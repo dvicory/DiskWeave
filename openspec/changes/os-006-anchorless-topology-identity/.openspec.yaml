@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: Implement stable topology, assignment generations, and evidence-based
+  identity assessment without data-member metadata anchors.

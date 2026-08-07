@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: Unlock portable request adapters, simulator integration, macOS
+  feasibility, and Linux conformance.

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: Prevent home-media mutation before durable intent and prevent clean or
+  valid claims without durable fence and checkpoint evidence.

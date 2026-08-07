@@ -1,0 +1,3 @@
+# os-012-file-backed-stores
+
+Implement portable sparse/regular file stores, recovery/control SQLite seams, locking, identity observations, and capability probes for the macOS path.

@@ -1,0 +1,17 @@
+[package]
+name = "diskweave"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+members = [
+    "crates/dwv-core",
+    "crates/dwv-codec",
+    "crates/dwv-store",
+    "crates/dwv-sim",
+    "crates/dwv-recovery",
+    "crates/dwv-recovery-sqlite",
+]
+resolver = "2"
+
+[dependencies]

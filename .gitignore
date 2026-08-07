@@ -1,0 +1,14 @@
+# Rust build artifacts
+/target/
+
+# rustfmt backup files
+**/*.rs.bk
+
+# MSVC debug symbols
+*.pdb
+
+# Local mise overrides
+.mise.local.toml
+
+# macOS metadata
+.DS_Store

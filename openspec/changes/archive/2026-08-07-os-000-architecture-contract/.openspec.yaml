@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: Create the repository-local source of truth that unlocks the portable
+  DiskWeave implementation sequence.

@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: Exercise normalized requests, store completions, and XOR semantics against
+  explicit durable, volatile, pending, completion, and fault states.

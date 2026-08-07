@@ -1,0 +1,10 @@
+[package]
+name = "dwv-store"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dwv-core = { path = "../dwv-core" }
