@@ -10,6 +10,7 @@ mod rebuild;
 mod repair;
 mod report;
 mod scan;
+mod scrub;
 mod store;
 
 pub use degraded::{
@@ -33,6 +34,7 @@ pub use report::{
     VerificationReport,
 };
 pub use scan::{DEFAULT_MAX_REGIONS, ScanConfig, verify_exhaustive, verify_sampled};
+pub use scrub::{ScrubContext, ScrubPlan, apply_scrub, plan_scrub};
 pub use store::{VerificationIdentity, VerificationStore, VerificationStoreError};
 
 #[cfg(test)]

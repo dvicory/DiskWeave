@@ -19,6 +19,9 @@ members = [
     "crates/dwv-store-file",
     "crates/dwv-service",
     "crates/dwv-verify",
+    "crates/dwv-format",
+    "crates/dwv-transaction-proc",
+    "crates/dwv-trace",
 ]
 resolver = "2"
 
@@ -28,9 +31,12 @@ dwv-codec = { path = "crates/dwv-codec" }
 dwv-core = { path = "crates/dwv-core" }
 dwv-recovery = { path = "crates/dwv-recovery" }
 dwv-recovery-sqlite = { path = "crates/dwv-recovery-sqlite" }
+dwv-format = { path = "crates/dwv-format" }
 dwv-service = { path = "crates/dwv-service" }
+dwv-sim = { path = "crates/dwv-sim" }
 dwv-store = { path = "crates/dwv-store" }
 dwv-store-file = { path = "crates/dwv-store-file" }
+dwv-trace = { path = "crates/dwv-trace" }
 dwv-verify = { path = "crates/dwv-verify" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -39,7 +39,7 @@ fn main() -> ExitCode {
 fn dispatch(args: Vec<String>) -> Result<serde_json::Value, demo::DemoError> {
     if args.first().map(String::as_str) != Some("demo") {
         return Err(demo::DemoError::usage(
-            "usage: dwv demo <init|run|status|inspect|capabilities|verify|plan|rebuild> --root PATH",
+            "usage: dwv demo <init|run|status|inspect|capabilities|verify|scrub|repair|plan|rebuild|trace-export|trace-render|trace-replay> --root PATH",
         ));
     }
     let command = args
@@ -51,6 +51,8 @@ fn dispatch(args: Vec<String>) -> Result<serde_json::Value, demo::DemoError> {
     let mut plan = PathBuf::from("rebuild-plan.json");
     let mut confirmation = None;
     let mut stop_after = None;
+    let mut scrub_plan = PathBuf::from("scrub-plan.json");
+    let mut trace = PathBuf::from("trace.json");
     let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
@@ -76,6 +78,20 @@ fn dispatch(args: Vec<String>) -> Result<serde_json::Value, demo::DemoError> {
                 plan = PathBuf::from(
                     args.get(index)
                         .ok_or_else(|| demo::DemoError::usage("--plan requires a path"))?,
+                );
+            }
+            "--scrub-plan" => {
+                index += 1;
+                scrub_plan = PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| demo::DemoError::usage("--scrub-plan requires a path"))?,
+                );
+            }
+            "--trace" => {
+                index += 1;
+                trace = PathBuf::from(
+                    args.get(index)
+                        .ok_or_else(|| demo::DemoError::usage("--trace requires a path"))?,
                 );
             }
             "--confirm" => {
@@ -114,7 +130,15 @@ fn dispatch(args: Vec<String>) -> Result<serde_json::Value, demo::DemoError> {
         "inspect" => demo::inspect(&root),
         "capabilities" => demo::capabilities(&root),
         "verify" => demo::verify(&root),
-        "plan" => demo::plan(&root),
+        "scrub" => demo::scrub(&root),
+        "repair" => demo::repair(
+            &root,
+            &scrub_plan,
+            confirmation
+                .as_deref()
+                .ok_or_else(|| demo::DemoError::usage("repair requires --confirm TOKEN"))?,
+        ),
+        "plan" => demo::plan(&root, &plan),
         "rebuild" => demo::execute(
             &root,
             &plan,
@@ -123,6 +147,9 @@ fn dispatch(args: Vec<String>) -> Result<serde_json::Value, demo::DemoError> {
                 .ok_or_else(|| demo::DemoError::usage("rebuild requires --confirm TOKEN"))?,
             stop_after,
         ),
+        "trace-export" => demo::trace_export(&root, &trace),
+        "trace-render" => demo::trace_render(&root, &trace),
+        "trace-replay" => demo::trace_replay(&root, &trace),
         _ => Err(demo::DemoError::usage(format!(
             "unknown demo command: {command}"
         ))),

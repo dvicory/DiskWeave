@@ -9,3 +9,4 @@ path = "src/lib.rs"
 [dependencies]
 dwv-core = { path = "../dwv-core" }
 dwv-store = { path = "../dwv-store" }
+dwv-format = { path = "../dwv-format" }

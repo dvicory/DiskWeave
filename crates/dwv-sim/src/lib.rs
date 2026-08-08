@@ -14,7 +14,13 @@ use dwv_store::{
 use std::fmt;
 
 mod checksum_model;
+mod envelope_model;
 mod recovery_model;
+
+pub use envelope_model::{
+    EnvelopeCutPoint, EnvelopeModelOutcome, EnvelopeSchedule, ProfileCost, compare_profile_costs,
+    run_envelope_schedule, run_interrupted_migration,
+};
 
 pub use checksum_model::{
     ChecksumCutPoint, ChecksumModelEvent, ChecksumModelOutcome, ChecksumModelSchedule,

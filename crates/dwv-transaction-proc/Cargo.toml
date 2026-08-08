@@ -1,0 +1,14 @@
+[package]
+name = "dwv-transaction-proc"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dwv-core = { path = "../dwv-core" }
+dwv-recovery = { path = "../dwv-recovery" }
+dwv-store = { path = "../dwv-store" }
+dwv-transaction-ref = { path = "../dwv-transaction-ref" }
+procmachines = { version = "=1.0.0", default-features = false, features = ["std"] }

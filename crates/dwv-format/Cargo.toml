@@ -1,0 +1,10 @@
+[package]
+name = "dwv-format"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+blake3 = "1"
