@@ -3,12 +3,9 @@ name = "dwv-store-file"
 version = "0.1.0"
 edition = "2024"
 
-[workspace]
-
 [lib]
 path = "src/lib.rs"
 
 [dependencies]
 dwv-core = { path = "../dwv-core" }
 dwv-store = { path = "../dwv-store" }
-

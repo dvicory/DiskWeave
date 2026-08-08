@@ -1,6 +1,9 @@
-use dwv_store::{IdentityAssessment, IdentityComparison as StoreIdentityComparison, IdentityObservation, IdentityObservationSet};
+use dwv_store::{
+    IdentityAssessment, IdentityComparison as StoreIdentityComparison, IdentityObservation,
+    IdentityObservationSet,
+};
 use std::fmt;
-use std::fs::{File, OpenOptions, Metadata, remove_file, rename};
+use std::fs::{File, Metadata, OpenOptions, remove_file, rename};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -32,7 +35,9 @@ impl fmt::Display for FileIdentityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "file identity probe failed: {error}"),
-            Self::NotARegularFile(path) => write!(formatter, "not a regular file: {}", path.display()),
+            Self::NotARegularFile(path) => {
+                write!(formatter, "not a regular file: {}", path.display())
+            }
         }
     }
 }
@@ -40,7 +45,9 @@ impl fmt::Display for FileIdentityError {
 impl std::error::Error for FileIdentityError {}
 
 impl From<std::io::Error> for FileIdentityError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 /// Observe identity using filesystem metadata, never the path alone.
@@ -59,7 +66,7 @@ pub(crate) fn identity_from_metadata(metadata: &Metadata) -> IdentityObservation
     fingerprint[8..].copy_from_slice(&second.to_le_bytes());
     IdentityObservationSet::new(
         vec![IdentityObservation {
-            source: dwv_store::IdentitySourceKind::FilesystemId,
+            source: dwv_store::IdentitySourceKind::FileId,
             fingerprint,
         }],
         IdentityAssessment::Confirmed,
@@ -97,7 +104,9 @@ impl fmt::Display for FileLeaseError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(formatter, "file lease failed: {error}"),
-            Self::AlreadyHeld(path) => write!(formatter, "file lease already held: {}", path.display()),
+            Self::AlreadyHeld(path) => {
+                write!(formatter, "file lease already held: {}", path.display())
+            }
         }
     }
 }
@@ -114,7 +123,10 @@ pub struct FileLease {
 
 impl fmt::Debug for FileLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.debug_struct("FileLease").field("path", &self.path).finish()
+        formatter
+            .debug_struct("FileLease")
+            .field("path", &self.path)
+            .finish()
     }
 }
 
@@ -134,12 +146,24 @@ impl FileLease {
             }
             Err(error) => return Err(FileLeaseError::Io(error)),
         };
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
-        let _ = writeln!(marker, "pid={} acquired_ns={}", std::process::id(), stamp.as_nanos());
-        Ok(Self { path, marker: Some(marker) })
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default();
+        let _ = writeln!(
+            marker,
+            "pid={} acquired_ns={}",
+            std::process::id(),
+            stamp.as_nanos()
+        );
+        Ok(Self {
+            path,
+            marker: Some(marker),
+        })
     }
 
-    pub fn path(&self) -> &Path { &self.path }
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
 
     pub fn release(&mut self) -> Result<(), FileLeaseError> {
         if self.marker.take().is_some() {
@@ -172,7 +196,9 @@ impl fmt::Display for AliasError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Identity(error) => write!(formatter, "alias identity probe failed: {error}"),
-            Self::SameBackingAndExport(path) => write!(formatter, "backing/export aliases: {}", path.display()),
+            Self::SameBackingAndExport(path) => {
+                write!(formatter, "backing/export aliases: {}", path.display())
+            }
             Self::AmbiguousIdentity => write!(formatter, "backing/export identity is ambiguous"),
         }
     }
@@ -188,7 +214,9 @@ pub fn reject_backing_export_alias(
     let backing = observe_file_identity(backing_path).map_err(AliasError::Identity)?;
     let export = observe_file_identity(export_path).map_err(AliasError::Identity)?;
     match backing.compare(&export) {
-        StoreIdentityComparison::Unchanged => Err(AliasError::SameBackingAndExport(backing_path.to_path_buf())),
+        StoreIdentityComparison::Unchanged => {
+            Err(AliasError::SameBackingAndExport(backing_path.to_path_buf()))
+        }
         StoreIdentityComparison::Changed => Ok(()),
         StoreIdentityComparison::Ambiguous => Err(AliasError::AmbiguousIdentity),
     }
@@ -217,14 +245,19 @@ mod tests {
         let _ = fs::remove_file(&root);
         fs::write(&root, b"payload").unwrap();
         let mut lease = FileLease::acquire(&root).unwrap();
-        assert!(matches!(FileLease::acquire(&root), Err(FileLeaseError::AlreadyHeld(_))));
+        assert!(matches!(
+            FileLease::acquire(&root),
+            Err(FileLeaseError::AlreadyHeld(_))
+        ));
         let identity = observe_file_identity(&root).unwrap();
         let alias = root.with_file_name(format!("alias-{}", std::process::id()));
         std::fs::hard_link(&root, &alias).unwrap();
-        assert_eq!(identity.compare(&observe_file_identity(&alias).unwrap()), StoreIdentityComparison::Unchanged);
+        assert_eq!(
+            identity.compare(&observe_file_identity(&alias).unwrap()),
+            StoreIdentityComparison::Unchanged
+        );
         lease.release().unwrap();
         let _ = fs::remove_file(alias);
         let _ = fs::remove_file(root);
     }
 }
-

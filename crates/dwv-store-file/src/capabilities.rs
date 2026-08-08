@@ -1,5 +1,8 @@
-use crate::lease::{FileIdentityError, identity_from_metadata, observe_file_identity};
-use dwv_store::{CapabilityEvidenceId, CapabilitySupport, Evidence, IdentitySourceSet, StoreCapabilities, TornWriteModel, VolatileCacheModel};
+use crate::lease::{FileIdentityError, observe_file_identity};
+use dwv_store::{
+    CapabilityEvidenceId, CapabilitySupport, IdentitySourceSet, StoreCapabilities, TornWriteModel,
+    VolatileCacheModel,
+};
 use std::fmt;
 use std::fs::Metadata;
 use std::path::{Path, PathBuf};
@@ -32,7 +35,9 @@ impl fmt::Display for CapabilityProbeError {
         match self {
             Self::Io(error) => write!(formatter, "capability probe failed: {error}"),
             Self::Identity(error) => write!(formatter, "identity probe failed: {error}"),
-            Self::NotRegularFile(path) => write!(formatter, "not a regular file: {}", path.display()),
+            Self::NotRegularFile(path) => {
+                write!(formatter, "not a regular file: {}", path.display())
+            }
             Self::InvalidGeometry(message) => write!(formatter, "invalid file geometry: {message}"),
         }
     }
@@ -41,7 +46,9 @@ impl fmt::Display for CapabilityProbeError {
 impl std::error::Error for CapabilityProbeError {}
 
 impl From<std::io::Error> for CapabilityProbeError {
-    fn from(error: std::io::Error) -> Self { Self::Io(error) }
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
 }
 
 pub fn probe_file_capabilities(
@@ -112,8 +119,9 @@ pub(crate) fn capabilities_for(
     capabilities.stable_identity_sources = IdentitySourceSet {
         stable_device_id: false,
         serial: false,
-        filesystem_id: true,
+        filesystem_id: false,
         world_wide_name: false,
+        file_id: true,
         path: false,
     };
     capabilities.torn_write_model = TornWriteModel::Unknown;
@@ -128,6 +136,7 @@ pub(crate) fn capabilities_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dwv_store::Evidence;
     use std::fs;
 
     #[test]
@@ -147,8 +156,10 @@ mod tests {
         assert_eq!(report.capabilities.logical_length, Evidence::Known(4096));
         assert_eq!(report.capabilities.fua, CapabilitySupport::Unsupported);
         assert_eq!(report.capabilities.discard, CapabilitySupport::Unsupported);
-        assert_eq!(report.capabilities.volatile_cache, VolatileCacheModel::Unknown);
+        assert_eq!(
+            report.capabilities.volatile_cache,
+            VolatileCacheModel::Unknown
+        );
         let _ = fs::remove_file(path);
     }
 }
-
