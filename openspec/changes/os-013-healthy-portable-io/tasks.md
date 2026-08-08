@@ -23,4 +23,4 @@
 - [x] 4.1 Add randomized reference-image tests, action traces, child-completion permutations, and resource-bound tests.
 - [x] 4.2 Add macOS temporary-file integration tests, clean reopen, control-state rebuild, and independent data-file readability.
 - [x] 4.3 Run workspace tests, format, dependency/license inspection, and OpenSpec validation; record portable-demo limitations.
-- [ ] 4.4 Mark complete only when OS-013 acceptance passes; leave OS-014–017 and OS-020 as separate changes.
+- [x] 4.4 Mark complete after the workspace acceptance, restart/abandonment cut-point matrices, dependency inspection, and OpenSpec validation pass; leave OS-014–017 and OS-020 as separate changes.

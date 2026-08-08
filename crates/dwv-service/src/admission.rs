@@ -253,4 +253,55 @@ mod tests {
         assert_eq!(admission.usage().operation_slots, 0);
         assert_eq!(admission.usage().backend_submissions, 0);
     }
+
+    #[test]
+    fn abandonment_matrix_reconciles_every_child_completion_cutpoint() {
+        let ranges = [
+            ByteRange::new(0, 4).unwrap(),
+            ByteRange::new(4, 4).unwrap(),
+            ByteRange::new(8, 4).unwrap(),
+            ByteRange::new(12, 4).unwrap(),
+        ];
+
+        for completed_count in 0..=ranges.len() {
+            let mut admission = OperationAdmission::new(AdmissionConfig {
+                limits: ResourceLimits::new(1, 1, ranges.len(), 1, 1, 1),
+            });
+            let token = admission
+                .reserve(OperationId(100 + completed_count as u64), TopologyEpoch(2))
+                .unwrap();
+            let children = admission.children(token, &ranges).unwrap();
+            admission.submit_all(token, children.len()).unwrap();
+
+            for (&child, &range) in children.iter().zip(&ranges).take(completed_count) {
+                admission
+                    .complete(
+                        token,
+                        completion(
+                            child,
+                            range,
+                            range.length,
+                            CompletionDisposition::Success,
+                            PersistenceEvidence::VolatileOrUnknown,
+                        ),
+                    )
+                    .unwrap();
+            }
+
+            admission.abandon(token).unwrap();
+            assert!(admission.snapshot(token).unwrap().abandoned);
+            let remaining = children
+                .iter()
+                .zip(&ranges)
+                .skip(completed_count)
+                .map(|(&child, &range)| (child, range))
+                .collect::<Vec<_>>();
+            admission.reconcile_children(token, &remaining).unwrap();
+            admission
+                .reclaim(token, completed_count != ranges.len())
+                .unwrap();
+            assert_eq!(admission.usage().operation_slots, 0);
+            assert_eq!(admission.usage().backend_submissions, 0);
+        }
+    }
 }

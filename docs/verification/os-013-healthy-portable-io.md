@@ -8,7 +8,7 @@ flush semantics.
 ## Evidence run on 2026-08-07
 
 - `cargo test --workspace` — passed; all workspace unit and doctests passed,
-  including 20 `dwv-service` tests.
+  including 21 `dwv-service` tests and 16 transaction-reference tests.
 - `cargo fmt --all -- --check` — passed.
 - `cargo clippy -p dwv-service --all-targets --no-deps -- -D warnings` — passed.
 - `cargo tree --workspace -e normal` — passed; the only third-party runtime
@@ -19,12 +19,15 @@ flush semantics.
 - `openspec validate --all --json` — passed, 13/13 repository specs and
   changes valid.
 
-The service tests cover exact and short reads, stale and corrupt recovery,
-single-XOR partial/full writes, randomized reference-image comparison,
-generational checksum invalidation, fence/checkpoint gating, alias and active
-lease rejection, abandonment reconciliation, bounded slot/buffer/child
-resources, clean reopen, disposable control-state deletion/rebuild, and direct
-ordinary-file payload reads.
+The service and transaction-reference tests cover exact and short reads, stale
+and corrupt recovery, single-XOR partial/full writes, randomized
+reference-image comparison, generational checksum invalidation,
+fence/checkpoint gating, alias and active lease rejection, abandonment
+reconciliation at every child-completion cut point, all eight transaction
+action restart cut points, bounded slot/buffer/child resources, clean reopen,
+disposable control-state deletion/rebuild, and direct ordinary-file payload
+reads. The transaction-reference matrix has eight restart cut points, and the
+service admission matrix has five child-completion cut points.
 
 ## Dependency/license inspection boundary
 
@@ -35,8 +38,8 @@ transitives are BSD-2-Clause, MIT/Apache-2.0, CC0-1.0/MIT-0/Apache-2.0, or
 MIT/Apache-2.0. This is a metadata inspection, not a policy audit; a dedicated
 license-policy tool remains a release-check item.
 
-## Remaining acceptance boundary
-
-OS-013 remains active until the modeled kill/restart cut-point matrix and a
-complete license audit are available. OS-020 remains the owner of FSKit,
-DiskImages, synchronization/cache/disconnect, and bridge entitlement evidence.
+The resolved dependency graph has been inspected through Cargo metadata; the
+host does not have a dedicated cargo-deny or cargo-about policy tool, so that
+release-policy audit remains an operational follow-up rather than a semantic
+acceptance blocker. OS-020 remains the owner of FSKit, DiskImages,
+synchronization/cache/disconnect, and bridge entitlement evidence.

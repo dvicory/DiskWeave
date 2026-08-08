@@ -743,7 +743,7 @@ fn result_matches(action: ActionKind, result: ResultKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionResult, ErrorClass, FenceEvidence, StoreWatermark};
+    use crate::{ActionResult, ErrorClass, FenceEvidence, StoreWatermark, TraceEvent};
     use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
     use dwv_recovery::{
         FenceCertificate, IntegrityExtentId, IntentEvidence, RecoveryGeneration, RegionId,
@@ -809,6 +809,29 @@ mod tests {
         machine
             .apply(ActionResult::ParityComputed(ComputationResult::complete()))
             .unwrap();
+    }
+
+    fn successful_result(machine: &TransactionMachine) -> ActionResult {
+        match machine
+            .pending_action()
+            .expect("machine has a pending action")
+            .kind()
+        {
+            ActionKind::AcquireRange => ActionResult::RangeAcquired(RangeGuardToken(1)),
+            ActionKind::PersistDirtyAndInvalidateIntegrity => ActionResult::RecoveryIntentDurable(
+                CommittedRecoveryGeneration::new(RecoveryGeneration(3), TopologyEpoch(7)),
+            ),
+            ActionKind::ReadSet => ActionResult::ReadSetComplete(SemanticIoResult::complete()),
+            ActionKind::ComputeParity => {
+                ActionResult::ParityComputed(ComputationResult::complete())
+            }
+            ActionKind::WriteSet => ActionResult::WriteSetComplete(SemanticIoResult::complete()),
+            ActionKind::FlushSet => ActionResult::FlushSetComplete(durable_fence()),
+            ActionKind::CommitCheckpointOrClear => ActionResult::CheckpointCommitted(
+                CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
+            ),
+            ActionKind::ReleaseRange => ActionResult::RangeReleased,
+        }
     }
 
     #[test]
@@ -941,6 +964,52 @@ mod tests {
         machine.daemon_crash().unwrap();
         assert_eq!(machine.stage(), Stage::ReconciliationRequired);
         assert!(machine.state().home_mutation_emitted);
+    }
+
+    #[test]
+    fn daemon_restart_cutpoint_matrix_preserves_conservative_recovery() {
+        let mut results = Vec::new();
+        let mut cutpoints = 0;
+
+        loop {
+            let mut restarted = TransactionMachine::replay(plan(), &results).unwrap();
+            if restarted.is_terminal() {
+                break;
+            }
+
+            let pending_kind = restarted.pending_action().unwrap().kind();
+            restarted.daemon_crash().unwrap();
+            cutpoints += 1;
+
+            assert!(restarted.pending_action().is_none());
+            assert!(matches!(
+                restarted.stage(),
+                Stage::Aborted | Stage::ReconciliationRequired
+            ));
+            assert!(
+                restarted
+                    .trace()
+                    .events()
+                    .iter()
+                    .any(|event| matches!(event, TraceEvent::DaemonCrashed { .. }))
+            );
+            if results.is_empty() {
+                assert_eq!(pending_kind, ActionKind::AcquireRange);
+                assert_eq!(restarted.stage(), Stage::Aborted);
+                assert!(!restarted.state().home_mutation_emitted);
+            } else {
+                assert_eq!(restarted.stage(), Stage::ReconciliationRequired);
+            }
+
+            let running = TransactionMachine::replay(plan(), &results).unwrap();
+            assert_eq!(running.pending_action().unwrap().kind(), pending_kind);
+            results.push(successful_result(&running));
+        }
+
+        assert_eq!(cutpoints, 8);
+        let completed = TransactionMachine::replay(plan(), &results).unwrap();
+        assert_eq!(completed.stage(), Stage::Completed);
+        assert_eq!(completed.disposition(), Disposition::Completed);
     }
 
     #[test]
