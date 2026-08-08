@@ -531,8 +531,8 @@ fn assess_candidate(
         .claimed_array
         .is_none_or(|array| array == profile.array_id)
         && candidate
-        .claimed_slot
-        .is_none_or(|slot| slot == profile.slot_id)
+            .claimed_slot
+            .is_none_or(|slot| slot == profile.slot_id)
         && candidate
             .claimed_role
             .is_none_or(|role| role == profile.role)
@@ -943,9 +943,21 @@ mod tests {
 
     #[test]
     fn explicit_fixture_matrix_is_fail_closed() {
-        assert_eq!(fixtures::replacement().assessment, IdentityAssessment::Changed);
-        assert_eq!(fixtures::file_identity().assessment, IdentityAssessment::Match);
-        assert_eq!(fixtures::ambiguous_candidates().assessment, IdentityAssessment::Clone);
-        assert_eq!(fixtures::reordered_discovery().assessment, IdentityAssessment::Match);
+        assert_eq!(
+            fixtures::replacement().assessment,
+            IdentityAssessment::Changed
+        );
+        assert_eq!(
+            fixtures::file_identity().assessment,
+            IdentityAssessment::Match
+        );
+        assert_eq!(
+            fixtures::ambiguous_candidates().assessment,
+            IdentityAssessment::Clone
+        );
+        assert_eq!(
+            fixtures::reordered_discovery().assessment,
+            IdentityAssessment::Match
+        );
     }
 }
