@@ -490,24 +490,33 @@ impl SqliteRecoveryStore {
     pub fn open(database_path: impl Into<PathBuf>) -> Result<Self, SqliteRecoveryStoreError> {
         let database_path = database_path.into();
         let (lock_path, lock) = acquire_lock(&database_path)?;
-        if !database_path.is_file() {
-            return Err(SqliteRecoveryStoreError::MissingTarget);
+        let result = (|| {
+            if !database_path.is_file() {
+                return Err(SqliteRecoveryStoreError::MissingTarget);
+            }
+            let prototype = SqlitePrototype::new(&database_path);
+            prototype
+                .initialize()
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            let manifest = prototype
+                .load_manifest()
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            let memory = MemoryRecoveryStore::from_manifest(manifest)
+                .map_err(|error| SqliteRecoveryStoreError::Semantic(error.to_string()))?;
+            Ok((prototype, memory))
+        })();
+        match result {
+            Ok((prototype, memory)) => Ok(Self {
+                prototype,
+                memory,
+                lock_path,
+                _lock: lock,
+            }),
+            Err(error) => {
+                let _ = remove_file(&lock_path);
+                Err(error)
+            }
         }
-        let prototype = SqlitePrototype::new(&database_path);
-        prototype
-            .initialize()
-            .map_err(SqliteRecoveryStoreError::Prototype)?;
-        let manifest = prototype
-            .load_manifest()
-            .map_err(SqliteRecoveryStoreError::Prototype)?;
-        let memory = MemoryRecoveryStore::from_manifest(manifest)
-            .map_err(|error| SqliteRecoveryStoreError::Semantic(error.to_string()))?;
-        Ok(Self {
-            prototype,
-            memory,
-            lock_path,
-            _lock: lock,
-        })
     }
 
     pub fn database_path(&self) -> &Path {

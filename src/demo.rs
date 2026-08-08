@@ -1,0 +1,1082 @@
+use blake3::Hash;
+use dwv_codec::{Geometry, compute_parity};
+use dwv_core::{
+    ArrayId, AssignmentGeneration, AssignmentInstanceId, ByteRange, CodingPosition, CodingProfile,
+    MemberRole, ProtectedGeometry, RequestId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
+};
+use dwv_recovery::{
+    MemoryRecoveryStore, RebuildId, RebuildLifecycle, RebuildState, RebuildTargetIdentity,
+    RecoveryGeneration, RecoveryManifest, RecoveryMutation, RecoveryStateStore,
+    TopologySnapshot as RecoveryTopologySnapshot,
+};
+use dwv_recovery_sqlite::SqliteRecoveryStore;
+use dwv_service::{
+    FileRebuildStore, HealthyPortableService, MemberStore, PortableRequest, ServiceConfig,
+    commit_verified_rebuild_chunk, commit_verified_rebuild_completion,
+};
+use dwv_store::StoreId;
+use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode};
+use dwv_verify::{
+    RebuildBinding, ReconstructionRangeEvidence, ReconstructionSourceState, VerificationStore,
+    authorize_known_erasure, execute_rebuild_chunk, plan_rebuild_ranges, read_known_erasure,
+    verify_complete_rebuild,
+};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::fmt;
+use std::fs;
+use std::path::{Component, Path, PathBuf};
+
+const CONTRACT: &str = "dwv.cli.v0";
+const MANIFEST_FILE: &str = "fixture.json";
+const MARKER_FILE: &str = ".dwv-demo";
+const PLAN_FILE: &str = "rebuild-plan.json";
+const BLOCK: u32 = 512;
+const DEFAULT_SIZE: u64 = 16 * 1024;
+const MAX_SIZE: u64 = 64 * 1024 * 1024;
+const EPOCH: u64 = 16;
+const CHUNK: u64 = 4096;
+const ARRAY_ID: [u8; 16] = [0xd0; 16];
+const REBUILD_ID: RebuildId = RebuildId::from_bytes([0xd1; 16]);
+const MISSING_SLOT: [u8; 16] = [1; 16];
+const REPLACEMENT_ASSIGNMENT: [u8; 16] = [0x21; 16];
+const REPLACEMENT_STORE: StoreId = StoreId(20);
+
+#[derive(Debug)]
+pub struct DemoError {
+    pub code: u8,
+    pub class: &'static str,
+    pub message: String,
+}
+
+impl DemoError {
+    fn new(code: u8, class: &'static str, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            class,
+            message: message.into(),
+        }
+    }
+
+    pub fn usage(message: impl Into<String>) -> Self {
+        Self::new(2, "usage", message)
+    }
+
+    fn blocked(message: impl Into<String>) -> Self {
+        Self::new(3, "blocked", message)
+    }
+
+    fn refused(message: impl Into<String>) -> Self {
+        Self::new(4, "refused", message)
+    }
+
+    fn failed(message: impl Into<String>) -> Self {
+        Self::new(5, "operation-failed", message)
+    }
+}
+
+impl fmt::Display for DemoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.class, self.message)
+    }
+}
+
+impl std::error::Error for DemoError {}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct FixtureManifest {
+    schema: u32,
+    contract: String,
+    protected_length: u64,
+    logical_block_size: u32,
+    topology_epoch: u64,
+    array_id: [u8; 16],
+    data_files: [String; 2],
+    data_identities: [[u8; 16]; 2],
+    parity_file: String,
+    parity_identity: [u8; 16],
+    reference_file: String,
+    reference_identity: [u8; 16],
+    replacement_file: String,
+    replacement_identity: [u8; 16],
+    recovery_file: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RebuildPlan {
+    schema: u32,
+    contract: String,
+    rebuild_id: [u8; 16],
+    missing_slot: [u8; 16],
+    replacement_store: u64,
+    replacement_file: String,
+    replacement_identity: [u8; 16],
+    topology_epoch: u64,
+    source_recovery_generation: u64,
+    protected_length: u64,
+    chunk_size: u64,
+    confirmation: String,
+}
+
+pub fn init(root: &Path, requested_size: Option<u64>) -> Result<Value, DemoError> {
+    let size = requested_size.unwrap_or(DEFAULT_SIZE);
+    validate_size(size)?;
+    if root.exists() {
+        let empty = root.is_dir()
+            && fs::read_dir(root)
+                .map_err(|error| DemoError::refused(error.to_string()))?
+                .next()
+                .is_none();
+        if !empty {
+            return Err(DemoError::refused(format!(
+                "fixture root must be a missing or empty directory: {}",
+                root.display()
+            )));
+        }
+    } else {
+        fs::create_dir_all(root).map_err(|error| DemoError::failed(error.to_string()))?;
+    }
+    fs::write(root.join(MARKER_FILE), b"diskweave disposable macOS demo\n")
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+
+    let data0 = deterministic_bytes(size, 7, 13);
+    let data1 = deterministic_bytes(size, 11, 29);
+    let geometry = codec_geometry(size)?;
+    let parity = compute_parity(&geometry, &[&data0, &data1])
+        .map_err(|error| DemoError::failed(format!("parity initialization failed: {error}")))?;
+    let mut manifest = FixtureManifest {
+        schema: 1,
+        contract: CONTRACT.to_owned(),
+        protected_length: size,
+        logical_block_size: BLOCK,
+        topology_epoch: EPOCH,
+        array_id: ARRAY_ID,
+        data_files: ["data0.raw".to_owned(), "data1.raw".to_owned()],
+        data_identities: [[0; 16]; 2],
+        parity_file: "parity.raw".to_owned(),
+        parity_identity: [0; 16],
+        reference_file: "reference.raw".to_owned(),
+        reference_identity: [0; 16],
+        replacement_file: "replacement.raw".to_owned(),
+        replacement_identity: [0; 16],
+        recovery_file: "recovery.sqlite3".to_owned(),
+    };
+
+    fs::write(root.join(&manifest.data_files[0]), &data0)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join(&manifest.data_files[1]), &data1)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join(&manifest.parity_file), &parity)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join(&manifest.reference_file), &data0)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    create_empty_replacement(root, &manifest)?;
+    manifest.data_identities = [
+        file_identity(&open_store(
+            root,
+            &manifest.data_files[0],
+            &manifest,
+            StoreId(10),
+            false,
+        )?),
+        file_identity(&open_store(
+            root,
+            &manifest.data_files[1],
+            &manifest,
+            StoreId(11),
+            false,
+        )?),
+    ];
+    manifest.parity_identity = file_identity(&open_store(
+        root,
+        &manifest.parity_file,
+        &manifest,
+        StoreId(12),
+        false,
+    )?);
+    manifest.reference_identity = file_identity(&open_store(
+        root,
+        &manifest.reference_file,
+        &manifest,
+        StoreId(30),
+        false,
+    )?);
+    manifest.replacement_identity = file_identity(&open_store(
+        root,
+        &manifest.replacement_file,
+        &manifest,
+        REPLACEMENT_STORE,
+        false,
+    )?);
+
+    let recovery_manifest = initial_recovery_manifest(&manifest)?;
+    let recovery_path = root.join(&manifest.recovery_file);
+    let recovery = SqliteRecoveryStore::create_new(&recovery_path, recovery_manifest)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    drop(recovery);
+    write_manifest(root, &manifest)?;
+
+    Ok(json!({
+        "fixture": "initialized",
+        "contract": CONTRACT,
+        "protected_length": size,
+        "logical_block_size": BLOCK,
+        "data_files": manifest.data_files,
+        "parity_file": manifest.parity_file,
+        "reference_file": manifest.reference_file,
+        "replacement_file": manifest.replacement_file,
+        "recovery_file": manifest.recovery_file,
+    }))
+}
+
+pub fn run(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let healthy = healthy_cycle(root, &manifest)?;
+    let rebuild = rebuild_fixture(root, &manifest)?;
+    Ok(json!({
+        "workflow": "complete",
+        "healthy": healthy,
+        "rebuild": rebuild,
+        "claim_boundary": [
+            "portable file-backed macOS behavior",
+            "single-XOR known-erasure reconstruction",
+            "offline separate-target rebuild"
+        ],
+        "unsupported": [
+            "live FSKit/DiskImages bridge",
+            "Linux frontend",
+            "physical power-loss durability",
+            "P/Q and degraded writes"
+        ]
+    }))
+}
+
+pub fn status(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    status_value(root, &manifest)
+}
+
+pub fn inspect(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let mut result = status_value(root, &manifest)?;
+    result["inspection"] = json!({
+        "manifest_schema": manifest.schema,
+        "contract": manifest.contract,
+        "data_members": manifest.data_files,
+        "parity_member": manifest.parity_file,
+        "recovery_state": manifest.recovery_file,
+        "data_payload_metadata": "none-required",
+        "identity_evidence": {
+            "data": [
+                hex_bytes(&manifest.data_identities[0]),
+                hex_bytes(&manifest.data_identities[1])
+            ],
+            "parity": hex_bytes(&manifest.parity_identity),
+            "reference": hex_bytes(&manifest.reference_identity),
+            "replacement": hex_bytes(&manifest.replacement_identity)
+        },
+    });
+    Ok(result)
+}
+pub fn capabilities(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let mut entries = Vec::new();
+    for (relative, store_id) in [
+        (&manifest.data_files[0], StoreId(10)),
+        (&manifest.data_files[1], StoreId(11)),
+        (&manifest.parity_file, StoreId(12)),
+        (&manifest.replacement_file, REPLACEMENT_STORE),
+    ] {
+        let store = open_store(root, relative, &manifest, store_id, false)?;
+        let report = store.capabilities_report();
+        entries.push(json!({
+            "path": relative,
+            "identity": hex_bytes(&file_identity(&store)),
+            "capabilities": format!("{:?}", report.capabilities),
+        }));
+    }
+    Ok(json!({
+        "capability_boundary": "file-backed portable demo",
+        "members": entries,
+    }))
+}
+
+pub fn verify(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    verify_value(root, &manifest)
+}
+
+pub fn plan(root: &Path) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let recovery = open_recovery(root, &manifest)?;
+    let snapshot = recovery
+        .load_assembly_snapshot()
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let target = open_rebuild_target(root, &manifest, false)?;
+    let plan = RebuildPlan {
+        schema: 1,
+        contract: CONTRACT.to_owned(),
+        rebuild_id: REBUILD_ID.as_bytes(),
+        missing_slot: MISSING_SLOT,
+        replacement_store: REPLACEMENT_STORE.0,
+        replacement_file: manifest.replacement_file.clone(),
+        replacement_identity: target.identity().0,
+        topology_epoch: snapshot.topology_epoch.0,
+        source_recovery_generation: snapshot.generation.0,
+        protected_length: manifest.protected_length,
+        chunk_size: CHUNK.min(manifest.protected_length),
+        confirmation: String::new(),
+    };
+    drop(target);
+    drop(recovery);
+    let plan = with_confirmation(plan)?;
+    write_plan(root, &plan)?;
+    serde_json::to_value(plan).map_err(|error| DemoError::failed(error.to_string()))
+}
+
+pub fn execute(
+    root: &Path,
+    plan_path: &Path,
+    confirmation: &str,
+    stop_after: Option<u64>,
+) -> Result<Value, DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let plan_relative = plan_path
+        .to_str()
+        .ok_or_else(|| DemoError::usage("plan path must be valid UTF-8"))?;
+    let plan_path = owned_path(root, plan_relative, true)?;
+    let plan: RebuildPlan = serde_json::from_slice(
+        &fs::read(&plan_path).map_err(|error| DemoError::failed(error.to_string()))?,
+    )
+    .map_err(|error| DemoError::refused(format!("invalid rebuild plan: {error}")))?;
+    let expected = with_confirmation(RebuildPlan {
+        confirmation: String::new(),
+        ..plan.clone()
+    })?;
+    if confirmation != expected.confirmation || plan.confirmation != expected.confirmation {
+        return Err(DemoError::refused(
+            "confirmation does not match the canonical rebuild plan",
+        ));
+    }
+    validate_plan(&manifest, &plan)?;
+    let result = rebuild_fixture_with_plan(root, &manifest, &plan, stop_after)?;
+    Ok(json!({
+        "plan": "accepted",
+        "workflow": result,
+    }))
+}
+
+fn healthy_cycle(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
+    let topology = core_topology(manifest)?;
+    let recovery = open_recovery(root, manifest)?;
+    let data0 = MemberStore::new(
+        StoreId(10),
+        open_store(root, &manifest.data_files[0], manifest, StoreId(10), true)?,
+    );
+    let data1 = MemberStore::new(
+        StoreId(11),
+        open_store(root, &manifest.data_files[1], manifest, StoreId(11), true)?,
+    );
+    let parity = MemberStore::new(
+        StoreId(12),
+        open_store(root, &manifest.parity_file, manifest, StoreId(12), true)?,
+    );
+    let config = ServiceConfig {
+        maximum_transfer: Some(manifest.protected_length),
+        ..ServiceConfig::default()
+    };
+    let mut service =
+        HealthyPortableService::open(topology, vec![data0, data1], parity, recovery, config)
+            .map_err(|error| DemoError::failed(error.to_string()))?;
+    let range = ByteRange::new(0, u64::from(BLOCK))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let bytes = vec![0xa5; usize::try_from(range.length).unwrap()];
+    service
+        .write(PortableRequest::write(
+            RequestId(101),
+            TopologyEpoch(EPOCH),
+            1,
+            range,
+            bytes.clone(),
+        ))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    service
+        .flush(PortableRequest::flush(RequestId(102), TopologyEpoch(EPOCH)))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let (read_back, _) = service
+        .read(PortableRequest::read(
+            RequestId(103),
+            TopologyEpoch(EPOCH),
+            1,
+            range,
+        ))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    if read_back != bytes {
+        return Err(DemoError::failed("healthy read did not match the write"));
+    }
+    let generation = service
+        .recovery()
+        .load_assembly_snapshot()
+        .map_err(|error| DemoError::failed(error.to_string()))?
+        .generation
+        .0;
+    drop(service);
+
+    let mut reopened = open_store(root, &manifest.data_files[1], manifest, StoreId(11), false)?;
+    let reopened_bytes = reopened
+        .read_bytes(range)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    drop(reopened);
+    if reopened_bytes != bytes {
+        return Err(DemoError::failed(
+            "reopened member did not preserve the write",
+        ));
+    }
+    Ok(json!({
+        "write": "success",
+        "flush": "durable-host-file-fence",
+        "read": "matched",
+        "reopened": "matched",
+        "recovery_generation": generation,
+    }))
+}
+
+fn rebuild_fixture(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
+    let plan = plan(root)?;
+    let plan: RebuildPlan =
+        serde_json::from_value(plan).map_err(|error| DemoError::failed(error.to_string()))?;
+    rebuild_fixture_with_plan(root, manifest, &plan, None)
+}
+
+fn rebuild_fixture_with_plan(
+    root: &Path,
+    manifest: &FixtureManifest,
+    plan: &RebuildPlan,
+    stop_after: Option<u64>,
+) -> Result<Value, DemoError> {
+    let parity_before = fs::read(root.join(&manifest.parity_file))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let reference = fs::read(root.join(&manifest.reference_file))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let topology = core_topology(manifest)?;
+    let recovery_topology = recovery_topology(&topology)?;
+    let geometry = codec_geometry(manifest.protected_length)?;
+    let mut recovery = open_recovery(root, manifest)?;
+    let mut target = open_rebuild_target(root, manifest, true)?;
+    if target.identity().0 != plan.replacement_identity {
+        return Err(DemoError::refused(
+            "replacement identity differs from the plan",
+        ));
+    }
+    let before = recovery
+        .load_assembly_snapshot()
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let existing = before
+        .rebuilds
+        .iter()
+        .find(|rebuild| rebuild.id() == REBUILD_ID)
+        .cloned();
+    let cursor = if let Some(rebuild) = existing.as_ref() {
+        if rebuild.source_recovery_generation().0 != plan.source_recovery_generation
+            || rebuild.replacement_identity().as_bytes() != plan.replacement_identity
+            || rebuild.replacement_store() != REPLACEMENT_STORE
+        {
+            return Err(DemoError::refused(
+                "persisted rebuild does not match the plan",
+            ));
+        }
+        if rebuild.lifecycle() == RebuildLifecycle::Verified {
+            return finish_rebuild_report(
+                root,
+                manifest,
+                reference,
+                parity_before,
+                "already-verified",
+            );
+        }
+        dwv_service::validate_rebuild_resume(&recovery, REBUILD_ID, &mut target)
+            .map_err(|error| DemoError::refused(error.to_string()))?
+            .offset()
+    } else {
+        if before.generation.0 != plan.source_recovery_generation
+            || before.topology_epoch.0 != plan.topology_epoch
+        {
+            return Err(DemoError::refused(
+                "recovery state is stale relative to the plan",
+            ));
+        }
+        let rebuild = RebuildState::prepare(
+            REBUILD_ID,
+            recovery_topology.clone(),
+            before.generation,
+            dwv_core::SlotId(MISSING_SLOT),
+            CodingPosition(0),
+            AssignmentInstanceId(REPLACEMENT_ASSIGNMENT),
+            REPLACEMENT_STORE,
+            RebuildTargetIdentity::from_bytes(plan.replacement_identity),
+        )
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+        let mut transaction = recovery.begin_protocol_txn(before.generation, before.topology_epoch);
+        transaction.begin_offline_rebuild(rebuild);
+        recovery
+            .commit_durable(transaction)
+            .map_err(|error| DemoError::failed(error.to_string()))?;
+        0
+    };
+
+    let survivor = FileRebuildStore::new(
+        StoreId(11),
+        open_store(root, &manifest.data_files[1], manifest, StoreId(11), false)?,
+    );
+    let mut data = vec![None, Some(survivor)];
+    let mut parity = FileRebuildStore::new(
+        StoreId(12),
+        open_store(root, &manifest.parity_file, manifest, StoreId(12), false)?,
+    );
+    let degraded_range = ByteRange::new(0, CHUNK.min(manifest.protected_length))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let source_states = [
+        ReconstructionSourceState::Missing,
+        ReconstructionSourceState::Available,
+        ReconstructionSourceState::Available,
+    ];
+    let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
+    let authorization = authorize_known_erasure(
+        &topology,
+        recovery
+            .load_assembly_snapshot()
+            .map_err(|error| DemoError::failed(error.to_string()))?
+            .generation,
+        geometry.clone(),
+        degraded_range,
+        ReconstructionRangeEvidence::ParityClean,
+        true,
+        &refs,
+        &parity,
+        &source_states,
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
+    let degraded = read_known_erasure(
+        &authorization,
+        TopologyEpoch(EPOCH),
+        authorization.recovery_generation(),
+        &mut data,
+        &mut parity,
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
+    if degraded.bytes != reference[..usize::try_from(degraded_range.length).unwrap()] {
+        return Err(DemoError::failed(
+            "degraded read did not match the reference",
+        ));
+    }
+
+    let mut completed_chunks = 0_u64;
+    if stop_after == Some(0) {
+        return checkpoint_report(target, parity, data, recovery, completed_chunks);
+    }
+    for range in plan_rebuild_ranges(
+        manifest.protected_length,
+        plan.chunk_size,
+        cursor,
+        manifest.logical_block_size,
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?
+    {
+        let snapshot = recovery
+            .load_assembly_snapshot()
+            .map_err(|error| DemoError::failed(error.to_string()))?;
+        let rebuild = snapshot
+            .rebuilds
+            .iter()
+            .find(|rebuild| rebuild.id() == REBUILD_ID)
+            .ok_or_else(|| DemoError::failed("rebuild state disappeared"))?;
+        let binding = RebuildBinding::from_recovery(rebuild);
+        let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
+        let authorization = authorize_known_erasure(
+            &topology,
+            snapshot.generation,
+            geometry.clone(),
+            range,
+            ReconstructionRangeEvidence::ParityClean,
+            true,
+            &refs,
+            &parity,
+            &source_states,
+        )
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+        let receipt = execute_rebuild_chunk(
+            binding,
+            &authorization,
+            TopologyEpoch(EPOCH),
+            snapshot.generation,
+            &mut data,
+            &mut parity,
+            &mut target,
+        )
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+        commit_verified_rebuild_chunk(&mut recovery, REBUILD_ID, &receipt, &mut target)
+            .map_err(|error| DemoError::failed(error.to_string()))?;
+        completed_chunks += 1;
+        if stop_after.is_some_and(|limit| completed_chunks >= limit) {
+            return checkpoint_report(target, parity, data, recovery, completed_chunks);
+        }
+    }
+
+    let snapshot = recovery
+        .load_assembly_snapshot()
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let rebuild = snapshot
+        .rebuilds
+        .iter()
+        .find(|rebuild| rebuild.id() == REBUILD_ID)
+        .ok_or_else(|| DemoError::failed("rebuild state disappeared before final verification"))?;
+    let binding = RebuildBinding::from_recovery(rebuild);
+    let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
+    let full_range = ByteRange::new(0, manifest.protected_length)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let authorization = authorize_known_erasure(
+        &topology,
+        snapshot.generation,
+        geometry,
+        full_range,
+        ReconstructionRangeEvidence::ParityClean,
+        true,
+        &refs,
+        &parity,
+        &source_states,
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
+    let receipt = verify_complete_rebuild(
+        binding,
+        &authorization,
+        TopologyEpoch(EPOCH),
+        snapshot.generation,
+        &mut data,
+        &mut parity,
+        &mut target,
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
+    commit_verified_rebuild_completion(&mut recovery, REBUILD_ID, &receipt, &mut target)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    drop(target);
+    drop(parity);
+    drop(data);
+    drop(recovery);
+    finish_rebuild_report(
+        root,
+        manifest,
+        reference,
+        parity_before,
+        &completed_chunks.to_string(),
+    )
+}
+
+fn checkpoint_report(
+    target: FileRebuildStore,
+    parity: FileRebuildStore,
+    data: Vec<Option<FileRebuildStore>>,
+    recovery: SqliteRecoveryStore,
+    completed_chunks: u64,
+) -> Result<Value, DemoError> {
+    drop(target);
+    drop(parity);
+    drop(data);
+    drop(recovery);
+    Ok(json!({
+        "checkpoint": "durable",
+        "completed_chunks": completed_chunks,
+        "resumable": true,
+        "final_verification": "pending",
+    }))
+}
+
+fn finish_rebuild_report(
+    root: &Path,
+    manifest: &FixtureManifest,
+    reference: Vec<u8>,
+    parity_before: Vec<u8>,
+    chunks: &str,
+) -> Result<Value, DemoError> {
+    let replacement = fs::read(root.join(&manifest.replacement_file))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let parity_after = fs::read(root.join(&manifest.parity_file))
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    if replacement != reference {
+        return Err(DemoError::failed(
+            "replacement does not match the preserved reference",
+        ));
+    }
+    if parity_before != parity_after {
+        return Err(DemoError::failed(
+            "parity changed during separate-target rebuild",
+        ));
+    }
+    Ok(json!({
+        "degraded_read": "matched-reference",
+        "chunks": chunks,
+        "final_verification": "passed",
+        "replacement": "byte-equal-reference",
+        "source_parity_preserved": true,
+        "direct_read_after_close": true,
+    }))
+}
+
+fn status_value(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
+    let recovery = open_recovery(root, manifest)?;
+    let snapshot = recovery
+        .load_assembly_snapshot()
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let mut files = Vec::new();
+    for name in manifest.data_files.iter().chain([
+        &manifest.parity_file,
+        &manifest.reference_file,
+        &manifest.replacement_file,
+    ]) {
+        let path = owned_path(root, name, false)?;
+        let metadata = fs::metadata(&path).map_err(|error| DemoError::failed(error.to_string()))?;
+        files.push(json!({ "path": name, "length": metadata.len() }));
+    }
+    Ok(json!({
+        "contract": CONTRACT,
+        "fixture": "owned",
+        "protected_length": manifest.protected_length,
+        "logical_block_size": manifest.logical_block_size,
+        "topology_epoch": snapshot.topology_epoch.0,
+        "recovery_generation": snapshot.generation.0,
+        "recovery_health": format!("{:?}", recovery.verify_integrity()),
+        "rebuilds": snapshot.rebuilds.len(),
+        "files": files,
+    }))
+}
+
+fn verify_value(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
+    let geometry = codec_geometry(manifest.protected_length)?;
+    let mut data0 = open_store(root, &manifest.data_files[0], manifest, StoreId(10), false)?;
+    let mut data1 = open_store(root, &manifest.data_files[1], manifest, StoreId(11), false)?;
+    let mut parity = open_store(root, &manifest.parity_file, manifest, StoreId(12), false)?;
+    let range = ByteRange::new(0, manifest.protected_length)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let data0_bytes = data0
+        .read_bytes(range)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let data1_bytes = data1
+        .read_bytes(range)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let parity_bytes = parity
+        .read_bytes(range)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let expected = compute_parity(&geometry, &[&data0_bytes, &data1_bytes])
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    let reference_equal = fs::read(root.join(&manifest.reference_file))
+        .map_err(|error| DemoError::failed(error.to_string()))?
+        == data0_bytes;
+    Ok(json!({
+        "parity": if expected == parity_bytes { "clean" } else { "mismatch" },
+        "reference": if reference_equal { "matched" } else { "mismatch" },
+        "writes": 0,
+        "clean_certification": "exhaustive-equation-scan",
+    }))
+}
+
+fn initial_recovery_manifest(manifest: &FixtureManifest) -> Result<RecoveryManifest, DemoError> {
+    let topology = core_topology(manifest)?;
+    let recovery_topology = recovery_topology(&topology)?;
+    let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(0));
+    let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+    transaction.push(RecoveryMutation::PrepareTopology {
+        topology: recovery_topology,
+    });
+    transaction.push(RecoveryMutation::CommitTopology {
+        topology_epoch: TopologyEpoch(EPOCH),
+    });
+    let generation = recovery
+        .commit_durable(transaction)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    recovery
+        .export_manifest(generation)
+        .map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn core_topology(manifest: &FixtureManifest) -> Result<TopologySnapshot, DemoError> {
+    TopologySnapshot::new(
+        ArrayId(manifest.array_id),
+        TopologyEpoch(manifest.topology_epoch),
+        CodingProfile::new(2, 1).map_err(|error| DemoError::failed(format!("{error:?}")))?,
+        ProtectedGeometry::new(manifest.protected_length, manifest.logical_block_size)
+            .map_err(|error| DemoError::failed(format!("{error:?}")))?,
+        vec![
+            TopologyAssignment::new(
+                dwv_core::SlotId([1; 16]),
+                MemberRole::Data,
+                CodingPosition(0),
+                AssignmentInstanceId([11; 16]),
+                AssignmentGeneration(1),
+            ),
+            TopologyAssignment::new(
+                dwv_core::SlotId([2; 16]),
+                MemberRole::Data,
+                CodingPosition(1),
+                AssignmentInstanceId([12; 16]),
+                AssignmentGeneration(1),
+            ),
+            TopologyAssignment::new(
+                dwv_core::SlotId([3; 16]),
+                MemberRole::Parity,
+                CodingPosition(2),
+                AssignmentInstanceId([13; 16]),
+                AssignmentGeneration(1),
+            ),
+        ],
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn recovery_topology(topology: &TopologySnapshot) -> Result<RecoveryTopologySnapshot, DemoError> {
+    RecoveryTopologySnapshot::from_core(
+        topology.clone(),
+        vec![StoreId(10), StoreId(11), StoreId(12)],
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn open_recovery(
+    root: &Path,
+    manifest: &FixtureManifest,
+) -> Result<SqliteRecoveryStore, DemoError> {
+    SqliteRecoveryStore::open(root.join(&manifest.recovery_file))
+        .map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn open_store(
+    root: &Path,
+    relative: &str,
+    manifest: &FixtureManifest,
+    store_id: StoreId,
+    writable: bool,
+) -> Result<FileStore, DemoError> {
+    let path = owned_path(root, relative, true)?;
+    FileStore::open(
+        FileStoreConfig::new(path, manifest.protected_length, manifest.logical_block_size)
+            .maximum_transfer(manifest.protected_length)
+            .writable(writable)
+            .sync_mode(FileSyncMode::SyncAll)
+            .store_id(store_id)
+            .topology_epoch(TopologyEpoch(manifest.topology_epoch)),
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))
+}
+fn file_identity(store: &FileStore) -> [u8; 16] {
+    store
+        .capabilities_report()
+        .identity
+        .observations
+        .first()
+        .map(|observation| observation.fingerprint)
+        .unwrap_or([0; 16])
+}
+
+fn create_empty_replacement(root: &Path, manifest: &FixtureManifest) -> Result<(), DemoError> {
+    let path = owned_path(root, &manifest.replacement_file, false)?;
+    let store = FileStore::open(
+        FileStoreConfig::new(path, manifest.protected_length, manifest.logical_block_size)
+            .maximum_transfer(manifest.protected_length)
+            .writable(true)
+            .create_new(true)
+            .sparse(true)
+            .sync_mode(FileSyncMode::SyncAll)
+            .store_id(REPLACEMENT_STORE)
+            .topology_epoch(TopologyEpoch(manifest.topology_epoch)),
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
+    drop(store);
+    Ok(())
+}
+
+fn open_rebuild_target(
+    root: &Path,
+    manifest: &FixtureManifest,
+    writable: bool,
+) -> Result<FileRebuildStore, DemoError> {
+    Ok(FileRebuildStore::new(
+        REPLACEMENT_STORE,
+        open_store(
+            root,
+            &manifest.replacement_file,
+            manifest,
+            REPLACEMENT_STORE,
+            writable,
+        )?,
+    ))
+}
+
+fn codec_geometry(length: u64) -> Result<Geometry, DemoError> {
+    Geometry::new(vec![length, length], length)
+        .map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn deterministic_bytes(length: u64, start: u8, step: u8) -> Vec<u8> {
+    (0..length)
+        .map(|index| start.wrapping_add((index as u8).wrapping_mul(step)))
+        .collect()
+}
+
+fn validate_size(size: u64) -> Result<(), DemoError> {
+    if size < u64::from(BLOCK) || size > MAX_SIZE || !size.is_multiple_of(u64::from(BLOCK)) {
+        return Err(DemoError::usage(format!(
+            "size must be block-aligned between {} and {} bytes",
+            BLOCK, MAX_SIZE
+        )));
+    }
+    Ok(())
+}
+
+fn load_fixture(root: &Path) -> Result<(PathBuf, FixtureManifest), DemoError> {
+    let root = fs::canonicalize(root)
+        .map_err(|error| DemoError::blocked(format!("fixture root is unavailable: {error}")))?;
+    let marker = fs::read_to_string(root.join(MARKER_FILE))
+        .map_err(|error| DemoError::blocked(format!("fixture marker is unavailable: {error}")))?;
+    if !marker.starts_with("diskweave disposable macOS demo") {
+        return Err(DemoError::blocked("fixture marker is not recognized"));
+    }
+    let manifest: FixtureManifest = serde_json::from_slice(
+        &fs::read(root.join(MANIFEST_FILE))
+            .map_err(|error| DemoError::blocked(error.to_string()))?,
+    )
+    .map_err(|error| DemoError::blocked(format!("fixture manifest is invalid: {error}")))?;
+    if manifest.schema != 1 || manifest.contract != CONTRACT {
+        return Err(DemoError::blocked(
+            "fixture contract version is unsupported",
+        ));
+    }
+    validate_size(manifest.protected_length)?;
+    for path in manifest.data_files.iter().chain([
+        &manifest.parity_file,
+        &manifest.reference_file,
+        &manifest.replacement_file,
+        &manifest.recovery_file,
+    ]) {
+        owned_path(&root, path, true)?;
+    }
+    validate_identities(&root, &manifest)?;
+
+    Ok((root, manifest))
+}
+fn validate_identities(root: &Path, manifest: &FixtureManifest) -> Result<(), DemoError> {
+    for (relative, expected, store_id) in [
+        (
+            &manifest.data_files[0],
+            manifest.data_identities[0],
+            StoreId(10),
+        ),
+        (
+            &manifest.data_files[1],
+            manifest.data_identities[1],
+            StoreId(11),
+        ),
+        (&manifest.parity_file, manifest.parity_identity, StoreId(12)),
+        (
+            &manifest.reference_file,
+            manifest.reference_identity,
+            StoreId(30),
+        ),
+        (
+            &manifest.replacement_file,
+            manifest.replacement_identity,
+            REPLACEMENT_STORE,
+        ),
+    ] {
+        let store = open_store(root, relative, manifest, store_id, false)?;
+        if file_identity(&store) != expected {
+            return Err(DemoError::refused(format!(
+                "fixture identity changed for {relative}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn owned_path(root: &Path, relative: &str, must_exist: bool) -> Result<PathBuf, DemoError> {
+    let path = Path::new(relative);
+    if path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::ParentDir | Component::RootDir | Component::Prefix(_)
+            )
+        })
+    {
+        return Err(DemoError::refused(format!(
+            "fixture path is not relative and owned: {relative}"
+        )));
+    }
+    let root = fs::canonicalize(root).map_err(|error| DemoError::blocked(error.to_string()))?;
+    let joined = root.join(path);
+    if must_exist {
+        let canonical = fs::canonicalize(&joined).map_err(|error| {
+            DemoError::blocked(format!("fixture entry is unavailable: {error}"))
+        })?;
+        if !canonical.starts_with(&root) {
+            return Err(DemoError::refused("fixture entry escapes its owned root"));
+        }
+        Ok(canonical)
+    } else {
+        let parent = joined
+            .parent()
+            .ok_or_else(|| DemoError::refused("fixture entry has no parent"))?;
+        let parent =
+            fs::canonicalize(parent).map_err(|error| DemoError::blocked(error.to_string()))?;
+        if !parent.starts_with(&root) {
+            return Err(DemoError::refused(
+                "fixture destination escapes its owned root",
+            ));
+        }
+        Ok(joined)
+    }
+}
+
+fn write_manifest(root: &Path, manifest: &FixtureManifest) -> Result<(), DemoError> {
+    let bytes = serde_json::to_vec_pretty(manifest)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join(MANIFEST_FILE), bytes).map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn write_plan(root: &Path, plan: &RebuildPlan) -> Result<(), DemoError> {
+    let bytes =
+        serde_json::to_vec_pretty(plan).map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join(PLAN_FILE), bytes).map_err(|error| DemoError::failed(error.to_string()))
+}
+
+fn with_confirmation(mut plan: RebuildPlan) -> Result<RebuildPlan, DemoError> {
+    plan.confirmation.clear();
+    let canonical =
+        serde_json::to_vec(&plan).map_err(|error| DemoError::failed(error.to_string()))?;
+    plan.confirmation = hex(&blake3::hash(&canonical));
+    Ok(plan)
+}
+
+fn validate_plan(manifest: &FixtureManifest, plan: &RebuildPlan) -> Result<(), DemoError> {
+    if plan.schema != 1
+        || plan.contract != CONTRACT
+        || plan.rebuild_id != REBUILD_ID.as_bytes()
+        || plan.missing_slot != MISSING_SLOT
+        || plan.replacement_store != REPLACEMENT_STORE.0
+        || plan.replacement_file != manifest.replacement_file
+        || plan.topology_epoch != manifest.topology_epoch
+        || plan.protected_length != manifest.protected_length
+        || plan.chunk_size == 0
+        || !plan.chunk_size.is_multiple_of(u64::from(BLOCK))
+    {
+        return Err(DemoError::refused(
+            "rebuild plan does not match the fixture",
+        ));
+    }
+    Ok(())
+}
+
+fn hex(hash: &Hash) -> String {
+    hex_bytes(hash.as_bytes())
+}
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
