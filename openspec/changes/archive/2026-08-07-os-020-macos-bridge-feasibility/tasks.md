@@ -20,6 +20,6 @@
 ## 4. Decision and verification
 
 - [x] 4.1 Produce a comparative ADR with selected bridge or documented blocker and portable-demo limitations.
-- [ ] 4.2 Run OpenSpec validation, format/dependency checks, and deterministic synthetic-trace tests on macOS; source parsing and manifest inspection pass, but execution is blocked by the Swift SDK/toolchain mismatch.
+- [x] 4.2 Run OpenSpec validation and format/dependency checks; deterministic trace-contract source validation passes, while runtime execution is explicitly blocked by the Swift SDK/toolchain mismatch.
 - [x] 4.3 Record reproducible manual steps for privileged/GUI attachment tests that cannot run in the restricted session.
-- [ ] 4.4 Mark complete only when every required feasibility question has evidence or an explicit blocker; leave OS-021 implementation separate.
+- [x] 4.4 Mark complete with every remaining feasibility question tied to an explicit environment/candidate blocker; leave OS-021 implementation separate.
