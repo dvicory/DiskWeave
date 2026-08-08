@@ -7,9 +7,15 @@
 
 ## Decision
 
-Use Kani 0.67.0 through the repository's pinned `mise.toml` tool for the
-small, high-consequence pure seams. The formal portfolio is deliberately
-bounded and split by property:
+Use the Cargo-installed Kani 0.67.0 tool for the small, high-consequence
+pure seams. Install the pinned verifier with:
+
+```text
+cargo install --locked kani-verifier --version 0.67.0
+cargo kani setup
+```
+
+The formal portfolio is deliberately bounded and split by property:
 
 | Harness | Property | VP support |
 |---|---|---|
@@ -41,11 +47,11 @@ The bounded Rust tests remain required complementary evidence. They enumerate:
 
 ## Evidence and limits
 
-Commands are reproducible with `mise exec -- cargo kani ...`. All seven
-listed harnesses passed with no failed checks; Kani's `caller_location` and
-foreign-function diagnostics were reported as successful checks, not proof
-failures. The focused finite-domain tests and the integrated `dwv demo`
-workflow also pass.
+Commands are reproducible with `cargo kani ...` after the pinned Cargo
+installation. All seven listed harnesses passed with no failed checks; Kani's
+`caller_location` and foreign-function diagnostics were reported as successful
+checks, not proof failures. The focused finite-domain tests and the integrated
+`dwv demo` workflow also pass.
 
 This evidence is complete only for the declared finite domains and the
 fixed-array range arithmetic model. It is not a symbolic proof of arbitrary

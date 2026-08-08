@@ -488,6 +488,129 @@ mod tests {
         trace
     }
 
+    fn next_seed(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed
+    }
+
+    fn generated_trace(mut seed: u64) -> Trace {
+        let blocks = seed % 32 + 1;
+        let size = blocks * 512;
+        let write_blocks = (next_seed(&mut seed) % blocks) + 1;
+        let start = next_seed(&mut seed) % (blocks - write_blocks + 1) * 512;
+        let length = write_blocks * 512;
+        let mut trace = Trace::new(TraceFixture {
+            size,
+            seed,
+            write_length: length,
+        })
+        .unwrap();
+        trace.push(TraceEventKind::Open { size }).unwrap();
+        trace
+            .push(TraceEventKind::Write {
+                store: (next_seed(&mut seed) & 1) as u8,
+                offset: start,
+                length,
+                pattern: PayloadPattern::Counter {
+                    seed: next_seed(&mut seed),
+                },
+            })
+            .unwrap();
+        if seed & 1 != 0 {
+            trace
+                .push(TraceEventKind::Read {
+                    store: 0,
+                    offset: start,
+                    length,
+                })
+                .unwrap();
+        }
+        if seed & 2 != 0 {
+            trace
+                .push(TraceEventKind::DegradedRead {
+                    slot: 1,
+                    offset: start,
+                    length,
+                })
+                .unwrap();
+        }
+        if seed & 4 != 0 {
+            trace
+                .push(TraceEventKind::RebuildChunk {
+                    offset: start,
+                    length,
+                    verified: seed & 8 != 0,
+                })
+                .unwrap();
+        }
+        trace
+            .push(TraceEventKind::Checksum {
+                region: start,
+                outcome: if seed & 16 != 0 {
+                    ChecksumOutcome::CurrentMismatch
+                } else {
+                    ChecksumOutcome::CurrentMatch
+                },
+            })
+            .unwrap();
+        trace
+            .push(TraceEventKind::Outcome {
+                outcome: if seed & 32 != 0 {
+                    TraceOutcome::Uncertain
+                } else {
+                    TraceOutcome::Success
+                },
+            })
+            .unwrap();
+        trace
+    }
+
+    fn mutate_json(mut bytes: Vec<u8>, mut seed: u64) -> Vec<u8> {
+        for _ in 0..=next_seed(&mut seed) % 6 {
+            let operation = next_seed(&mut seed) % 4;
+            match operation {
+                0 if !bytes.is_empty() => {
+                    let index = next_seed(&mut seed) as usize % bytes.len();
+                    bytes[index] ^= 1 << (next_seed(&mut seed) % 8);
+                }
+                1 => {
+                    let index = next_seed(&mut seed) as usize % (bytes.len() + 1);
+                    bytes.insert(index, b'X');
+                }
+                2 if !bytes.is_empty() => {
+                    let index = next_seed(&mut seed) as usize % bytes.len();
+                    bytes.remove(index);
+                }
+                _ => bytes.extend_from_slice(b" "),
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn seeded_trace_corpus_round_trips_and_rejects_or_normalizes_mutations() {
+        let seeds: Vec<u64> = serde_json::from_str(include_str!(
+            "../../../verification/corpus/trace-seeds.json"
+        ))
+        .unwrap();
+        assert!(!seeds.is_empty());
+        for seed in seeds {
+            let trace = generated_trace(seed);
+            let bytes = trace.to_json().unwrap();
+            assert_eq!(Trace::from_json(&bytes).unwrap(), trace);
+
+            let mutated = mutate_json(bytes, seed);
+            if let Ok(parsed) = Trace::from_json(&mutated) {
+                assert_eq!(
+                    Trace::from_json(&parsed.to_json().unwrap()).unwrap(),
+                    parsed
+                );
+            }
+        }
+    }
+
     #[test]
     fn canonical_round_trip_contains_no_host_path_or_payload() {
         let trace = trace();

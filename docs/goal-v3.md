@@ -379,10 +379,12 @@ failures to deterministic `dwv-sim` regressions.
 
 Current queue status: VE-001 is evidenced for its declared finite portfolio
 but does not claim arbitrary-width proof; VE-002 has finite TLC/Rust-model
-evidence; VE-005 is the next dependency-ready portable evidence item;
-VE-003 and VE-004 remain dependency-gated; OS-021/022/023, OS-030+, Linux,
-bridge, and hardware claims remain platform-gated. VP-011 and VP-012 apply to
-every queue rather than forming separate tool projects.
+evidence; VE-005 now has initial dependency-free structured trace-corpus and
+parser-mutation evidence but remains in progress for operation/fault/parity/
+topology/schedule fuzzing; VE-003 and VE-004 remain dependency-gated;
+OS-021/022/023, OS-030+, Linux, bridge, and hardware claims remain
+platform-gated. VP-011 and VP-012 apply to every queue rather than forming
+separate tool projects.
 
 # 8. Rules for current milestone reconciliation
 

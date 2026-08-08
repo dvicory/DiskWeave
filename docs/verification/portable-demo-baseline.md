@@ -1,4 +1,4 @@
-# Goal-v3 portable demo baseline
+# Portable demo baseline
 
 ## Run
 
