@@ -10,3 +10,4 @@ path = "src/lib.rs"
 blake3 = "1"
 dwv-core = { path = "../dwv-core" }
 dwv-store = { path = "../dwv-store" }
+serde = { version = "1", features = ["derive"] }

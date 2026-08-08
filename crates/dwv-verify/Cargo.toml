@@ -11,3 +11,4 @@ path = "src/lib.rs"
 dwv-codec = { path = "../dwv-codec" }
 dwv-core = { path = "../dwv-core" }
 dwv-recovery = { path = "../dwv-recovery" }
+dwv-store = { path = "../dwv-store" }

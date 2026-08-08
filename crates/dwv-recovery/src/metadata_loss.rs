@@ -12,7 +12,9 @@ use std::fmt;
 
 pub const METADATA_LOSS_MATRIX_VERSION: u16 = 1;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub enum MetadataLossCase {
     AllDataSingleParityCertified,
     AllDataSingleParityUncertified,
@@ -80,7 +82,7 @@ impl MetadataLossCase {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum MetadataLossAction {
     RecreateFromCertifiedEnvelope,
     ExhaustiveVerifyThenRecreate,
@@ -201,7 +203,7 @@ impl PayloadWritePolicy {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum BaselineDisposition {
     NewChecksumBaselineRequired,
     NewParityAndChecksumBaselineRequired,
@@ -222,7 +224,7 @@ impl BaselineDisposition {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum MetadataLossVerification {
     CertifiedCleanEnvelope,
     ExhaustiveMatches,
@@ -664,7 +666,7 @@ impl MetadataLossAuthorization {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MetadataLossAudit {
     pub matrix_version: u16,
     pub lineage_id: ArrayId,

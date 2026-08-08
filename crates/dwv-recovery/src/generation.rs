@@ -3,7 +3,9 @@
 use std::fmt;
 
 /// Monotonic generation of the durable recovery state.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct RecoveryGeneration(pub u64);
 
 impl RecoveryGeneration {

@@ -11,7 +11,18 @@ pub const MAX_EVIDENCE_SOURCES: u8 = 32;
 
 macro_rules! byte_id {
     ($name:ident) => {
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+        #[derive(
+            Clone,
+            Copy,
+            Debug,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            serde::Deserialize,
+            serde::Serialize,
+        )]
         pub struct $name(pub [u8; 16]);
 
         impl $name {
@@ -33,7 +44,9 @@ byte_id!(AssignmentInstanceId);
 /// assignment ID.
 pub type AssignmentId = AssignmentInstanceId;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct TopologyEpoch(pub u64);
 
 impl TopologyEpoch {
@@ -49,7 +62,9 @@ impl TopologyEpoch {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct SlotId(pub [u8; 16]);
 
 impl SlotId {
@@ -62,10 +77,14 @@ impl SlotId {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct CodingPosition(pub u16);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct AssignmentGeneration(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -79,7 +98,9 @@ impl RoleId {
     pub const PARITY: Self = Self(1);
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub enum MemberRole {
     Data,
     Parity,
@@ -94,7 +115,9 @@ impl MemberRole {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct CodingProfile {
     data_slots: u16,
     parity_slots: u16,
@@ -134,7 +157,7 @@ impl CodingProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ProtectedGeometry {
     protected_length: u64,
     logical_block_size: u32,
@@ -158,8 +181,8 @@ impl ProtectedGeometry {
             });
         }
         if logical_block_size == 0
-            || protected_length % (logical_block_size as u64) != 0
-            || parity_length % (logical_block_size as u64) != 0
+            || !protected_length.is_multiple_of(logical_block_size as u64)
+            || !parity_length.is_multiple_of(logical_block_size as u64)
         {
             return Err(GeometryError::Unaligned {
                 protected_length,
@@ -187,7 +210,9 @@ impl ProtectedGeometry {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub enum EvidenceConfidence {
     None,
     Low,
@@ -196,7 +221,7 @@ pub enum EvidenceConfidence {
     Attested,
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct AssignmentEvidence {
     observed_sources: u8,
     stable_sources: u8,
@@ -320,7 +345,7 @@ impl AssignmentEvidence {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct TopologyAssignment {
     slot_id: SlotId,
     role: MemberRole,

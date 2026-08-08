@@ -12,19 +12,27 @@ pub use identity::*;
 
 pub use dwv_core::{BufferToken, ByteRange, FenceDomain, SubmissionSequence, TopologyEpoch};
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct StoreId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct OperationId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct CapabilityEvidenceId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct FenceId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct StoreWriteWatermark(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -385,7 +393,7 @@ pub enum PersistenceEvidence {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct StoreFenceRef {
     pub fence_id: FenceId,
     pub store_id: StoreId,
@@ -713,7 +721,9 @@ impl StoreCapabilities {
                 ));
             }
         };
-        if range.offset % u64::from(alignment) != 0 || range.length % u64::from(alignment) != 0 {
+        if !range.offset.is_multiple_of(u64::from(alignment))
+            || !range.length.is_multiple_of(u64::from(alignment))
+        {
             return Err(StoreError::AlignmentViolation {
                 offset: range.offset,
                 length: range.length,

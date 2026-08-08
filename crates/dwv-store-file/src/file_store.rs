@@ -38,6 +38,7 @@ pub struct FileStoreConfig {
     pub maximum_transfer: u64,
     pub writable: bool,
     pub create: bool,
+    pub create_new: bool,
     pub sparse: bool,
     pub sync_mode: FileSyncMode,
     pub store_id: StoreId,
@@ -54,6 +55,7 @@ impl FileStoreConfig {
             maximum_transfer: protected_length.max(u64::from(logical_block_size)),
             writable: true,
             create: false,
+            create_new: false,
             sparse: false,
             sync_mode: FileSyncMode::CallerFlush,
             store_id: StoreId(0),
@@ -68,6 +70,10 @@ impl FileStoreConfig {
     }
     pub fn create(mut self, value: bool) -> Self {
         self.create = value;
+        self
+    }
+    pub fn create_new(mut self, value: bool) -> Self {
+        self.create_new = value;
         self
     }
     pub fn writable(mut self, value: bool) -> Self {
@@ -184,6 +190,8 @@ impl FileStore {
         options.read(true).write(config.writable);
         if config.create {
             options.create(true);
+        } else if config.create_new {
+            options.create_new(true);
         }
         let file = match options.open(&config.path) {
             Ok(file) => file,
@@ -192,8 +200,19 @@ impl FileStore {
                 return Err(FileStoreError::Io(error));
             }
         };
+        let mut created_path = if config.create_new {
+            match CreatedPathReservation::new(config.path.clone(), &file) {
+                Ok(reservation) => Some(reservation),
+                Err(error) => {
+                    drop(lease.take());
+                    return Err(FileStoreError::Io(error));
+                }
+            }
+        } else {
+            None
+        };
         let mut length = file.metadata()?.len();
-        if config.create && length == 0 && config.protected_length != 0 {
+        if config.protected_length != 0 && (config.create_new || (config.create && length == 0)) {
             file.set_len(config.protected_length)?;
             length = config.protected_length;
         }
@@ -216,6 +235,9 @@ impl FileStore {
                 SparseBehavior::Regular
             },
         )?;
+        if let Some(reservation) = created_path.as_mut() {
+            reservation.commit();
+        }
         Ok(Self {
             file,
             config,
@@ -282,17 +304,17 @@ impl FileStore {
         if let Err(error) = self.validate(range, StoreOperation::Write, Some(intent), true) {
             return failed(operation_id, range, error, 0);
         }
-        if intent_uses_preflush(intent) {
-            if let Err(error) = self.sync_file() {
-                return failed(
-                    operation_id,
-                    range,
-                    StoreError::BackendFailure {
-                        code: io_code(&error),
-                    },
-                    0,
-                );
-            }
+        if intent_uses_preflush(intent)
+            && let Err(error) = self.sync_file()
+        {
+            return failed(
+                operation_id,
+                range,
+                StoreError::BackendFailure {
+                    code: io_code(&error),
+                },
+                0,
+            );
         }
         let progress = write_all_at(&self.file, range.offset, bytes);
         let completed = progress.completed;
@@ -348,17 +370,17 @@ impl FileStore {
         if let Err(error) = self.validate(range, StoreOperation::WriteZeroes, Some(intent), false) {
             return failed(operation_id, range, error, 0);
         }
-        if intent_uses_preflush(intent) {
-            if let Err(error) = self.sync_file() {
-                return failed(
-                    operation_id,
-                    range,
-                    StoreError::BackendFailure {
-                        code: io_code(&error),
-                    },
-                    0,
-                );
-            }
+        if intent_uses_preflush(intent)
+            && let Err(error) = self.sync_file()
+        {
+            return failed(
+                operation_id,
+                range,
+                StoreError::BackendFailure {
+                    code: io_code(&error),
+                },
+                0,
+            );
         }
         let chunk =
             usize::try_from(self.config.maximum_transfer.min(1024 * 1024)).unwrap_or(1024 * 1024);
@@ -623,14 +645,18 @@ impl RandomAccessStore for FileStore {
 
 fn validate_config(config: &FileStoreConfig) -> Result<(), FileStoreError> {
     if config.logical_block_size == 0
-        || config.protected_length % u64::from(config.logical_block_size) != 0
+        || !config
+            .protected_length
+            .is_multiple_of(u64::from(config.logical_block_size))
     {
         return Err(FileStoreError::InvalidGeometry(
             "protected length must be block aligned".to_owned(),
         ));
     }
     if config.maximum_transfer == 0
-        || config.maximum_transfer % u64::from(config.logical_block_size) != 0
+        || !config
+            .maximum_transfer
+            .is_multiple_of(u64::from(config.logical_block_size))
     {
         return Err(FileStoreError::InvalidGeometry(
             "maximum transfer must be a non-zero block multiple".to_owned(),
@@ -641,7 +667,51 @@ fn validate_config(config: &FileStoreConfig) -> Result<(), FileStoreError> {
             "creation requires writable access".to_owned(),
         ));
     }
+    if config.create_new && !config.writable {
+        return Err(FileStoreError::InvalidGeometry(
+            "exclusive creation requires writable access".to_owned(),
+        ));
+    }
+    if config.create && config.create_new {
+        return Err(FileStoreError::InvalidGeometry(
+            "ordinary and exclusive creation are mutually exclusive".to_owned(),
+        ));
+    }
     Ok(())
+}
+
+struct CreatedPathReservation {
+    path: PathBuf,
+    identity: IdentityObservationSet,
+    committed: bool,
+}
+
+impl CreatedPathReservation {
+    fn new(path: PathBuf, file: &File) -> io::Result<Self> {
+        Ok(Self {
+            path,
+            identity: identity_from_metadata(&file.metadata()?),
+            committed: false,
+        })
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for CreatedPathReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if matches!(
+            compare_identity(&self.identity, &self.path),
+            Ok(IdentityComparison::Unchanged)
+        ) {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
 }
 
 fn evidence_id(path: &Path, config: &FileStoreConfig) -> CapabilityEvidenceId {
@@ -764,6 +834,130 @@ mod tests {
     }
     fn temp(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("dwv-file-{name}-{}", std::process::id()))
+    }
+
+    fn remove_if_present(path: &Path) {
+        match fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed to remove {}: {error}", path.display()),
+        }
+    }
+
+    #[test]
+    fn create_new_atomically_reserves_and_initializes_sparse_length() {
+        let path = temp("create-new");
+        let lock_path = temp("create-new-lock");
+        remove_if_present(&path);
+        remove_if_present(&lock_path);
+
+        let store = FileStore::open(
+            FileStoreConfig::new(&path, 8192, 512)
+                .create_new(true)
+                .sparse(true)
+                .lock_path(&lock_path),
+        )
+        .unwrap();
+
+        assert_eq!(store.length(), 8192);
+        assert_eq!(fs::metadata(&path).unwrap().len(), 8192);
+        drop(store);
+        assert!(!lock_path.exists());
+        remove_if_present(&path);
+    }
+
+    #[test]
+    fn create_new_never_opens_or_overwrites_an_existing_nonempty_path() {
+        let path = temp("create-new-existing");
+        let lock_path = temp("create-new-existing-lock");
+        remove_if_present(&path);
+        remove_if_present(&lock_path);
+        let original = vec![0xa5_u8; 4096];
+        fs::write(&path, &original).unwrap();
+
+        let error = FileStore::open(
+            FileStoreConfig::new(&path, 4096, 512)
+                .create_new(true)
+                .sparse(true)
+                .lock_path(&lock_path),
+        )
+        .unwrap_err();
+
+        assert!(matches!(
+            error,
+            FileStoreError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert!(!lock_path.exists());
+        remove_if_present(&path);
+    }
+
+    #[test]
+    fn failed_create_new_releases_lease_and_allows_a_clean_retry() {
+        let path = temp("create-new-retry");
+        let lock_path = temp("create-new-retry-lock");
+        remove_if_present(&path);
+        remove_if_present(&lock_path);
+        fs::write(&path, vec![0x3c_u8; 4096]).unwrap();
+        let config = FileStoreConfig::new(&path, 4096, 512)
+            .create_new(true)
+            .lock_path(&lock_path);
+
+        assert!(FileStore::open(config.clone()).is_err());
+        assert!(!lock_path.exists());
+        assert_eq!(fs::read(&path).unwrap(), vec![0x3c_u8; 4096]);
+
+        remove_if_present(&path);
+        let store = FileStore::open(config).unwrap();
+        assert_eq!(fs::metadata(&path).unwrap().len(), 4096);
+        drop(store);
+        assert!(!lock_path.exists());
+        remove_if_present(&path);
+    }
+
+    #[test]
+    fn uncommitted_create_new_reservation_removes_created_path_and_lease() {
+        let path = temp("create-new-rollback");
+        let lock_path = temp("create-new-rollback-lock");
+        remove_if_present(&path);
+        remove_if_present(&lock_path);
+
+        let lease = FileLease::acquire_at(&lock_path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        let reservation = CreatedPathReservation::new(path.clone(), &file).unwrap();
+        file.set_len(4096).unwrap();
+
+        drop(file);
+        drop(reservation);
+        drop(lease);
+
+        assert!(!path.exists());
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn ordinary_and_exclusive_creation_are_rejected_together() {
+        let path = temp("create-modes");
+        let lock_path = temp("create-modes-lock");
+        remove_if_present(&path);
+        remove_if_present(&lock_path);
+
+        let error = FileStore::open(
+            FileStoreConfig::new(&path, 4096, 512)
+                .create(true)
+                .create_new(true)
+                .lock_path(&lock_path),
+        )
+        .unwrap_err();
+
+        assert!(matches!(error, FileStoreError::InvalidGeometry(_)));
+        assert!(!path.exists());
+        assert!(!lock_path.exists());
     }
 
     #[test]

@@ -19,6 +19,7 @@ mod metadata_loss;
 mod migration;
 mod profile;
 mod provider;
+mod rebuild;
 mod record;
 mod transition;
 
@@ -49,30 +50,46 @@ pub use profile::{
     ChecksumSetState, ProfileError,
 };
 pub use provider::{Blake3Provider, DigestProvider, ProviderError};
+pub use rebuild::{
+    REBUILD_ID_BYTES, REBUILD_TARGET_IDENTITY_BYTES, RebuildChunkReceipt, RebuildCompletionReceipt,
+    RebuildCursor, RebuildError, RebuildId, RebuildLifecycle, RebuildState, RebuildTargetIdentity,
+};
 pub use record::{ChecksumRecord, ChecksumState, ContentGeneration, Digest, FenceEvidence};
 pub use transition::{
     RecoveryTransitionId, TransitionEvidence, TransitionKind, TransitionOutcome, TransitionTrace,
 };
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct SessionId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct RegionId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct IntegrityExtentId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct JobId(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct RecoveryCursor(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(2);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(3);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -85,6 +102,7 @@ pub enum RecoveryRecordKind {
     MaintenanceCheckpoint,
     MigrationState,
     MetadataLossAudit,
+    OfflineRebuild,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -106,6 +124,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
             RecoveryRecordKind::MaintenanceCheckpoint,
             RecoveryRecordKind::MigrationState,
             RecoveryRecordKind::MetadataLossAudit,
+            RecoveryRecordKind::OfflineRebuild,
         ],
     }
 }
@@ -114,6 +133,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
 pub enum RecoveryMigrationStep {
     InitializeSemanticSchemaV1,
     AddMetadataLossAuditV2,
+    AddOfflineRebuildV3,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -133,12 +153,24 @@ impl RecoveryMigrationPlan {
             (RecoverySchemaVersion(0), RecoverySchemaVersion(1)) => {
                 vec![RecoveryMigrationStep::InitializeSemanticSchemaV1]
             }
-            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
+            (RecoverySchemaVersion(0), RecoverySchemaVersion(2)) => vec![
                 RecoveryMigrationStep::InitializeSemanticSchemaV1,
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
             ],
-            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => {
+            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::InitializeSemanticSchemaV1,
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+            ],
+            (RecoverySchemaVersion(1), RecoverySchemaVersion(2)) => {
                 vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
+            }
+            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+            ],
+            (RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA) => {
+                vec![RecoveryMigrationStep::AddOfflineRebuildV3]
             }
             _ => {
                 return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
@@ -148,7 +180,7 @@ impl RecoveryMigrationPlan {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum RecoveryStoreHealth {
     Healthy,
     Missing,
@@ -208,21 +240,21 @@ impl RecoveryCommitObservation {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum RegionState {
     Clean,
     Dirty { dirty_since: RecoveryGeneration },
     Indeterminate,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct DirtyRegionRecord {
     pub region: RegionId,
     pub state: RegionState,
     pub last_clean_fence: Option<FenceCertificate>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum IntegrityState {
     Absent,
     Stale {
@@ -236,13 +268,13 @@ pub enum IntegrityState {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct IntegrityRecord {
     pub extent: IntegrityExtentId,
     pub state: IntegrityState,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FenceCertificate {
     pub topology_epoch: TopologyEpoch,
     pub fence_domain: FenceDomain,
@@ -302,7 +334,7 @@ impl FenceCertificate {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct WritableSession {
     pub session_id: SessionId,
     pub topology_epoch: TopologyEpoch,
@@ -311,7 +343,7 @@ pub struct WritableSession {
     pub global_fence: Option<FenceCertificate>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct StoreAssignment {
     assignment: dwv_core::TopologyAssignment,
     store_id: StoreId,
@@ -347,7 +379,7 @@ impl StoreAssignment {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct TopologySnapshot {
     array_id: dwv_core::ArrayId,
     topology_epoch: TopologyEpoch,
@@ -441,13 +473,13 @@ impl fmt::Display for RecoveryTopologyError {
 
 impl std::error::Error for RecoveryTopologyError {}
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct MaintenanceCheckpoint {
     pub job: JobId,
     pub cursor: RecoveryCursor,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RecoverySnapshot {
     pub generation: RecoveryGeneration,
     pub topology_epoch: TopologyEpoch,
@@ -459,9 +491,10 @@ pub struct RecoverySnapshot {
     pub fences: Vec<FenceCertificate>,
     pub maintenance_checkpoints: Vec<MaintenanceCheckpoint>,
     pub metadata_loss_audit: Option<MetadataLossAudit>,
+    pub rebuilds: Vec<RebuildState>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RecoveryManifest {
     pub schema: RecoverySchemaVersion,
     pub snapshot: RecoverySnapshot,
@@ -478,6 +511,7 @@ pub struct RecoveryExportLimits {
     pub max_region_captures_per_fence: usize,
     pub max_integrity_captures_per_fence: usize,
     pub max_digest_bytes: usize,
+    pub max_rebuilds: usize,
 }
 
 impl Default for RecoveryExportLimits {
@@ -492,6 +526,7 @@ impl Default for RecoveryExportLimits {
             max_region_captures_per_fence: 16 * 1024,
             max_integrity_captures_per_fence: 16 * 1024,
             max_digest_bytes: 1024,
+            max_rebuilds: 64,
         }
     }
 }
@@ -519,6 +554,7 @@ pub enum RecoveryError {
         to: RecoverySchemaVersion,
     },
     ExportLimitExceeded(RecoveryRecordKind),
+    Rebuild(RebuildError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -581,6 +617,7 @@ impl fmt::Display for RecoveryError {
             Self::ExportLimitExceeded(kind) => {
                 write!(formatter, "recovery export limit exceeded for {kind:?}")
             }
+            Self::Rebuild(error) => error.fmt(formatter),
         }
     }
 }
@@ -625,6 +662,15 @@ pub enum RecoveryMutation {
     RecordMaintenanceCheckpoint {
         job: JobId,
         cursor: RecoveryCursor,
+    },
+    BeginOfflineRebuild {
+        rebuild: RebuildState,
+    },
+    AdvanceOfflineRebuild {
+        receipt: RebuildChunkReceipt,
+    },
+    CompleteOfflineRebuild {
+        receipt: RebuildCompletionReceipt,
     },
 }
 
@@ -673,6 +719,18 @@ impl RecoveryTxn {
             stale_generation,
         })
     }
+
+    pub fn begin_offline_rebuild(&mut self, rebuild: RebuildState) -> &mut Self {
+        self.push(RecoveryMutation::BeginOfflineRebuild { rebuild })
+    }
+
+    pub fn advance_offline_rebuild(&mut self, receipt: RebuildChunkReceipt) -> &mut Self {
+        self.push(RecoveryMutation::AdvanceOfflineRebuild { receipt })
+    }
+
+    pub fn complete_offline_rebuild(&mut self, receipt: RebuildCompletionReceipt) -> &mut Self {
+        self.push(RecoveryMutation::CompleteOfflineRebuild { receipt })
+    }
 }
 
 pub trait RecoveryStateStore {
@@ -705,7 +763,7 @@ pub trait RecoveryStateStore {
 pub trait RecoveryStateAdapter: RecoveryStateStore {}
 
 impl<T: RecoveryStateStore> RecoveryStateAdapter for T {}
-
+#[derive(Clone)]
 pub struct MemoryRecoveryStore {
     snapshot: RecoverySnapshot,
     health: RecoveryStoreHealth,
@@ -725,6 +783,7 @@ impl MemoryRecoveryStore {
                 fences: Vec::new(),
                 maintenance_checkpoints: Vec::new(),
                 metadata_loss_audit: None,
+                rebuilds: Vec::new(),
             },
             health: RecoveryStoreHealth::Healthy,
         }
@@ -1019,6 +1078,39 @@ impl MemoryRecoveryStore {
                         .push(MaintenanceCheckpoint { job, cursor });
                 }
             }
+            RecoveryMutation::BeginOfflineRebuild { rebuild } => {
+                if snapshot
+                    .rebuilds
+                    .iter()
+                    .any(|existing| existing.id() == rebuild.id())
+                {
+                    return Err(RecoveryError::Rebuild(RebuildError::DuplicateRebuildId));
+                }
+                rebuild
+                    .validate_source(snapshot.active_topology.as_ref(), snapshot.generation)
+                    .map_err(RecoveryError::Rebuild)?;
+                snapshot.rebuilds.push(rebuild);
+            }
+            RecoveryMutation::AdvanceOfflineRebuild { receipt } => {
+                let rebuild = snapshot
+                    .rebuilds
+                    .iter_mut()
+                    .find(|rebuild| rebuild.id() == receipt.rebuild_id())
+                    .ok_or(RecoveryError::Rebuild(RebuildError::RebuildNotFound))?;
+                rebuild
+                    .apply_chunk_receipt(receipt, snapshot.generation)
+                    .map_err(RecoveryError::Rebuild)?;
+            }
+            RecoveryMutation::CompleteOfflineRebuild { receipt } => {
+                let rebuild = snapshot
+                    .rebuilds
+                    .iter_mut()
+                    .find(|rebuild| rebuild.id() == receipt.rebuild_id())
+                    .ok_or(RecoveryError::Rebuild(RebuildError::RebuildNotFound))?;
+                rebuild
+                    .apply_completion_receipt(receipt, snapshot.generation)
+                    .map_err(RecoveryError::Rebuild)?;
+            }
         }
         Ok(())
     }
@@ -1082,6 +1174,44 @@ impl RecoveryStateStore for MemoryRecoveryStore {
 }
 
 impl MemoryRecoveryStore {
+    pub fn from_manifest(manifest: RecoveryManifest) -> Result<Self, RecoveryError> {
+        if manifest.schema != CURRENT_RECOVERY_SCHEMA {
+            return Err(RecoveryError::UnsupportedSchemaMigration {
+                from: manifest.schema,
+                to: CURRENT_RECOVERY_SCHEMA,
+            });
+        }
+        if manifest.snapshot.topology_epoch
+            != manifest.snapshot.active_topology.as_ref().map_or(
+                manifest.snapshot.topology_epoch,
+                TopologySnapshot::topology_epoch,
+            )
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceTopologyMismatch,
+            ));
+        }
+        for (index, rebuild) in manifest.snapshot.rebuilds.iter().enumerate() {
+            if manifest.snapshot.rebuilds[..index]
+                .iter()
+                .any(|prior| prior.id() == rebuild.id())
+            {
+                return Err(RecoveryError::Rebuild(RebuildError::DuplicateRebuildId));
+            }
+            rebuild
+                .validate_restored(
+                    manifest.snapshot.active_topology.as_ref(),
+                    manifest.snapshot.generation,
+                )
+                .map_err(RecoveryError::Rebuild)?;
+        }
+        validate_export_limits(&manifest.snapshot, RecoveryExportLimits::default())?;
+        Ok(Self {
+            snapshot: manifest.snapshot,
+            health: RecoveryStoreHealth::Healthy,
+        })
+    }
+
     pub fn export_manifest_with_limits(
         &self,
         generation: RecoveryGeneration,
@@ -1154,6 +1284,11 @@ fn validate_export_limits(
             RecoveryRecordKind::MaintenanceCheckpoint,
         ));
     }
+    if snapshot.rebuilds.len() > limits.max_rebuilds {
+        return Err(RecoveryError::ExportLimitExceeded(
+            RecoveryRecordKind::OfflineRebuild,
+        ));
+    }
     for topology in [
         snapshot.active_topology.as_ref(),
         snapshot.pending_topology.as_ref(),
@@ -1164,6 +1299,13 @@ fn validate_export_limits(
         if topology.assignments().len() > limits.max_topology_assignments {
             return Err(RecoveryError::ExportLimitExceeded(
                 RecoveryRecordKind::Topology,
+            ));
+        }
+    }
+    for rebuild in &snapshot.rebuilds {
+        if rebuild.source_topology().assignments().len() > limits.max_topology_assignments {
+            return Err(RecoveryError::ExportLimitExceeded(
+                RecoveryRecordKind::OfflineRebuild,
             ));
         }
     }
@@ -1741,18 +1883,33 @@ mod tests {
             vec![
                 RecoveryMigrationStep::InitializeSemanticSchemaV1,
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
             ]
         );
         assert_eq!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
+            vec![
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+            ]
+        );
+        assert_eq!(
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA)
+                .unwrap()
+                .steps,
+            vec![RecoveryMigrationStep::AddOfflineRebuildV3]
         );
         assert!(
             current_recovery_schema()
                 .records
                 .contains(&RecoveryRecordKind::MetadataLossAudit)
+        );
+        assert!(
+            current_recovery_schema()
+                .records
+                .contains(&RecoveryRecordKind::OfflineRebuild)
         );
         assert!(matches!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), CURRENT_RECOVERY_SCHEMA),

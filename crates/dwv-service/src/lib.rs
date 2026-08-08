@@ -6,21 +6,28 @@
 //! outside its boundary.
 
 mod admission;
+mod degraded;
 mod evidence;
 mod failure;
 mod lifecycle;
 mod metadata_loss;
 mod range;
 mod read;
+mod rebuild;
 mod request;
 mod service;
 mod write;
 
 pub use admission::{AdmissionConfig, OperationAdmission};
+pub use degraded::{FileRebuildSource, OfflineAuthorizationError, authorize_file_known_erasure};
 pub use evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim};
 pub use failure::{FailureClass, ServiceError};
 pub use lifecycle::ServiceState;
 pub use metadata_loss::classify_metadata_loss_verification;
 pub use range::{RangePlan, split_range};
+pub use rebuild::{
+    FileRebuildStore, OfflineRebuildCommitError, commit_verified_rebuild_chunk,
+    commit_verified_rebuild_completion, validate_rebuild_resume,
+};
 pub use request::{PortableRequest, RequestOperation};
 pub use service::{HealthyPortableService, MemberStore, ServiceConfig};

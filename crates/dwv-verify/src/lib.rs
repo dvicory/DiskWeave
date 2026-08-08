@@ -3,15 +3,27 @@
 //! This crate reports parity consistency and evidence disposition without
 //! owning filesystem, recovery-database, frontend, or runtime semantics.
 
+mod degraded;
 mod error;
 mod evidence;
+mod rebuild;
 mod repair;
 mod report;
 mod scan;
 mod store;
 
+pub use degraded::{
+    DegradedReadError, DegradedReadOutcome, DegradedReadTelemetry, KnownErasureAuthorization,
+    ReconstructionRangeEvidence, ReconstructionSourceState, authorize_known_erasure,
+    read_known_erasure,
+};
 pub use error::VerificationError;
 pub use evidence::{ChecksumEvidence, DigestEvidence, EvidenceKind};
+pub use rebuild::{
+    RebuildBinding, RebuildChunkReceipt, RebuildError, RebuildRangePlan, RebuildTarget,
+    RebuildVerificationReceipt, execute_rebuild_chunk, plan_rebuild_ranges,
+    verify_complete_rebuild,
+};
 pub use repair::{
     RepairCandidate, RepairOutcome, RepairPlan, RepairRefusal, RepairTarget, apply_repair,
     plan_repairs,

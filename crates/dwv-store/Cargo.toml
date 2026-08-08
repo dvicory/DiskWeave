@@ -8,3 +8,4 @@ path = "src/lib.rs"
 
 [dependencies]
 dwv-core = { path = "../dwv-core" }
+serde = { version = "1", features = ["derive"] }
