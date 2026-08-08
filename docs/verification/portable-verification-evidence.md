@@ -128,6 +128,33 @@ This supports initial VP-005, VP-008, VP-010, and VP-011 evidence. It does not
 claim exhaustive schedule coverage, topology generation, parity equivalence,
 concurrency, filesystem behavior, or hardware durability.
 
+## VE-005 bounded parity, topology, and envelope corpus evidence
+
+Sources: `verification/corpus/parity-seeds.txt`,
+`verification/corpus/topology-seeds.txt`, and
+`verification/corpus/envelope-mutation-seeds.txt`.
+
+Commands:
+
+```text
+cargo test -p dwv-codec seeded_parity_corpus_matches_reconstruction_equations
+cargo test -p dwv-core seeded_topology_candidates_reject_duplicate_assignments
+cargo test -p dwv-format seeded_envelope_mutations_fail_closed
+```
+
+Observed: eight retained parity seeds drive 128 generated geometries and
+single-erasure reconstructions; eight topology seeds drive reordered valid
+candidates and duplicate-assignment refusals; eight envelope seeds mutate
+magic, version, header, profile, slot, body, and padding offsets, all of which
+are rejected. The artifacts retain seed values and producer logic, not payload
+bytes.
+
+This extends bounded VP-001, VP-002, VP-009, VP-010, and VP-011 evidence. The
+corpus remains finite and does not claim arbitrary-width proof, exhaustive
+topology space, concurrency, filesystem behavior, Linux behavior, or hardware
+durability.
+
+
 ## Integrated portable checkpoint
 
 Disposable root: `/tmp/dwv-v3-followup`
@@ -193,7 +220,8 @@ cargo metadata --format-version 1 --no-deps
 openspec validate --all --strict --json
 ```
 
-Observed: 227 tests passed across 29 suites with one ignored; formatting,
+Observed: 232 tests passed across 29 suites with one ignored; the three new
+corpus tests and lifecycle-focused suites passed; formatting, workspace
 Clippy, metadata, and strict OpenSpec validation passed. OpenSpec validation
 reported 21/21 items valid; informational long-requirement notices are not
 failures.

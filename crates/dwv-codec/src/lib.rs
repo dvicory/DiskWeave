@@ -761,6 +761,47 @@ mod tests {
     }
 
     #[test]
+    fn seeded_parity_corpus_matches_reconstruction_equations() {
+        for (line, seed_text) in include_str!("../../../verification/corpus/parity-seeds.txt")
+            .lines()
+            .enumerate()
+        {
+            let mut seed = u64::from_str_radix(seed_text.trim(), 16)
+                .unwrap_or_else(|_| panic!("invalid parity seed on line {}", line + 1));
+            for _ in 0..16 {
+                let lengths = vec![
+                    1 + (next(&mut seed) % 32),
+                    1 + (next(&mut seed) % 32),
+                    1 + (next(&mut seed) % 32),
+                ];
+                let geometry =
+                    Geometry::new(lengths.clone(), *lengths.iter().max().unwrap()).unwrap();
+                let data: Vec<Vec<u8>> = lengths
+                    .iter()
+                    .map(|length| (0..*length).map(|_| next(&mut seed) as u8).collect())
+                    .collect();
+                let references: Vec<&[u8]> = data.iter().map(Vec::as_slice).collect();
+                let parity = compute_parity(&geometry, &references).unwrap();
+                for missing_slot in 0..data.len() {
+                    let range = ByteRange::new(0, data[missing_slot].len() as u64).unwrap();
+                    let survivors: Vec<Option<&[u8]>> = data
+                        .iter()
+                        .enumerate()
+                        .map(|(slot, member)| {
+                            (slot != missing_slot)
+                                .then_some(&member[..member.len().min(data[missing_slot].len())])
+                        })
+                        .collect();
+                    assert_eq!(
+                        reconstruct(&geometry, &parity, missing_slot, range, &survivors).unwrap(),
+                        data[missing_slot]
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn bounded_geometry_and_parity_exhaustive() {
         for lengths in [[0_u64, 1, 2], [1, 2, 3], [2, 0, 3]] {
             let parity_length = lengths.iter().copied().max().unwrap();

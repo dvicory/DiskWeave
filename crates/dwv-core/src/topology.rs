@@ -879,6 +879,42 @@ mod tests {
             second.assignment_for_position(CodingPosition(1))
         );
     }
+    #[test]
+    fn seeded_topology_candidates_reject_duplicate_assignments() {
+        for (line, seed_text) in include_str!("../../../verification/corpus/topology-seeds.txt")
+            .lines()
+            .enumerate()
+        {
+            let seed = u64::from_str_radix(seed_text.trim(), 16)
+                .unwrap_or_else(|_| panic!("invalid topology seed on line {}", line + 1));
+            let base = snapshot(1);
+            let mut reordered = base.assignments().to_vec();
+            let rotation = (seed as usize) % reordered.len();
+            reordered.rotate_left(rotation);
+            let candidate = TopologySnapshot::new(
+                base.array_id(),
+                TopologyEpoch(2),
+                base.profile(),
+                base.geometry(),
+                reordered,
+            )
+            .unwrap();
+            assert_eq!(candidate.assignments().len(), 3);
+
+            let mut duplicate = candidate.assignments().to_vec();
+            duplicate[0] = duplicate[1].clone();
+            assert!(matches!(
+                TopologySnapshot::new(
+                    base.array_id(),
+                    TopologyEpoch(2),
+                    base.profile(),
+                    base.geometry(),
+                    duplicate,
+                ),
+                Err(TopologyValidationError::DuplicateSlot { .. })
+            ));
+        }
+    }
 
     #[test]
     fn failed_verification_does_not_change_active_topology() {

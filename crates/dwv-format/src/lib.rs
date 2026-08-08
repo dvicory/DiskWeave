@@ -991,6 +991,25 @@ mod tests {
             Err(FormatError::InvalidLength { .. })
         ));
     }
+    #[test]
+    fn seeded_envelope_mutations_fail_closed() {
+        const MUTATION_OFFSETS: [usize; 7] = [0, 8, 10, 16, 18, HEADER_BYTES, COPY_BYTES - 1];
+        for (line, seed_text) in
+            include_str!("../../../verification/corpus/envelope-mutation-seeds.txt")
+                .lines()
+                .enumerate()
+        {
+            let seed = u64::from_str_radix(seed_text.trim(), 16)
+                .unwrap_or_else(|_| panic!("invalid envelope seed on line {}", line + 1));
+            let mut bytes = encode_copy(&record(Profile::RedundantEnvelope, 0)).unwrap();
+            let offset = MUTATION_OFFSETS[(seed as usize) % MUTATION_OFFSETS.len()];
+            bytes[offset] ^= 1 + (seed as u8);
+            assert!(
+                decode_copy(&bytes).is_err(),
+                "mutation at offset {offset} was accepted"
+            );
+        }
+    }
 
     #[test]
     fn oversized_input_is_rejected_before_decode() {
