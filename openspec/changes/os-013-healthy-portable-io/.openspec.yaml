@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-07
+goal: An end-to-end portable single-parity read/write path through normalized
+  requests, transactions, operation slots, file stores, recovery state, and
+  checksum evidence

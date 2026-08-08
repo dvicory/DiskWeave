@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-07
+goal: A dependency-ready portable state protocol that prevents home writes
+  without durable dirty and stale integrity intent, and recovers conservatively
+  after faults

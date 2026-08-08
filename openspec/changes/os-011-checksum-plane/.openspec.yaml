@@ -1,0 +1,4 @@
+schema: spec-driven
+created: 2026-08-07
+goal: A portable checksum extent model with generational asynchronous
+  revalidation and a migration seam for checksum profiles
