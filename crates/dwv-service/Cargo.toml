@@ -11,3 +11,4 @@ dwv-recovery = { path = "../dwv-recovery" }
 dwv-store = { path = "../dwv-store" }
 dwv-store-file = { path = "../dwv-store-file" }
 dwv-transaction-ref = { path = "../dwv-transaction-ref" }
+dwv-verify = { path = "../dwv-verify" }

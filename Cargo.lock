@@ -98,6 +98,7 @@ dependencies = [
  "dwv-store",
  "dwv-store-file",
  "dwv-transaction-ref",
+ "dwv-verify",
 ]
 
 [[package]]
@@ -131,6 +132,15 @@ dependencies = [
  "dwv-recovery",
  "dwv-sim",
  "dwv-store",
+]
+
+[[package]]
+name = "dwv-verify"
+version = "0.1.0"
+dependencies = [
+ "dwv-codec",
+ "dwv-core",
+ "dwv-recovery",
 ]
 
 [[package]]

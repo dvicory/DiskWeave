@@ -14,6 +14,7 @@ members = [
     "crates/dwv-transaction-ref",
     "crates/dwv-store-file",
     "crates/dwv-service",
+    "crates/dwv-verify",
 ]
 resolver = "2"
 

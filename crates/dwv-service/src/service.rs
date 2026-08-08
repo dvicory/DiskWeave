@@ -892,7 +892,12 @@ mod tests {
     };
     use dwv_recovery::IntentCommit;
     use dwv_recovery::MemoryRecoveryStore;
+    use dwv_recovery::{Blake3Provider, DigestProvider};
     use dwv_store_file::{ControlProjection, FileStoreConfig, FileSyncMode};
+    use dwv_verify::{
+        ChecksumEvidence, DigestEvidence, VerificationIdentity, VerificationStore,
+        VerificationStoreError, apply_repair, plan_repairs, verify_exhaustive,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -900,6 +905,52 @@ mod tests {
     const LENGTH: u64 = 4096;
     const BLOCK: u32 = 512;
     static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+    struct FileVerificationStore(FileStore);
+
+    impl VerificationStore for FileVerificationStore {
+        fn identity(&self) -> VerificationIdentity {
+            VerificationIdentity(
+                self.0
+                    .capabilities_report()
+                    .identity
+                    .observations
+                    .first()
+                    .map(|observation| observation.fingerprint)
+                    .unwrap_or([0; 16]),
+            )
+        }
+
+        fn read_exact(&mut self, range: ByteRange) -> Result<Vec<u8>, VerificationStoreError> {
+            self.0
+                .read_bytes(range)
+                .map_err(|error| VerificationStoreError::new(error.to_string()))
+        }
+
+        fn write_exact(
+            &mut self,
+            range: ByteRange,
+            bytes: &[u8],
+        ) -> Result<(), VerificationStoreError> {
+            let completion = self.0.write_bytes(
+                dwv_store::ChildOperationId {
+                    slot: OperationSlotToken::new(0, 1),
+                    index: 0,
+                },
+                range,
+                bytes,
+                dwv_store::WriteIntent::Ordinary,
+            );
+            if matches!(completion.disposition, CompletionDisposition::Success) {
+                Ok(())
+            } else {
+                Err(VerificationStoreError::new(format!(
+                    "repair write did not complete: {:?}",
+                    completion.disposition
+                )))
+            }
+        }
+    }
 
     fn topology(epoch: TopologyEpoch) -> TopologySnapshot {
         let profile = CodingProfile::new(2, 1).unwrap();
@@ -1494,6 +1545,104 @@ mod tests {
             Err(ServiceError::Blocked(FailureClass::Recovery))
         ));
         drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn macos_regular_files_support_separate_target_verification_repair() {
+        let root = std::env::temp_dir().join(format!(
+            "dwv-verify-file-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let data0 = (0..LENGTH as usize)
+            .map(|index| index as u8)
+            .collect::<Vec<_>>();
+        let data1 = (0..LENGTH as usize)
+            .map(|index| 0xa0_u8.wrapping_add(index as u8))
+            .collect::<Vec<_>>();
+        let parity = data0
+            .iter()
+            .zip(&data1)
+            .map(|(left, right)| left ^ right)
+            .collect::<Vec<_>>();
+        let data_paths = [root.join("data-0.raw"), root.join("data-1.raw")];
+        let parity_path = root.join("parity.raw");
+        let target_path = root.join("repair-target.raw");
+        fs::write(&data_paths[0], &data0).unwrap();
+        fs::write(&data_paths[1], &data1).unwrap();
+        let mut corrupt_parity = parity.clone();
+        corrupt_parity[1] ^= 0xff;
+        fs::write(&parity_path, &corrupt_parity).unwrap();
+        fs::write(&target_path, vec![0; LENGTH as usize]).unwrap();
+        let epoch = TopologyEpoch(4);
+        let open = |path: &PathBuf, id: u64| {
+            FileStore::open(
+                FileStoreConfig::new(path, LENGTH, BLOCK)
+                    .maximum_transfer(LENGTH)
+                    .store_id(StoreId(id))
+                    .topology_epoch(epoch)
+                    .sync_mode(FileSyncMode::CallerFlush),
+            )
+            .unwrap()
+        };
+        assert!(dwv_store_file::reject_backing_export_alias(&parity_path, &target_path).is_ok());
+        let alias_path = root.join("parity-alias.raw");
+        fs::hard_link(&parity_path, &alias_path).unwrap();
+        assert!(dwv_store_file::reject_backing_export_alias(&parity_path, &alias_path).is_err());
+
+        let ranges = (0..(LENGTH / BLOCK as u64))
+            .map(|index| ByteRange::new(index * BLOCK as u64, BLOCK as u64).unwrap())
+            .collect::<Vec<_>>();
+        let provider = Blake3Provider;
+        let digest_records = |bytes: &[u8]| {
+            ranges
+                .iter()
+                .map(|range| {
+                    DigestEvidence::Current(
+                        provider
+                            .digest(&bytes[range.offset as usize..range.end() as usize])
+                            .unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let evidence = ChecksumEvidence::new(
+            vec![digest_records(&data0), digest_records(&data1)],
+            digest_records(&parity),
+        );
+        let geometry = dwv_codec::Geometry::new(vec![LENGTH, LENGTH], LENGTH).unwrap();
+        let config = dwv_verify::ScanConfig::new(geometry, BLOCK as u64).unwrap();
+        let mut data = vec![
+            FileVerificationStore(open(&data_paths[0], 1)),
+            FileVerificationStore(open(&data_paths[1], 2)),
+        ];
+        let mut parity_store = FileVerificationStore(open(&parity_path, 3));
+        let mut target = FileVerificationStore(open(&target_path, 4));
+        let report = verify_exhaustive(&mut data, &mut parity_store, &config, &evidence).unwrap();
+        let plan = plan_repairs(&report);
+        assert_eq!(plan.candidates.len(), 1);
+        apply_repair(
+            &config,
+            &mut data,
+            &mut parity_store,
+            &mut target,
+            plan.candidates[0],
+        )
+        .unwrap();
+        assert_eq!(
+            target
+                .0
+                .read_bytes(ByteRange::new(0, BLOCK as u64).unwrap())
+                .unwrap(),
+            parity[..BLOCK as usize]
+        );
+        assert_eq!(fs::read(&parity_path).unwrap(), corrupt_parity);
+        drop(target);
+        drop(parity_store);
+        drop(data);
         fs::remove_dir_all(root).unwrap();
     }
 }

@@ -1,0 +1,13 @@
+[package]
+name = "dwv-verify"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dwv-codec = { path = "../dwv-codec" }
+dwv-core = { path = "../dwv-core" }
+dwv-recovery = { path = "../dwv-recovery" }
