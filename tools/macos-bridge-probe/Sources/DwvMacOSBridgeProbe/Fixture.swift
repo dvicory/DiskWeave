@@ -20,6 +20,12 @@ struct ProbeRunner {
         let copy = copies.appendingPathComponent("data0-copy.raw")
         try fileManager.copyItem(at: backing, to: copy)
 
+        let rangeProbe = root.appendingPathComponent("range-probe.raw")
+        let rangeChecks = try probeRegularFileRangeBehavior(
+            at: rangeProbe,
+            size: arguments.logicalSize
+        )
+
         let backingNumber = fileNumber(for: backing)
         let exportNumber = fileNumber(for: exported)
         let copyNumber = fileNumber(for: copy)
@@ -32,7 +38,7 @@ struct ProbeRunner {
             result[path] = fileManager.isExecutableFile(atPath: path)
         }
 
-        var checks = [
+        var checks = rangeChecks + [
             CheckEvidence(
                 id: "fixed-logical-size",
                 status: fileSize(for: backing) == arguments.logicalSize && fileSize(for: exported) == arguments.logicalSize ? "pass" : "fail",
@@ -138,6 +144,13 @@ struct ProbeRunner {
             guard readback == marker else {
                 throw ProbeError.filesystem("baseline proxy readback did not match the marker")
             }
+
+            let reopened = try FileHandle(forReadingFrom: url)
+            let reopenedReadback = try reopened.read(upToCount: marker.count) ?? Data()
+            try reopened.close()
+            guard reopenedReadback == marker else {
+                throw ProbeError.filesystem("reopened baseline proxy readback did not match")
+            }
         } catch let error as ProbeError {
             throw error
         } catch {
@@ -151,8 +164,47 @@ struct ProbeRunner {
             TraceEvent(sequence: 3, operation: "sync", offset: 0, length: length, status: "complete", persistence: "host-file-sync", detail: "FileHandle.synchronize completed; not hardware durability"),
             TraceEvent(sequence: 4, operation: "read", offset: 0, length: length, status: "complete", persistence: "volatile-or-unknown", detail: "marker readback matched"),
             TraceEvent(sequence: 5, operation: "close", offset: 0, length: 0, status: "complete", persistence: "not-applicable", detail: "regular-file baseline closed"),
-            TraceEvent(sequence: 6, operation: "detach", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a candidate bridge and DiskImages attachment"),
-            TraceEvent(sequence: 7, operation: "disconnect", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a live bridge with backing failure injection")
+            TraceEvent(sequence: 6, operation: "reopen", offset: 0, length: 0, status: "complete", persistence: "host-file-reopen", detail: "regular-file baseline reopened"),
+            TraceEvent(sequence: 7, operation: "read-after-reopen", offset: 0, length: length, status: "complete", persistence: "host-file-reopen", detail: "marker remained readable after close/reopen"),
+            TraceEvent(sequence: 8, operation: "detach", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a candidate bridge and DiskImages attachment"),
+            TraceEvent(sequence: 9, operation: "disconnect", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a live bridge with backing failure injection")
+        ]
+    }
+
+    private func probeRegularFileRangeBehavior(at url: URL, size: UInt64) throws -> [CheckEvidence] {
+        guard size > 0 else {
+            throw ProbeError.invalidArgument("logical size must be positive")
+        }
+        try createSparseFile(at: url, size: size)
+
+        let writeHandle = try FileHandle(forUpdating: url)
+        try writeHandle.seek(toFileOffset: size)
+        try writeHandle.write(contentsOf: Data([0xEE]))
+        try writeHandle.close()
+        let extended = fileSize(for: url) == size + 1
+
+        let shrinkTo = max(1, size / 2)
+        let shrinkHandle = try FileHandle(forUpdating: url)
+        try shrinkHandle.truncate(atOffset: shrinkTo)
+        try shrinkHandle.close()
+        let shrunk = fileSize(for: url) == shrinkTo
+
+        let restoreHandle = try FileHandle(forUpdating: url)
+        try restoreHandle.truncate(atOffset: size)
+        try restoreHandle.close()
+        let restored = fileSize(for: url) == size
+
+        return [
+            CheckEvidence(
+                id: "regular-file-out-of-range-write",
+                status: extended ? "observed-host-extension" : "not-observed",
+                detail: "the regular-file baseline accepts a write at logical EOF; a bridge proxy must reject it"
+            ),
+            CheckEvidence(
+                id: "regular-file-truncate-resize",
+                status: shrunk && restored ? "observed-host-resize" : "fail",
+                detail: "the regular-file baseline permits disposable truncate/resize; bridge denial remains unverified"
+            )
         ]
     }
 
