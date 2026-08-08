@@ -64,6 +64,7 @@ struct ProbeRunner {
             backingFileNumber: backingNumber,
             exportFileNumber: exportNumber
         )
+        let trace = try captureBaselineTrace(at: exported, logicalSize: arguments.logicalSize)
 
         if !arguments.keepFixture {
             try? fileManager.removeItem(at: root)
@@ -80,12 +81,48 @@ struct ProbeRunner {
             host: host,
             fixture: fixture,
             checks: checks,
+            trace: trace,
             claims: [
                 "This probe establishes portable-demo fixture and host-tool evidence only.",
                 "It does not certify FSKit, macFUSE, DiskImages synchronization, FUA, controller-cache behavior, or physical power loss.",
                 "A bridge candidate must translate operations into normalized requests and preserve backing/export separation."
             ]
         )
+    }
+
+    private func captureBaselineTrace(at url: URL, logicalSize: UInt64) throws -> [TraceEvent] {
+        let marker = Data([0x44, 0x57, 0x56, 0x2D, 0x50, 0x52, 0x4F, 0x42, 0x45])
+        guard UInt64(marker.count) <= logicalSize else {
+            throw ProbeError.invalidArgument("logical size is smaller than the baseline marker")
+        }
+
+        do {
+            let handle = try FileHandle(forUpdating: url)
+            try handle.seek(toFileOffset: 0)
+            try handle.write(contentsOf: marker)
+            try handle.synchronize()
+            try handle.seek(toFileOffset: 0)
+            let readback = try handle.read(upToCount: marker.count) ?? Data()
+            try handle.close()
+            guard readback == marker else {
+                throw ProbeError.filesystem("baseline proxy readback did not match the marker")
+            }
+        } catch let error as ProbeError {
+            throw error
+        } catch {
+            throw ProbeError.filesystem("baseline proxy trace failed: \(error)")
+        }
+
+        let length = UInt64(marker.count)
+        return [
+            TraceEvent(sequence: 1, operation: "open", offset: 0, length: 0, status: "complete", persistence: "not-applicable", detail: "regular-file baseline opened for update"),
+            TraceEvent(sequence: 2, operation: "write", offset: 0, length: length, status: "complete", persistence: "volatile-or-unknown", detail: "baseline marker write"),
+            TraceEvent(sequence: 3, operation: "sync", offset: 0, length: length, status: "complete", persistence: "host-file-sync", detail: "FileHandle.synchronize completed; not hardware durability"),
+            TraceEvent(sequence: 4, operation: "read", offset: 0, length: length, status: "complete", persistence: "volatile-or-unknown", detail: "marker readback matched"),
+            TraceEvent(sequence: 5, operation: "close", offset: 0, length: 0, status: "complete", persistence: "not-applicable", detail: "regular-file baseline closed"),
+            TraceEvent(sequence: 6, operation: "detach", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a candidate bridge and DiskImages attachment"),
+            TraceEvent(sequence: 7, operation: "disconnect", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a live bridge with backing failure injection")
+        ]
     }
 
     private func makeRoot(_ requested: URL?) throws -> URL {

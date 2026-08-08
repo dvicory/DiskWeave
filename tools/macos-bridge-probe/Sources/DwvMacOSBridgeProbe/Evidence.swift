@@ -11,6 +11,7 @@ struct ProbeEvidence: Codable {
     let host: HostEvidence
     let fixture: FixtureEvidence
     let checks: [CheckEvidence]
+    let trace: [TraceEvent]
     let claims: [String]
 }
 
@@ -33,6 +34,16 @@ struct FixtureEvidence: Codable {
 struct CheckEvidence: Codable {
     let id: String
     let status: String
+    let detail: String
+}
+
+struct TraceEvent: Codable {
+    let sequence: Int
+    let operation: String
+    let offset: UInt64
+    let length: UInt64
+    let status: String
+    let persistence: String
     let detail: String
 }
 

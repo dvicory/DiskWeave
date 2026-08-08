@@ -1,6 +1,6 @@
 # macOS bridge feasibility probe
 
-This package is the unprivileged baseline for OS-020. It creates separate fixed-size sparse files under `backends/` and `exports/`, records host tool/SDK availability, checks apparent geometry and host file identity separation, and emits bounded JSON evidence. It does not attach a filesystem extension or claim DiskImages synchronization.
+This package is the unprivileged baseline for OS-020. It creates separate fixed-size sparse files under `backends/` and `exports/`, records host tool/SDK availability, checks apparent geometry and host file identity separation, and emits bounded JSON evidence plus a normalized regular-file trace. It does not attach a filesystem extension or claim DiskImages synchronization.
 
 Run it from this directory when a matching Swift toolchain is available:
 

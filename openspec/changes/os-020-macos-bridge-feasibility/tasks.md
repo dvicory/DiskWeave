@@ -7,7 +7,7 @@
 ## 2. Baseline probe
 
 - [x] 2.1 Add a macOS fixture/probe with explicit temporary backing/export directories and fixed geometry.
-- [ ] 2.2 Add normalized operation trace capture for read/write/flush/sync/close/detach/failure.
+- [x] 2.2 Add normalized operation trace capture for read/write/flush/sync/close/detach/failure.
 - [ ] 2.3 Verify exact range, no truncate/resize, hole/copy/file-ID, and backing/export separation behavior.
 
 ## 3. Candidate evidence
