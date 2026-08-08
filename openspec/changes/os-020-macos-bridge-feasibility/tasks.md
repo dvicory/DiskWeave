@@ -6,7 +6,7 @@
 
 ## 2. Baseline probe
 
-- [ ] 2.1 Add a macOS fixture/probe with explicit temporary backing/export directories and fixed geometry.
+- [x] 2.1 Add a macOS fixture/probe with explicit temporary backing/export directories and fixed geometry.
 - [ ] 2.2 Add normalized operation trace capture for read/write/flush/sync/close/detach/failure.
 - [ ] 2.3 Verify exact range, no truncate/resize, hole/copy/file-ID, and backing/export separation behavior.
 
@@ -21,5 +21,5 @@
 
 - [ ] 4.1 Produce a comparative ADR with selected bridge or documented blocker and portable-demo limitations.
 - [ ] 4.2 Run OpenSpec validation, format/dependency checks, and deterministic synthetic-trace tests on macOS.
-- [ ] 4.3 Record reproducible manual steps for privileged/GUI attachment tests that cannot run in the restricted session.
+- [x] 4.3 Record reproducible manual steps for privileged/GUI attachment tests that cannot run in the restricted session.
 - [ ] 4.4 Mark complete only when every required feasibility question has evidence or an explicit blocker; leave OS-021 implementation separate.
