@@ -6,7 +6,10 @@ use crate::action::{
 use crate::error::{ErrorClass, PlanError, TransactionError};
 use crate::trace::Trace;
 use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
-use dwv_recovery::{FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId};
+use dwv_recovery::{
+    FenceCertificate, IntegrityExtentId, IntentEvidence, InvalidationTarget, RecoveryGeneration,
+    RegionId,
+};
 use dwv_store::StoreId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -124,6 +127,10 @@ impl TransactionPlan {
 
     pub fn captured_intent_generation(&self) -> RecoveryGeneration {
         self.intent.generation(self.recovery_generation)
+    }
+
+    pub fn invalidation_target(&self) -> InvalidationTarget {
+        InvalidationTarget::new(self.dirty_regions.clone(), self.checksum_extents.clone())
     }
 
     pub fn validate(&self) -> Result<(), PlanError> {
@@ -451,6 +458,15 @@ impl TransactionMachine {
                 self.state.irreversible_boundary = true;
                 Ok(Some(Stage::ReadSet))
             }
+            (
+                ActionKind::PersistDirtyAndInvalidateIntegrity,
+                ActionResult::RecoveryIntentCommitted(evidence),
+            ) => {
+                self.require_intent_evidence(&evidence)?;
+                self.state.intent_durable = true;
+                self.state.irreversible_boundary = true;
+                Ok(Some(Stage::ReadSet))
+            }
             (ActionKind::ReadSet, ActionResult::ReadSetComplete(result)) => match result {
                 SemanticIoResult::Complete => Ok(Some(Stage::ComputeParity)),
                 SemanticIoResult::Failed => {
@@ -670,6 +686,38 @@ impl TransactionMachine {
         }
         Ok(())
     }
+
+    fn require_intent_evidence(&self, evidence: &IntentEvidence) -> Result<(), TransactionError> {
+        if !evidence.durable {
+            return Err(TransactionError::InvalidResult(
+                "recovery intent evidence is not durable",
+            ));
+        }
+        if evidence.topology_epoch != self.plan.topology_epoch {
+            return Err(TransactionError::TopologyMismatch {
+                expected: self.plan.topology_epoch,
+                actual: evidence.topology_epoch,
+            });
+        }
+        if evidence.captured_generation != self.state.captured_recovery_generation {
+            return Err(TransactionError::RecoveryGenerationMismatch {
+                expected: self.state.captured_recovery_generation,
+                actual: evidence.captured_generation,
+            });
+        }
+        if evidence.committed_generation.0 < evidence.captured_generation.0 {
+            return Err(TransactionError::RecoveryGenerationMismatch {
+                expected: evidence.captured_generation,
+                actual: evidence.committed_generation,
+            });
+        }
+        if evidence.target != self.plan.invalidation_target() {
+            return Err(TransactionError::InvalidResult(
+                "recovery intent coverage does not match the transaction",
+            ));
+        }
+        Ok(())
+    }
 }
 
 fn result_matches(action: ActionKind, result: ResultKind) -> bool {
@@ -697,7 +745,9 @@ mod tests {
     use super::*;
     use crate::{ActionResult, ErrorClass, FenceEvidence, StoreWatermark};
     use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
-    use dwv_recovery::{FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId};
+    use dwv_recovery::{
+        FenceCertificate, IntegrityExtentId, IntentEvidence, RecoveryGeneration, RegionId,
+    };
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
 
     fn plan() -> TransactionPlan {
@@ -1075,5 +1125,28 @@ mod tests {
         let second = TransactionMachine::replay(plan(), &results).unwrap();
         assert_eq!(first.trace(), second.trace());
         assert_eq!(first.state(), second.state());
+    }
+
+    #[test]
+    fn structured_intent_evidence_is_checked_before_reads() {
+        let mut machine = TransactionMachine::new(plan()).unwrap();
+        machine
+            .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
+            .unwrap();
+        let evidence = IntentEvidence {
+            topology_epoch: TopologyEpoch(7),
+            captured_generation: RecoveryGeneration(3),
+            committed_generation: RecoveryGeneration(4),
+            target: machine.plan().invalidation_target(),
+            durable: true,
+        };
+        machine
+            .apply(ActionResult::RecoveryIntentCommitted(evidence))
+            .unwrap();
+        assert_eq!(machine.stage(), Stage::ReadSet);
+        assert_eq!(
+            machine.pending_action().unwrap().kind(),
+            ActionKind::ReadSet
+        );
     }
 }

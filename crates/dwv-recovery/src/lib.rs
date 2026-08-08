@@ -9,8 +9,25 @@ use dwv_core::{FenceDomain, TopologyEpoch};
 use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct RecoveryGeneration(pub u64);
+mod checkpoint;
+mod generation;
+mod intent;
+mod invalidation;
+mod transition;
+
+pub use checkpoint::{
+    CheckpointDecision, CheckpointRefusal, CheckpointRequest, RequiredFence, evaluate_checkpoint,
+    fence_ref,
+};
+pub use generation::{GenerationCapture, RecoveryGeneration};
+pub use intent::IntentCommit;
+pub use invalidation::{
+    IntentBoundary, IntentCoverage, IntentDecision, IntentEvidence, InvalidationTarget,
+    assess_intent,
+};
+pub use transition::{
+    RecoveryTransitionId, TransitionEvidence, TransitionKind, TransitionOutcome, TransitionTrace,
+};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionId(pub u64);
@@ -230,7 +247,7 @@ impl FenceCertificate {
         self
     }
 
-    fn covers_region(&self, region: RegionId, generation: RecoveryGeneration) -> bool {
+    pub(crate) fn covers_region(&self, region: RegionId, generation: RecoveryGeneration) -> bool {
         self.captured_region_generations
             .iter()
             .any(|(captured_region, captured_generation)| {
@@ -238,11 +255,11 @@ impl FenceCertificate {
             })
     }
 
-    fn contains_store_fence(&self, fence: StoreFenceRef) -> bool {
+    pub(crate) fn contains_store_fence(&self, fence: StoreFenceRef) -> bool {
         self.stores.contains(&fence)
     }
 
-    fn covers_integrity_extent(
+    pub(crate) fn covers_integrity_extent(
         &self,
         extent: IntegrityExtentId,
         generation: RecoveryGeneration,
@@ -488,6 +505,28 @@ impl RecoveryTxn {
     pub fn push(&mut self, mutation: RecoveryMutation) -> &mut Self {
         self.mutations.push(mutation);
         self
+    }
+
+    pub fn mark_region_dirty(
+        &mut self,
+        region: RegionId,
+        mutation_generation: RecoveryGeneration,
+    ) -> &mut Self {
+        self.push(RecoveryMutation::MarkRegionDirty {
+            region,
+            mutation_generation,
+        })
+    }
+
+    pub fn mark_integrity_stale(
+        &mut self,
+        extent: IntegrityExtentId,
+        stale_generation: RecoveryGeneration,
+    ) -> &mut Self {
+        self.push(RecoveryMutation::MarkIntegrityStale {
+            extent,
+            stale_generation,
+        })
     }
 }
 
@@ -872,13 +911,10 @@ impl RecoveryStateStore for MemoryRecoveryStore {
         for mutation in txn.mutations {
             Self::apply_mutation(&mut candidate, mutation, txn.expected_topology_epoch)?;
         }
-        candidate.generation = RecoveryGeneration(
-            candidate
-                .generation
-                .0
-                .checked_add(1)
-                .ok_or(RecoveryError::GenerationExhausted)?,
-        );
+        candidate.generation = candidate
+            .generation
+            .checked_next()
+            .ok_or(RecoveryError::GenerationExhausted)?;
         self.snapshot = candidate;
         Ok(self.snapshot.generation)
     }
@@ -1682,6 +1718,31 @@ mod tests {
             Err(RecoveryError::InvalidTransition(
                 TransitionError::IntegrityCoverageMissing
             ))
+        ));
+    }
+
+    #[test]
+    fn dirty_integrity_intent_survives_semantic_export() {
+        let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        let evidence = IntentCommit::new(
+            &mut recovery,
+            TopologyEpoch(1),
+            RecoveryGeneration(0),
+            InvalidationTarget::new(vec![RegionId(5)], vec![IntegrityExtentId(6)]),
+        )
+        .commit()
+        .unwrap();
+        let manifest = recovery
+            .export_manifest(evidence.committed_generation)
+            .unwrap();
+        assert_eq!(manifest.snapshot.generation, evidence.committed_generation);
+        assert!(matches!(
+            manifest.snapshot.dirty_regions[0].state,
+            RegionState::Dirty { .. }
+        ));
+        assert!(matches!(
+            manifest.snapshot.integrity_records[0].state,
+            IntegrityState::Stale { .. }
         ));
     }
 }

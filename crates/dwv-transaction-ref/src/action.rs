@@ -1,6 +1,8 @@
 use crate::error::ErrorClass;
 use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
-use dwv_recovery::{FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId, SessionId};
+use dwv_recovery::{
+    FenceCertificate, IntegrityExtentId, IntentEvidence, RecoveryGeneration, RegionId, SessionId,
+};
 use dwv_store::{StoreFenceRef, StoreId, StoreWriteWatermark};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -321,6 +323,7 @@ impl SemanticFailure {
 pub enum ActionResult {
     RangeAcquired(RangeGuardToken),
     RecoveryIntentDurable(CommittedRecoveryGeneration),
+    RecoveryIntentCommitted(IntentEvidence),
     ReadSetComplete(SemanticIoResult),
     ParityComputed(ComputationResult),
     WriteSetComplete(SemanticIoResult),
@@ -335,6 +338,7 @@ impl ActionResult {
         match self {
             Self::RangeAcquired(_) => ResultKind::RangeAcquired,
             Self::RecoveryIntentDurable(_) => ResultKind::RecoveryIntentDurable,
+            Self::RecoveryIntentCommitted(_) => ResultKind::RecoveryIntentDurable,
             Self::ReadSetComplete(_) => ResultKind::ReadSetComplete,
             Self::ParityComputed(_) => ResultKind::ParityComputed,
             Self::WriteSetComplete(_) => ResultKind::WriteSetComplete,

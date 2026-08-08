@@ -13,6 +13,13 @@ use dwv_store::{
 };
 use std::fmt;
 
+mod recovery_model;
+
+pub use recovery_model::{
+    RecoveryCutPoint, RecoveryModelEvent, RecoveryModelOutcome, RecoveryModelState,
+    RecoverySchedule, RecoveryWrite,
+};
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MediaEffect {
     None,
