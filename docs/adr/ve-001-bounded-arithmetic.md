@@ -9,8 +9,8 @@
 
 Use dependency-free exhaustive finite-domain Rust tests as the bounded
 verification mechanism for the current pure seams. Kani is not installed in
-the host environment, and adding a verifier dependency or changing production
-architecture is not justified for these small deterministic components.
+the host environment, and introducing an external verifier toolchain and CI
+setup was not justified for these small deterministic components.
 
 The harness exhaustively enumerates:
 
