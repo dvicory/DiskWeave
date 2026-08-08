@@ -59,12 +59,12 @@ pub fn probe_file_capabilities(
     evidence_id: CapabilityEvidenceId,
     sparse_behavior: SparseBehavior,
 ) -> Result<FileCapabilityReport, CapabilityProbeError> {
-    if logical_block_size == 0 || protected_length % u64::from(logical_block_size) != 0 {
+    if logical_block_size == 0 || !protected_length.is_multiple_of(u64::from(logical_block_size)) {
         return Err(CapabilityProbeError::InvalidGeometry(
             "protected length must be a multiple of the non-zero logical block size".to_owned(),
         ));
     }
-    if maximum_transfer == 0 || maximum_transfer % u64::from(logical_block_size) != 0 {
+    if maximum_transfer == 0 || !maximum_transfer.is_multiple_of(u64::from(logical_block_size)) {
         return Err(CapabilityProbeError::InvalidGeometry(
             "maximum transfer must be a non-zero block multiple".to_owned(),
         ));

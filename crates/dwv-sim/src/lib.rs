@@ -889,13 +889,13 @@ pub struct Simulator {
 
 impl Simulator {
     pub fn new(initial_media: Vec<u8>, config: SimulatorConfig) -> Result<Self, SimulationError> {
-        if let Evidence::Known(length) = config.capabilities.logical_length {
-            if length != initial_media.len() as u64 {
-                return Err(SimulationError::Store(StoreError::RangeOutsideStore {
-                    end: initial_media.len() as u64,
-                    length,
-                }));
-            }
+        if let Evidence::Known(length) = config.capabilities.logical_length
+            && length != initial_media.len() as u64
+        {
+            return Err(SimulationError::Store(StoreError::RangeOutsideStore {
+                end: initial_media.len() as u64,
+                length,
+            }));
         }
         Ok(Self {
             durable_media: initial_media.clone(),

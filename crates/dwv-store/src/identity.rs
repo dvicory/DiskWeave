@@ -228,6 +228,7 @@ pub struct IdentityProfile {
 }
 
 impl IdentityProfile {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         array_id: ArrayId,
         topology_epoch: TopologyEpoch,
@@ -425,17 +426,7 @@ pub fn assess_identity(
             IdentityConfidence::None,
         )
     } else if let Some(found) = matches.first() {
-        if has_changed {
-            (
-                IdentityAssessment::Changed,
-                AssemblyDecision::PrepareReplacement {
-                    candidate: found.candidate,
-                    confidence: found.confidence,
-                },
-                EvidenceAction::ReadOnlyInspection,
-                found.confidence,
-            )
-        } else if !found.geometry_compatible {
+        if has_changed || !found.geometry_compatible {
             (
                 IdentityAssessment::Changed,
                 AssemblyDecision::PrepareReplacement {

@@ -192,11 +192,8 @@ impl ControlProjection {
     }
 
     pub fn rebuild(&self, entries: &[ControlEntry]) -> Result<(), ControlError> {
-        if self.database_path.exists() {
-            if !self.integrity_check().unwrap_or(false) {
-                quarantine(&self.database_path)
-                    .map_err(|error| ControlError::Io(error.to_string()))?;
-            }
+        if self.database_path.exists() && !self.integrity_check().unwrap_or(false) {
+            quarantine(&self.database_path).map_err(|error| ControlError::Io(error.to_string()))?;
         }
         self.initialize()?;
         self.run("DELETE FROM inventory; DELETE FROM history; DELETE FROM jobs;")?;
@@ -243,10 +240,10 @@ impl ControlProjection {
         if !self.available() {
             return Err(ControlError::SqliteUnavailable);
         }
-        if let Some(parent) = self.database_path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent).map_err(|error| ControlError::Io(error.to_string()))?;
-            }
+        if let Some(parent) = self.database_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|error| ControlError::Io(error.to_string()))?;
         }
         let mut child = Command::new(&self.sqlite_program)
             .arg("-batch")
@@ -286,7 +283,7 @@ fn quote(value: &str) -> String {
     value.replace('\'', "''")
 }
 fn decode_hex(value: &str) -> Result<String, ControlError> {
-    if value.len() % 2 != 0 {
+    if !value.len().is_multiple_of(2) {
         return Err(ControlError::InvalidOutput("odd hex field".to_owned()));
     }
     let bytes = (0..value.len())

@@ -575,7 +575,7 @@ mod tests {
 
     #[test]
     fn randomized_updates_match_full_recomputation() {
-        let mut seed = 0xD1_5C_A11Eu64;
+        let mut seed = 0xD15C_A11E_u64;
         for case in 0..128 {
             let lengths = vec![
                 1 + (next(&mut seed) % 31),
