@@ -75,4 +75,43 @@ mod tests {
         assert!(split_range(ByteRange::new(1, 512).unwrap(), geometry, 1024).is_err());
         assert!(split_range(ByteRange::new(3584, 1024).unwrap(), geometry, 1024).is_err());
     }
+
+    #[test]
+    fn bounded_split_ranges_preserve_aligned_coverage() {
+        for block_size in [1_u32, 2, 4, 8] {
+            for geometry_blocks in 1_u64..=8 {
+                let geometry =
+                    ProtectedGeometry::new(geometry_blocks * u64::from(block_size), block_size)
+                        .unwrap();
+                for transfer_blocks in 1_u64..=geometry_blocks {
+                    let maximum_transfer = transfer_blocks * u64::from(block_size);
+                    for start_block in 0..geometry_blocks {
+                        for length_blocks in 1..=(geometry_blocks - start_block) {
+                            let range = ByteRange::new(
+                                start_block * u64::from(block_size),
+                                length_blocks * u64::from(block_size),
+                            )
+                            .unwrap();
+                            let plan = split_range(range, geometry, maximum_transfer).unwrap();
+                            assert!(!plan.ranges.is_empty());
+
+                            let mut cursor = range.offset;
+                            for part in &plan.ranges {
+                                assert_eq!(part.offset, cursor);
+                                assert!(part.length <= maximum_transfer);
+                                assert_eq!(part.offset % u64::from(block_size), 0);
+                                assert_eq!(part.length % u64::from(block_size), 0);
+                                cursor = part.end();
+                            }
+                            assert_eq!(cursor, range.end());
+                            assert_eq!(
+                                plan.ranges.iter().map(|part| part.length).sum::<u64>(),
+                                range.length
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 }

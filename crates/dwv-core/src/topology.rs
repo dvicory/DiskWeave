@@ -812,6 +812,26 @@ impl std::error::Error for TransitionError {}
 mod tests {
     use super::*;
 
+    #[test]
+    fn bounded_geometry_accepts_only_valid_capacity_and_alignment() {
+        let block_sizes = [1_u32, 2, 4, 512];
+        for block_size in block_sizes {
+            for protected_blocks in 0_u64..=4 {
+                for parity_blocks in 0_u64..=5 {
+                    let protected = protected_blocks * u64::from(block_size);
+                    let parity = parity_blocks * u64::from(block_size);
+                    let expected = protected != 0 && parity >= protected;
+                    assert_eq!(
+                        ProtectedGeometry::with_parity_length(protected, block_size, parity)
+                            .is_ok(),
+                        expected,
+                        "protected={protected} block={block_size} parity={parity}"
+                    );
+                }
+            }
+        }
+    }
+
     fn snapshot(epoch: u64) -> TopologySnapshot {
         let profile = CodingProfile::new(2, 1).unwrap();
         let geometry = ProtectedGeometry::new(4096, 512).unwrap();

@@ -20,7 +20,7 @@ portable claim.
 | `dwv-sim` is the durability/recovery oracle | CONFORMANT | Simulator separates durable, volatile, pending, completion, recovery DB, envelope, and power-loss state; OS-004 and OS-024 evidence | Does not model real filesystem, kernel, device, or hardware behavior |
 | Generated operation/fault/crash/topology schedules | EVIDENCE GAP | Deterministic schedules exist; no sustained `proptest` or fuzz corpus is committed | VE-005 after the current trace/parser surfaces justify a campaign |
 | Normalized semantic reproducer | CONFORMANT | OS-024 trace model, bounded parser, migration/limit tests, CLI export/render/replay, and baseline trace evidence | Preserve producer-specific witnesses if future tools find them |
-| Bounded verification of high-consequence pure components | EVIDENCE GAP | Pure range/parity seams have ordinary tests but no Kani or equivalent bounded proof harness | VE-001 is the next portable evidence item |
+| Bounded verification of high-consequence pure components | CONFORMANT (finite bounded domains) | `dwv-core`, `dwv-service`, and `dwv-codec` exhaustive finite-domain tests; decision and bounds in `docs/adr/ve-001-bounded-arithmetic.md` | Evidence covers declared bounds only; no arbitrary-width formal proof |
 | Independent abstract recovery protocol | CONFORMANT (finite safety/reachability) | PlusCal source, generated translation, TLC run, `tla-rs` cross-check, and seeded mutation detection in `docs/adr/ve-002-independent-recovery-model.md` | Bounds and omitted facts remain explicit; no application-wide proof |
 | Broad concurrency schedule exploration | EVIDENCE GAP | Slot lifecycle has deterministic transition tests, but no real concurrent executor/job/shutdown graph exists | VE-003 after executor/job/shutdown code exists; do not add a runtime for the checker |
 | Production-adjacent deterministic filesystem/io_uring simulation | NOT YET APPLICABLE | No Linux-oriented executor or io_uring seam exists in the portable product | VE-004/OS-031 dependency-gated; `dwv-sim` remains authoritative |
@@ -45,14 +45,14 @@ platform gates, not reasons to weaken the portable claim.
 - **Evidenced portable history:** archived OS-000 through OS-017 slices,
   OS-020 feasibility, and OS-024 trace replay; each remains qualified by its
   verification record and claim boundary.
-- **Current additive evidence:** VE-002 is implemented and checked by both
-  official TLC and `tla-rs`; its source/configuration live under
-  `verification/tla/`.
-- **Next portable item:** VE-001 bounded arithmetic verification for range,
-  capacity, offset, and parity-update components. It has no Linux, bridge, or
+- **Current additive evidence:** VE-001 finite-domain arithmetic/range/parity
+  harnesses and VE-002 independent recovery-model checks are implemented and
+  recorded.
+- **Next portable item:** VE-005 generated/fuzzed operation, fault, trace,
+  parity, topology, and boundary schedules. It has no Linux, bridge, or
   hardware prerequisite.
-- **Later evidence:** VE-005 fuzz corpus; VE-003 concurrency schedules after a
-  real executor/job/shutdown seam; VE-004 simulated I/O after that seam exists.
+- **Later evidence:** VE-003 concurrency schedules after a real
+  executor/job/shutdown seam; VE-004 simulated I/O after that seam exists.
 - **Platform-gated:** OS-021/022/023 macOS frontend/APFS acceptance and
   OS-030+ Linux/hardware milestones remain unclaimed.
 
@@ -62,7 +62,14 @@ platform gates, not reasons to weaken the portable claim.
 - **A — Immediate conformance blockers:** none found.
 - **B — Coherent current work:** OS-007, OS-009, OS-017, OS-024, and the
   disposable `dwv demo` remain preserved under their actual claim boundaries.
-- **C — Additive verification:** VE-002 complete; VE-001 is next; VE-005,
-  VE-003, and VE-004 remain ordered by their stated prerequisites.
+- **C — Additive verification:** VE-001 and VE-002 complete; VE-005 is next;
+  VE-003 and VE-004 remain ordered by their stated prerequisites.
 - **D — Capability-gated platform work:** OS-021/022/023 and OS-030+ remain
   explicitly unclaimed until bridge, Linux, or hardware evidence exists.
+
+## Completion status
+
+**INCOMPLETE.** The audit/remediation slice is complete, but goal-v3's
+completion standard is not met while the portable VE-005 schedule/fuzz corpus
+and VE-003 concurrency evidence remain gaps. No platform-gated claim is being
+used to hide either gap.

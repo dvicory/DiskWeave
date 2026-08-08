@@ -761,6 +761,118 @@ mod tests {
     }
 
     #[test]
+    fn bounded_geometry_and_parity_exhaustive() {
+        for lengths in [[0_u64, 1, 2], [1, 2, 3], [2, 0, 3]] {
+            let parity_length = lengths.iter().copied().max().unwrap();
+            let geometry = Geometry::new(lengths.to_vec(), parity_length).unwrap();
+            let total_length = lengths.iter().sum::<u64>() as usize;
+            let vector_count = 3_usize.pow(total_length as u32);
+
+            for old_ordinal in 0..vector_count {
+                let old_data = bounded_vectors(&lengths, old_ordinal);
+                let old_references: Vec<&[u8]> = old_data.iter().map(Vec::as_slice).collect();
+                let expected_old = explicit_parity(&old_data, parity_length);
+                assert_eq!(
+                    compute_parity(&geometry, &old_references).unwrap(),
+                    expected_old
+                );
+
+                for slot in 0..lengths.len() {
+                    for offset in 0..=lengths[slot] {
+                        for range_length in 0..=(lengths[slot] - offset) {
+                            let range = ByteRange::new(offset, range_length).unwrap();
+                            let old =
+                                &old_data[slot][offset as usize..(offset + range_length) as usize];
+                            let new_count = 3_usize.pow(range_length as u32);
+                            for new_ordinal in 0..new_count {
+                                let new = bounded_bytes(range_length as usize, new_ordinal);
+                                let mut new_data = old_data.clone();
+                                new_data[slot][offset as usize..(offset + range_length) as usize]
+                                    .copy_from_slice(&new);
+                                let mut updated = expected_old.clone();
+                                update_parity(&geometry, &mut updated, slot, range, old, &new)
+                                    .unwrap();
+                                assert_eq!(updated, explicit_parity(&new_data, parity_length));
+                            }
+                        }
+                    }
+                }
+
+                for missing_slot in 0..lengths.len() {
+                    for offset in 0..=lengths[missing_slot] {
+                        for range_length in 0..=(lengths[missing_slot] - offset) {
+                            let range = ByteRange::new(offset, range_length).unwrap();
+                            let survivors: Vec<Option<&[u8]>> = old_data
+                                .iter()
+                                .enumerate()
+                                .map(|(slot, data)| {
+                                    if slot == missing_slot {
+                                        None
+                                    } else {
+                                        let start = offset.min(data.len() as u64) as usize;
+                                        let end =
+                                            (offset + range_length).min(data.len() as u64) as usize;
+                                        Some(&data[start..end])
+                                    }
+                                })
+                                .collect();
+                            assert_eq!(
+                                reconstruct(
+                                    &geometry,
+                                    &expected_old,
+                                    missing_slot,
+                                    range,
+                                    &survivors,
+                                )
+                                .unwrap(),
+                                old_data[missing_slot]
+                                    [offset as usize..(offset + range_length) as usize]
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn bounded_vectors(lengths: &[u64], mut ordinal: usize) -> Vec<Vec<u8>> {
+        const VALUES: [u8; 3] = [0, 1, u8::MAX];
+        lengths
+            .iter()
+            .map(|length| {
+                (0..*length)
+                    .map(|_| {
+                        let value = VALUES[ordinal % VALUES.len()];
+                        ordinal /= VALUES.len();
+                        value
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn bounded_bytes(length: usize, mut ordinal: usize) -> Vec<u8> {
+        const VALUES: [u8; 3] = [0, 1, u8::MAX];
+        (0..length)
+            .map(|_| {
+                let value = VALUES[ordinal % VALUES.len()];
+                ordinal /= VALUES.len();
+                value
+            })
+            .collect()
+    }
+
+    fn explicit_parity(data: &[Vec<u8>], parity_length: u64) -> Vec<u8> {
+        let mut parity = vec![0; parity_length as usize];
+        for member in data {
+            for (index, byte) in member.iter().copied().enumerate() {
+                parity[index] ^= byte;
+            }
+        }
+        parity
+    }
+
+    #[test]
     fn future_codec_profiles_use_a_separate_seam() {
         fn accepts_codec<T: ParityCodec>(_codec: T) {}
         accepts_codec(XorReference);
