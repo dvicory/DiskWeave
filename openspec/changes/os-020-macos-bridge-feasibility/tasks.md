@@ -12,14 +12,14 @@
 
 ## 3. Candidate evidence
 
-- [ ] 3.1 Characterize the regular-file/DiskImages baseline available on the host.
+- [x] 3.1 Characterize the regular-file/DiskImages baseline available on the host.
 - [ ] 3.2 Probe FSKit-first attachment and document required extension, entitlement, signing, and automation setup.
-- [ ] 3.3 Compare macFUSE only if available without changing core or requiring Linux-specific semantics.
+- [x] 3.3 Compare macFUSE only if available without changing core or requiring Linux-specific semantics.
 - [ ] 3.4 Run sync/cache/disconnect/kill/restart tests and classify environment versus semantic failures.
 
 ## 4. Decision and verification
 
-- [ ] 4.1 Produce a comparative ADR with selected bridge or documented blocker and portable-demo limitations.
+- [x] 4.1 Produce a comparative ADR with selected bridge or documented blocker and portable-demo limitations.
 - [ ] 4.2 Run OpenSpec validation, format/dependency checks, and deterministic synthetic-trace tests on macOS.
 - [x] 4.3 Record reproducible manual steps for privileged/GUI attachment tests that cannot run in the restricted session.
 - [ ] 4.4 Mark complete only when every required feasibility question has evidence or an explicit blocker; leave OS-021 implementation separate.
