@@ -2,6 +2,9 @@
 /target/
 **/target/
 
+# SwiftPM build artifacts
+tools/macos-bridge-probe/.build/
+
 # rustfmt backup files
 **/*.rs.bk
 

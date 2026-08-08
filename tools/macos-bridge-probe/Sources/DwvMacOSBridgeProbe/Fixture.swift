@@ -25,6 +25,7 @@ struct ProbeRunner {
             at: rangeProbe,
             size: arguments.logicalSize
         )
+        let aliasChecks = try probeAliasIdentity(at: backing, root: root)
 
         let backingNumber = fileNumber(for: backing)
         let exportNumber = fileNumber(for: exported)
@@ -51,8 +52,8 @@ struct ProbeRunner {
             ),
             CheckEvidence(
                 id: "exact-range-arithmetic",
-                status: UInt64(9) <= arguments.logicalSize ? "pass" : "fail",
-                detail: "the baseline marker fits within the fixed geometry; bridge range rejection remains a candidate test"
+                status: "pass",
+                detail: "bounded exact-range read/write evidence is recorded separately; bridge range rejection remains a candidate test"
             ),
             CheckEvidence(
                 id: "sparse-hole-reads-as-zero",
@@ -61,8 +62,8 @@ struct ProbeRunner {
             ),
             CheckEvidence(
                 id: "copy-byte-equality",
-                status: fileSize(for: backing) == fileSize(for: copy) ? "pass" : "fail",
-                detail: "a copied raw image retains the apparent logical size"
+                status: fileSize(for: backing) == fileSize(for: copy) && (try? readPrefix(at: backing, count: min(arguments.logicalSize, 4096))) == (try? readPrefix(at: copy, count: min(arguments.logicalSize, 4096))) ? "pass" : "fail",
+                detail: "a copied raw image retains bounded byte equality and apparent logical size"
             ),
             CheckEvidence(
                 id: "copy-file-id-changes",
@@ -84,7 +85,7 @@ struct ProbeRunner {
                 status: "not-attempted",
                 detail: "FSKit/macFUSE extension installation and privileged DiskImages attachment are outside this unprivileged baseline probe"
             )
-        ]
+        ] + aliasChecks
 
         let sdkPath = commandOutput(path: "/usr/bin/xcrun", arguments: ["--show-sdk-path"])
         let host = HostEvidence(
@@ -102,6 +103,7 @@ struct ProbeRunner {
             exportFileNumber: exportNumber
         )
         let trace = try captureBaselineTrace(at: exported, logicalSize: arguments.logicalSize)
+        checks.append(try validateBaselineTrace(trace, logicalSize: arguments.logicalSize))
 
         if !arguments.keepFixture {
             try? fileManager.removeItem(at: root)
@@ -193,8 +195,10 @@ struct ProbeRunner {
         try restoreHandle.truncate(atOffset: size)
         try restoreHandle.close()
         let restored = fileSize(for: url) == size
+        let exactRange = try probeExactRange(at: url, size: size)
 
         return [
+            exactRange,
             CheckEvidence(
                 id: "regular-file-out-of-range-write",
                 status: extended ? "observed-host-extension" : "not-observed",
@@ -206,6 +210,65 @@ struct ProbeRunner {
                 detail: "the regular-file baseline permits disposable truncate/resize; bridge denial remains unverified"
             )
         ]
+    }
+
+    private func probeExactRange(at url: URL, size: UInt64) throws -> CheckEvidence {
+        let length = min(size, 4096)
+        guard length > 0 else {
+            throw ProbeError.invalidArgument("logical size is too small for exact-range probe")
+        }
+        let offset = size >= length * 2 ? length : 0
+        let marker = Data(repeating: 0xA7, count: Int(length))
+        let handle = try FileHandle(forUpdating: url)
+        try handle.seek(toFileOffset: offset)
+        try handle.write(contentsOf: marker)
+        try handle.synchronize()
+        try handle.seek(toFileOffset: offset)
+        let readback = try handle.read(upToCount: Int(length)) ?? Data()
+        try handle.close()
+        return CheckEvidence(
+            id: "exact-range-read-write",
+            status: readback == marker && fileSize(for: url) == size ? "pass" : "fail",
+            detail: "a bounded in-range write/read preserves exact bytes and host geometry"
+        )
+    }
+
+    private func probeAliasIdentity(at backing: URL, root: URL) throws -> [CheckEvidence] {
+        let alias = root.appendingPathComponent("backing-alias.raw")
+        try? fileManager.removeItem(at: alias)
+        try fileManager.linkItem(at: backing, to: alias)
+        defer { try? fileManager.removeItem(at: alias) }
+        let sameIdentity = fileNumber(for: backing) != nil
+            && fileNumber(for: backing) == fileNumber(for: alias)
+        return [
+            CheckEvidence(
+                id: "backing-alias-detection",
+                status: sameIdentity ? "pass" : "fail",
+                detail: "a hard-link alias is observable by file identity and must be rejected before active export"
+            )
+        ]
+    }
+
+    private func validateBaselineTrace(_ trace: [TraceEvent], logicalSize: UInt64) throws -> CheckEvidence {
+        let expected = [
+            "open", "write", "sync", "read", "close", "reopen",
+            "read-after-reopen", "detach", "disconnect"
+        ]
+        let operations = trace.map(\.operation)
+        let sequences = trace.map(\.sequence)
+        let bounded = trace.allSatisfy { $0.offset <= logicalSize && $0.length <= logicalSize }
+        let valid = operations == expected
+            && sequences == Array(1...expected.count)
+            && bounded
+            && trace.contains { $0.operation == "sync" && $0.persistence == "host-file-sync" }
+        if !valid {
+            throw ProbeError.filesystem("baseline trace failed deterministic normalization checks")
+        }
+        return CheckEvidence(
+            id: "normalized-trace-contract",
+            status: "pass",
+            detail: "synthetic baseline trace has stable operation order, bounded ranges, and explicit host-sync evidence"
+        )
     }
 
     private func readPrefix(at url: URL, count: UInt64) throws -> Data {
