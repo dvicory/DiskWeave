@@ -39,6 +39,7 @@ pub struct TransitionEvidence {
 }
 
 impl TransitionEvidence {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         transaction_id: RecoveryTransitionId,
         sequence: u64,

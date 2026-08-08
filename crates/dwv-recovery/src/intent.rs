@@ -13,45 +13,6 @@ pub struct IntentCommit<'a, S: RecoveryStateStore + ?Sized> {
     target: InvalidationTarget,
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{MemoryRecoveryStore, RegionId};
-
-    #[test]
-    fn intent_commit_is_atomic_and_repeated_intent_is_idempotent() {
-        let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
-        let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
-        let evidence = IntentCommit::new(
-            &mut store,
-            TopologyEpoch(3),
-            RecoveryGeneration(0),
-            target.clone(),
-        )
-        .commit()
-        .unwrap();
-        assert_eq!(evidence.committed_generation, RecoveryGeneration(1));
-        assert!(evidence.durable);
-        let repeated =
-            IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(1), target)
-                .commit()
-                .unwrap();
-        assert_eq!(repeated.committed_generation, RecoveryGeneration(1));
-        assert_eq!(store.snapshot().generation, RecoveryGeneration(1));
-    }
-
-    #[test]
-    fn rejected_observation_does_not_mutate_state() {
-        let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
-        let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
-        let result = IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(0), target)
-            .commit_observed(RecoveryCommitObservation::Lost);
-        assert!(matches!(result, Err(RecoveryError::CommitNotDurable(_))));
-        assert_eq!(store.snapshot().generation, RecoveryGeneration(0));
-        assert!(store.snapshot().dirty_regions.is_empty());
-    }
-}
-
 impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
     pub fn new(
         store: &'a mut S,
@@ -115,5 +76,44 @@ impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
             return Err(RecoveryError::CommitNotDurable(observation));
         }
         self.commit()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{MemoryRecoveryStore, RegionId};
+
+    #[test]
+    fn intent_commit_is_atomic_and_repeated_intent_is_idempotent() {
+        let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
+        let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
+        let evidence = IntentCommit::new(
+            &mut store,
+            TopologyEpoch(3),
+            RecoveryGeneration(0),
+            target.clone(),
+        )
+        .commit()
+        .unwrap();
+        assert_eq!(evidence.committed_generation, RecoveryGeneration(1));
+        assert!(evidence.durable);
+        let repeated =
+            IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(1), target)
+                .commit()
+                .unwrap();
+        assert_eq!(repeated.committed_generation, RecoveryGeneration(1));
+        assert_eq!(store.snapshot().generation, RecoveryGeneration(1));
+    }
+
+    #[test]
+    fn rejected_observation_does_not_mutate_state() {
+        let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
+        let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
+        let result = IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(0), target)
+            .commit_observed(RecoveryCommitObservation::Lost);
+        assert!(matches!(result, Err(RecoveryError::CommitNotDurable(_))));
+        assert_eq!(store.snapshot().generation, RecoveryGeneration(0));
+        assert!(store.snapshot().dirty_regions.is_empty());
     }
 }

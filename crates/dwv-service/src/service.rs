@@ -1629,7 +1629,7 @@ mod tests {
             &mut data,
             &mut parity_store,
             &mut target,
-            plan.candidates[0],
+            plan.candidates[0].clone(),
         )
         .unwrap();
         assert_eq!(

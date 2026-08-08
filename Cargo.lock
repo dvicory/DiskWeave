@@ -86,6 +86,7 @@ version = "0.1.0"
 dependencies = [
  "dwv-core",
  "dwv-recovery",
+ "dwv-store",
 ]
 
 [[package]]

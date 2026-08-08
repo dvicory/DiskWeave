@@ -1,6 +1,6 @@
 use crate::{
     error::VerificationError,
-    report::{MismatchClass, RegionDisposition, VerificationReport},
+    report::{MismatchClass, RegionDisposition, VerificationBinding, VerificationReport},
     scan::{ScanConfig, read_member_region},
     store::VerificationStore,
 };
@@ -14,11 +14,26 @@ pub enum RepairTarget {
     Parity,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepairCandidate {
-    pub range: ByteRange,
-    pub target: RepairTarget,
-    pub classification: MismatchClass,
+    range: ByteRange,
+    target: RepairTarget,
+    classification: MismatchClass,
+    binding: VerificationBinding,
+}
+
+impl RepairCandidate {
+    pub const fn range(&self) -> ByteRange {
+        self.range
+    }
+
+    pub const fn target(&self) -> RepairTarget {
+        self.target
+    }
+
+    pub const fn classification(&self) -> MismatchClass {
+        self.classification
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,12 +62,14 @@ pub fn plan_repairs(report: &VerificationReport) -> RepairPlan {
                 range: region.range,
                 target: RepairTarget::Parity,
                 classification,
+                binding: report.binding.clone(),
             }),
             MismatchClass::DataIdentified { slot } => {
                 plan.candidates.push(RepairCandidate {
                     range: region.range,
                     target: RepairTarget::Data { slot },
                     classification,
+                    binding: report.binding.clone(),
                 });
             }
             MismatchClass::Ambiguous | MismatchClass::EvidenceConflict => {
@@ -66,11 +83,42 @@ pub fn plan_repairs(report: &VerificationReport) -> RepairPlan {
     plan
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RepairOutcome {
-    pub range: ByteRange,
-    pub target: RepairTarget,
-    pub digest: Digest,
+    range: ByteRange,
+    target: RepairTarget,
+    digest: Digest,
+    target_identity: crate::VerificationIdentity,
+    binding: VerificationBinding,
+}
+
+impl RepairOutcome {
+    pub const fn range(&self) -> ByteRange {
+        self.range
+    }
+
+    pub const fn target(&self) -> RepairTarget {
+        self.target
+    }
+
+    pub const fn digest(&self) -> Digest {
+        self.digest
+    }
+
+    pub const fn target_identity(&self) -> crate::VerificationIdentity {
+        self.target_identity
+    }
+
+    /// Returns true only for a read-back-verified repair produced from this
+    /// exact verification run and expected mismatch.
+    pub fn verifies(
+        &self,
+        report: &VerificationReport,
+        range: ByteRange,
+        target: RepairTarget,
+    ) -> bool {
+        self.binding == report.binding && self.range == range && self.target == target
+    }
 }
 
 pub fn apply_repair<S: VerificationStore>(
@@ -80,7 +128,18 @@ pub fn apply_repair<S: VerificationStore>(
     target: &mut S,
     candidate: RepairCandidate,
 ) -> Result<RepairOutcome, VerificationError> {
-    validate_candidate(config, data.len(), candidate)?;
+    validate_candidate(config, data.len(), &candidate)?;
+    if candidate.binding.data_identities
+        != data
+            .iter()
+            .map(VerificationStore::identity)
+            .collect::<Vec<_>>()
+        || candidate.binding.parity_identity != parity.identity()
+    {
+        return Err(VerificationError::Repair(
+            "repair sources differ from the verification run".to_owned(),
+        ));
+    }
     let target_identity = target.identity();
     if data.iter().any(|store| store.identity() == target_identity)
         || parity.identity() == target_identity
@@ -219,13 +278,15 @@ pub fn apply_repair<S: VerificationStore>(
         range: candidate.range,
         target: candidate.target,
         digest,
+        target_identity,
+        binding: candidate.binding,
     })
 }
 
 fn validate_candidate(
     config: &ScanConfig,
     data_count: usize,
-    candidate: RepairCandidate,
+    candidate: &RepairCandidate,
 ) -> Result<(), VerificationError> {
     if candidate.range.is_empty()
         || candidate.range.end() > config.geometry.parity_length()

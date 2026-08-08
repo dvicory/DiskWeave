@@ -80,7 +80,10 @@ impl ChecksumExtent {
         if range.is_empty() {
             return Err(ExtentError::EmptyRange);
         }
-        if extent_size == 0 || range.offset % extent_size != 0 || range.length > extent_size {
+        if extent_size == 0
+            || !range.offset.is_multiple_of(extent_size)
+            || range.length > extent_size
+        {
             return Err(ExtentError::Unaligned {
                 offset: range.offset,
                 length: range.length,

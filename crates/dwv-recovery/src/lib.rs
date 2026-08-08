@@ -15,6 +15,7 @@ mod generation;
 mod intent;
 mod invalidation;
 mod job;
+mod metadata_loss;
 mod migration;
 mod profile;
 mod provider;
@@ -35,6 +36,12 @@ pub use invalidation::{
 pub use job::{
     ChecksumAuthority, ChecksumJob, ChecksumJobKey, ChecksumJobResult, ChecksumQueue,
     CommitOutcome, JobError, ReadEvidence,
+};
+pub use metadata_loss::{
+    BaselineDisposition, EvidenceRequirement, METADATA_LOSS_MATRIX_VERSION, MetadataLossAction,
+    MetadataLossAudit, MetadataLossAuthorization, MetadataLossCase, MetadataLossDisposition,
+    MetadataLossError, MetadataLossPlan, MetadataLossVerification, PayloadWritePolicy,
+    create_fresh_manifest, render_metadata_loss_matrix,
 };
 pub use migration::{MigrationError, MigrationOutcome, ProfileMigration};
 pub use profile::{
@@ -65,7 +72,7 @@ pub struct RecoveryCursor(pub u64);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(1);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(2);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -77,6 +84,7 @@ pub enum RecoveryRecordKind {
     WritableSession,
     MaintenanceCheckpoint,
     MigrationState,
+    MetadataLossAudit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -97,6 +105,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
             RecoveryRecordKind::WritableSession,
             RecoveryRecordKind::MaintenanceCheckpoint,
             RecoveryRecordKind::MigrationState,
+            RecoveryRecordKind::MetadataLossAudit,
         ],
     }
 }
@@ -104,6 +113,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryMigrationStep {
     InitializeSemanticSchemaV1,
+    AddMetadataLossAuditV2,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -119,14 +129,16 @@ impl RecoveryMigrationPlan {
         to: RecoverySchemaVersion,
     ) -> Result<Self, RecoveryError> {
         let steps = match (from, to) {
-            (from, to)
-                if from == to
-                    && (from == RecoverySchemaVersion(0) || from == CURRENT_RECOVERY_SCHEMA) =>
-            {
-                Vec::new()
-            }
-            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => {
+            (from, to) if from == to && from.0 <= CURRENT_RECOVERY_SCHEMA.0 => Vec::new(),
+            (RecoverySchemaVersion(0), RecoverySchemaVersion(1)) => {
                 vec![RecoveryMigrationStep::InitializeSemanticSchemaV1]
+            }
+            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::InitializeSemanticSchemaV1,
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+            ],
+            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => {
+                vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
             }
             _ => {
                 return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
@@ -299,21 +311,135 @@ pub struct WritableSession {
     pub global_fence: Option<FenceCertificate>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoreAssignment {
-    pub logical_slot: u32,
-    pub store_id: StoreId,
-    pub protected_length: u64,
+    assignment: dwv_core::TopologyAssignment,
+    store_id: StoreId,
+}
+
+impl StoreAssignment {
+    pub const fn slot_id(&self) -> dwv_core::SlotId {
+        self.assignment.slot_id()
+    }
+
+    pub const fn role(&self) -> dwv_core::MemberRole {
+        self.assignment.role()
+    }
+
+    pub const fn coding_position(&self) -> dwv_core::CodingPosition {
+        self.assignment.coding_position()
+    }
+
+    pub const fn assignment_instance(&self) -> dwv_core::AssignmentInstanceId {
+        self.assignment.assignment_instance()
+    }
+
+    pub const fn assignment_generation(&self) -> dwv_core::AssignmentGeneration {
+        self.assignment.assignment_generation()
+    }
+
+    pub const fn evidence(&self) -> dwv_core::AssignmentEvidence {
+        self.assignment.evidence()
+    }
+
+    pub const fn store_id(&self) -> StoreId {
+        self.store_id
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologySnapshot {
-    pub topology_epoch: TopologyEpoch,
-    pub assignment_generation: u64,
-    pub codec_profile: u64,
-    pub protected_length: u64,
-    pub assignments: Vec<StoreAssignment>,
+    array_id: dwv_core::ArrayId,
+    topology_epoch: TopologyEpoch,
+    profile: dwv_core::CodingProfile,
+    geometry: dwv_core::ProtectedGeometry,
+    assignments: Vec<StoreAssignment>,
 }
+
+impl TopologySnapshot {
+    pub fn from_core(
+        topology: dwv_core::TopologySnapshot,
+        store_ids: Vec<StoreId>,
+    ) -> Result<Self, RecoveryTopologyError> {
+        topology
+            .validate()
+            .map_err(RecoveryTopologyError::InvalidCoreTopology)?;
+        if topology.assignments().len() != store_ids.len() {
+            return Err(RecoveryTopologyError::StoreCount {
+                expected: topology.assignments().len(),
+                actual: store_ids.len(),
+            });
+        }
+        for (index, store_id) in store_ids.iter().enumerate() {
+            if store_ids[..index].contains(store_id) {
+                return Err(RecoveryTopologyError::DuplicateStore(*store_id));
+            }
+        }
+        let assignments = topology
+            .assignments()
+            .iter()
+            .cloned()
+            .zip(store_ids)
+            .map(|(assignment, store_id)| StoreAssignment {
+                assignment,
+                store_id,
+            })
+            .collect();
+        Ok(Self {
+            array_id: topology.array_id(),
+            topology_epoch: topology.topology_epoch(),
+            profile: topology.profile(),
+            geometry: topology.geometry(),
+            assignments,
+        })
+    }
+
+    pub const fn array_id(&self) -> dwv_core::ArrayId {
+        self.array_id
+    }
+
+    pub const fn topology_epoch(&self) -> TopologyEpoch {
+        self.topology_epoch
+    }
+
+    pub const fn profile(&self) -> dwv_core::CodingProfile {
+        self.profile
+    }
+
+    pub const fn geometry(&self) -> dwv_core::ProtectedGeometry {
+        self.geometry
+    }
+
+    pub fn assignments(&self) -> &[StoreAssignment] {
+        &self.assignments
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RecoveryTopologyError {
+    InvalidCoreTopology(dwv_core::TopologyValidationError),
+    StoreCount { expected: usize, actual: usize },
+    DuplicateStore(StoreId),
+}
+
+impl fmt::Display for RecoveryTopologyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidCoreTopology(error) => write!(formatter, "invalid core topology: {error}"),
+            Self::StoreCount { expected, actual } => {
+                write!(
+                    formatter,
+                    "topology has {expected} assignments but {actual} stores"
+                )
+            }
+            Self::DuplicateStore(store_id) => {
+                write!(formatter, "store {store_id:?} appears more than once")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecoveryTopologyError {}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct MaintenanceCheckpoint {
@@ -332,6 +458,7 @@ pub struct RecoverySnapshot {
     pub integrity_records: Vec<IntegrityRecord>,
     pub fences: Vec<FenceCertificate>,
     pub maintenance_checkpoints: Vec<MaintenanceCheckpoint>,
+    pub metadata_loss_audit: Option<MetadataLossAudit>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -597,6 +724,7 @@ impl MemoryRecoveryStore {
                 integrity_records: Vec::new(),
                 fences: Vec::new(),
                 maintenance_checkpoints: Vec::new(),
+                metadata_loss_audit: None,
             },
             health: RecoveryStoreHealth::Healthy,
         }
@@ -604,6 +732,16 @@ impl MemoryRecoveryStore {
 
     pub fn snapshot(&self) -> &RecoverySnapshot {
         &self.snapshot
+    }
+
+    pub(crate) fn with_active_topology(topology: TopologySnapshot) -> Self {
+        let mut store = Self::new(topology.topology_epoch());
+        store.snapshot.active_topology = Some(topology);
+        store
+    }
+
+    pub(crate) fn set_metadata_loss_audit(&mut self, audit: MetadataLossAudit) {
+        self.snapshot.metadata_loss_audit = Some(audit);
     }
 
     pub fn set_health(&mut self, health: RecoveryStoreHealth) {
@@ -809,14 +947,12 @@ impl MemoryRecoveryStore {
                     .integrity_records
                     .iter()
                     .find(|existing| existing.extent == record.extent)
+                    && let IntegrityState::Stale { stale_generation } = existing.state
+                    && content_generation < stale_generation
                 {
-                    if let IntegrityState::Stale { stale_generation } = existing.state {
-                        if content_generation < stale_generation {
-                            return Err(RecoveryError::InvalidTransition(
-                                TransitionError::IntegrityGenerationStale,
-                            ));
-                        }
-                    }
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::IntegrityGenerationStale,
+                    ));
                 }
                 let target = snapshot
                     .integrity_records
@@ -837,7 +973,7 @@ impl MemoryRecoveryStore {
                 }
             }
             RecoveryMutation::PrepareTopology { topology } => {
-                if topology.topology_epoch <= snapshot.topology_epoch {
+                if topology.topology_epoch() <= snapshot.topology_epoch {
                     return Err(RecoveryError::InvalidTransition(
                         TransitionError::FenceTopologyMismatch,
                     ));
@@ -852,10 +988,10 @@ impl MemoryRecoveryStore {
                         .ok_or(RecoveryError::InvalidTransition(
                             TransitionError::PendingTopologyMissing,
                         ))?;
-                if pending.topology_epoch != topology_epoch {
+                if pending.topology_epoch() != topology_epoch {
                     return Err(RecoveryError::TopologyMismatch {
                         expected: topology_epoch,
-                        actual: pending.topology_epoch,
+                        actual: pending.topology_epoch(),
                     });
                 }
                 if snapshot
@@ -1025,19 +1161,19 @@ fn validate_export_limits(
     .into_iter()
     .flatten()
     {
-        if topology.assignments.len() > limits.max_topology_assignments {
+        if topology.assignments().len() > limits.max_topology_assignments {
             return Err(RecoveryError::ExportLimitExceeded(
                 RecoveryRecordKind::Topology,
             ));
         }
     }
     for record in &snapshot.integrity_records {
-        if let IntegrityState::Valid { digest, .. } = &record.state {
-            if digest.len() > limits.max_digest_bytes {
-                return Err(RecoveryError::ExportLimitExceeded(
-                    RecoveryRecordKind::IntegrityEvidence,
-                ));
-            }
+        if let IntegrityState::Valid { digest, .. } = &record.state
+            && digest.len() > limits.max_digest_bytes
+        {
+            return Err(RecoveryError::ExportLimitExceeded(
+                RecoveryRecordKind::IntegrityEvidence,
+            ));
         }
     }
     Ok(())
@@ -1488,18 +1624,32 @@ mod tests {
     fn topology_prepare_and_commit_change_epoch_explicitly() {
         let mut recovery = store();
         let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        let core_topology = dwv_core::TopologySnapshot::new(
+            dwv_core::ArrayId([1; 16]),
+            TopologyEpoch(2),
+            dwv_core::CodingProfile::new(1, 1).unwrap(),
+            dwv_core::ProtectedGeometry::new(64, 1).unwrap(),
+            vec![
+                dwv_core::TopologyAssignment::new(
+                    dwv_core::SlotId([1; 16]),
+                    dwv_core::MemberRole::Data,
+                    dwv_core::CodingPosition(0),
+                    dwv_core::AssignmentInstanceId([11; 16]),
+                    dwv_core::AssignmentGeneration(4),
+                ),
+                dwv_core::TopologyAssignment::new(
+                    dwv_core::SlotId([2; 16]),
+                    dwv_core::MemberRole::Parity,
+                    dwv_core::CodingPosition(1),
+                    dwv_core::AssignmentInstanceId([12; 16]),
+                    dwv_core::AssignmentGeneration(4),
+                ),
+            ],
+        )
+        .unwrap();
         transaction.push(RecoveryMutation::PrepareTopology {
-            topology: TopologySnapshot {
-                topology_epoch: TopologyEpoch(2),
-                assignment_generation: 4,
-                codec_profile: 1,
-                protected_length: 64,
-                assignments: vec![StoreAssignment {
-                    logical_slot: 0,
-                    store_id: StoreId(2),
-                    protected_length: 64,
-                }],
-            },
+            topology: TopologySnapshot::from_core(core_topology, vec![StoreId(2), StoreId(3)])
+                .unwrap(),
         });
         transaction.push(RecoveryMutation::CommitTopology {
             topology_epoch: TopologyEpoch(2),
@@ -1512,7 +1662,7 @@ mod tests {
                 .active_topology
                 .as_ref()
                 .unwrap()
-                .topology_epoch,
+                .topology_epoch(),
             TopologyEpoch(2)
         );
 
@@ -1588,7 +1738,21 @@ mod tests {
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::InitializeSemanticSchemaV1]
+            vec![
+                RecoveryMigrationStep::InitializeSemanticSchemaV1,
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+            ]
+        );
+        assert_eq!(
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA)
+                .unwrap()
+                .steps,
+            vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
+        );
+        assert!(
+            current_recovery_schema()
+                .records
+                .contains(&RecoveryRecordKind::MetadataLossAudit)
         );
         assert!(matches!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), CURRENT_RECOVERY_SCHEMA),
@@ -1602,16 +1766,17 @@ mod tests {
         let recovery = store();
         let manifest = recovery.export_manifest(RecoveryGeneration(0)).unwrap();
         assert_eq!(manifest.schema, CURRENT_RECOVERY_SCHEMA);
-        assert!(matches!(
-            recovery.export_manifest_with_limits(
-                RecoveryGeneration(0),
-                RecoveryExportLimits {
-                    max_dirty_regions: 0,
-                    ..RecoveryExportLimits::default()
-                }
-            ),
-            Ok(_)
-        ));
+        assert!(
+            recovery
+                .export_manifest_with_limits(
+                    RecoveryGeneration(0),
+                    RecoveryExportLimits {
+                        max_dirty_regions: 0,
+                        ..RecoveryExportLimits::default()
+                    }
+                )
+                .is_ok()
+        );
     }
 
     #[test]

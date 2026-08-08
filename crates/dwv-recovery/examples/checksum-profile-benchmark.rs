@@ -21,7 +21,7 @@ fn main() {
                     .digest(black_box(&bytes))
                     .expect("BLAKE3 is supported")
             })
-            .last()
+            .next_back()
             .expect("benchmark has at least one iteration");
         black_box(sink);
         let elapsed = start.elapsed().as_secs_f64();

@@ -7,8 +7,9 @@
 //! bindings and durability claims remain separate decisions.
 
 use dwv_recovery::{
-    RecoveryGeneration, RecoveryManifest, RecoverySchemaVersion, SqliteEvaluationCase,
-    SqliteJournalMode, SqliteSynchronousMode,
+    MetadataLossAuthorization, RecoveryGeneration, RecoveryManifest, RecoverySchemaVersion,
+    RecoveryStoreHealth, SqliteEvaluationCase, SqliteJournalMode, SqliteSynchronousMode,
+    TopologySnapshot,
 };
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -25,6 +26,8 @@ pub enum SqlitePrototypeError {
     CommandFailed { status: Option<i32>, stderr: String },
     InvalidOutput(String),
     MissingState,
+    ExistingTarget,
+    Semantic(String),
 }
 
 impl fmt::Display for SqlitePrototypeError {
@@ -37,6 +40,10 @@ impl fmt::Display for SqlitePrototypeError {
             }
             Self::InvalidOutput(message) => write!(formatter, "invalid sqlite output: {message}"),
             Self::MissingState => write!(formatter, "recovery state is missing"),
+            Self::ExistingTarget => {
+                write!(formatter, "recovery target already exists and is preserved")
+            }
+            Self::Semantic(message) => write!(formatter, "semantic recovery failed: {message}"),
         }
     }
 }
@@ -136,6 +143,46 @@ impl SqlitePrototype {
         self.run(&sql).map(|_| ())
     }
 
+    pub fn recreate_from_metadata_loss(
+        &self,
+        authorization: MetadataLossAuthorization,
+        topology: TopologySnapshot,
+        source_health: RecoveryStoreHealth,
+    ) -> Result<SemanticHeader, SqlitePrototypeError> {
+        let manifest = authorization
+            .fresh_manifest(topology, source_health)
+            .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?;
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&self.database_path)
+        {
+            Ok(file) => drop(file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                return Err(SqlitePrototypeError::ExistingTarget);
+            }
+            Err(error) => return Err(SqlitePrototypeError::Io(error.to_string())),
+        }
+        let result = (|| {
+            self.initialize()?;
+            self.write_manifest(&manifest)?;
+            self.export_header()
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&self.database_path);
+        }
+        result
+    }
+
+    /// Returns the adapter's physical SQLite schema version. This is distinct
+    /// from the semantic recovery manifest schema stored in each row.
+    pub fn storage_schema_version(&self) -> Result<u64, SqlitePrototypeError> {
+        parse_u64(
+            self.run("PRAGMA user_version;\n")?.lines().next(),
+            "user_version",
+        )
+    }
+
     pub fn export_header(&self) -> Result<SemanticHeader, SqlitePrototypeError> {
         let output = match self.run(
             "SELECT schema_version || '|' || generation || '|' || topology_epoch || '|' || manifest_payload FROM recovery_state WHERE singleton=1;\n",
@@ -218,8 +265,18 @@ impl SqlitePrototype {
 }
 
 fn semantic_payload(manifest: &RecoveryManifest) -> String {
+    let audit = manifest.snapshot.metadata_loss_audit;
+    let mut lineage = String::new();
+    if let Some(audit) = audit {
+        use std::fmt::Write as _;
+        for byte in audit.lineage_id.as_bytes() {
+            write!(lineage, "{byte:02x}").expect("writing to a string cannot fail");
+        }
+    } else {
+        lineage.push_str("none");
+    }
     format!(
-        "schema={};generation={};topology={};dirty={};integrity={};fences={};sessions={};maintenance={}",
+        "schema={};generation={};topology={};dirty={};integrity={};fences={};sessions={};maintenance={};metadata_loss_matrix={};metadata_loss_lineage={};metadata_loss_case={};metadata_loss_action={};metadata_loss_verification={};metadata_loss_baseline={};metadata_loss_source_health={};metadata_loss_topology={}",
         manifest.schema.0,
         manifest.snapshot.generation.0,
         manifest.snapshot.topology_epoch.0,
@@ -232,6 +289,17 @@ fn semantic_payload(manifest: &RecoveryManifest) -> String {
             0
         },
         manifest.snapshot.maintenance_checkpoints.len(),
+        audit.map_or(0, |audit| audit.matrix_version),
+        lineage,
+        audit.map_or("none", |audit| audit.case.id()),
+        audit.map_or("none", |audit| audit.action.id()),
+        audit.map_or("none", |audit| audit.verification.id()),
+        audit.map_or("none", |audit| audit.baseline.id()),
+        audit.map_or("none".to_owned(), |audit| format!(
+            "{:?}",
+            audit.source_health
+        )),
+        audit.map_or(0, |audit| audit.topology_epoch.0),
     )
 }
 
@@ -253,11 +321,17 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dwv_core::TopologyEpoch;
-    use dwv_recovery::{
-        MemoryRecoveryStore, RecoveryStateStore, SqliteCheckpointPolicy, SqliteEvaluationMatrix,
-        SqliteJournalMode, SqliteSynchronousMode,
+    use dwv_core::{
+        ArrayId, AssignmentGeneration, AssignmentInstanceId, CodingPosition, CodingProfile,
+        MemberRole, ProtectedGeometry, SlotId, TopologyAssignment, TopologyEpoch,
+        TopologySnapshot as CoreTopologySnapshot,
     };
+    use dwv_recovery::{
+        MemoryRecoveryStore, MetadataLossCase, MetadataLossPlan, MetadataLossVerification,
+        RecoveryStateStore, SqliteCheckpointPolicy, SqliteEvaluationMatrix, SqliteJournalMode,
+        SqliteSynchronousMode,
+    };
+    use dwv_store::StoreId;
 
     fn temp_database() -> PathBuf {
         let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
@@ -265,6 +339,33 @@ mod tests {
             "diskweave-recovery-{id}-{}.sqlite3",
             std::process::id()
         ))
+    }
+
+    fn topology(lineage: ArrayId) -> TopologySnapshot {
+        let core = CoreTopologySnapshot::new(
+            lineage,
+            TopologyEpoch(1),
+            CodingProfile::new(1, 1).unwrap(),
+            ProtectedGeometry::new(4096, 512).unwrap(),
+            vec![
+                TopologyAssignment::new(
+                    SlotId([1; 16]),
+                    MemberRole::Data,
+                    CodingPosition(0),
+                    AssignmentInstanceId([11; 16]),
+                    AssignmentGeneration(1),
+                ),
+                TopologyAssignment::new(
+                    SlotId([2; 16]),
+                    MemberRole::Parity,
+                    CodingPosition(1),
+                    AssignmentInstanceId([12; 16]),
+                    AssignmentGeneration(1),
+                ),
+            ],
+        )
+        .unwrap();
+        TopologySnapshot::from_core(core, vec![StoreId(1), StoreId(2)]).unwrap()
     }
 
     #[test]
@@ -276,6 +377,7 @@ mod tests {
             "sqlite3 is required for this prototype test"
         );
         adapter.initialize().unwrap();
+        assert_eq!(adapter.storage_schema_version().unwrap(), 1);
 
         let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
         let manifest = recovery.export_manifest(RecoveryGeneration(0)).unwrap();
@@ -362,5 +464,102 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(direct_data_path);
+    }
+
+    #[test]
+    fn metadata_loss_recreates_separate_state_and_preserves_regular_file_payloads() {
+        let path = temp_database();
+        let data_path = path.with_extension("data.raw");
+        let parity_path = path.with_extension("parity.raw");
+        let data_bytes = vec![0x5a; 4096];
+        let parity_bytes = vec![0xa5; 4096];
+        std::fs::write(&data_path, &data_bytes).unwrap();
+        std::fs::write(&parity_path, &parity_bytes).unwrap();
+
+        let original = SqlitePrototype::new(&path);
+        assert!(original.available());
+        original.initialize().unwrap();
+        let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        original
+            .write_manifest(&recovery.export_manifest(RecoveryGeneration::ZERO).unwrap())
+            .unwrap();
+        drop(original);
+        std::fs::remove_file(&path).unwrap();
+
+        let authorization =
+            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified)
+                .authorize(MetadataLossVerification::ExhaustiveMatches)
+                .unwrap();
+        let recreated = SqlitePrototype::new(&path);
+        let header = recreated
+            .recreate_from_metadata_loss(
+                authorization,
+                topology(ArrayId([4; 16])),
+                RecoveryStoreHealth::Missing,
+            )
+            .unwrap();
+        assert_eq!(header.schema, dwv_recovery::CURRENT_RECOVERY_SCHEMA);
+        assert_eq!(recreated.storage_schema_version().unwrap(), 1);
+        assert_eq!(header.generation, RecoveryGeneration::ZERO);
+        assert_eq!(header.topology_epoch, 1);
+        assert!(
+            header
+                .payload
+                .contains("metadata_loss_case=all-data-p-uncertified")
+        );
+        assert!(header.payload.contains("metadata_loss_matrix=1"));
+        assert!(
+            header
+                .payload
+                .contains("metadata_loss_lineage=04040404040404040404040404040404")
+        );
+        assert!(
+            header
+                .payload
+                .contains("metadata_loss_action=exhaustive-verify-then-recreate")
+        );
+        assert!(
+            header
+                .payload
+                .contains("metadata_loss_verification=exhaustive-matches")
+        );
+        assert!(
+            header
+                .payload
+                .contains("metadata_loss_baseline=new-checksum-baseline-required")
+        );
+        assert_eq!(std::fs::read(&data_path).unwrap(), data_bytes);
+        assert_eq!(std::fs::read(&parity_path).unwrap(), parity_bytes);
+        assert_eq!(
+            recreated.recreate_from_metadata_loss(
+                authorization,
+                topology(ArrayId([4; 16])),
+                RecoveryStoreHealth::Missing,
+            ),
+            Err(SqlitePrototypeError::ExistingTarget)
+        );
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(data_path);
+        let _ = std::fs::remove_file(parity_path);
+    }
+
+    #[test]
+    fn failed_recreation_releases_its_atomic_target_reservation() {
+        let path = temp_database();
+        let adapter = SqlitePrototype::with_program(&path, "definitely-not-a-sqlite-program");
+        let authorization =
+            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified)
+                .authorize(MetadataLossVerification::ExhaustiveMatches)
+                .unwrap();
+        assert_eq!(
+            adapter.recreate_from_metadata_loss(
+                authorization,
+                topology(ArrayId([6; 16])),
+                RecoveryStoreHealth::Missing,
+            ),
+            Err(SqlitePrototypeError::SqliteUnavailable)
+        );
+        assert!(!path.exists());
     }
 }

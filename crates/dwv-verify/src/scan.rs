@@ -9,8 +9,10 @@ use crate::{
 };
 use dwv_codec::{Geometry, ParityCodec, XorReference};
 use dwv_core::ByteRange;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub const DEFAULT_MAX_REGIONS: usize = 1_048_576;
+static NEXT_VERIFICATION_RUN_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Debug)]
 pub struct ScanConfig {
@@ -144,6 +146,15 @@ fn verify_ranges<S: VerificationStore>(
     }
     validate_identities(data, parity)?;
     evidence.validate(data.len(), ranges.len())?;
+    let run_id = NEXT_VERIFICATION_RUN_ID
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .map_err(|_| {
+            VerificationError::InvalidConfig("verification run IDs exhausted".to_owned())
+        })?;
+    let data_identities = data.iter().map(VerificationStore::identity).collect();
+    let parity_identity = parity.identity();
 
     let mut regions = Vec::with_capacity(ranges.len());
     for (region_index, range) in ranges.iter().copied().enumerate() {
@@ -193,6 +204,11 @@ fn verify_ranges<S: VerificationStore>(
         exhaustive_complete,
         payload_writes: 0,
         clean_authorized: false,
+        binding: crate::report::VerificationBinding {
+            run_id,
+            data_identities,
+            parity_identity,
+        },
     })
 }
 

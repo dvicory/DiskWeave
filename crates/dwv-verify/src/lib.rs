@@ -28,7 +28,7 @@ mod tests {
     use super::*;
     use dwv_codec::Geometry;
     use dwv_core::ByteRange;
-    use dwv_recovery::{Blake3Provider, DigestProvider};
+    use dwv_recovery::{Blake3Provider, Digest, DigestProvider};
 
     const LENGTH: usize = 16;
     const REGION: u64 = 4;
@@ -221,7 +221,7 @@ mod tests {
         let report = verify_exhaustive(&mut data, &mut parity, &config(), &evidence).unwrap();
         let plan = plan_repairs(&report);
         assert_eq!(plan.candidates.len(), 1);
-        assert_eq!(plan.candidates[0].target, RepairTarget::Parity);
+        assert_eq!(plan.candidates[0].target(), RepairTarget::Parity);
 
         let original_parity = parity.bytes.clone();
         let mut target = MemoryStore::new(vec![0; LENGTH]);
@@ -230,10 +230,12 @@ mod tests {
             &mut data,
             &mut parity,
             &mut target,
-            plan.candidates[0],
+            plan.candidates[0].clone(),
         )
         .unwrap();
-        assert_eq!(outcome.target, RepairTarget::Parity);
+        assert_eq!(outcome.target(), RepairTarget::Parity);
+        assert_eq!(outcome.target_identity(), target.identity());
+        assert_ne!(outcome.digest(), Digest::default());
         assert_eq!(&target.bytes[..4], &parity_image[..4]);
         assert_eq!(parity.bytes, original_parity);
         assert_eq!(target.writes, 1);
@@ -248,7 +250,7 @@ mod tests {
         let report = verify_exhaustive(&mut data, &mut parity, &config(), &evidence).unwrap();
         let plan = plan_repairs(&report);
         assert_eq!(plan.candidates.len(), 1);
-        assert_eq!(plan.candidates[0].target, RepairTarget::Data { slot: 1 });
+        assert_eq!(plan.candidates[0].target(), RepairTarget::Data { slot: 1 });
 
         let original_data = data[1].bytes.clone();
         let mut target = MemoryStore::new(vec![0; LENGTH]);
@@ -257,7 +259,7 @@ mod tests {
             &mut data,
             &mut parity,
             &mut target,
-            plan.candidates[0],
+            plan.candidates[0].clone(),
         )
         .unwrap();
         assert_eq!(&target.bytes[4..8], &data1[4..8]);
@@ -307,7 +309,7 @@ mod tests {
         let (mut data, mut parity) = source_stores();
         parity.bytes[4] ^= 0x80;
         let report = verify_exhaustive(&mut data, &mut parity, &config(), &evidence).unwrap();
-        let candidate = plan_repairs(&report).candidates[0];
+        let candidate = plan_repairs(&report).candidates[0].clone();
         let original_data = data.clone();
         let original_parity = parity.clone();
         let mut target = MemoryStore::new(vec![0; LENGTH]).failing_write();
@@ -323,7 +325,7 @@ mod tests {
         let (mut data, mut parity) = source_stores();
         parity.bytes[0] ^= 0x40;
         let report = verify_exhaustive(&mut data, &mut parity, &config(), &evidence).unwrap();
-        let candidate = plan_repairs(&report).candidates[0];
+        let candidate = plan_repairs(&report).candidates[0].clone();
         let target_identity = data[0].identity.0;
         let mut target = MemoryStore::new(vec![0; LENGTH]).with_identity(target_identity);
         assert!(matches!(
@@ -340,6 +342,23 @@ mod tests {
             verify_exhaustive(&mut aliased_data, &mut aliased_parity, &config(), &evidence),
             Err(VerificationError::InvalidConfig(message)) if message.contains("aliased")
         ));
+    }
+
+    #[test]
+    fn repair_candidate_is_bound_to_the_exact_scanned_sources() {
+        let (data0, data1, parity_image) = data_images();
+        let evidence = evidence_for(&[data0, data1], &parity_image, &ranges());
+        let (mut data, mut parity) = source_stores();
+        parity.bytes[0] ^= 0x40;
+        let report = verify_exhaustive(&mut data, &mut parity, &config(), &evidence).unwrap();
+        let candidate = plan_repairs(&report).candidates.remove(0);
+        data[0].identity = VerificationIdentity([99; 16]);
+        let mut target = MemoryStore::new(vec![0; LENGTH]);
+        assert!(matches!(
+            apply_repair(&config(), &mut data, &mut parity, &mut target, candidate),
+            Err(VerificationError::Repair(message)) if message.contains("differ from the verification run")
+        ));
+        assert_eq!(target.writes, 0);
     }
 
     #[test]
