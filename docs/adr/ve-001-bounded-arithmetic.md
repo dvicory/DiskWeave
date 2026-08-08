@@ -7,12 +7,27 @@
 
 ## Decision
 
-Use dependency-free exhaustive finite-domain Rust tests as the bounded
-verification mechanism for the current pure seams. Kani is not installed in
-the host environment, and introducing an external verifier toolchain and CI
-setup was not justified for these small deterministic components.
+Use Kani 0.67.0 through the repository's pinned `mise.toml` tool for the
+small, high-consequence pure seams. The formal portfolio is deliberately
+bounded and split by property:
 
-The harness exhaustively enumerates:
+| Harness | Property | VP support |
+|---|---|---|
+| `dwv-core::byte_range_constructor_matches_checked_add` | checked range end arithmetic | VP-002 |
+| `dwv-core::geometry_512_acceptance_is_exact_and_reachable` | 512-byte geometry acceptance and rejection | VP-002 |
+| `dwv-core::geometry_4096_acceptance_is_exact_and_reachable` | 4096-byte geometry acceptance and rejection | VP-002 |
+| `dwv-service::split_range_math_preserves_aligned_coverage` | fixed-array split arithmetic, bounds, alignment, and coverage | VP-002 |
+| `dwv-codec::full_parity_matches_explicit_xor` | bounded reference parity equivalence | VP-001 |
+| `dwv-codec::incremental_update_matches_full_recomputation` | bounded incremental-update equivalence | VP-001 |
+| `dwv-codec::fixed_single_erasure_reconstructs_exactly` | bounded single-erasure reconstruction | VP-001 |
+
+The service harness intentionally proves a fixed-array arithmetic model rather
+than the public `Vec`-allocating wrapper. The wrapper's list/allocation and
+error-formatting behavior remains covered by the exhaustive Rust tests and
+property/fuzz layers. This avoids making a verifier-friendly representation
+the production representation.
+
+The bounded Rust tests remain required complementary evidence. They enumerate:
 
 - protected and parity lengths from zero through four logical blocks, with
   block sizes 1, 2, 4, and 512;
@@ -24,16 +39,18 @@ The harness exhaustively enumerates:
 - every single missing-slot reconstruction range, including logical-zero
   tails.
 
-The tests compare implementation results with an explicit parity calculation,
-check exact range coverage and alignment, and verify reconstruction against the
-original bounded data. Existing near-`u64::MAX` overflow tests remain part of
-the arithmetic boundary evidence.
-
 ## Evidence and limits
 
-Focused tests pass in `dwv-core`, `dwv-service`, and `dwv-codec`. This is a
-complete check only for the enumerated finite domains. It is not a symbolic
-proof of arbitrary `u64` inputs, allocation safety for unbounded lengths, P/Q
-semantics, filesystem/device I/O, concurrency, or physical durability. Future
-changes to these pure seams must preserve or extend the bounded harness before
-claiming VE-001 conformance.
+Commands are reproducible with `mise exec -- cargo kani ...`. All seven
+listed harnesses passed with no failed checks; Kani's `caller_location` and
+foreign-function diagnostics were reported as successful checks, not proof
+failures. The focused finite-domain tests and the integrated `dwv demo`
+workflow also pass.
+
+This evidence is complete only for the declared finite domains and the
+fixed-array range arithmetic model. It is not a symbolic proof of arbitrary
+`u64` inputs, unbounded allocation/list behavior, P/Q semantics, filesystem or
+device I/O, concurrency, recovery ordering, or physical durability.
+Future changes to these pure seams must preserve or extend both the Kani
+portfolio and the bounded regression tests before claiming stronger VE-001
+conformance.

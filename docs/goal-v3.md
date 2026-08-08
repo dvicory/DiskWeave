@@ -318,6 +318,72 @@ Use `proptest`, `cargo-fuzz`/libFuzzer, or evidence-backed alternatives for:
 
 Promote minimized failures into the common reproducer bundle when representable.
 
+## 7.1 — Verification operating rules and current status
+
+The verification program establishes the architecture's named VP properties;
+it does not require every verification tool immediately and does not replace
+the portable product. Every proof, model, simulator scenario, scheduler
+schedule, fuzz input, and integration test record SHALL name:
+
+- the VP property or properties it supports;
+- the exact bounded domain, assumptions, schedule, or fault model;
+- the retained witness or regression artifact;
+- what the evidence does not establish.
+
+The VP index is:
+
+| ID | Property |
+|---|---|
+| VP-001 | Exact math |
+| VP-002 | Checked addressing |
+| VP-003 | Intent before effect |
+| VP-004 | No false clean |
+| VP-005 | Uncertainty is conserved |
+| VP-006 | Integrity evidence is current |
+| VP-007 | Consequential work remains owned |
+| VP-008 | Recovery is conservative and idempotent |
+| VP-009 | Topology cannot drift underneath work |
+| VP-010 | Formats are hostile-input safe |
+| VP-011 | Evidence is reproducible |
+| VP-012 | Claims do not outrun evidence |
+
+VE-001 uses a small portfolio of independent bounded Kani harnesses, not
+application-wide verification. A harness SHALL state its proposition, use
+only real production preconditions, include reachability coverage where useful,
+retain bounds and timing, and avoid shrinking production domains merely for
+solver speed. Split geometry, capacity/address, range, parity, and envelope
+proofs into independently meaningful harnesses. If `Vec` or large-loop
+behavior makes a proof pathological, prove the underlying fixed/bounded
+arithmetic invariant and leave list/scale behavior to ordinary property or
+fuzz evidence; do not change production semantics solely for Kani. Ordinary
+bounded tests are complementary evidence, not a formal-proof substitute.
+
+VE-002 is an independently expressed abstract protocol model, primarily for
+VP-003 through VP-008. It SHALL use model-only state/actions, cover dirty
+intent, integrity invalidation, durable versus uncertain completion,
+fence/checkpoint/clean, crash, loss, and recovery, and record finite bounds,
+omitted facts, fairness, and non-claims. Keep one primary model. The current
+decision is PlusCal-authored TLA+ checked by TLC, cross-checked with the
+Rust-native checker; Stateright remains a test-only alternative, not a second
+production model.
+
+VE-003 covers broader controlled concurrency schedules only after the
+executor/job/shutdown seam exists; VE-004 covers production-adjacent
+deterministic I/O only after that seam exists. Neither may be used to claim
+real Linux, filesystem, controller-cache, FUA, or physical power-loss
+behavior. VE-005 is the next portable additive layer after the current
+trace/parser and simulator surfaces: use structured property generation and
+fuzzing for ranges, parity, topology, schedules, envelopes, manifests, and
+traces, preserving producer-specific witnesses and promoting minimized
+failures to deterministic `dwv-sim` regressions.
+
+Current queue status: VE-001 is evidenced for its declared finite portfolio
+but does not claim arbitrary-width proof; VE-002 has finite TLC/Rust-model
+evidence; VE-005 is the next dependency-ready portable evidence item;
+VE-003 and VE-004 remain dependency-gated; OS-021/022/023, OS-030+, Linux,
+bridge, and hardware claims remain platform-gated. VP-011 and VP-012 apply to
+every queue rather than forming separate tool projects.
+
 # 8. Rules for current milestone reconciliation
 
 ## OS-007 — parity-envelope profiles and decoder

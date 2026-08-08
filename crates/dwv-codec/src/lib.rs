@@ -885,3 +885,75 @@ mod tests {
         *seed
     }
 }
+
+#[cfg(kani)]
+mod kani_verification {
+    use super::*;
+
+    fn fixed_geometry() -> Geometry {
+        Geometry::new(vec![2, 2, 2], 2).unwrap()
+    }
+
+    #[kani::proof]
+    fn full_parity_matches_explicit_xor() {
+        let data = [
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+        ];
+        let references: [&[u8]; 3] = [&data[0], &data[1], &data[2]];
+        let parity = compute_parity(&fixed_geometry(), &references).unwrap();
+
+        assert_eq!(parity[0], data[0][0] ^ data[1][0] ^ data[2][0]);
+        assert_eq!(parity[1], data[0][1] ^ data[1][1] ^ data[2][1]);
+    }
+
+    #[kani::proof]
+    fn incremental_update_matches_full_recomputation() {
+        let old = [
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+        ];
+        let new = [kani::any::<u8>(), kani::any::<u8>()];
+        let geometry = fixed_geometry();
+        let old_references: [&[u8]; 3] = [&old[0], &old[1], &old[2]];
+        let new_references: [&[u8]; 3] = [&old[0], &new, &old[2]];
+        let mut updated = compute_parity(&geometry, &old_references).unwrap();
+
+        update_parity(
+            &geometry,
+            &mut updated,
+            1,
+            ByteRange::new(0, 2).unwrap(),
+            &old[1],
+            &new,
+        )
+        .unwrap();
+
+        assert_eq!(updated, compute_parity(&geometry, &new_references).unwrap());
+    }
+
+    #[kani::proof]
+    fn fixed_single_erasure_reconstructs_exactly() {
+        let data = [
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+            [kani::any::<u8>(), kani::any::<u8>()],
+        ];
+        let geometry = fixed_geometry();
+        let references: [&[u8]; 3] = [&data[0], &data[1], &data[2]];
+        let parity = compute_parity(&geometry, &references).unwrap();
+        let survivors = [Some(&data[0][..]), None, Some(&data[2][..])];
+        let reconstructed = reconstruct(
+            &geometry,
+            &parity,
+            1,
+            ByteRange::new(0, 2).unwrap(),
+            &survivors,
+        )
+        .unwrap();
+
+        assert_eq!(reconstructed.as_slice(), &data[1]);
+    }
+}

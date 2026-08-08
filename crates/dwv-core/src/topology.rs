@@ -908,3 +908,66 @@ mod tests {
         );
     }
 }
+
+#[cfg(kani)]
+mod kani_verification {
+    use super::ProtectedGeometry;
+    use crate::{ByteRange, RangeError};
+
+    #[kani::proof]
+    fn byte_range_constructor_matches_checked_add() {
+        let offset: u64 = kani::any();
+        let length: u64 = kani::any();
+        let checked = offset.checked_add(length);
+        let constructed = ByteRange::new(offset, length);
+
+        match (checked, constructed) {
+            (Some(expected_end), Ok(range)) => assert_eq!(range.end(), expected_end),
+            (None, Err(RangeError::Overflow { .. })) => {}
+            (Some(_), Err(_)) | (None, Ok(_)) => assert!(false),
+        }
+    }
+
+    fn verify_geometry_for_block(
+        logical_block_size: u32,
+        protected_length: u64,
+        parity_length: u64,
+    ) {
+        let block_size = u64::from(logical_block_size);
+        let valid = protected_length > 0
+            && parity_length >= protected_length
+            && protected_length.is_multiple_of(block_size)
+            && parity_length.is_multiple_of(block_size);
+        let result = ProtectedGeometry::with_parity_length(
+            protected_length,
+            logical_block_size,
+            parity_length,
+        );
+
+        kani::cover!(valid);
+        kani::cover!(!valid);
+        match (valid, result) {
+            (true, Ok(geometry)) => {
+                assert_eq!(geometry.protected_length(), protected_length);
+                assert_eq!(geometry.logical_block_size(), logical_block_size);
+                assert_eq!(geometry.parity_length(), parity_length);
+            }
+            (false, Err(_)) => {}
+            (true, Err(_)) | (false, Ok(_)) => assert!(false),
+        }
+    }
+
+    #[kani::proof]
+    fn geometry_512_acceptance_is_exact_and_reachable() {
+        let protected_length: u64 = kani::any();
+        let parity_length: u64 = kani::any();
+        verify_geometry_for_block(512, protected_length, parity_length);
+    }
+
+    #[kani::proof]
+    fn geometry_4096_acceptance_is_exact_and_reachable() {
+        let protected_length: u64 = kani::any();
+        let parity_length: u64 = kani::any();
+        verify_geometry_for_block(4096, protected_length, parity_length);
+    }
+}

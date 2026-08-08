@@ -2,3 +2,4 @@
 rust = "stable"
 rust-analyzer = "latest"
 java = "temurin-21"
+"cargo:kani-verifier" = "0.67.0"

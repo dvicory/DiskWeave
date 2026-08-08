@@ -55,6 +55,34 @@ every single-erasure reconstruction range, including zero-extended tails.
 The evidence is bounded to those domains and does not claim arbitrary-width
 formal proof, P/Q semantics, I/O, concurrency, or durability.
 
+The bounded suite is complementary evidence, not a substitute for formal
+verification. The Kani portfolio is:
+
+```text
+mise exec -- cargo kani -p dwv-core --harness byte_range_constructor_matches_checked_add
+mise exec -- cargo kani -p dwv-core --harness geometry_512_acceptance_is_exact_and_reachable
+mise exec -- cargo kani -p dwv-core --harness geometry_4096_acceptance_is_exact_and_reachable
+mise exec -- cargo kani -p dwv-service --harness split_range_math_preserves_aligned_coverage
+mise exec -- cargo kani -p dwv-codec --harness full_parity_matches_explicit_xor
+mise exec -- cargo kani -p dwv-codec --harness incremental_update_matches_full_recomputation
+mise exec -- cargo kani -p dwv-codec --harness fixed_single_erasure_reconstructs_exactly
+```
+
+Observed: all seven harnesses completed with no failed checks. Geometry
+reachability covers for valid and invalid inputs were satisfied. The direct
+`Vec`-backed service harness was canceled after symbolic execution became
+pathological; the replacement fixed-array arithmetic harness completed in
+2.66 seconds and proves VP-002's bounded split/coverage arithmetic. Public
+list/allocation and error-formatting behavior remains covered by the bounded
+Rust tests and later property/fuzz layers. Kani diagnostics for
+`caller_location` and foreign functions were emitted as successful checks,
+not proof failures.
+
+Kani claim map: the core and service harnesses support VP-002; the codec
+parity, incremental-update, and single-erasure harnesses support VP-001.
+These runs do not establish arbitrary-width `u64` proof, P/Q behavior,
+concurrency, recovery ordering, filesystem/device I/O, or physical durability.
+
 ## Integrated portable checkpoint
 
 Disposable root: `/tmp/dwv-v3-followup`
