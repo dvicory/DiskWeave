@@ -13,6 +13,7 @@ members = [
     "crates/dwv-recovery-sqlite",
     "crates/dwv-transaction-ref",
     "crates/dwv-store-file",
+    "crates/dwv-service",
 ]
 resolver = "2"
 

@@ -89,6 +89,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "dwv-service"
+version = "0.1.0"
+dependencies = [
+ "dwv-codec",
+ "dwv-core",
+ "dwv-recovery",
+ "dwv-store",
+ "dwv-store-file",
+ "dwv-transaction-ref",
+]
+
+[[package]]
 name = "dwv-sim"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,13 @@
+[package]
+name = "dwv-service"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dwv-codec = { path = "../dwv-codec" }
+dwv-core = { path = "../dwv-core" }
+dwv-recovery = { path = "../dwv-recovery" }
+dwv-store = { path = "../dwv-store" }
+dwv-store-file = { path = "../dwv-store-file" }
+dwv-transaction-ref = { path = "../dwv-transaction-ref" }

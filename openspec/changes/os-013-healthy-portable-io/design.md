@@ -18,7 +18,7 @@ Implement orchestration and healthy single-parity I/O only. Degraded/rebuild/rep
 
 ## 5. Semantic APIs and contracts
 
-Split orchestration into request routing, range planning, parity I/O, operation slots, and service lifecycle modules. Reuse normalized core types and typed evidence. The service accepts an injected store/recovery/transaction implementation so tests do not require a particular runtime or database.
+Split orchestration into request routing, range planning, parity I/O, operation slots, and service lifecycle modules. Reuse normalized core types and typed evidence. This first implementation selects the OS-012 `FileStore` payload adapter, keeps `RecoveryStateStore` generic, and drives the explicit OS-008 reference transaction machine; later store and executor adapters remain behind those seams.
 
 ## 6. State ownership and lifecycle
 
@@ -30,7 +30,7 @@ Register new portable crates and retain independent `dwv-store-file` and transac
 
 ## 8. Irreversible and durability boundaries
 
-Use the OS-008 action order exactly: acquire, intent, read/compute/write, flush/fence, checkpoint/clear, release. Store completion evidence is carried through each layer; no layer upgrades `VolatileOrUnknown` to durable by assumption.
+Use the OS-008 action order exactly: acquire, intent, read/compute/write, flush/fence, checkpoint/clear, release. `ChecksumAuthority::invalidate_with_intent` persists the OS-010 target before home mutation, while this slice leaves digest installation to the asynchronous checksum path. Store completion evidence is carried through each layer; no layer upgrades `VolatileOrUnknown` to durable by assumption.
 
 ## 9. State and sequence diagrams
 

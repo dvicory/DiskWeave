@@ -443,7 +443,7 @@ impl FileStore {
         }
     }
 
-    fn read_progress(&mut self, range: ByteRange) -> Result<ReadProgress, StoreError> {
+    pub fn read_progress(&mut self, range: ByteRange) -> Result<ReadProgress, StoreError> {
         self.validate(range, StoreOperation::Read, None, true)?;
         let length = usize::try_from(range.length).map_err(|_| StoreError::TransferTooLarge {
             length: range.length,
