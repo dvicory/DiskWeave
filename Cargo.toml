@@ -11,6 +11,8 @@ members = [
     "crates/dwv-sim",
     "crates/dwv-recovery",
     "crates/dwv-recovery-sqlite",
+    "crates/dwv-transaction-ref",
+    "crates/dwv-store-file",
 ]
 resolver = "2"
 

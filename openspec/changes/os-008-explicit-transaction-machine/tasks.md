@@ -6,14 +6,14 @@
 
 ## 2. Reference machine implementation
 
-- [ ] 2.1 Add `dwv-transaction-ref` and split the implementation into action, machine, trace, and error modules.
-- [ ] 2.2 Implement bounded transaction plans, stage transitions, semantic actions/results, and topology/recovery generation capture.
-- [ ] 2.3 Enforce durable dirty/integrity intent before home mutation and fence evidence before checkpoint/clear/release.
-- [ ] 2.4 Implement failure, uncertainty, abandonment, daemon-crash, duplicate-result, and reconciliation-required handling.
+- [x] 2.1 Add `dwv-transaction-ref` and split the implementation into action, machine, trace, and error modules.
+- [x] 2.2 Implement bounded transaction plans, stage transitions, semantic actions/results, and topology/recovery generation capture.
+- [x] 2.3 Enforce durable dirty/integrity intent before home mutation and fence evidence before checkpoint/clear/release.
+- [x] 2.4 Implement failure, uncertainty, abandonment, daemon-crash, duplicate-result, and reconciliation-required handling.
 
 ## 3. Trace and verification
 
-- [ ] 3.1 Implement versioned normalized action traces and deterministic replay without private backend/runtime types.
-- [ ] 3.2 Add transition, ordering, mutation, crash, abandonment, and simulator-composition tests.
-- [ ] 3.3 Run focused/workspace tests, formatting, dependency inspection, and OpenSpec validation.
-- [ ] 3.4 Record OS-008 complete only after every forbidden transition is rejected and every legal path has evidence; leave OS-009 selection to its own change.
+- [x] 3.1 Implement versioned normalized action traces and deterministic replay without private backend/runtime types.
+- [x] 3.2 Add transition, ordering, mutation, crash, abandonment, and simulator-composition tests.
+- [x] 3.3 Run focused/workspace tests, formatting, dependency inspection, and OpenSpec validation.
+- [x] 3.4 Record OS-008 complete only after every forbidden transition is rejected and every legal path has evidence; leave OS-009 selection to its own change.

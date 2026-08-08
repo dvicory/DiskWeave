@@ -1,0 +1,359 @@
+use crate::error::ErrorClass;
+use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
+use dwv_recovery::{FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId, SessionId};
+use dwv_store::{StoreFenceRef, StoreId, StoreWriteWatermark};
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ParityRange {
+    pub region: RegionId,
+    pub store: StoreId,
+    pub range: ByteRange,
+}
+
+impl ParityRange {
+    pub const fn new(region: RegionId, store: StoreId, range: ByteRange) -> Self {
+        Self {
+            region,
+            store,
+            range,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PlannedRead {
+    pub store: StoreId,
+    pub range: ByteRange,
+}
+
+impl PlannedRead {
+    pub const fn new(store: StoreId, range: ByteRange) -> Self {
+        Self { store, range }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct PlannedWrite {
+    pub store: StoreId,
+    pub range: ByteRange,
+}
+
+impl PlannedWrite {
+    pub const fn new(store: StoreId, range: ByteRange) -> Self {
+        Self { store, range }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct StoreWatermark {
+    pub store: StoreId,
+    pub through: StoreWriteWatermark,
+}
+
+impl StoreWatermark {
+    pub const fn new(store: StoreId, through: StoreWriteWatermark) -> Self {
+        Self { store, through }
+    }
+}
+
+pub type StoreWatermarks = Vec<StoreWatermark>;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct ParityComputationPlan {
+    pub topology_epoch: TopologyEpoch,
+    pub range: ByteRange,
+    pub input_count: u16,
+}
+
+impl ParityComputationPlan {
+    pub const fn new(topology_epoch: TopologyEpoch, range: ByteRange, input_count: u16) -> Self {
+        Self {
+            topology_epoch,
+            range,
+            input_count,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RangeGuardToken(pub u64);
+
+impl RangeGuardToken {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct CommittedRecoveryGeneration {
+    pub generation: RecoveryGeneration,
+    pub topology_epoch: TopologyEpoch,
+}
+
+impl CommittedRecoveryGeneration {
+    pub const fn new(generation: RecoveryGeneration, topology_epoch: TopologyEpoch) -> Self {
+        Self {
+            generation,
+            topology_epoch,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum IntentRequirement {
+    FirstWrite,
+    AlreadyDirty {
+        durable_generation: RecoveryGeneration,
+    },
+}
+
+impl IntentRequirement {
+    pub const fn requires_commit(self) -> bool {
+        matches!(self, Self::FirstWrite)
+    }
+
+    pub const fn generation(self, captured: RecoveryGeneration) -> RecoveryGeneration {
+        match self {
+            Self::FirstWrite => captured,
+            Self::AlreadyDirty { durable_generation } => durable_generation,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransactionAction {
+    AcquireRange {
+        ranges: Vec<ParityRange>,
+    },
+    PersistDirtyAndInvalidateIntegrity {
+        dirty_regions: Vec<RegionId>,
+        checksum_extents: Vec<IntegrityExtentId>,
+    },
+    ReadSet {
+        reads: Vec<PlannedRead>,
+    },
+    ComputeParity {
+        plan: ParityComputationPlan,
+    },
+    WriteSet {
+        writes: Vec<PlannedWrite>,
+    },
+    FlushSet {
+        stores: Vec<StoreId>,
+        through: StoreWatermarks,
+    },
+    CommitCheckpointOrClear {
+        certificate: FenceCertificate,
+    },
+    ReleaseRange,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ActionKind {
+    AcquireRange,
+    PersistDirtyAndInvalidateIntegrity,
+    ReadSet,
+    ComputeParity,
+    WriteSet,
+    FlushSet,
+    CommitCheckpointOrClear,
+    ReleaseRange,
+}
+
+impl TransactionAction {
+    pub const fn kind(&self) -> ActionKind {
+        match self {
+            Self::AcquireRange { .. } => ActionKind::AcquireRange,
+            Self::PersistDirtyAndInvalidateIntegrity { .. } => {
+                ActionKind::PersistDirtyAndInvalidateIntegrity
+            }
+            Self::ReadSet { .. } => ActionKind::ReadSet,
+            Self::ComputeParity { .. } => ActionKind::ComputeParity,
+            Self::WriteSet { .. } => ActionKind::WriteSet,
+            Self::FlushSet { .. } => ActionKind::FlushSet,
+            Self::CommitCheckpointOrClear { .. } => ActionKind::CommitCheckpointOrClear,
+            Self::ReleaseRange => ActionKind::ReleaseRange,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ResultKind {
+    RangeAcquired,
+    RecoveryIntentDurable,
+    ReadSetComplete,
+    ParityComputed,
+    WriteSetComplete,
+    FlushSetComplete,
+    CheckpointCommitted,
+    RangeReleased,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SemanticIoResult {
+    Complete,
+    Failed,
+    Uncertain,
+}
+
+impl SemanticIoResult {
+    pub const fn complete() -> Self {
+        Self::Complete
+    }
+
+    pub const fn failed() -> Self {
+        Self::Failed
+    }
+
+    pub const fn uncertain() -> Self {
+        Self::Uncertain
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ComputationResult {
+    Complete,
+    Failed,
+}
+
+impl ComputationResult {
+    pub const fn complete() -> Self {
+        Self::Complete
+    }
+
+    pub const fn failed() -> Self {
+        Self::Failed
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FenceEvidence {
+    pub certificate: FenceCertificate,
+    pub durable: bool,
+    pub uncertain: bool,
+}
+
+impl FenceEvidence {
+    pub fn durable(certificate: FenceCertificate) -> Self {
+        Self {
+            certificate,
+            durable: true,
+            uncertain: false,
+        }
+    }
+
+    pub fn volatile(certificate: FenceCertificate) -> Self {
+        Self {
+            certificate,
+            durable: false,
+            uncertain: false,
+        }
+    }
+
+    pub fn uncertain(certificate: FenceCertificate) -> Self {
+        Self {
+            certificate,
+            durable: false,
+            uncertain: true,
+        }
+    }
+
+    pub const fn is_durable(&self) -> bool {
+        self.durable && !self.uncertain
+    }
+
+    pub fn covers(
+        &self,
+        topology_epoch: TopologyEpoch,
+        fence_domain: FenceDomain,
+        stores: &[StoreWatermark],
+        regions: &[RegionId],
+        extents: &[IntegrityExtentId],
+        generation: RecoveryGeneration,
+    ) -> bool {
+        if !self.is_durable()
+            || self.certificate.topology_epoch != topology_epoch
+            || self.certificate.fence_domain != fence_domain
+        {
+            return false;
+        }
+
+        let stores_covered = stores.iter().all(|required| {
+            self.certificate.stores.iter().any(|observed| {
+                observed.store_id == required.store
+                    && observed.topology_epoch == topology_epoch
+                    && observed.through.0 >= required.through.0
+            })
+        });
+        let regions_covered = regions.iter().all(|region| {
+            self.certificate
+                .captured_region_generations
+                .iter()
+                .any(|(captured, observed)| *captured == *region && observed.0 >= generation.0)
+        });
+        let extents_covered = extents.iter().all(|extent| {
+            self.certificate
+                .captured_integrity_generations
+                .iter()
+                .any(|(captured, observed)| *captured == *extent && observed.0 >= generation.0)
+        });
+        stores_covered && regions_covered && extents_covered
+    }
+
+    pub fn store_fences(&self) -> &[StoreFenceRef] {
+        &self.certificate.stores
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SemanticFailure {
+    pub class: ErrorClass,
+}
+
+impl SemanticFailure {
+    pub const fn new(class: ErrorClass) -> Self {
+        Self { class }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ActionResult {
+    RangeAcquired(RangeGuardToken),
+    RecoveryIntentDurable(CommittedRecoveryGeneration),
+    ReadSetComplete(SemanticIoResult),
+    ParityComputed(ComputationResult),
+    WriteSetComplete(SemanticIoResult),
+    FlushSetComplete(FenceEvidence),
+    CheckpointCommitted(CommittedRecoveryGeneration),
+    RangeReleased,
+    Failed(SemanticFailure),
+}
+
+impl ActionResult {
+    pub const fn kind(&self) -> ResultKind {
+        match self {
+            Self::RangeAcquired(_) => ResultKind::RangeAcquired,
+            Self::RecoveryIntentDurable(_) => ResultKind::RecoveryIntentDurable,
+            Self::ReadSetComplete(_) => ResultKind::ReadSetComplete,
+            Self::ParityComputed(_) => ResultKind::ParityComputed,
+            Self::WriteSetComplete(_) => ResultKind::WriteSetComplete,
+            Self::FlushSetComplete(_) => ResultKind::FlushSetComplete,
+            Self::CheckpointCommitted(_) => ResultKind::CheckpointCommitted,
+            Self::RangeReleased => ResultKind::RangeReleased,
+            Self::Failed(_) => ResultKind::Failed,
+        }
+    }
+
+    pub const fn failure(class: ErrorClass) -> Self {
+        Self::Failed(SemanticFailure::new(class))
+    }
+}
+
+/// The semantic session identity is carried in the plan, not in backend I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TransactionIdentity {
+    pub session: SessionId,
+    pub topology_epoch: TopologyEpoch,
+    pub recovery_generation: RecoveryGeneration,
+}

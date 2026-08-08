@@ -44,3 +44,21 @@ version = "0.1.0"
 dependencies = [
  "dwv-core",
 ]
+
+[[package]]
+name = "dwv-store-file"
+version = "0.1.0"
+dependencies = [
+ "dwv-core",
+ "dwv-store",
+]
+
+[[package]]
+name = "dwv-transaction-ref"
+version = "0.1.0"
+dependencies = [
+ "dwv-core",
+ "dwv-recovery",
+ "dwv-sim",
+ "dwv-store",
+]

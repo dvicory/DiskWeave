@@ -1,0 +1,15 @@
+[package]
+name = "dwv-transaction-ref"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+dwv-core = { path = "../dwv-core" }
+dwv-recovery = { path = "../dwv-recovery" }
+dwv-store = { path = "../dwv-store" }
+
+[dev-dependencies]
+dwv-sim = { path = "../dwv-sim" }
