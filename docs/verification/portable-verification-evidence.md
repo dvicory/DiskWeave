@@ -105,6 +105,29 @@ This is initial VP-010 hostile trace-input and VP-011 reproducibility evidence.
 It does not claim broad simulator operation/fault/crash/topology schedules,
 parity generation, concurrency, filesystem behavior, or hardware durability.
 
+## VE-005 seeded simulator schedule corpus evidence
+
+Source: `verification/corpus/simulator-schedule-seeds.txt` and the seeded
+`dwv-sim` schedule/replay test.
+
+Command:
+
+```text
+cargo test -p dwv-sim --lib seeded_operation_and_fault_schedules_replay_stably
+```
+
+Observed: 16 retained seeds generate bounded simulator schedules with
+operation submissions, delivery, write faults, recovery/envelope commits,
+latent corruption, daemon/controller interruption, power loss, and store
+disappearance/reappearance. Every schedule round-trips through the simulator
+reproducer format, replays deterministically, drains pending work, and ends
+with the store available. The corpus retains seeds and producer logic, not
+payload data.
+
+This supports initial VP-005, VP-008, VP-010, and VP-011 evidence. It does not
+claim exhaustive schedule coverage, topology generation, parity equivalence,
+concurrency, filesystem behavior, or hardware durability.
+
 ## Integrated portable checkpoint
 
 Disposable root: `/tmp/dwv-v3-followup`

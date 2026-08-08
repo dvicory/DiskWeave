@@ -2353,4 +2353,179 @@ mod tests {
             Err(ScheduleBoundError::LimitExceeded { limit: 1 })
         );
     }
+    #[test]
+    fn seeded_operation_and_fault_schedules_replay_stably() {
+        for (line, seed_text) in
+            include_str!("../../../verification/corpus/simulator-schedule-seeds.txt")
+                .lines()
+                .enumerate()
+        {
+            let seed = u64::from_str_radix(seed_text.trim(), 16)
+                .unwrap_or_else(|_| panic!("invalid simulator seed on line {}", line + 1));
+            let (initial, config, schedule) = seeded_schedule(seed);
+            let encoded = schedule.to_reproducer();
+            assert_eq!(
+                Schedule::from_reproducer(&encoded).unwrap(),
+                schedule,
+                "seed {seed:#x} must preserve its producer witness"
+            );
+            assert!(
+                Simulator::deterministic_replay(initial.clone(), config.clone(), &schedule)
+                    .unwrap(),
+                "seed {seed:#x} must replay deterministically"
+            );
+
+            let mut simulator = Simulator::new(initial, config).unwrap();
+            let trace = simulator.run(&schedule).unwrap();
+            assert_eq!(trace.final_snapshot.pending_operations, 0);
+            assert!(trace.final_snapshot.available);
+        }
+    }
+
+    fn seeded_schedule(mut seed: u64) -> (Vec<u8>, SimulatorConfig, Schedule) {
+        let size = 8 + (next(&mut seed) as usize % 3) * 4;
+        let initial = (0..size).map(|_| next(&mut seed) as u8).collect::<Vec<_>>();
+        let mut config = SimulatorConfig::for_size(size);
+        config.fault_model.max_pending = 4;
+        config.fault_model.write_completion = match next(&mut seed) % 4 {
+            0 => CompletionFault::Success,
+            1 => CompletionFault::Short(1),
+            2 => CompletionFault::Torn(1),
+            _ => CompletionFault::Uncertain {
+                effect: MediaEffect::VolatileAll,
+            },
+        };
+        config.fault_model.recovery_commit = match next(&mut seed) % 3 {
+            0 => CompletionFault::Success,
+            1 => CompletionFault::Failed(7),
+            _ => CompletionFault::Torn(1),
+        };
+        config.fault_model.parity_envelope_commit = match next(&mut seed) % 3 {
+            0 => CompletionFault::Success,
+            1 => CompletionFault::Failed(9),
+            _ => CompletionFault::Torn(1),
+        };
+        config.fault_model.power_loss = match next(&mut seed) % 3 {
+            0 => PowerLossPolicy::DiscardVolatile,
+            1 => PowerLossPolicy::PersistVolatile,
+            _ => PowerLossPolicy::PersistPrefix(2),
+        };
+
+        let slot = dwv_store::OperationSlotToken::new(0, 1);
+        let mut operation_index = 0;
+        let mut pending = 0;
+        let mut available = true;
+        let mut steps = Vec::new();
+
+        for _ in 0..32 {
+            let choice = (next(&mut seed) % 12) as usize;
+            match choice {
+                0 if pending > 0 && available => {
+                    steps.push(ScheduleStep::Deliver { pending_index: 0 });
+                    pending -= 1;
+                }
+                1 if available => {
+                    steps.push(ScheduleStep::InjectLatentCorruption {
+                        offset: next(&mut seed) % size as u64,
+                        xor_mask: vec![next(&mut seed) as u8 | 1],
+                    });
+                }
+                2 => {
+                    steps.push(ScheduleStep::DaemonCrash);
+                    pending = 0;
+                }
+                3 => {
+                    steps.push(ScheduleStep::ControllerReset);
+                    pending = 0;
+                }
+                4 => {
+                    steps.push(ScheduleStep::PowerLoss);
+                    pending = 0;
+                }
+                5 if available => {
+                    steps.push(ScheduleStep::Disappear);
+                    available = false;
+                }
+                6 if !available => {
+                    steps.push(ScheduleStep::Reappear);
+                    available = true;
+                }
+                _ if available && pending < 4 => {
+                    let offset = next(&mut seed) % size as u64;
+                    let length = 1 + next(&mut seed) % (size as u64 - offset);
+                    let operation_id = ChildOperationId {
+                        slot,
+                        index: operation_index,
+                    };
+                    operation_index += 1;
+                    let intent = match next(&mut seed) % 4 {
+                        0 => WriteIntent::Ordinary,
+                        1 => WriteIntent::Fua,
+                        2 => WriteIntent::Preflush,
+                        _ => WriteIntent::FuaAndPreflush,
+                    };
+                    match next(&mut seed) % 7 {
+                        0 => steps.push(ScheduleStep::SubmitWrite {
+                            operation_id,
+                            offset,
+                            bytes: (0..length).map(|_| next(&mut seed) as u8).collect(),
+                            intent,
+                        }),
+                        1 => steps.push(ScheduleStep::SubmitRead {
+                            operation_id,
+                            offset,
+                            length,
+                        }),
+                        2 => steps.push(ScheduleStep::SubmitWriteZeroes {
+                            operation_id,
+                            offset,
+                            length,
+                            intent,
+                        }),
+                        3 => steps.push(ScheduleStep::SubmitDiscard {
+                            operation_id,
+                            offset,
+                            length,
+                        }),
+                        4 => steps.push(ScheduleStep::SubmitFlush {
+                            operation_id,
+                            through: StoreWriteWatermark(next(&mut seed) % 4),
+                        }),
+                        5 => steps.push(ScheduleStep::SubmitRecoveryCommit {
+                            operation_id,
+                            generation: 1 + next(&mut seed) % 4,
+                            bytes: vec![next(&mut seed) as u8, next(&mut seed) as u8],
+                        }),
+                        _ => steps.push(ScheduleStep::SubmitParityEnvelopeCommit {
+                            operation_id,
+                            copy_index: next(&mut seed) as usize % 2,
+                            generation: 1 + next(&mut seed) % 4,
+                            bytes: vec![next(&mut seed) as u8, next(&mut seed) as u8],
+                        }),
+                    }
+                    pending += 1;
+                }
+                _ => {
+                    steps.push(ScheduleStep::Reappear);
+                    available = true;
+                }
+            }
+        }
+
+        if !available {
+            steps.push(ScheduleStep::Reappear);
+        }
+        while pending > 0 {
+            steps.push(ScheduleStep::Deliver { pending_index: 0 });
+            pending -= 1;
+        }
+        (initial, config, Schedule::new(steps))
+    }
+
+    fn next(seed: &mut u64) -> u64 {
+        *seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        *seed
+    }
 }

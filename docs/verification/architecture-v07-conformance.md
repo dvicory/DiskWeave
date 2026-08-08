@@ -18,7 +18,7 @@ portable claim.
 | Uncertain completion is explicit | CONFORMANT | `CompletionDisposition::Uncertain`, `CompletionUncertain`, `ReconciliationRequired`, `UncertainRetained`, and simulator fault schedules preserve uncertainty | No blind retry or production reissue claim |
 | Deterministic IDs, schedules, fault choices, and traces | CONFORMANT (bounded evidence) | `dwv-sim::Schedule`, deterministic fixture generation, `dwv-trace` schema/limits, and OS-024 replay evidence | Tool-specific scheduler witnesses remain optional |
 | `dwv-sim` is the durability/recovery oracle | CONFORMANT | Simulator separates durable, volatile, pending, completion, recovery DB, envelope, and power-loss state; OS-004 and OS-024 evidence | Does not model real filesystem, kernel, device, or hardware behavior |
-| Generated operation/fault/crash/topology schedules | EVIDENCE GAP | Deterministic schedules exist; `verification/corpus/trace-seeds.json` and the `dwv-trace` seeded parser-mutation test provide initial VP-010/VP-011 corpus evidence | Broaden to simulator operation/fault/topology schedules and sustained fuzz/property campaigns |
+| Generated operation/fault/crash schedules | CONFORMANT (seeded bounded evidence) | `verification/corpus/simulator-schedule-seeds.txt` and the `dwv-sim` seeded schedule/replay test exercise deterministic operation/fault/interruption schedules | Broaden to parity/topology generation and sustained fuzz/property campaigns |
 | Normalized semantic reproducer | CONFORMANT | OS-024 trace model, bounded parser, migration/limit tests, CLI export/render/replay, and baseline trace evidence | Preserve producer-specific witnesses if future tools find them |
 | Bounded verification of high-consequence pure components | CONFORMANT (finite bounded domains) | `dwv-core`, `dwv-service`, and `dwv-codec` exhaustive finite-domain tests; decision and bounds in `docs/adr/ve-001-bounded-arithmetic.md` | Evidence covers declared bounds only; no arbitrary-width formal proof |
 | Independent abstract recovery protocol | CONFORMANT (finite safety/reachability) | PlusCal source, generated translation, TLC run, `tla-rs` cross-check, and seeded mutation detection in `docs/adr/ve-002-independent-recovery-model.md` | Bounds and omitted facts remain explicit; no application-wide proof |
@@ -46,12 +46,13 @@ platform gates, not reasons to weaken the portable claim.
 - **Portable evidence:** VE-001 finite-domain arithmetic/range/parity
   harnesses and VE-002 independent recovery-model checks are implemented and
   recorded.
-- **Initial VE-005 evidence:** deterministic trace seeds and parser mutations
-  are recorded in `verification/corpus/trace-seeds.json` and exercised by
-  `dwv-trace`; this supports VP-010 and VP-011 only.
-- **Remaining VE-005 work:** generated/fuzzed operation, fault, trace, parity,
-  topology, and boundary schedules. It has no Linux, bridge, or hardware
-  prerequisite.
+- **Initial VE-005 evidence:** deterministic trace seeds, parser mutations, and
+  seeded simulator operation/fault schedules are recorded in
+  `verification/corpus/`; `dwv-trace` and `dwv-sim` tests exercise them. This
+  supports VP-005, VP-008, VP-010, and VP-011 within declared bounds.
+- **Remaining VE-005 work:** generated/fuzzed parity, topology, and boundary
+  schedules plus broader operation/fault campaigns. It has no Linux, bridge,
+  or hardware prerequisite.
 - **Later evidence:** VE-003 concurrency schedules after a real
   executor/job/shutdown seam; VE-004 simulated I/O after that seam exists.
 - **Platform-gated:** OS-021/022/023 and OS-030+ remain explicitly unclaimed
@@ -60,8 +61,8 @@ platform gates, not reasons to weaken the portable claim.
 ## Remaining evidence gates
 
 The current portable record remains incomplete for the broader VE-005
-schedule/fuzz corpus and VE-003 concurrency evidence. The initial trace corpus
-does not establish simulator operation/fault schedules, parity/topology
-generation, concurrency, or platform behavior. No platform-gated claim is
-being used to hide either gap; VE-003 remains gated on the
+schedule/fuzz corpus and VE-003 concurrency evidence. The retained trace and
+simulator corpora do not establish parity/topology generation, exhaustive
+schedule coverage, concurrency, or platform behavior. No platform-gated claim
+is being used to hide either gap; VE-003 remains gated on the
 executor/job/shutdown seam.
