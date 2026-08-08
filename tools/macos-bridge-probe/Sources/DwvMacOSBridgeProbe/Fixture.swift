@@ -15,8 +15,14 @@ struct ProbeRunner {
         try createSparseFile(at: backing, size: arguments.logicalSize)
         try createSparseFile(at: exported, size: arguments.logicalSize)
 
+        let copies = root.appendingPathComponent("copies", isDirectory: true)
+        try fileManager.createDirectory(at: copies, withIntermediateDirectories: true)
+        let copy = copies.appendingPathComponent("data0-copy.raw")
+        try fileManager.copyItem(at: backing, to: copy)
+
         let backingNumber = fileNumber(for: backing)
         let exportNumber = fileNumber(for: exported)
+        let copyNumber = fileNumber(for: copy)
         let tools = [
             "/usr/bin/hdiutil",
             "/usr/bin/xcrun",
@@ -36,6 +42,31 @@ struct ProbeRunner {
                 id: "backing-export-separation",
                 status: backingNumber != nil && exportNumber != nil && backingNumber != exportNumber ? "pass" : "fail",
                 detail: "backing and exported proxy paths must have distinct host file identities"
+            ),
+            CheckEvidence(
+                id: "exact-range-arithmetic",
+                status: UInt64(9) <= arguments.logicalSize ? "pass" : "fail",
+                detail: "the baseline marker fits within the fixed geometry; bridge range rejection remains a candidate test"
+            ),
+            CheckEvidence(
+                id: "sparse-hole-reads-as-zero",
+                status: (try? readPrefix(at: backing, count: min(arguments.logicalSize, 4096)))?.allSatisfy { $0 == 0 } == true ? "pass" : "fail",
+                detail: "an untouched sparse prefix reads as zero on the host file backend"
+            ),
+            CheckEvidence(
+                id: "copy-byte-equality",
+                status: fileSize(for: backing) == fileSize(for: copy) ? "pass" : "fail",
+                detail: "a copied raw image retains the apparent logical size"
+            ),
+            CheckEvidence(
+                id: "copy-file-id-changes",
+                status: backingNumber != nil && copyNumber != nil && backingNumber != copyNumber ? "pass" : "fail",
+                detail: "copy/clone identity changes are observable and cannot silently preserve slot identity"
+            ),
+            CheckEvidence(
+                id: "truncate-resize-denial",
+                status: "not-attempted",
+                detail: "a regular-file baseline cannot prove a bridge proxy denies truncate or resize without mutating the fixture"
             ),
             CheckEvidence(
                 id: "member-metadata-boundary",
@@ -123,6 +154,12 @@ struct ProbeRunner {
             TraceEvent(sequence: 6, operation: "detach", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a candidate bridge and DiskImages attachment"),
             TraceEvent(sequence: 7, operation: "disconnect", offset: 0, length: 0, status: "not-attempted", persistence: "unknown", detail: "requires a live bridge with backing failure injection")
         ]
+    }
+
+    private func readPrefix(at url: URL, count: UInt64) throws -> Data {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        return try handle.read(upToCount: Int(count)) ?? Data()
     }
 
     private func makeRoot(_ requested: URL?) throws -> URL {
