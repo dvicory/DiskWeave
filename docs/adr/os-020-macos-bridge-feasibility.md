@@ -14,7 +14,7 @@ Keep the regular-file fixture and normalized trace as the current macOS baseline
 |---|---|---|
 | Regular-file baseline | `tools/macos-bridge-probe` creates separate fixed-size backing/export files, checks size/file identity, sparse zero reads, copy identity, and emits a bounded normalized open/write/sync/read/close trace | Available as a portable-demo baseline; it does not deny truncate/resize or emulate a virtual disk |
 | FSKit | Command Line Tools SDK exposes FSKit headers, modulemap, Swift interfaces, and `FSKit.tbd` | Not attached: no extension, signing, entitlement, or matching Swift build evidence |
-| DiskImages | `/usr/bin/hdiutil` exists and `hdiutil help` runs; `diskutil` framework access is restricted in this session | Attachment through a candidate proxy is not attempted |
+| DiskImages | `/usr/bin/hdiutil` exists and `hdiutil help` runs; a disposable `hdiutil create -size 16m -fs APFS -type SPARSE` attempt failed with `Device not configured`; `diskutil` framework access is restricted in this session | Attachment through a candidate proxy is not attempted; the failure is an environment/device boundary, not bridge evidence |
 | macFUSE | `/Library/Filesystems/macfuse.fs` and `/usr/local/bin/mount_macfuse` are absent | No comparison run; candidate is unavailable on this host |
 | Swift toolchain | selected developer directory is `/Library/Developer/CommandLineTools`; SDK is 26.2; no Xcode app is present; SwiftPM reports a compiler/SDK patch mismatch and an unwritable user module cache | Environment blocker, not semantic bridge evidence |
 

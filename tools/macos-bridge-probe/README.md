@@ -19,6 +19,8 @@ The current host reports:
 - macOS SDK version `26.2`, with FSKit headers/modulemap available;
 - `/usr/bin/hdiutil`, `/usr/bin/xcrun`, `/usr/bin/swiftc`, and `/usr/bin/sqlite3` present;
 - no `/Applications/Xcode*.app` toolchain in the session.
+- a disposable `hdiutil create -size 16m -fs APFS -type SPARSE` attempt failed with
+  `Device not configured`; this does not establish any DiskImages bridge behavior.
 
 SwiftPM currently cannot build this package in the restricted session because its user cache/module cache is outside the writable workspace and the installed compiler/SDK patch versions disagree. This is an environment limitation, not evidence that FSKit or DiskImages is semantically viable.
 
