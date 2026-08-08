@@ -13,8 +13,13 @@ use dwv_store::{
 };
 use std::fmt;
 
+mod checksum_model;
 mod recovery_model;
 
+pub use checksum_model::{
+    ChecksumCutPoint, ChecksumModelEvent, ChecksumModelOutcome, ChecksumModelSchedule,
+    ChecksumModelState,
+};
 pub use recovery_model::{
     RecoveryCutPoint, RecoveryModelEvent, RecoveryModelOutcome, RecoveryModelState,
     RecoverySchedule, RecoveryWrite,

@@ -7,5 +7,6 @@ edition = "2024"
 path = "src/lib.rs"
 
 [dependencies]
+blake3 = "1"
 dwv-core = { path = "../dwv-core" }
 dwv-store = { path = "../dwv-store" }

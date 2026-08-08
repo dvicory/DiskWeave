@@ -10,21 +10,39 @@ use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
 mod checkpoint;
+mod extent;
 mod generation;
 mod intent;
 mod invalidation;
+mod job;
+mod migration;
+mod profile;
+mod provider;
+mod record;
 mod transition;
 
 pub use checkpoint::{
     CheckpointDecision, CheckpointRefusal, CheckpointRequest, RequiredFence, evaluate_checkpoint,
     fence_ref,
 };
+pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
 pub use intent::IntentCommit;
 pub use invalidation::{
     IntentBoundary, IntentCoverage, IntentDecision, IntentEvidence, InvalidationTarget,
     assess_intent,
 };
+pub use job::{
+    ChecksumAuthority, ChecksumJob, ChecksumJobKey, ChecksumJobResult, ChecksumQueue,
+    CommitOutcome, JobError, ReadEvidence,
+};
+pub use migration::{MigrationError, MigrationOutcome, ProfileMigration};
+pub use profile::{
+    BLAKE3_256_PROFILE, ChecksumProfile, ChecksumProfileId, ChecksumSet, ChecksumSetGeneration,
+    ChecksumSetState, ProfileError,
+};
+pub use provider::{Blake3Provider, DigestProvider, ProviderError};
+pub use record::{ChecksumRecord, ChecksumState, ContentGeneration, Digest, FenceEvidence};
 pub use transition::{
     RecoveryTransitionId, TransitionEvidence, TransitionKind, TransitionOutcome, TransitionTrace,
 };
