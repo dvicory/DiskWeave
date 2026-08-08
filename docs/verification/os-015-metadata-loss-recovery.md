@@ -34,7 +34,7 @@ The certified-envelope paths remain gated semantic plans. Gate H has not enabled
 - `cargo run -q -p dwv-recovery --example metadata-loss-dry-run`: passed and printed the 18 cases in deterministic order.
 - `cargo tree -p dwv-recovery-sqlite -e normal`: passed; the adapter uses only `dwv-core`, `dwv-recovery`, and `dwv-store`, with the existing BLAKE3 graph beneath recovery.
 - `cargo metadata --format-version 1 --no-deps`: passed.
-- `openspec validate --all --json`: passed 15/15 items. The only notices are informational long-requirement warnings in the existing XOR and parity-verification specs.
+- `openspec validate --all --json`: passed 15/15 items before and after archive. The only notices are informational long-requirement warnings in the XOR, parity-verification, and metadata-loss specs.
 
 ## Deferred work
 
