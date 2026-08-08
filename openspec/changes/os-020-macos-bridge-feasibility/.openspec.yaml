@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-07
+goal: A bounded macOS bridge probe and comparative evidence package that selects
+  a viable portable-demo path or documents the blocker without changing core
+  semantics
