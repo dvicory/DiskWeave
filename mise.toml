@@ -1,3 +1,4 @@
 [tools]
 rust = "stable"
 rust-analyzer = "latest"
+java = "temurin-21"
