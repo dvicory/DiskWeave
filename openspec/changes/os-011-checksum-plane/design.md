@@ -12,6 +12,8 @@ Recovery state can accept a digest only for a named target extent, content gener
 
 Use OS-010 invalidation, OS-003 geometry, OS-005 persistence/export, and store capabilities from OS-002/012. The implementation can begin with an in-memory provider and add the selected BLAKE3 provider behind a trait after dependency/benchmark review.
 
+Dependency research recorded for this change: the official [`blake3` Rust crate](https://docs.rs/blake3/latest/blake3/) exposes a 32-byte default `Hash`, incremental `Hasher::update`, and `Hasher::finalize`; the [official BLAKE3 repository](https://github.com/BLAKE3-team/BLAKE3) documents the Rust implementation and portable/optimized backends. The provisional implementation choice is `blake3` with default features behind `DigestProvider`, using the 32-byte result as an implementation of a profile rather than as a format identity. Rayon, mmap, and digest-trait preview features remain disabled until V-009 benchmarks and portability evidence justify them; no BLAKE3 type enters the durable semantic API.
+
 ## 4. Exact scope and non-scope
 
 Add integrity modules, provider trait, records, worker scheduling semantics, and tests. Do not implement repair, scrub policy, format freeze, or a filesystem/front-end adapter.
