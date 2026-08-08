@@ -6,6 +6,10 @@
 
 use std::fmt;
 
+mod identity;
+
+pub use identity::*;
+
 pub use dwv_core::{BufferToken, ByteRange, FenceDomain, SubmissionSequence, TopologyEpoch};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -544,90 +548,6 @@ pub enum VolatileCacheModel {
     None,
     VolatileUntilFlush,
     Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum IdentitySourceKind {
-    StableDeviceId,
-    Serial,
-    FilesystemId,
-    WorldWideName,
-    Path,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IdentitySourceSet {
-    pub stable_device_id: bool,
-    pub serial: bool,
-    pub filesystem_id: bool,
-    pub world_wide_name: bool,
-    pub path: bool,
-}
-
-impl IdentitySourceSet {
-    pub const fn none() -> Self {
-        Self {
-            stable_device_id: false,
-            serial: false,
-            filesystem_id: false,
-            world_wide_name: false,
-            path: false,
-        }
-    }
-
-    pub const fn has_stable_source(self) -> bool {
-        self.stable_device_id || self.serial || self.world_wide_name
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct IdentityObservation {
-    pub source: IdentitySourceKind,
-    pub fingerprint: [u8; 16],
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IdentityAssessment {
-    Confirmed,
-    Ambiguous,
-    Conflicting,
-    Unknown,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IdentityComparison {
-    Unchanged,
-    Changed,
-    Ambiguous,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IdentityObservationSet {
-    pub observations: Vec<IdentityObservation>,
-    pub assessment: IdentityAssessment,
-}
-
-impl IdentityObservationSet {
-    pub fn new(mut observations: Vec<IdentityObservation>, assessment: IdentityAssessment) -> Self {
-        observations.sort_by_key(|observation| observation.source);
-        Self {
-            observations,
-            assessment,
-        }
-    }
-
-    pub fn compare(&self, observed: &Self) -> IdentityComparison {
-        if self.assessment != IdentityAssessment::Confirmed
-            || observed.assessment != IdentityAssessment::Confirmed
-        {
-            return IdentityComparison::Ambiguous;
-        }
-        if self.observations == observed.observations {
-            IdentityComparison::Unchanged
-        } else {
-            IdentityComparison::Changed
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

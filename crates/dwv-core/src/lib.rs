@@ -7,6 +7,10 @@
 
 use std::fmt;
 
+mod topology;
+
+pub use topology::*;
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct RequestId(pub u64);
 
@@ -14,22 +18,10 @@ pub struct RequestId(pub u64);
 pub struct FrontendId(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct TopologyEpoch(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SubmissionSequence(pub u64);
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FenceDomain(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct SlotId(pub [u8; 16]);
-
-impl SlotId {
-    pub const fn from_bytes(bytes: [u8; 16]) -> Self {
-        Self(bytes)
-    }
-}
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BufferToken {
