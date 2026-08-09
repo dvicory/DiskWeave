@@ -8,6 +8,8 @@ tier = "documentation-migration"
 fault_model = ["duplicate semantic registry", "historical-source leakage"]
 scope = ["canonical requirement discovery", "v0.8 disposition audit"]
 requirements = [
+  "req.anchorless-topology-identity.topology-transition-plans-bind-source-target-and-recovery",
+  "req.anchorless-topology-identity.topology-transitions-are-staged-and-recoverable",
   "req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry",
   "req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only",
   "req.documentation-knowledge-architecture.durable-documentation-configuration-is-small-and-state-is-reconstructible",
