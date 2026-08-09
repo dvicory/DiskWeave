@@ -378,3 +378,48 @@ Goal v4 is complete only when:
 - no speculative allocator, per-object protection API, universal transaction framework, format, crate, or CLI has been introduced;
 - macOS bridge, Linux, and hardware claims remain gated to their actual evidence;
 - the exact next dependency-ready action is named and execution continues; if no dependency-ready portable item remains, an evidenced dependency or platform block is a valid endpoint and its entry condition is recorded.
+
+
+## 12. Current execution status (2026-08-08)
+
+### 12.1 Bounded v0.8 conformance matrix
+
+| Section 3 property | Inspected implementation and evidence | Outcome | Action and claim boundary |
+|---|---|---|---|
+| 3.1 Physical store versus logical topology | `crates/dwv-store/src/lib.rs` (`RandomAccessStore`, `StoreCapabilities`); `crates/dwv-core/src/topology.rs` (`TopologySnapshot`, assignments); `crates/dwv-store-file/src/file_store.rs`; `crates/dwv-sim/src/media.rs` (`MediaConfig`/`MediaSimulator`) | CONFORMANT | Store identity/capabilities and logical role bindings remain separate. File and simulated stores do not encode data/parity roles. |
+| 3.2 Codec independence | `crates/dwv-codec/src/lib.rs` (`ParityCodec`, `XorReference`); codec bounded and golden-vector tests | CONFORMANT | Codec consumes geometry, coding position, ranges, and bytes only. No store, topology, recovery, or frontend dependency is introduced. |
+| 3.3 Executor ownership | `crates/dwv-store/src/lib.rs` (`OperationSlotTable`, `RandomAccessStore`); `crates/dwv-service/src/admission.rs`; operation-slot and service lifecycle tests | CONFORMANT | Slot generations, buffers, permits, completion evidence, abandonment, and drain remain executor/service concerns. |
+| 3.4 Simulator layering | `crates/dwv-sim/src/media.rs` (`MediaSimulator`, `MediaSchedule`, `MediaTrace`); parent protocol adapter in `crates/dwv-sim/src/lib.rs` (`Simulator`); `media_model_replays_without_protocol_state` and existing schedule/replay tests | LOCAL CLARIFICATION completed | Low-level media state now has a role-neutral module with no parity, dirty-region, checksum, envelope, recovery-schema, or SQLite dependency. The parent fixture owns recovery/envelope state and adapts protocol schedules. Evidence is deterministic and portable; it does not claim a production executor or physical durability. |
+| 3.5 Persistent and trace format identity | `crates/dwv-format/src/lib.rs`; `crates/dwv-trace/src/lib.rs`; `crates/dwv-recovery-sqlite/src/lib.rs`; hostile envelope and normalized-trace tests | CONFORMANT | Existing magic/profile/features/version and schema checks remain the family boundary. No reserved filesystem or allocator fields were added. |
+| 3.6 Durability versus array protection | `crates/dwv-core/src/lib.rs` (`DurabilityIntent`); `crates/dwv-transaction-ref/src/action.rs`; topology/profile and service planning code | CONFORMANT | Request ordering/durability remains distinct from array-level parity. No per-object protection API was added. |
+| 3.7 Namespace placement scope | No namespace placement or allocator implementation is present in the inspected portable crates; architecture Section 3.7 remains the future namespace owner | NOT YET APPLICABLE | No placeholder allocator or filesystem machinery is added. Entry condition: an accepted namespace/frontend OpenSpec with deterministic whole-file placement semantics. |
+| 3.8 Current protocol specificity | `crates/dwv-service/src/service.rs`; `crates/dwv-recovery/src/*`; `crates/dwv-transaction-ref/src/*`; `src/demo.rs`; existing portable demo and recovery evidence | CONFORMANT | Block parity, recovery state, integrity invalidation, rebuild, verification, and CLI semantics remain DiskWeave-specific. |
+| 3.9 No speculative production machinery | Scoped source audit across `crates/`, `src/`, and `docs`; no unused object/protection/allocator API was found | CONFORMANT | No new speculative crate, feature, CLI, schema, or universal transaction/effect framework was introduced. |
+
+The audit inspected code and tests directly. `cargo check --workspace` passed
+after the simulator seam change; `cargo test -p dwv-sim` passed 28 tests,
+including the new role-neutral media test.
+
+### 12.2 Goal-v3 status and carryover
+
+- **Completed and retained:** OS-007, OS-009, OS-017, OS-024, VE-001 through
+  VE-005 declared evidence, the bounded portable `dwv demo` path, and prior
+  recovery/verification artifacts. Their historical documents remain unchanged.
+- **Corrective work completed:** the only demonstrated v0.8 implementation gap
+  found in this pass was simulator layering. `crates/dwv-sim/src/media.rs`
+  now owns role-neutral media/fault state; `Simulator` remains the
+  DiskWeave-specific protocol fixture.
+- **Platform-gated:** live macOS bridge, Linux ublk/io_uring, and physical
+  power-loss durability remain gated by their existing evidence entry
+  conditions. The portable media model does not widen those claims.
+- **Not started but valid future work:** namespace placement is absent and
+  remains gated behind an accepted namespace/frontend consumer; no production
+  placeholder is permitted.
+
+### 12.3 Dependency/status index
+
+The focused and integrated acceptance run is complete: workspace tests,
+Clippy, formatting, metadata, strict OpenSpec validation, and the portable
+`dwv demo` workflow all passed. No additional portable implementation is
+dependency-ready in this goal; the remaining entry conditions are the existing
+platform gates, so the next action is final artifact review and goal closure.

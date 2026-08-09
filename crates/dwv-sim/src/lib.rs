@@ -6,16 +6,23 @@
 
 use dwv_core::TopologyEpoch;
 use dwv_store::{
-    BufferToken, ByteRange, CapabilityEvidenceId, CapabilitySupport, ChildOperationId,
-    CompletedRangeSet, CompletionDisposition, Evidence, FenceId, PersistenceEvidence,
-    StoreCapabilities, StoreCompletion, StoreError, StoreId, StoreOperation, StoreRequest,
-    StoreRequestKind, StoreWriteWatermark, WriteIntent,
+    ByteRange, CapabilityEvidenceId, CapabilitySupport, ChildOperationId, StoreCapabilities,
+    StoreError, StoreId, StoreOperation, StoreWriteWatermark, WriteIntent,
 };
+#[cfg(test)]
+use dwv_store::{CompletionDisposition, PersistenceEvidence};
 use std::fmt;
 
 mod checksum_model;
 mod envelope_model;
+mod media;
 mod recovery_model;
+
+pub use media::{
+    CompletionFault, Delivery, MediaConfig, MediaEffect, MediaError, MediaSchedule,
+    MediaScheduleStep, MediaSimulator, MediaStateSnapshot, MediaTrace, MediaTraceEvent,
+    MediaVolatileWriteSnapshot, PowerLossPolicy,
+};
 
 pub use envelope_model::{
     EnvelopeCutPoint, EnvelopeModelOutcome, EnvelopeSchedule, ProfileCost, compare_profile_costs,
@@ -30,31 +37,6 @@ pub use recovery_model::{
     RecoveryCutPoint, RecoveryModelEvent, RecoveryModelOutcome, RecoveryModelState,
     RecoverySchedule, RecoveryWrite,
 };
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MediaEffect {
-    None,
-    VolatileAll,
-    DurableAll,
-    VolatilePrefix(usize),
-    DurablePrefix(usize),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PowerLossPolicy {
-    DiscardVolatile,
-    PersistVolatile,
-    PersistPrefix(usize),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CompletionFault {
-    Success,
-    Short(usize),
-    Torn(usize),
-    Failed(u16),
-    Uncertain { effect: MediaEffect },
-}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FaultModel {
@@ -748,6 +730,20 @@ impl From<StoreError> for SimulationError {
         Self::Store(error)
     }
 }
+impl From<MediaError> for SimulationError {
+    fn from(error: MediaError) -> Self {
+        match error {
+            MediaError::Store(error) => Self::Store(error),
+            MediaError::StoreUnavailable => Self::StoreUnavailable,
+            MediaError::PendingBound { limit } => Self::PendingBound { limit },
+            MediaError::PendingIndex { index } => Self::PendingIndex { index },
+            MediaError::DeliveryIndex { index } => Self::DeliveryIndex { index },
+            MediaError::EmptyCorruptionMask => Self::EmptyCorruptionMask,
+            MediaError::InvalidFault => Self::InvalidFault,
+            MediaError::InvalidPowerLoss => Self::InvalidPowerLoss,
+        }
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VolatileWriteSnapshot {
@@ -781,14 +777,6 @@ pub struct MediaSnapshot {
     pub available: bool,
     pub recovery_database: RecoveryDatabaseSnapshot,
     pub parity_envelope_copies: Vec<ParityEnvelopeCopySnapshot>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Delivery {
-    pub completion: StoreCompletion,
-    pub read_data: Option<Vec<u8>>,
-    pub duplicate: bool,
-    pub fault: CompletionFault,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -837,81 +825,56 @@ pub struct SimulationTrace {
 }
 
 #[derive(Clone, Debug)]
-enum PendingKind {
-    Write {
-        range: ByteRange,
-        bytes: Vec<u8>,
-        intent: WriteIntent,
-    },
-    Read {
-        range: ByteRange,
-    },
-    WriteZeroes {
-        range: ByteRange,
-        intent: WriteIntent,
-    },
-    Discard {
-        range: ByteRange,
-    },
-    Flush {
-        through: StoreWriteWatermark,
-    },
-    RecoveryCommit {
+enum ParentPending {
+    Media(crate::media::MediaPendingId),
+    Recovery {
+        operation_id: ChildOperationId,
         generation: u64,
         bytes: Vec<u8>,
     },
-    ParityEnvelopeCommit {
+    ParityEnvelope {
+        operation_id: ChildOperationId,
         copy_index: usize,
         generation: u64,
         bytes: Vec<u8>,
     },
 }
 
-#[derive(Clone, Debug)]
-struct PendingOperation {
-    operation_id: ChildOperationId,
-    kind: PendingKind,
-}
-
-#[derive(Clone, Debug)]
-struct VolatileWrite {
-    range: ByteRange,
-    bytes: Vec<u8>,
-}
-
 pub struct Simulator {
-    initial_media: Vec<u8>,
-    durable_media: Vec<u8>,
-    volatile_acknowledged_writes: Vec<VolatileWrite>,
-    pending_operations: Vec<PendingOperation>,
+    media: MediaSimulator,
+    pending: Vec<ParentPending>,
     deliveries: Vec<Delivery>,
     state_deliveries: Vec<StateDelivery>,
     events: Vec<TraceEvent>,
-    available: bool,
     config: SimulatorConfig,
     recovery_database: RecoveryDatabaseSnapshot,
     parity_envelope_copies: Vec<ParityEnvelopeCopySnapshot>,
+    media_event_cursor: usize,
 }
 
 impl Simulator {
     pub fn new(initial_media: Vec<u8>, config: SimulatorConfig) -> Result<Self, SimulationError> {
-        if let Evidence::Known(length) = config.capabilities.logical_length
-            && length != initial_media.len() as u64
-        {
-            return Err(SimulationError::Store(StoreError::RangeOutsideStore {
-                end: initial_media.len() as u64,
-                length,
-            }));
-        }
-        Ok(Self {
-            durable_media: initial_media.clone(),
+        let media = MediaSimulator::new(
             initial_media,
-            volatile_acknowledged_writes: Vec::new(),
-            pending_operations: Vec::new(),
+            MediaConfig {
+                store_id: config.store_id,
+                topology_epoch: config.topology_epoch,
+                capabilities: config.capabilities.clone(),
+                max_pending: config.fault_model.max_pending,
+                write_completion: config.fault_model.write_completion,
+                write_zeroes_completion: config.fault_model.write_zeroes_completion,
+                discard_completion: config.fault_model.discard_completion,
+                read_completion: config.fault_model.read_completion,
+                flush_completion: config.fault_model.flush_completion,
+                power_loss: config.fault_model.power_loss,
+            },
+        )?;
+        Ok(Self {
+            media,
+            pending: Vec::new(),
             deliveries: Vec::new(),
             state_deliveries: Vec::new(),
             events: Vec::new(),
-            available: true,
             config,
             recovery_database: RecoveryDatabaseSnapshot {
                 committed_generation: 0,
@@ -919,51 +882,25 @@ impl Simulator {
                 commit_uncertain: false,
                 torn: false,
             },
-            parity_envelope_copies: vec![
-                ParityEnvelopeCopySnapshot {
-                    generation: 0,
-                    bytes: Vec::new(),
-                    valid: true,
-                    commit_uncertain: false,
-                },
-                ParityEnvelopeCopySnapshot {
-                    generation: 0,
-                    bytes: Vec::new(),
-                    valid: true,
-                    commit_uncertain: false,
-                },
-            ],
+            parity_envelope_copies: initial_envelopes(),
+            media_event_cursor: 0,
         })
     }
 
     pub fn reset(&mut self) {
-        self.durable_media.clone_from(&self.initial_media);
-        self.volatile_acknowledged_writes.clear();
-        self.pending_operations.clear();
+        self.media.reset();
+        self.pending.clear();
         self.deliveries.clear();
         self.state_deliveries.clear();
         self.events.clear();
-        self.available = true;
         self.recovery_database = RecoveryDatabaseSnapshot {
             committed_generation: 0,
             durable_bytes: Vec::new(),
             commit_uncertain: false,
             torn: false,
         };
-        self.parity_envelope_copies = vec![
-            ParityEnvelopeCopySnapshot {
-                generation: 0,
-                bytes: Vec::new(),
-                valid: true,
-                commit_uncertain: false,
-            },
-            ParityEnvelopeCopySnapshot {
-                generation: 0,
-                bytes: Vec::new(),
-                valid: true,
-                commit_uncertain: false,
-            },
-        ];
+        self.parity_envelope_copies = initial_envelopes();
+        self.media_event_cursor = 0;
     }
 
     pub fn run(&mut self, schedule: &Schedule) -> Result<SimulationTrace, SimulationError> {
@@ -977,32 +914,6 @@ impl Simulator {
 
     pub fn apply(&mut self, step: &ScheduleStep) -> Result<(), SimulationError> {
         match step {
-            ScheduleStep::SubmitWrite {
-                operation_id,
-                offset,
-                bytes,
-                intent,
-            } => self.submit_write(*operation_id, *offset, bytes, *intent),
-            ScheduleStep::SubmitRead {
-                operation_id,
-                offset,
-                length,
-            } => self.submit_read(*operation_id, *offset, *length),
-            ScheduleStep::SubmitWriteZeroes {
-                operation_id,
-                offset,
-                length,
-                intent,
-            } => self.submit_write_zeroes(*operation_id, *offset, *length, *intent),
-            ScheduleStep::SubmitDiscard {
-                operation_id,
-                offset,
-                length,
-            } => self.submit_discard(*operation_id, *offset, *length),
-            ScheduleStep::SubmitFlush {
-                operation_id,
-                through,
-            } => self.submit_flush(*operation_id, *through),
             ScheduleStep::SubmitRecoveryCommit {
                 operation_id,
                 generation,
@@ -1015,57 +926,52 @@ impl Simulator {
                 bytes,
             } => self.submit_parity_envelope_commit(*operation_id, *copy_index, *generation, bytes),
             ScheduleStep::Deliver { pending_index } => self.deliver(*pending_index),
-            ScheduleStep::DuplicateDelivery { delivery_index } => {
-                self.duplicate_delivery(*delivery_index)
-            }
-            ScheduleStep::InjectLatentCorruption { offset, xor_mask } => {
-                self.inject_latent_corruption(*offset, xor_mask)
-            }
             ScheduleStep::DaemonCrash => {
-                self.pending_operations.clear();
-                self.events.push(TraceEvent::DaemonCrashed);
+                self.apply_media(MediaScheduleStep::DaemonCrash)?;
+                self.clear_pending_after_restart();
                 Ok(())
             }
             ScheduleStep::ControllerReset => {
-                self.pending_operations.clear();
-                self.events.push(TraceEvent::ControllerReset);
+                self.apply_media(MediaScheduleStep::ControllerReset)?;
+                self.clear_pending_after_restart();
                 Ok(())
             }
             ScheduleStep::PowerLoss => {
-                self.power_loss()?;
-                self.pending_operations.clear();
-                self.events
-                    .push(TraceEvent::PowerLost(self.config.fault_model.power_loss));
+                self.apply_media(MediaScheduleStep::PowerLoss)?;
+                self.clear_pending_after_restart();
                 Ok(())
             }
-            ScheduleStep::Disappear => {
-                self.available = false;
-                self.events.push(TraceEvent::StoreDisappeared);
-                Ok(())
-            }
-            ScheduleStep::Reappear => {
-                self.available = true;
-                self.events.push(TraceEvent::StoreReappeared);
-                Ok(())
+            ScheduleStep::SubmitWrite { .. }
+            | ScheduleStep::SubmitRead { .. }
+            | ScheduleStep::SubmitWriteZeroes { .. }
+            | ScheduleStep::SubmitDiscard { .. }
+            | ScheduleStep::SubmitFlush { .. }
+            | ScheduleStep::DuplicateDelivery { .. }
+            | ScheduleStep::InjectLatentCorruption { .. }
+            | ScheduleStep::Disappear
+            | ScheduleStep::Reappear => {
+                let media_step = to_media_step(step).expect("matched media schedule step");
+                self.apply_media(media_step)
             }
         }
     }
 
     pub fn snapshot(&self) -> MediaSnapshot {
+        let media = self.media.snapshot();
         MediaSnapshot {
-            store_id: self.config.store_id,
-            topology_epoch: self.config.topology_epoch,
-            durable_media: self.durable_media.clone(),
-            volatile_acknowledged_writes: self
+            store_id: media.store_id,
+            topology_epoch: media.topology_epoch,
+            durable_media: media.durable_media,
+            volatile_acknowledged_writes: media
                 .volatile_acknowledged_writes
-                .iter()
+                .into_iter()
                 .map(|write| VolatileWriteSnapshot {
                     range: write.range,
-                    bytes: write.bytes.clone(),
+                    bytes: write.bytes,
                 })
                 .collect(),
-            pending_operations: self.pending_operations.len(),
-            available: self.available,
+            pending_operations: self.pending.len(),
+            available: media.available,
             recovery_database: self.recovery_database.clone(),
             parity_envelope_copies: self.parity_envelope_copies.clone(),
         }
@@ -1085,26 +991,18 @@ impl Simulator {
     }
 
     pub fn check_invariants(&self) -> Result<(), SimulationError> {
-        if self.durable_media.len() != self.initial_media.len() {
+        self.media.check_invariants()?;
+        let media_pending = self
+            .pending
+            .iter()
+            .filter(|pending| matches!(pending, ParentPending::Media(_)))
+            .count();
+        if media_pending != self.media.pending_operations() || self.parity_envelope_copies.len() < 2
+        {
             return Err(SimulationError::InvalidPowerLoss);
-        }
-        for write in &self.volatile_acknowledged_writes {
-            let end = write
-                .range
-                .offset
-                .checked_add(write.range.length)
-                .ok_or(SimulationError::InvalidPowerLoss)?;
-            if end > self.durable_media.len() as u64
-                || write.bytes.len() as u64 != write.range.length
-            {
-                return Err(SimulationError::InvalidPowerLoss);
-            }
         }
         for delivery in &self.deliveries {
             delivery.completion.validate()?;
-        }
-        if self.parity_envelope_copies.len() < 2 {
-            return Err(SimulationError::InvalidPowerLoss);
         }
         Ok(())
     }
@@ -1121,122 +1019,58 @@ impl Simulator {
         Ok(first_trace == second_trace)
     }
 
-    fn submit_write(
-        &mut self,
-        operation_id: ChildOperationId,
-        offset: u64,
-        bytes: &[u8],
-        intent: WriteIntent,
-    ) -> Result<(), SimulationError> {
-        let range = ByteRange::new(offset, bytes.len() as u64).map_err(|error| {
-            SimulationError::Store(StoreError::RangeOverflow {
-                offset: error_offset(error),
-                length: bytes.len() as u64,
-            })
-        })?;
-        self.validate_submission(
-            operation_id,
-            StoreRequestKind::Write { range, intent },
-            Some(BufferToken::new(
-                operation_id.index,
-                operation_id.slot.generation,
-            )),
-        )?;
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
-            operation_id,
-            kind: PendingKind::Write {
-                range,
-                bytes: bytes.to_vec(),
-                intent,
-            },
-        });
-        self.events.push(TraceEvent::Submitted {
-            operation_id,
-            operation: StoreOperation::Write,
-            range,
-        });
+    fn apply_media(&mut self, step: MediaScheduleStep) -> Result<(), SimulationError> {
+        let was_submission = matches!(
+            step,
+            MediaScheduleStep::SubmitWrite { .. }
+                | MediaScheduleStep::SubmitRead { .. }
+                | MediaScheduleStep::SubmitWriteZeroes { .. }
+                | MediaScheduleStep::SubmitDiscard { .. }
+                | MediaScheduleStep::SubmitFlush { .. }
+        );
+        let previous_media_pending = self.media.pending_operations();
+        self.media.apply(&step)?;
+        self.sync_media();
+        if was_submission {
+            let pending_id = self
+                .media
+                .pending_id_at(previous_media_pending)
+                .ok_or(SimulationError::InvalidPowerLoss)?;
+            self.pending.push(ParentPending::Media(pending_id));
+        }
         Ok(())
     }
 
-    fn submit_read(
-        &mut self,
-        operation_id: ChildOperationId,
-        offset: u64,
-        length: u64,
-    ) -> Result<(), SimulationError> {
-        let range = ByteRange::new(offset, length).map_err(|error| {
-            SimulationError::Store(StoreError::RangeOverflow {
-                offset: error_offset(error),
-                length,
-            })
-        })?;
-        self.validate_submission(
-            operation_id,
-            StoreRequestKind::Read { range },
-            Some(BufferToken::new(
-                operation_id.index,
-                operation_id.slot.generation,
-            )),
-        )?;
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
-            operation_id,
-            kind: PendingKind::Read { range },
-        });
-        self.events.push(TraceEvent::Submitted {
-            operation_id,
-            operation: StoreOperation::Read,
-            range,
-        });
-        Ok(())
+    fn sync_media(&mut self) {
+        let media_events = self.media.events();
+        for event in &media_events[self.media_event_cursor..] {
+            self.events.push(match event {
+                MediaTraceEvent::Submitted {
+                    operation_id,
+                    operation,
+                    range,
+                } => TraceEvent::Submitted {
+                    operation_id: *operation_id,
+                    operation: *operation,
+                    range: *range,
+                },
+                MediaTraceEvent::Delivered(delivery) => TraceEvent::Delivered(delivery.clone()),
+                MediaTraceEvent::LatentCorruption { range } => {
+                    TraceEvent::LatentCorruption { range: *range }
+                }
+                MediaTraceEvent::DaemonCrashed => TraceEvent::DaemonCrashed,
+                MediaTraceEvent::ControllerReset => TraceEvent::ControllerReset,
+                MediaTraceEvent::PowerLost(policy) => TraceEvent::PowerLost(*policy),
+                MediaTraceEvent::StoreDisappeared => TraceEvent::StoreDisappeared,
+                MediaTraceEvent::StoreReappeared => TraceEvent::StoreReappeared,
+            });
+        }
+        self.media_event_cursor = media_events.len();
+        self.deliveries = self.media.deliveries().to_vec();
     }
 
-    fn submit_write_zeroes(
-        &mut self,
-        operation_id: ChildOperationId,
-        offset: u64,
-        length: u64,
-        intent: WriteIntent,
-    ) -> Result<(), SimulationError> {
-        let range = self.make_range(offset, length)?;
-        self.validate_submission(
-            operation_id,
-            StoreRequestKind::WriteZeroes { range, intent },
-            None,
-        )?;
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
-            operation_id,
-            kind: PendingKind::WriteZeroes { range, intent },
-        });
-        self.events.push(TraceEvent::Submitted {
-            operation_id,
-            operation: StoreOperation::WriteZeroes,
-            range,
-        });
-        Ok(())
-    }
-
-    fn submit_discard(
-        &mut self,
-        operation_id: ChildOperationId,
-        offset: u64,
-        length: u64,
-    ) -> Result<(), SimulationError> {
-        let range = self.make_range(offset, length)?;
-        self.validate_submission(operation_id, StoreRequestKind::Discard { range }, None)?;
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
-            operation_id,
-            kind: PendingKind::Discard { range },
-        });
-        self.events.push(TraceEvent::Submitted {
-            operation_id,
-            operation: StoreOperation::Discard,
-            range,
-        });
-        Ok(())
+    fn clear_pending_after_restart(&mut self) {
+        self.pending.clear();
     }
 
     fn submit_recovery_commit(
@@ -1245,20 +1079,19 @@ impl Simulator {
         generation: u64,
         bytes: &[u8],
     ) -> Result<(), SimulationError> {
-        if !self.available {
+        self.ensure_pending_capacity()?;
+        if !self.media.is_available() {
             return Err(SimulationError::StoreUnavailable);
         }
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
+        self.pending.push(ParentPending::Recovery {
             operation_id,
-            kind: PendingKind::RecoveryCommit {
-                generation,
-                bytes: bytes.to_vec(),
-            },
+            generation,
+            bytes: bytes.to_vec(),
         });
-        let kind = StateCommitKind::RecoveryDatabase;
-        self.events
-            .push(TraceEvent::StateCommitSubmitted { operation_id, kind });
+        self.events.push(TraceEvent::StateCommitSubmitted {
+            operation_id,
+            kind: StateCommitKind::RecoveryDatabase,
+        });
         Ok(())
     }
 
@@ -1272,104 +1105,25 @@ impl Simulator {
         if copy_index >= self.parity_envelope_copies.len() {
             return Err(SimulationError::EnvelopeIndex { index: copy_index });
         }
-        if !self.available {
+        self.ensure_pending_capacity()?;
+        if !self.media.is_available() {
             return Err(SimulationError::StoreUnavailable);
         }
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
+        self.pending.push(ParentPending::ParityEnvelope {
             operation_id,
-            kind: PendingKind::ParityEnvelopeCommit {
-                copy_index,
-                generation,
-                bytes: bytes.to_vec(),
-            },
+            copy_index,
+            generation,
+            bytes: bytes.to_vec(),
         });
-        let kind = StateCommitKind::ParityEnvelope { copy_index };
-        self.events
-            .push(TraceEvent::StateCommitSubmitted { operation_id, kind });
-        Ok(())
-    }
-
-    fn inject_latent_corruption(
-        &mut self,
-        offset: u64,
-        xor_mask: &[u8],
-    ) -> Result<(), SimulationError> {
-        if xor_mask.is_empty() {
-            return Err(SimulationError::EmptyCorruptionMask);
-        }
-        let range = self.make_range(offset, xor_mask.len() as u64)?;
-        let end = range
-            .offset
-            .checked_add(range.length)
-            .ok_or(SimulationError::InvalidPowerLoss)?;
-        if end > self.durable_media.len() as u64 {
-            return Err(SimulationError::Store(StoreError::RangeOutsideStore {
-                end,
-                length: self.durable_media.len() as u64,
-            }));
-        }
-        let start = range.offset as usize;
-        for (byte, mask) in self.durable_media[start..start + xor_mask.len()]
-            .iter_mut()
-            .zip(xor_mask)
-        {
-            *byte ^= mask;
-        }
-        self.events.push(TraceEvent::LatentCorruption { range });
-        Ok(())
-    }
-
-    fn make_range(&self, offset: u64, length: u64) -> Result<ByteRange, SimulationError> {
-        ByteRange::new(offset, length).map_err(|error| {
-            SimulationError::Store(StoreError::RangeOverflow {
-                offset: error_offset(error),
-                length,
-            })
-        })
-    }
-
-    fn submit_flush(
-        &mut self,
-        operation_id: ChildOperationId,
-        through: StoreWriteWatermark,
-    ) -> Result<(), SimulationError> {
-        self.validate_submission(operation_id, StoreRequestKind::Flush { through }, None)?;
-        self.ensure_pending_capacity()?;
-        self.pending_operations.push(PendingOperation {
+        self.events.push(TraceEvent::StateCommitSubmitted {
             operation_id,
-            kind: PendingKind::Flush { through },
+            kind: StateCommitKind::ParityEnvelope { copy_index },
         });
-        self.events.push(TraceEvent::Submitted {
-            operation_id,
-            operation: StoreOperation::Flush,
-            range: ByteRange::empty(),
-        });
-        Ok(())
-    }
-
-    fn validate_submission(
-        &self,
-        operation_id: ChildOperationId,
-        kind: StoreRequestKind,
-        buffer: Option<BufferToken>,
-    ) -> Result<(), SimulationError> {
-        if !self.available {
-            return Err(SimulationError::StoreUnavailable);
-        }
-        let request = StoreRequest {
-            operation_id: dwv_store::OperationId(u64::from(operation_id.index)),
-            store_id: self.config.store_id,
-            topology_epoch: self.config.topology_epoch,
-            kind,
-            buffer,
-        };
-        request.validate(&self.config.capabilities)?;
         Ok(())
     }
 
     fn ensure_pending_capacity(&self) -> Result<(), SimulationError> {
-        if self.pending_operations.len() >= self.config.fault_model.max_pending {
+        if self.pending.len() >= self.config.fault_model.max_pending {
             return Err(SimulationError::PendingBound {
                 limit: self.config.fault_model.max_pending,
             });
@@ -1378,370 +1132,34 @@ impl Simulator {
     }
 
     fn deliver(&mut self, pending_index: usize) -> Result<(), SimulationError> {
-        if pending_index >= self.pending_operations.len() {
-            return Err(SimulationError::PendingIndex {
-                index: pending_index,
-            });
-        }
-        if !self.available {
-            return Err(SimulationError::StoreUnavailable);
-        }
-        let pending = self.pending_operations.remove(pending_index);
-        match pending.kind {
-            PendingKind::Write {
-                range,
+        let pending =
+            self.pending
+                .get(pending_index)
+                .cloned()
+                .ok_or(SimulationError::PendingIndex {
+                    index: pending_index,
+                })?;
+        self.pending.remove(pending_index);
+        match pending {
+            ParentPending::Media(id) => {
+                self.media.deliver_pending(id)?;
+                self.sync_media();
+            }
+            ParentPending::Recovery {
+                operation_id,
+                generation,
                 bytes,
-                intent,
-            } => {
-                let delivery = self.deliver_write(pending.operation_id, range, &bytes, intent)?;
-                self.events.push(TraceEvent::Delivered(delivery.clone()));
-                self.deliveries.push(delivery);
-            }
-            PendingKind::Read { range } => {
-                let delivery = self.deliver_read(pending.operation_id, range)?;
-                self.events.push(TraceEvent::Delivered(delivery.clone()));
-                self.deliveries.push(delivery);
-            }
-            PendingKind::WriteZeroes { range, intent } => {
-                let delivery = self.deliver_zeroes(
-                    pending.operation_id,
-                    range,
-                    intent,
-                    self.config.fault_model.write_zeroes_completion,
-                    false,
-                )?;
-                self.events.push(TraceEvent::Delivered(delivery.clone()));
-                self.deliveries.push(delivery);
-            }
-            PendingKind::Discard { range } => {
-                let delivery = self.deliver_zeroes(
-                    pending.operation_id,
-                    range,
-                    WriteIntent::Ordinary,
-                    self.config.fault_model.discard_completion,
-                    true,
-                )?;
-                self.events.push(TraceEvent::Delivered(delivery.clone()));
-                self.deliveries.push(delivery);
-            }
-            PendingKind::Flush { through } => {
-                let delivery = self.deliver_flush(pending.operation_id, through)?;
-                self.events.push(TraceEvent::Delivered(delivery.clone()));
-                self.deliveries.push(delivery);
-            }
-            PendingKind::RecoveryCommit { generation, bytes } => {
-                let delivery =
-                    self.deliver_recovery_commit(pending.operation_id, generation, &bytes);
-                self.events
-                    .push(TraceEvent::StateCommitDelivered(delivery.clone()));
-                self.state_deliveries.push(delivery);
-            }
-            PendingKind::ParityEnvelopeCommit {
+            } => self.deliver_recovery_commit(operation_id, generation, &bytes),
+            ParentPending::ParityEnvelope {
+                operation_id,
                 copy_index,
                 generation,
                 bytes,
             } => {
-                let delivery = self.deliver_parity_envelope_commit(
-                    pending.operation_id,
-                    copy_index,
-                    generation,
-                    &bytes,
-                )?;
-                self.events
-                    .push(TraceEvent::StateCommitDelivered(delivery.clone()));
-                self.state_deliveries.push(delivery);
+                self.deliver_parity_envelope_commit(operation_id, copy_index, generation, &bytes)?
             }
         }
         Ok(())
-    }
-
-    fn deliver_write(
-        &mut self,
-        operation_id: ChildOperationId,
-        range: ByteRange,
-        bytes: &[u8],
-        intent: WriteIntent,
-    ) -> Result<Delivery, SimulationError> {
-        let fault = self.config.fault_model.write_completion;
-        let (disposition, effect, persistence, completed_length) = match fault {
-            CompletionFault::Success => {
-                let effect = if uses_fua(intent) {
-                    MediaEffect::DurableAll
-                } else {
-                    MediaEffect::VolatileAll
-                };
-                let persistence = if uses_fua(intent) {
-                    PersistenceEvidence::DurableByFua {
-                        store_id: self.config.store_id,
-                        topology_epoch: self.config.topology_epoch,
-                        through: StoreWriteWatermark(u64::from(operation_id.index) + 1),
-                    }
-                } else {
-                    PersistenceEvidence::VolatileOrUnknown
-                };
-                (
-                    CompletionDisposition::Success,
-                    effect,
-                    persistence,
-                    Some(bytes.len()),
-                )
-            }
-            CompletionFault::Short(length) => {
-                if length >= bytes.len() {
-                    return Err(SimulationError::InvalidFault);
-                }
-                (
-                    CompletionDisposition::Short,
-                    if uses_fua(intent) {
-                        MediaEffect::DurablePrefix(length)
-                    } else {
-                        MediaEffect::VolatilePrefix(length)
-                    },
-                    PersistenceEvidence::VolatileOrUnknown,
-                    Some(length),
-                )
-            }
-            CompletionFault::Torn(length) => {
-                if length > bytes.len() {
-                    return Err(SimulationError::InvalidFault);
-                }
-                (
-                    CompletionDisposition::Uncertain,
-                    if uses_fua(intent) {
-                        MediaEffect::DurablePrefix(length)
-                    } else {
-                        MediaEffect::VolatilePrefix(length)
-                    },
-                    PersistenceEvidence::VolatileOrUnknown,
-                    None,
-                )
-            }
-            CompletionFault::Failed(code) => (
-                CompletionDisposition::Failed(StoreError::BackendFailure { code }),
-                MediaEffect::None,
-                PersistenceEvidence::VolatileOrUnknown,
-                None,
-            ),
-            CompletionFault::Uncertain { effect } => (
-                CompletionDisposition::Uncertain,
-                effect,
-                PersistenceEvidence::VolatileOrUnknown,
-                None,
-            ),
-        };
-        self.apply_effect(range, bytes, effect)?;
-        let completed = completed_for(range, &disposition, completed_length)?;
-        Ok(Delivery {
-            completion: StoreCompletion::new(
-                operation_id,
-                range,
-                completed,
-                disposition,
-                persistence,
-            )?,
-            read_data: None,
-            duplicate: false,
-            fault,
-        })
-    }
-
-    fn deliver_zeroes(
-        &mut self,
-        operation_id: ChildOperationId,
-        range: ByteRange,
-        intent: WriteIntent,
-        fault: CompletionFault,
-        durable_default: bool,
-    ) -> Result<Delivery, SimulationError> {
-        let length = usize::try_from(range.length).map_err(|_| SimulationError::InvalidFault)?;
-        let bytes = vec![0; length];
-        let (disposition, effect, persistence, completed_length) = match fault {
-            CompletionFault::Success => {
-                let durable = durable_default || uses_fua(intent);
-                (
-                    CompletionDisposition::Success,
-                    if durable {
-                        MediaEffect::DurableAll
-                    } else {
-                        MediaEffect::VolatileAll
-                    },
-                    if uses_fua(intent) {
-                        PersistenceEvidence::DurableByFua {
-                            store_id: self.config.store_id,
-                            topology_epoch: self.config.topology_epoch,
-                            through: StoreWriteWatermark(u64::from(operation_id.index) + 1),
-                        }
-                    } else {
-                        PersistenceEvidence::VolatileOrUnknown
-                    },
-                    Some(length),
-                )
-            }
-            CompletionFault::Short(completed) => {
-                if completed >= length {
-                    return Err(SimulationError::InvalidFault);
-                }
-                let durable = durable_default || uses_fua(intent);
-                (
-                    CompletionDisposition::Short,
-                    if durable {
-                        MediaEffect::DurablePrefix(completed)
-                    } else {
-                        MediaEffect::VolatilePrefix(completed)
-                    },
-                    PersistenceEvidence::VolatileOrUnknown,
-                    Some(completed),
-                )
-            }
-            CompletionFault::Torn(torn_length) => {
-                if torn_length > length {
-                    return Err(SimulationError::InvalidFault);
-                }
-                let durable = durable_default || uses_fua(intent);
-                (
-                    CompletionDisposition::Uncertain,
-                    if durable {
-                        MediaEffect::DurablePrefix(torn_length)
-                    } else {
-                        MediaEffect::VolatilePrefix(torn_length)
-                    },
-                    PersistenceEvidence::VolatileOrUnknown,
-                    None,
-                )
-            }
-            CompletionFault::Failed(code) => (
-                CompletionDisposition::Failed(StoreError::BackendFailure { code }),
-                MediaEffect::None,
-                PersistenceEvidence::VolatileOrUnknown,
-                None,
-            ),
-            CompletionFault::Uncertain { effect } => (
-                CompletionDisposition::Uncertain,
-                effect,
-                PersistenceEvidence::VolatileOrUnknown,
-                None,
-            ),
-        };
-        self.apply_effect(range, &bytes, effect)?;
-        let completed = completed_for(range, &disposition, completed_length)?;
-        Ok(Delivery {
-            completion: StoreCompletion::new(
-                operation_id,
-                range,
-                completed,
-                disposition,
-                persistence,
-            )?,
-            read_data: None,
-            duplicate: false,
-            fault,
-        })
-    }
-
-    fn deliver_read(
-        &mut self,
-        operation_id: ChildOperationId,
-        range: ByteRange,
-    ) -> Result<Delivery, SimulationError> {
-        let fault = self.config.fault_model.read_completion;
-        let view = self.read_view();
-        let start = range.offset as usize;
-        let end = (range.offset + range.length) as usize;
-        let (disposition, data, completed_length) = match fault {
-            CompletionFault::Success => (
-                CompletionDisposition::Success,
-                Some(view[start..end].to_vec()),
-                Some(range.length as usize),
-            ),
-            CompletionFault::Short(length) => {
-                if length >= range.length as usize {
-                    return Err(SimulationError::InvalidFault);
-                }
-                (
-                    CompletionDisposition::Short,
-                    Some(view[start..start + length].to_vec()),
-                    Some(length),
-                )
-            }
-            CompletionFault::Torn(_) => (CompletionDisposition::Uncertain, None, None),
-            CompletionFault::Failed(code) => (
-                CompletionDisposition::Failed(StoreError::BackendFailure { code }),
-                None,
-                None,
-            ),
-            CompletionFault::Uncertain { .. } => (CompletionDisposition::Uncertain, None, None),
-        };
-        let completed = completed_for(range, &disposition, completed_length)?;
-        Ok(Delivery {
-            completion: StoreCompletion::new(
-                operation_id,
-                range,
-                completed,
-                disposition,
-                PersistenceEvidence::VolatileOrUnknown,
-            )?,
-            read_data: data,
-            duplicate: false,
-            fault,
-        })
-    }
-
-    fn deliver_flush(
-        &mut self,
-        operation_id: ChildOperationId,
-        through: StoreWriteWatermark,
-    ) -> Result<Delivery, SimulationError> {
-        let range = ByteRange::empty();
-        let persistence = match self.config.fault_model.flush_completion {
-            CompletionFault::Success => {
-                self.flush_volatile();
-                PersistenceEvidence::DurableByFence {
-                    fence: dwv_store::StoreFenceRef {
-                        fence_id: FenceId(u64::from(operation_id.index)),
-                        store_id: self.config.store_id,
-                        topology_epoch: self.config.topology_epoch,
-                        through,
-                        capability_evidence_id: self.config.capabilities.evidence_id,
-                    },
-                }
-            }
-            CompletionFault::Short(_) => return Err(SimulationError::InvalidFault),
-            CompletionFault::Torn(_) => PersistenceEvidence::VolatileOrUnknown,
-            CompletionFault::Failed(code) => {
-                return Ok(Delivery {
-                    completion: StoreCompletion::new(
-                        operation_id,
-                        range,
-                        CompletedRangeSet::empty(),
-                        CompletionDisposition::Failed(StoreError::BackendFailure { code }),
-                        PersistenceEvidence::VolatileOrUnknown,
-                    )?,
-                    read_data: None,
-                    duplicate: false,
-                    fault: self.config.fault_model.flush_completion,
-                });
-            }
-            CompletionFault::Uncertain { .. } => PersistenceEvidence::VolatileOrUnknown,
-        };
-        Ok(Delivery {
-            completion: StoreCompletion::new(
-                operation_id,
-                range,
-                CompletedRangeSet::empty(),
-                if matches!(
-                    self.config.fault_model.flush_completion,
-                    CompletionFault::Success
-                ) {
-                    CompletionDisposition::Success
-                } else {
-                    CompletionDisposition::Uncertain
-                },
-                persistence,
-            )?,
-            read_data: None,
-            duplicate: false,
-            fault: self.config.fault_model.flush_completion,
-        })
     }
 
     fn deliver_recovery_commit(
@@ -1749,7 +1167,7 @@ impl Simulator {
         operation_id: ChildOperationId,
         generation: u64,
         bytes: &[u8],
-    ) -> StateDelivery {
+    ) {
         let fault = self.config.fault_model.recovery_commit;
         let mut committed = false;
         match fault {
@@ -1775,12 +1193,15 @@ impl Simulator {
                 self.recovery_database.commit_uncertain = true;
             }
         }
-        StateDelivery {
+        let delivery = StateDelivery {
             operation_id,
             kind: StateCommitKind::RecoveryDatabase,
             fault,
             committed,
-        }
+        };
+        self.events
+            .push(TraceEvent::StateCommitDelivered(delivery.clone()));
+        self.state_deliveries.push(delivery);
     }
 
     fn deliver_parity_envelope_commit(
@@ -1789,7 +1210,7 @@ impl Simulator {
         copy_index: usize,
         generation: u64,
         bytes: &[u8],
-    ) -> Result<StateDelivery, SimulationError> {
+    ) -> Result<(), SimulationError> {
         let copy = self
             .parity_envelope_copies
             .get_mut(copy_index)
@@ -1819,147 +1240,107 @@ impl Simulator {
                 copy.commit_uncertain = true;
             }
         }
-        Ok(StateDelivery {
+        let delivery = StateDelivery {
             operation_id,
             kind: StateCommitKind::ParityEnvelope { copy_index },
             fault,
             committed,
-        })
-    }
-
-    fn duplicate_delivery(&mut self, delivery_index: usize) -> Result<(), SimulationError> {
-        let original =
-            self.deliveries
-                .get(delivery_index)
-                .cloned()
-                .ok_or(SimulationError::DeliveryIndex {
-                    index: delivery_index,
-                })?;
-        let completion = StoreCompletion::new(
-            original.completion.operation_id,
-            original.completion.requested,
-            original.completion.completed.clone(),
-            CompletionDisposition::Duplicate,
-            original.completion.persistence,
-        )?;
-        let duplicate = Delivery {
-            completion,
-            read_data: original.read_data,
-            duplicate: true,
-            fault: original.fault,
         };
-        self.events.push(TraceEvent::Delivered(duplicate.clone()));
-        self.deliveries.push(duplicate);
-        Ok(())
-    }
-
-    fn apply_effect(
-        &mut self,
-        range: ByteRange,
-        bytes: &[u8],
-        effect: MediaEffect,
-    ) -> Result<(), SimulationError> {
-        let length = match effect {
-            MediaEffect::None => 0,
-            MediaEffect::VolatileAll | MediaEffect::DurableAll => bytes.len(),
-            MediaEffect::VolatilePrefix(length) | MediaEffect::DurablePrefix(length) => {
-                if length > bytes.len() {
-                    return Err(SimulationError::InvalidFault);
-                }
-                length
-            }
-        };
-        if length == 0 {
-            return Ok(());
-        }
-        let partial = ByteRange::new(range.offset, length as u64)
-            .map_err(|_| SimulationError::InvalidPowerLoss)?;
-        match effect {
-            MediaEffect::DurableAll | MediaEffect::DurablePrefix(_) => {
-                self.durable_media[range.offset as usize..range.offset as usize + length]
-                    .copy_from_slice(&bytes[..length]);
-            }
-            MediaEffect::VolatileAll | MediaEffect::VolatilePrefix(_) => {
-                self.volatile_acknowledged_writes.push(VolatileWrite {
-                    range: partial,
-                    bytes: bytes[..length].to_vec(),
-                });
-            }
-            MediaEffect::None => {}
-        }
-        Ok(())
-    }
-
-    fn read_view(&self) -> Vec<u8> {
-        let mut view = self.durable_media.clone();
-        for write in &self.volatile_acknowledged_writes {
-            let start = write.range.offset as usize;
-            view[start..start + write.bytes.len()].copy_from_slice(&write.bytes);
-        }
-        view
-    }
-
-    fn flush_volatile(&mut self) {
-        for write in self.volatile_acknowledged_writes.drain(..) {
-            let start = write.range.offset as usize;
-            self.durable_media[start..start + write.bytes.len()].copy_from_slice(&write.bytes);
-        }
-    }
-
-    fn power_loss(&mut self) -> Result<(), SimulationError> {
-        match self.config.fault_model.power_loss {
-            PowerLossPolicy::DiscardVolatile => self.volatile_acknowledged_writes.clear(),
-            PowerLossPolicy::PersistVolatile => self.flush_volatile(),
-            PowerLossPolicy::PersistPrefix(length) => {
-                for write in self.volatile_acknowledged_writes.drain(..) {
-                    let length = length.min(write.bytes.len());
-                    let start = write.range.offset as usize;
-                    self.durable_media[start..start + length]
-                        .copy_from_slice(&write.bytes[..length]);
-                }
-            }
-        }
+        self.events
+            .push(TraceEvent::StateCommitDelivered(delivery.clone()));
+        self.state_deliveries.push(delivery);
         Ok(())
     }
 }
 
-fn uses_fua(intent: WriteIntent) -> bool {
-    matches!(intent, WriteIntent::Fua | WriteIntent::FuaAndPreflush)
+fn initial_envelopes() -> Vec<ParityEnvelopeCopySnapshot> {
+    vec![
+        ParityEnvelopeCopySnapshot {
+            generation: 0,
+            bytes: Vec::new(),
+            valid: true,
+            commit_uncertain: false,
+        },
+        ParityEnvelopeCopySnapshot {
+            generation: 0,
+            bytes: Vec::new(),
+            valid: true,
+            commit_uncertain: false,
+        },
+    ]
 }
 
-fn completed_for(
-    range: ByteRange,
-    disposition: &CompletionDisposition,
-    completed_length: Option<usize>,
-) -> Result<CompletedRangeSet, SimulationError> {
-    match disposition {
-        CompletionDisposition::Success => {
-            if range.is_empty() {
-                Ok(CompletedRangeSet::empty())
-            } else {
-                Ok(CompletedRangeSet::new(vec![range])?)
+fn to_media_step(step: &ScheduleStep) -> Option<MediaScheduleStep> {
+    Some(match step {
+        ScheduleStep::SubmitWrite {
+            operation_id,
+            offset,
+            bytes,
+            intent,
+        } => MediaScheduleStep::SubmitWrite {
+            operation_id: *operation_id,
+            offset: *offset,
+            bytes: bytes.clone(),
+            intent: *intent,
+        },
+        ScheduleStep::SubmitRead {
+            operation_id,
+            offset,
+            length,
+        } => MediaScheduleStep::SubmitRead {
+            operation_id: *operation_id,
+            offset: *offset,
+            length: *length,
+        },
+        ScheduleStep::SubmitWriteZeroes {
+            operation_id,
+            offset,
+            length,
+            intent,
+        } => MediaScheduleStep::SubmitWriteZeroes {
+            operation_id: *operation_id,
+            offset: *offset,
+            length: *length,
+            intent: *intent,
+        },
+        ScheduleStep::SubmitDiscard {
+            operation_id,
+            offset,
+            length,
+        } => MediaScheduleStep::SubmitDiscard {
+            operation_id: *operation_id,
+            offset: *offset,
+            length: *length,
+        },
+        ScheduleStep::SubmitFlush {
+            operation_id,
+            through,
+        } => MediaScheduleStep::SubmitFlush {
+            operation_id: *operation_id,
+            through: *through,
+        },
+        ScheduleStep::Deliver { pending_index } => MediaScheduleStep::Deliver {
+            pending_index: *pending_index,
+        },
+        ScheduleStep::DuplicateDelivery { delivery_index } => {
+            MediaScheduleStep::DuplicateDelivery {
+                delivery_index: *delivery_index,
             }
         }
-        CompletionDisposition::Short => {
-            let length = completed_length.ok_or(SimulationError::InvalidFault)?;
-            if length == 0 {
-                Ok(CompletedRangeSet::empty())
-            } else {
-                let completed = ByteRange::new(range.offset, length as u64)
-                    .map_err(|_| SimulationError::InvalidFault)?;
-                Ok(CompletedRangeSet::new(vec![completed])?)
+        ScheduleStep::InjectLatentCorruption { offset, xor_mask } => {
+            MediaScheduleStep::InjectLatentCorruption {
+                offset: *offset,
+                xor_mask: xor_mask.clone(),
             }
         }
-        CompletionDisposition::Failed(_)
-        | CompletionDisposition::Uncertain
-        | CompletionDisposition::Duplicate => Ok(CompletedRangeSet::empty()),
-    }
-}
-
-fn error_offset(error: dwv_core::RangeError) -> u64 {
-    match error {
-        dwv_core::RangeError::Overflow { offset, .. } => offset,
-    }
+        ScheduleStep::DaemonCrash => MediaScheduleStep::DaemonCrash,
+        ScheduleStep::ControllerReset => MediaScheduleStep::ControllerReset,
+        ScheduleStep::PowerLoss => MediaScheduleStep::PowerLoss,
+        ScheduleStep::Disappear => MediaScheduleStep::Disappear,
+        ScheduleStep::Reappear => MediaScheduleStep::Reappear,
+        ScheduleStep::SubmitRecoveryCommit { .. }
+        | ScheduleStep::SubmitParityEnvelopeCommit { .. } => return None,
+    })
 }
 
 #[cfg(test)]

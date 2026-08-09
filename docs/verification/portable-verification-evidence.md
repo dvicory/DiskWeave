@@ -225,3 +225,50 @@ corpus tests and lifecycle-focused suites passed; formatting, workspace
 Clippy, metadata, and strict OpenSpec validation passed. OpenSpec validation
 reported 21/21 items valid; informational long-requirement notices are not
 failures.
+
+
+## v0.8 simulator-layer correction checkpoint
+
+Date: 2026-08-08
+
+Change under test: `crates/dwv-sim/src/media.rs` now contains the
+role-neutral `MediaSimulator`, `MediaSchedule`, and `MediaTrace` state. The
+DiskWeave-specific `Simulator` in `crates/dwv-sim/src/lib.rs` adapts protocol
+schedules and retains recovery-database and parity-envelope fixture state.
+
+Focused commands:
+
+```text
+cargo test -p dwv-sim
+cargo check --workspace
+```
+
+Observed: 28 `dwv-sim` tests passed, including
+`media_model_replays_without_protocol_state`; workspace compilation passed.
+The focused media test exercises volatile write acknowledgement, flush
+persistence, zero pending operations, and deterministic replay without
+constructing protocol recovery or envelope state.
+
+Integrated commands:
+
+```text
+cargo test --workspace
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo fmt --all -- --check
+cargo metadata --format-version 1 --no-deps
+openspec validate --all --strict --json
+```
+
+Observed: 233 workspace tests passed with one ignored; Clippy, formatting,
+metadata, and strict OpenSpec validation passed. OpenSpec validation reported
+21/21 items valid with informational long-requirement notices only.
+
+Portable CLI evidence used disposable root `/tmp/dwv-v4.KqoBWQ`. `demo init`,
+`demo run`, `demo status`, `demo inspect`, `demo capabilities`, `demo verify`,
+`demo trace-export`, `demo trace-render`, and `demo trace-replay` all
+succeeded. Healthy read/write/flush/reopen, degraded read, four-chunk
+separate-target rebuild, exhaustive clean verification, and 11-event
+trace-render/replay equivalence remained intact. The output continued to
+bound claims to portable ordinary-file behavior and explicitly exclude live
+bridges, Linux frontends, physical power-loss durability, P/Q, and degraded
+writes.
