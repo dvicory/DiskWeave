@@ -420,6 +420,7 @@ including the new role-neutral media test.
 
 The focused and integrated acceptance run is complete: workspace tests,
 Clippy, formatting, metadata, strict OpenSpec validation, and the portable
-`dwv demo` workflow all passed. No additional portable implementation is
+`dwv demo` workflow all passed. No additional portable implementation was
 dependency-ready in this goal; the remaining entry conditions are the existing
-platform gates, so the next action is final artifact review and goal closure.
+platform gates. Final artifact review is complete, and the implementation and
+evidence work is committed as `c7f3d734`.
