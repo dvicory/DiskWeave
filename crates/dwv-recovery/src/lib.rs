@@ -69,6 +69,56 @@ pub struct SessionId(pub u64);
 )]
 pub struct RegionId(pub u64);
 
+pub const DIRTY_REGION_BYTES: u64 = 4096;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegionMappingError {
+    EmptyRange,
+    InvalidRegionBytes,
+    RegionIdOverflow,
+}
+
+impl fmt::Display for RegionMappingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyRange => {
+                write!(formatter, "dirty-region mapping requires a non-empty range")
+            }
+            Self::InvalidRegionBytes => write!(formatter, "dirty-region size must be non-zero"),
+            Self::RegionIdOverflow => {
+                write!(formatter, "dirty-region identity is not representable")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegionMappingError {}
+
+pub fn dirty_regions_for_range(
+    member_index: u32,
+    range: dwv_core::ByteRange,
+    region_bytes: u64,
+) -> Result<Vec<RegionId>, RegionMappingError> {
+    if range.is_empty() {
+        return Err(RegionMappingError::EmptyRange);
+    }
+    if region_bytes == 0 {
+        return Err(RegionMappingError::InvalidRegionBytes);
+    }
+
+    let first = range.offset / region_bytes;
+    let last = range
+        .end()
+        .checked_sub(1)
+        .ok_or(RegionMappingError::RegionIdOverflow)?
+        / region_bytes;
+    let first = u32::try_from(first).map_err(|_| RegionMappingError::RegionIdOverflow)?;
+    let last = u32::try_from(last).map_err(|_| RegionMappingError::RegionIdOverflow)?;
+    Ok((first..=last)
+        .map(|region| RegionId((u64::from(member_index) << 32) | u64::from(region)))
+        .collect())
+}
+
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]
@@ -1637,12 +1687,75 @@ pub fn recovery_simulation_cases() -> Vec<RecoverySimulationCase> {
     ]
 }
 
+#[cfg(kani)]
+mod kani_verification {
+    use super::*;
+    use dwv_core::ByteRange;
+
+    #[kani::proof]
+    #[kani::unwind(5)]
+    fn dirty_region_mapping_covers_every_intersection_once() {
+        const REGION_BYTES: u64 = 4096;
+        let member: u8 = kani::any();
+        let start: u8 = kani::any();
+        let length: u8 = kani::any();
+        kani::assume(member < 4);
+        kani::assume(start < 4);
+        kani::assume(length > 0 && u16::from(start) + u16::from(length) <= 4);
+
+        let regions = dirty_regions_for_range(
+            u32::from(member),
+            ByteRange::new(
+                u64::from(start) * REGION_BYTES,
+                u64::from(length) * REGION_BYTES,
+            )
+            .unwrap(),
+            REGION_BYTES,
+        )
+        .unwrap();
+        assert_eq!(regions.len(), usize::from(length));
+        for (index, region) in regions.iter().enumerate() {
+            assert_eq!(
+                *region,
+                RegionId(
+                    (u64::from(member) << 32) | (u64::from(start) + u64::try_from(index).unwrap())
+                )
+            );
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dwv_core::ByteRange;
 
     fn store() -> MemoryRecoveryStore {
         MemoryRecoveryStore::new(TopologyEpoch(1))
+    }
+
+    #[test]
+    fn dirty_region_mapping_is_complete_unique_and_checked() {
+        assert_eq!(
+            dirty_regions_for_range(7, ByteRange::new(4095, 4098).unwrap(), 4096).unwrap(),
+            vec![
+                RegionId(7_u64 << 32),
+                RegionId((7_u64 << 32) | 1),
+                RegionId((7_u64 << 32) | 2),
+            ]
+        );
+        assert!(matches!(
+            dirty_regions_for_range(0, ByteRange::empty(), 4096),
+            Err(RegionMappingError::EmptyRange)
+        ));
+        assert!(matches!(
+            dirty_regions_for_range(0, ByteRange::new(u64::MAX - 1, 1).unwrap(), 1),
+            Err(RegionMappingError::RegionIdOverflow)
+        ));
+        assert_ne!(
+            dirty_regions_for_range(1, ByteRange::new(0, 1).unwrap(), 4096).unwrap(),
+            dirty_regions_for_range(2, ByteRange::new(0, 1).unwrap(), 4096).unwrap()
+        );
     }
 
     fn fence(region: RegionId, generation: RecoveryGeneration) -> FenceCertificate {
@@ -1652,6 +1765,7 @@ mod tests {
             vec![StoreFenceRef {
                 fence_id: dwv_store::FenceId(1),
                 store_id: StoreId(2),
+                store_incarnation: dwv_store::StoreIncarnationId(0),
                 topology_epoch: TopologyEpoch(1),
                 through: dwv_store::StoreWriteWatermark(10),
                 capability_evidence_id: dwv_store::CapabilityEvidenceId(3),
@@ -2033,6 +2147,7 @@ mod tests {
                 vec![StoreFenceRef {
                     fence_id: dwv_store::FenceId(1),
                     store_id: StoreId(2),
+                    store_incarnation: dwv_store::StoreIncarnationId(0),
                     topology_epoch: TopologyEpoch(1),
                     through: dwv_store::StoreWriteWatermark(10),
                     capability_evidence_id: dwv_store::CapabilityEvidenceId(3),

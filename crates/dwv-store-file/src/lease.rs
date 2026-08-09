@@ -3,7 +3,7 @@ use dwv_store::{
     IdentityObservationSet,
 };
 use std::fmt;
-use std::fs::{File, Metadata, OpenOptions, remove_file, rename};
+use std::fs::{File, Metadata, OpenOptions, rename};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -113,12 +113,13 @@ impl fmt::Display for FileLeaseError {
 
 impl std::error::Error for FileLeaseError {}
 
-/// An atomic, ephemeral, single-writer claim represented by an exclusive lock
-/// file.  It is intentionally not a payload sidecar and has no recovery
-/// meaning after the owning process exits.
+/// A crash-releasing single-writer claim held by an operating-system advisory
+/// lock on an open descriptor. Each successful acquisition durably appends a
+/// byte and uses the resulting file length as a monotonic store incarnation.
 pub struct FileLease {
     path: PathBuf,
     marker: Option<File>,
+    incarnation: u64,
 }
 
 impl fmt::Debug for FileLease {
@@ -138,26 +139,39 @@ impl FileLease {
     pub fn acquire_at(path: impl Into<PathBuf>) -> Result<Self, FileLeaseError> {
         let path = path.into();
         let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        let mut marker = match options.open(&path) {
-            Ok(file) => file,
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+        options.read(true).append(true).create(true);
+        let mut marker = options.open(&path).map_err(FileLeaseError::Io)?;
+        match marker.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
                 return Err(FileLeaseError::AlreadyHeld(path));
             }
-            Err(error) => return Err(FileLeaseError::Io(error)),
-        };
+            Err(error) => return Err(FileLeaseError::Io(error.into())),
+        }
+        let incarnation = marker
+            .metadata()
+            .and_then(|metadata| {
+                metadata
+                    .len()
+                    .checked_add(1)
+                    .ok_or_else(|| std::io::Error::other("store incarnation exhausted"))
+            })
+            .map_err(FileLeaseError::Io)?;
         let stamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default();
-        let _ = writeln!(
+        writeln!(
             marker,
-            "pid={} acquired_ns={}",
+            "incarnation={incarnation} pid={} acquired_ns={}",
             std::process::id(),
             stamp.as_nanos()
-        );
+        )
+        .and_then(|_| marker.sync_data())
+        .map_err(FileLeaseError::Io)?;
         Ok(Self {
             path,
             marker: Some(marker),
+            incarnation,
         })
     }
 
@@ -165,9 +179,13 @@ impl FileLease {
         &self.path
     }
 
+    pub const fn incarnation(&self) -> u64 {
+        self.incarnation
+    }
+
     pub fn release(&mut self) -> Result<(), FileLeaseError> {
-        if self.marker.take().is_some() {
-            remove_file(&self.path).map_err(FileLeaseError::Io)?;
+        if let Some(marker) = self.marker.take() {
+            File::unlock(&marker).map_err(FileLeaseError::Io)?;
         }
         Ok(())
     }
@@ -238,6 +256,7 @@ pub(crate) fn quarantine(path: &Path) -> Result<PathBuf, std::io::Error> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::{Command, Stdio};
 
     #[test]
     fn lease_is_atomic_and_identity_is_path_independent() {
@@ -258,6 +277,54 @@ mod tests {
         );
         lease.release().unwrap();
         let _ = fs::remove_file(alias);
+        let _ = fs::remove_file(default_lease_path(&root));
         let _ = fs::remove_file(root);
+    }
+
+    #[test]
+    fn lease_holder_process() {
+        let Ok(path) = std::env::var("DWV_TEST_LEASE_PATH") else {
+            return;
+        };
+        let _lease = FileLease::acquire_at(path).unwrap();
+        fs::write(std::env::var("DWV_TEST_LEASE_READY").unwrap(), b"ready").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn process_death_releases_lease() {
+        let marker = std::env::temp_dir().join(format!("dwv-crash-lease-{}", std::process::id()));
+        let ready_path = marker.with_extension("ready");
+        let _ = fs::remove_file(&ready_path);
+        let _ = fs::remove_file(&marker);
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "lease::tests::lease_holder_process",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("DWV_TEST_LEASE_PATH", &marker)
+            .env("DWV_TEST_LEASE_READY", &ready_path)
+            .stdout(Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..100 {
+            if ready_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready_path.exists());
+        assert!(matches!(
+            FileLease::acquire_at(&marker),
+            Err(FileLeaseError::AlreadyHeld(_))
+        ));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        FileLease::acquire_at(&marker).unwrap();
+        fs::remove_file(marker).unwrap();
+        fs::remove_file(ready_path).unwrap();
     }
 }

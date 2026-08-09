@@ -50,11 +50,28 @@ impl PlannedWrite {
 pub struct StoreWatermark {
     pub store: StoreId,
     pub through: StoreWriteWatermark,
+    pub incarnation: dwv_store::StoreIncarnationId,
 }
 
 impl StoreWatermark {
     pub const fn new(store: StoreId, through: StoreWriteWatermark) -> Self {
-        Self { store, through }
+        Self {
+            store,
+            through,
+            incarnation: dwv_store::StoreIncarnationId(0),
+        }
+    }
+
+    pub const fn for_incarnation(
+        store: StoreId,
+        incarnation: dwv_store::StoreIncarnationId,
+        through: StoreWriteWatermark,
+    ) -> Self {
+        Self {
+            store,
+            through,
+            incarnation,
+        }
     }
 }
 
@@ -284,6 +301,7 @@ impl FenceEvidence {
         let stores_covered = stores.iter().all(|required| {
             self.certificate.stores.iter().any(|observed| {
                 observed.store_id == required.store
+                    && observed.store_incarnation == required.incarnation
                     && observed.topology_epoch == topology_epoch
                     && observed.through.0 >= required.through.0
             })
@@ -360,4 +378,119 @@ pub struct TransactionIdentity {
     pub session: SessionId,
     pub topology_epoch: TopologyEpoch,
     pub recovery_generation: RecoveryGeneration,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn partial_multi_store_fence_is_rejected() {
+        let epoch = TopologyEpoch(3);
+        let generation = RecoveryGeneration(4);
+        let stores = [
+            StoreWatermark::for_incarnation(
+                StoreId(1),
+                dwv_store::StoreIncarnationId(11),
+                StoreWriteWatermark(7),
+            ),
+            StoreWatermark::for_incarnation(
+                StoreId(2),
+                dwv_store::StoreIncarnationId(22),
+                StoreWriteWatermark(8),
+            ),
+        ];
+        let certificate = FenceCertificate::new(
+            epoch,
+            FenceDomain(5),
+            vec![StoreFenceRef {
+                fence_id: dwv_store::FenceId(1),
+                store_id: StoreId(1),
+                store_incarnation: dwv_store::StoreIncarnationId(11),
+                topology_epoch: epoch,
+                through: StoreWriteWatermark(7),
+                capability_evidence_id: dwv_store::CapabilityEvidenceId(1),
+            }],
+            vec![(RegionId(7), generation), (RegionId(8), generation)],
+        )
+        .with_integrity_extent(IntegrityExtentId(9), generation);
+        assert!(!FenceEvidence::durable(certificate).covers(
+            epoch,
+            FenceDomain(5),
+            &stores,
+            &[RegionId(7), RegionId(8)],
+            &[IntegrityExtentId(9)],
+            generation,
+        ));
+    }
+}
+
+#[cfg(kani)]
+mod kani_verification {
+    use super::*;
+
+    #[kani::proof]
+    fn fence_coverage_requires_every_store_region_and_incarnation() {
+        let first_required: u8 = kani::any();
+        let second_required: u8 = kani::any();
+        let first_observed: u8 = kani::any();
+        let second_observed: u8 = kani::any();
+        let wrong_second_incarnation: bool = kani::any();
+        let epoch = TopologyEpoch(3);
+        let generation = RecoveryGeneration(4);
+        let stores = [
+            StoreWatermark::for_incarnation(
+                StoreId(1),
+                dwv_store::StoreIncarnationId(11),
+                StoreWriteWatermark(u64::from(first_required)),
+            ),
+            StoreWatermark::for_incarnation(
+                StoreId(2),
+                dwv_store::StoreIncarnationId(22),
+                StoreWriteWatermark(u64::from(second_required)),
+            ),
+        ];
+        let certificate =
+            FenceCertificate::new(
+                epoch,
+                FenceDomain(5),
+                vec![
+                    StoreFenceRef {
+                        fence_id: dwv_store::FenceId(1),
+                        store_id: StoreId(1),
+                        store_incarnation: dwv_store::StoreIncarnationId(11),
+                        topology_epoch: epoch,
+                        through: StoreWriteWatermark(u64::from(first_observed)),
+                        capability_evidence_id: dwv_store::CapabilityEvidenceId(1),
+                    },
+                    StoreFenceRef {
+                        fence_id: dwv_store::FenceId(2),
+                        store_id: StoreId(2),
+                        store_incarnation: dwv_store::StoreIncarnationId(
+                            if wrong_second_incarnation { 23 } else { 22 },
+                        ),
+                        topology_epoch: epoch,
+                        through: StoreWriteWatermark(u64::from(second_observed)),
+                        capability_evidence_id: dwv_store::CapabilityEvidenceId(2),
+                    },
+                ],
+                vec![(RegionId(7), generation), (RegionId(8), generation)],
+            )
+            .with_integrity_extent(IntegrityExtentId(9), generation)
+            .with_integrity_extent(IntegrityExtentId(10), generation);
+        let covered = FenceEvidence::durable(certificate).covers(
+            epoch,
+            FenceDomain(5),
+            &stores,
+            &[RegionId(7), RegionId(8)],
+            &[IntegrityExtentId(9), IntegrityExtentId(10)],
+            generation,
+        );
+        assert_eq!(
+            covered,
+            !wrong_second_incarnation
+                && first_observed >= first_required
+                && second_observed >= second_required
+        );
+    }
 }

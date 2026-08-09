@@ -3,6 +3,21 @@
 ## Purpose
 This capability provides the portable dirty-region protocol that atomically invalidates affected integrity evidence before protected home mutation and clears state only with generation-matched fence proof.
 ## Requirements
+### Requirement: Dirty-region coverage is complete and checked
+<!-- dwv:req req.dirty-integrity-invalidation.dirty-region-coverage-is-complete-and-checked -->
+
+One canonical semantic mapping SHALL derive every dirty region intersected by a member byte range from the recovery-owned region geometry. It SHALL return each region exactly once, preserve the member identity without collisions within declared supported bounds, and reject empty ranges, range arithmetic overflow, region-ID representation overflow, or unsupported geometry before invalidation or home mutation. Service, transaction, fence, checkpoint, simulator, and recovery paths SHALL use this mapping rather than a separate hard-coded region size.
+
+#### Scenario: A write crosses a region boundary
+
+- **WHEN** a valid protected write intersects two or more dirty regions
+- **THEN** every intersected region is included once in intent, transaction ranges, fence coverage, and any later matching clear decision
+
+#### Scenario: Region coverage cannot be represented
+
+- **WHEN** the member/range/geometry calculation overflows or two supported inputs would map to the same region identity
+- **THEN** the request is rejected before recovery or protected payload mutation
+
 ### Requirement: Durable intent precedes protected mutation
 <!-- dwv:req req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
 
@@ -36,7 +51,7 @@ The protocol MAY avoid a redundant durable intent commit only when every affecte
 ### Requirement: Checkpoint and clear require fence evidence
 <!-- dwv:req req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence -->
 
-The protocol SHALL clear dirty state or install a clean checkpoint only when all required home and parity writes are terminal, each participating store has covering durable fence evidence, and captured topology, region, checksum, and capability generations still match current recovery state.
+The protocol SHALL clear dirty state or install a clean checkpoint only when all required home and parity writes are terminal, each participating store has durable fence evidence covering its exact accepted write watermark, every region selected for clearing is covered by that evidence, and captured topology, region, checksum, capability, store-incarnation, and recovery generations still match current state. Future, stale, partial, omitted-region, or cross-store evidence SHALL fail closed, and the protocol SHALL clear only the regions proven by the matching fence set.
 
 #### Scenario: All writes have covering fences
 

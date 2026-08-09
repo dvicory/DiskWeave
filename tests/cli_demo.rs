@@ -6,9 +6,17 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 fn run(root: &Path, args: &[&str]) -> Output {
     Command::new(env!("CARGO_BIN_EXE_dwv"))
-        .args(["demo"])
+        .args(["demo", "file"])
         .args(args)
         .args(["--root", root.to_str().unwrap()])
+        .output()
+        .unwrap()
+}
+
+fn run_disk(args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_dwv"))
+        .args(["demo", "disk"])
+        .args(args)
         .output()
         .unwrap()
 }
@@ -40,7 +48,7 @@ fn demo_process_boundary_covers_lifecycle_confirmation_and_alias_refusal() {
     assert_eq!(json_stderr(&usage)["error"]["class"], "usage");
 
     let initialized = json_stdout(&run(&root, &["init"]));
-    assert_eq!(initialized["command"], "demo.init");
+    assert_eq!(initialized["command"], "demo.file.init");
     assert_eq!(initialized["fixture"], "initialized");
     let inspection = json_stdout(&run(&root, &["inspect"]));
     assert_eq!(
@@ -224,4 +232,72 @@ fn trace_cli_replays_without_mutating_source_and_rejects_bad_input() {
     assert_eq!(json_stderr(&oversized)["error"]["class"], "refused");
 
     let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn disk_trace_cli_replays_without_fixture_access() {
+    use dwv_frontend_ublk::{
+        DATA_SLOT, FRONTEND_ID, KernelCompletion, KernelOperation, KernelRequest,
+        MAX_TRACE_RECORDS, MAX_TRANSFER, NormalizedTraceRequest, QUEUE_DEPTH, TRACE_SCHEMA,
+        TerminalResult, TraceBounds, TraceDocument, TraceDurability,
+    };
+
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let trace_path = std::env::temp_dir().join(format!(
+        "dwv-ublk-trace-{}-{nonce}.json",
+        std::process::id()
+    ));
+    let trace = TraceDocument {
+        schema: TRACE_SCHEMA.into(),
+        fixture_digest: "fixture".into(),
+        capacity: 8192,
+        topology_epoch: 3,
+        bounds: TraceBounds {
+            queue_depth: QUEUE_DEPTH,
+            maximum_transfer: MAX_TRANSFER,
+            maximum_records: MAX_TRACE_RECORDS,
+        },
+        exhausted_records: 0,
+        records: vec![dwv_frontend_ublk::TraceRecord {
+            sequence: 1,
+            tag: 0,
+            generation: 1,
+            kernel_submission: KernelRequest {
+                operation: KernelOperation::Flush,
+                flags: 0,
+                start_sector: u64::MAX,
+                sectors: 0,
+                tag: 0,
+            },
+            normalized_request: Some(NormalizedTraceRequest {
+                request_id: 1,
+                frontend_id: FRONTEND_ID.0,
+                slot_id: DATA_SLOT.0,
+                topology_epoch: 3,
+                operation: KernelOperation::Flush,
+                offset: 0,
+                length: 0,
+                buffer_index: None,
+                buffer_generation: None,
+                submission_sequence: 1,
+                preflush: false,
+                fence_domain: 1,
+                durability: TraceDurability::ExplicitFlush,
+            }),
+            semantic_result: TerminalResult::Success,
+            kernel_completion: KernelCompletion::Success { bytes: 0 },
+        }],
+    };
+    fs::write(&trace_path, trace.to_json().unwrap()).unwrap();
+    let replay = json_stdout(&run_disk(&[
+        "trace-replay",
+        "--trace",
+        trace_path.to_str().unwrap(),
+    ]));
+    assert_eq!(replay["clean"], true);
+    assert_eq!(replay["record_count"], 1);
+    let _ = fs::remove_file(trace_path);
 }

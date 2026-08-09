@@ -14,7 +14,7 @@ use dwv_recovery::{
     SqliteSynchronousMode, TopologySnapshot,
 };
 use std::fmt;
-use std::fs::{File, OpenOptions, remove_file};
+use std::fs::{File, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
@@ -445,7 +445,6 @@ impl std::error::Error for SqliteRecoveryStoreError {}
 pub struct SqliteRecoveryStore {
     prototype: SqlitePrototype,
     memory: MemoryRecoveryStore,
-    lock_path: PathBuf,
     _lock: File,
 }
 
@@ -455,7 +454,7 @@ impl SqliteRecoveryStore {
         manifest: RecoveryManifest,
     ) -> Result<Self, SqliteRecoveryStoreError> {
         let database_path = database_path.into();
-        let (lock_path, lock) = acquire_lock(&database_path)?;
+        let (_lock_path, lock) = acquire_lock(&database_path)?;
         if database_path.exists() {
             return Err(SqliteRecoveryStoreError::ExistingTarget);
         }
@@ -477,7 +476,6 @@ impl SqliteRecoveryStore {
             Ok(memory) => Ok(Self {
                 prototype,
                 memory,
-                lock_path,
                 _lock: lock,
             }),
             Err(error) => {
@@ -489,7 +487,7 @@ impl SqliteRecoveryStore {
 
     pub fn open(database_path: impl Into<PathBuf>) -> Result<Self, SqliteRecoveryStoreError> {
         let database_path = database_path.into();
-        let (lock_path, lock) = acquire_lock(&database_path)?;
+        let (_lock_path, lock) = acquire_lock(&database_path)?;
         let result = (|| {
             if !database_path.is_file() {
                 return Err(SqliteRecoveryStoreError::MissingTarget);
@@ -509,13 +507,9 @@ impl SqliteRecoveryStore {
             Ok((prototype, memory)) => Ok(Self {
                 prototype,
                 memory,
-                lock_path,
                 _lock: lock,
             }),
-            Err(error) => {
-                let _ = remove_file(&lock_path);
-                Err(error)
-            }
+            Err(error) => Err(error),
         }
     }
 
@@ -601,7 +595,7 @@ impl RecoveryStateStore for SqliteRecoveryStore {
 
 impl Drop for SqliteRecoveryStore {
     fn drop(&mut self) {
-        let _ = remove_file(&self.lock_path);
+        let _ = File::unlock(&self._lock);
     }
 }
 
@@ -610,17 +604,21 @@ fn acquire_lock(database_path: &Path) -> Result<(PathBuf, File), SqliteRecoveryS
     lock_path.push(".dwv-lock");
     let lock_path = PathBuf::from(lock_path);
     let file = OpenOptions::new()
+        .read(true)
         .write(true)
-        .create_new(true)
+        .create(true)
+        .truncate(false)
         .open(&lock_path)
-        .map_err(|error| {
-            if error.kind() == std::io::ErrorKind::AlreadyExists {
-                SqliteRecoveryStoreError::LockHeld(lock_path.clone())
-            } else {
-                SqliteRecoveryStoreError::Io(error.to_string())
-            }
-        })?;
-    Ok((lock_path, file))
+        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    match file.try_lock() {
+        Ok(()) => Ok((lock_path, file)),
+        Err(std::fs::TryLockError::WouldBlock) => {
+            Err(SqliteRecoveryStoreError::LockHeld(lock_path))
+        }
+        Err(error) => Err(SqliteRecoveryStoreError::Io(
+            std::io::Error::from(error).to_string(),
+        )),
+    }
 }
 
 fn semantic_payload(manifest: &RecoveryManifest) -> String {
@@ -914,6 +912,7 @@ mod tests {
         let first_fence = StoreFenceRef {
             fence_id: FenceId(1),
             store_id: replacement_store,
+            store_incarnation: dwv_store::StoreIncarnationId(0),
             topology_epoch: TopologyEpoch(1),
             through: StoreWriteWatermark(1),
             capability_evidence_id: CapabilityEvidenceId(7),
@@ -1184,5 +1183,52 @@ mod tests {
             Err(SqlitePrototypeError::SqliteUnavailable)
         );
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn recovery_lock_holder_process() {
+        let Ok(path) = std::env::var("DWV_TEST_RECOVERY_LOCK_PATH") else {
+            return;
+        };
+        let _claim = acquire_lock(Path::new(&path)).unwrap();
+        std::fs::write(std::env::var("DWV_TEST_RECOVERY_READY").unwrap(), b"ready").unwrap();
+        loop {
+            std::thread::park();
+        }
+    }
+
+    #[test]
+    fn process_death_releases_recovery_claim() {
+        let path = temp_database();
+        let ready_path = path.with_extension("ready");
+        let _ = std::fs::remove_file(&ready_path);
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "tests::recovery_lock_holder_process",
+                "--exact",
+                "--nocapture",
+            ])
+            .env("DWV_TEST_RECOVERY_LOCK_PATH", &path)
+            .env("DWV_TEST_RECOVERY_READY", &ready_path)
+            .stdout(std::process::Stdio::null())
+            .spawn()
+            .unwrap();
+        for _ in 0..100 {
+            if ready_path.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ready_path.exists());
+        assert!(matches!(
+            acquire_lock(&path),
+            Err(SqliteRecoveryStoreError::LockHeld(_))
+        ));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        let (marker, claim) = acquire_lock(&path).unwrap();
+        drop(claim);
+        std::fs::remove_file(marker).unwrap();
+        std::fs::remove_file(ready_path).unwrap();
     }
 }

@@ -1,0 +1,22 @@
+minimumLimaVersion: 2.0.0
+vmType: vz
+arch: aarch64
+cpus: 4
+memory: 8GiB
+disk: 30GiB
+mounts: []
+containerd:
+  system: false
+  user: false
+images:
+  - location: https://cloud-images.ubuntu.com/releases/26.04/release/ubuntu-26.04-server-cloudimg-arm64.img
+    arch: aarch64
+provision:
+  - mode: system
+    script: |
+      set -eux
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y build-essential cargo clang e2fsprogs jq liburing-dev pkg-config rustc sqlite3 util-linux
+      modprobe ublk_drv
+      test -c /dev/ublk-control

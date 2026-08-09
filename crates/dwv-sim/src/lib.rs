@@ -859,6 +859,7 @@ impl Simulator {
             MediaConfig {
                 store_id: config.store_id,
                 topology_epoch: config.topology_epoch,
+                store_incarnation: dwv_store::StoreIncarnationId(1),
                 capabilities: config.capabilities.clone(),
                 max_pending: config.fault_model.max_pending,
                 write_completion: config.fault_model.write_completion,

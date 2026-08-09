@@ -8,8 +8,9 @@ use crate::lease::{
 use dwv_store::{
     BufferToken, ByteRange, CapabilityEvidenceId, ChildOperationId, CompletedRangeSet,
     CompletionDisposition, IdentityObservationSet, OperationId, PersistenceEvidence,
-    RandomAccessStore, StoreCapabilities, StoreCompletion, StoreError, StoreId, StoreOperation,
-    StoreRequest, StoreRequestKind, StoreWriteWatermark, TopologyEpoch, WriteIntent,
+    RandomAccessStore, StoreCapabilities, StoreCompletion, StoreError, StoreId, StoreIncarnationId,
+    StoreOperation, StoreRequest, StoreRequestKind, StoreWriteWatermark, TopologyEpoch,
+    WriteIntent,
 };
 use std::collections::BTreeMap;
 use std::fmt;
@@ -162,6 +163,9 @@ pub struct FileStore {
     identity: IdentityObservationSet,
     lease: Option<FileLease>,
     buffers: BTreeMap<BufferToken, Vec<u8>>,
+    incarnation: StoreIncarnationId,
+    next_write_watermark: u64,
+    highest_accepted_watermark: Option<StoreWriteWatermark>,
 }
 
 impl fmt::Debug for FileStore {
@@ -200,6 +204,19 @@ impl FileStore {
                 return Err(FileStoreError::Io(error));
             }
         };
+        if config.writable {
+            match file.try_lock() {
+                Ok(()) => {}
+                Err(std::fs::TryLockError::WouldBlock) => {
+                    drop(lease.take());
+                    return Err(FileLeaseError::AlreadyHeld(config.path.clone()).into());
+                }
+                Err(error) => {
+                    drop(lease.take());
+                    return Err(FileStoreError::Io(error.into()));
+                }
+            }
+        }
         let mut created_path = if config.create_new {
             match CreatedPathReservation::new(config.path.clone(), &file) {
                 Ok(reservation) => Some(reservation),
@@ -238,6 +255,11 @@ impl FileStore {
         if let Some(reservation) = created_path.as_mut() {
             reservation.commit();
         }
+        let incarnation = StoreIncarnationId(
+            lease
+                .as_ref()
+                .map_or(report.capabilities.evidence_id.0, FileLease::incarnation),
+        );
         Ok(Self {
             file,
             config,
@@ -245,11 +267,21 @@ impl FileStore {
             identity: report.identity,
             lease,
             buffers: BTreeMap::new(),
+            incarnation,
+            next_write_watermark: 1,
+            highest_accepted_watermark: None,
         })
     }
 
     pub fn path(&self) -> &Path {
         &self.config.path
+    }
+    pub const fn incarnation(&self) -> StoreIncarnationId {
+        self.incarnation
+    }
+
+    pub const fn highest_accepted_watermark(&self) -> Option<StoreWriteWatermark> {
+        self.highest_accepted_watermark
     }
     pub fn capabilities_report(&self) -> FileCapabilityReport {
         FileCapabilityReport {
@@ -304,6 +336,10 @@ impl FileStore {
         if let Err(error) = self.validate(range, StoreOperation::Write, Some(intent), true) {
             return failed(operation_id, range, error, 0);
         }
+        let watermark = match self.accept_write() {
+            Ok(watermark) => watermark,
+            Err(error) => return failed(operation_id, range, error, 0),
+        };
         if intent_uses_preflush(intent)
             && let Err(error) = self.sync_file()
         {
@@ -314,7 +350,8 @@ impl FileStore {
                     code: io_code(&error),
                 },
                 0,
-            );
+            )
+            .with_write_watermark(watermark);
         }
         let progress = write_all_at(&self.file, range.offset, bytes);
         let completed = progress.completed;
@@ -332,7 +369,8 @@ impl FileStore {
                 completed,
                 disposition,
                 PersistenceEvidence::VolatileOrUnknown,
-            );
+            )
+            .with_write_watermark(watermark);
         }
         match self.config.sync_mode {
             FileSyncMode::CallerFlush => completion(
@@ -341,22 +379,25 @@ impl FileStore {
                 completed,
                 CompletionDisposition::Success,
                 PersistenceEvidence::VolatileOrUnknown,
-            ),
+            )
+            .with_write_watermark(watermark),
             FileSyncMode::SyncData | FileSyncMode::SyncAll => match self.sync_file() {
                 Ok(()) => completion(
                     operation_id,
                     range,
                     completed,
                     CompletionDisposition::Success,
-                    self.fence_evidence(operation_id),
-                ),
+                    self.fence_evidence_through(watermark),
+                )
+                .with_write_watermark(watermark),
                 Err(_error) => completion(
                     operation_id,
                     range,
                     completed,
                     CompletionDisposition::Uncertain,
                     PersistenceEvidence::VolatileOrUnknown,
-                ),
+                )
+                .with_write_watermark(watermark),
             },
         }
     }
@@ -370,6 +411,10 @@ impl FileStore {
         if let Err(error) = self.validate(range, StoreOperation::WriteZeroes, Some(intent), false) {
             return failed(operation_id, range, error, 0);
         }
+        let watermark = match self.accept_write() {
+            Ok(watermark) => watermark,
+            Err(error) => return failed(operation_id, range, error, 0),
+        };
         if intent_uses_preflush(intent)
             && let Err(error) = self.sync_file()
         {
@@ -380,7 +425,8 @@ impl FileStore {
                     code: io_code(&error),
                 },
                 0,
-            );
+            )
+            .with_write_watermark(watermark);
         }
         let chunk =
             usize::try_from(self.config.maximum_transfer.min(1024 * 1024)).unwrap_or(1024 * 1024);
@@ -405,7 +451,8 @@ impl FileStore {
                     completed,
                     disposition,
                     PersistenceEvidence::VolatileOrUnknown,
-                );
+                )
+                .with_write_watermark(watermark);
             }
             offset += length as u64;
             remaining -= length as u64;
@@ -421,15 +468,17 @@ impl FileStore {
                     range.length,
                     CompletionDisposition::Uncertain,
                     PersistenceEvidence::VolatileOrUnknown,
-                );
+                )
+                .with_write_watermark(watermark);
             }
             return completion(
                 operation_id,
                 range,
                 range.length,
                 CompletionDisposition::Success,
-                self.fence_evidence(operation_id),
-            );
+                self.fence_evidence_through(watermark),
+            )
+            .with_write_watermark(watermark);
         }
         completion(
             operation_id,
@@ -438,6 +487,7 @@ impl FileStore {
             CompletionDisposition::Success,
             PersistenceEvidence::VolatileOrUnknown,
         )
+        .with_write_watermark(watermark)
     }
 
     pub fn flush_file(
@@ -445,6 +495,18 @@ impl FileStore {
         operation_id: ChildOperationId,
         through: StoreWriteWatermark,
     ) -> StoreCompletion {
+        if through.0
+            > self
+                .highest_accepted_watermark
+                .map_or(0, |watermark| watermark.0)
+        {
+            return failed(
+                operation_id,
+                ByteRange::empty(),
+                StoreError::BackendFailure { code: 22 },
+                0,
+            );
+        }
         match self.sync_file() {
             Ok(()) => completion(
                 operation_id,
@@ -537,14 +599,21 @@ impl FileStore {
             self.config.store_id
         }
     }
-    fn fence_evidence(&self, operation_id: ChildOperationId) -> PersistenceEvidence {
-        self.fence_evidence_through(StoreWriteWatermark(u64::from(operation_id.index) + 1))
+    fn accept_write(&mut self) -> Result<StoreWriteWatermark, StoreError> {
+        let watermark = StoreWriteWatermark(self.next_write_watermark);
+        self.next_write_watermark = self
+            .next_write_watermark
+            .checked_add(1)
+            .ok_or(StoreError::BackendFailure { code: 75 })?;
+        self.highest_accepted_watermark = Some(watermark);
+        Ok(watermark)
     }
     fn fence_evidence_through(&self, through: StoreWriteWatermark) -> PersistenceEvidence {
         PersistenceEvidence::DurableByFence {
             fence: dwv_store::StoreFenceRef {
                 fence_id: dwv_store::FenceId(through.0),
                 store_id: self.store_id(),
+                store_incarnation: self.incarnation,
                 topology_epoch: self.config.topology_epoch,
                 through,
                 capability_evidence_id: self.capabilities.evidence_id,
@@ -820,9 +889,17 @@ fn failed(
     )
 }
 
+impl Drop for FileStore {
+    fn drop(&mut self) {
+        if self.config.writable {
+            let _ = File::unlock(&self.file);
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lease::default_lease_path;
     use dwv_store::{OperationSlotToken, RandomAccessStore};
     use std::fs;
 
@@ -845,6 +922,29 @@ mod tests {
     }
 
     #[test]
+    fn hard_link_alias_cannot_bypass_member_claim() {
+        let path = temp("member-claim");
+        let alias = temp("member-claim-alias");
+        remove_if_present(&path);
+        remove_if_present(&alias);
+        remove_if_present(&default_lease_path(&path));
+        remove_if_present(&default_lease_path(&alias));
+        fs::write(&path, vec![0_u8; 4096]).unwrap();
+        fs::hard_link(&path, &alias).unwrap();
+        let first = FileStore::open(FileStoreConfig::new(&path, 4096, 512)).unwrap();
+        assert!(matches!(
+            FileStore::open(FileStoreConfig::new(&alias, 4096, 512)),
+            Err(FileStoreError::Lease(FileLeaseError::AlreadyHeld(_)))
+        ));
+        drop(first);
+        FileStore::open(FileStoreConfig::new(&alias, 4096, 512)).unwrap();
+        remove_if_present(&default_lease_path(&path));
+        remove_if_present(&default_lease_path(&alias));
+        remove_if_present(&alias);
+        remove_if_present(&path);
+    }
+
+    #[test]
     fn create_new_atomically_reserves_and_initializes_sparse_length() {
         let path = temp("create-new");
         let lock_path = temp("create-new-lock");
@@ -862,7 +962,8 @@ mod tests {
         assert_eq!(store.length(), 8192);
         assert_eq!(fs::metadata(&path).unwrap().len(), 8192);
         drop(store);
-        assert!(!lock_path.exists());
+        assert!(FileLease::acquire_at(&lock_path).is_ok());
+        remove_if_present(&lock_path);
         remove_if_present(&path);
     }
 
@@ -888,7 +989,8 @@ mod tests {
             FileStoreError::Io(ref error) if error.kind() == io::ErrorKind::AlreadyExists
         ));
         assert_eq!(fs::read(&path).unwrap(), original);
-        assert!(!lock_path.exists());
+        assert!(FileLease::acquire_at(&lock_path).is_ok());
+        remove_if_present(&lock_path);
         remove_if_present(&path);
     }
 
@@ -904,14 +1006,15 @@ mod tests {
             .lock_path(&lock_path);
 
         assert!(FileStore::open(config.clone()).is_err());
-        assert!(!lock_path.exists());
+        assert!(FileLease::acquire_at(&lock_path).is_ok());
         assert_eq!(fs::read(&path).unwrap(), vec![0x3c_u8; 4096]);
 
         remove_if_present(&path);
         let store = FileStore::open(config).unwrap();
         assert_eq!(fs::metadata(&path).unwrap().len(), 4096);
         drop(store);
-        assert!(!lock_path.exists());
+        assert!(FileLease::acquire_at(&lock_path).is_ok());
+        remove_if_present(&lock_path);
         remove_if_present(&path);
     }
 
@@ -937,7 +1040,8 @@ mod tests {
         drop(lease);
 
         assert!(!path.exists());
-        assert!(!lock_path.exists());
+        assert!(FileLease::acquire_at(&lock_path).is_ok());
+        remove_if_present(&lock_path);
     }
 
     #[test]
@@ -1022,6 +1126,55 @@ mod tests {
     }
 
     #[test]
+    fn write_watermarks_are_monotonic_and_bound_to_each_incarnation() {
+        let path = temp("watermark-incarnation");
+        remove_if_present(&path);
+        remove_if_present(&default_lease_path(&path));
+        fs::write(&path, vec![0_u8; 4096]).unwrap();
+        let mut first = FileStore::open(
+            FileStoreConfig::new(&path, 4096, 512).sync_mode(FileSyncMode::CallerFlush),
+        )
+        .unwrap();
+        let first_incarnation = first.incarnation();
+        let first_write = first.write_bytes(
+            operation(1),
+            ByteRange::new(0, 512).unwrap(),
+            &[1; 512],
+            WriteIntent::Ordinary,
+        );
+        let second_write = first.write_bytes(
+            operation(2),
+            ByteRange::new(512, 512).unwrap(),
+            &[2; 512],
+            WriteIntent::Ordinary,
+        );
+        assert_eq!(first_write.write_watermark, Some(StoreWriteWatermark(1)));
+        assert_eq!(second_write.write_watermark, Some(StoreWriteWatermark(2)));
+        drop(first);
+
+        let mut reopened = FileStore::open(
+            FileStoreConfig::new(&path, 4096, 512).sync_mode(FileSyncMode::CallerFlush),
+        )
+        .unwrap();
+        assert!(reopened.incarnation().0 > first_incarnation.0);
+        let reopened_write = reopened.write_bytes(
+            operation(3),
+            ByteRange::new(1024, 512).unwrap(),
+            &[3; 512],
+            WriteIntent::Ordinary,
+        );
+        assert_eq!(reopened_write.write_watermark, Some(StoreWriteWatermark(1)));
+        let fence = reopened.flush_file(operation(4), StoreWriteWatermark(1));
+        let PersistenceEvidence::DurableByFence { fence } = fence.persistence else {
+            panic!("flush lacks durable fence");
+        };
+        assert_eq!(fence.store_incarnation, reopened.incarnation());
+        drop(reopened);
+        remove_if_present(&default_lease_path(&path));
+        remove_if_present(&path);
+    }
+
+    #[test]
     fn trait_buffers_and_flush_produce_exact_completion_evidence() {
         let path = temp("trait");
         fs::write(&path, vec![0_u8; 4096]).unwrap();
@@ -1038,7 +1191,7 @@ mod tests {
             WriteIntent::Ordinary,
         );
         assert!(write.persistence.is_durable());
-        let flush = store.flush(operation(4), StoreWriteWatermark(3));
+        let flush = store.flush(operation(4), write.write_watermark.unwrap());
         assert!(flush.persistence.is_durable());
         let destination = BufferToken::new(3, 1);
         let read = store.read_at(operation(5), ByteRange::new(0, 512).unwrap(), destination);

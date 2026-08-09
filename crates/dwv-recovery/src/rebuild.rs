@@ -237,10 +237,10 @@ impl RebuildState {
         if replacement_fence.topology_epoch != self.binding.source_topology.topology_epoch() {
             return Err(RebuildError::FenceTopologyMismatch);
         }
-        if self
-            .last_replacement_fence
-            .is_some_and(|prior| replacement_fence.through < prior.through)
-        {
+        if self.last_replacement_fence.is_some_and(|prior| {
+            replacement_fence.store_incarnation == prior.store_incarnation
+                && replacement_fence.through < prior.through
+        }) {
             return Err(RebuildError::FenceRegressed);
         }
 
@@ -357,10 +357,10 @@ impl RebuildState {
         {
             return Err(RebuildError::FenceTopologyMismatch);
         }
-        if self
-            .last_replacement_fence
-            .is_some_and(|prior| receipt.replacement_fence.through < prior.through)
-        {
+        if self.last_replacement_fence.is_some_and(|prior| {
+            receipt.replacement_fence.store_incarnation == prior.store_incarnation
+                && receipt.replacement_fence.through < prior.through
+        }) {
             return Err(RebuildError::FenceRegressed);
         }
 
@@ -643,6 +643,7 @@ mod tests {
         StoreFenceRef {
             fence_id: FenceId(through),
             store_id,
+            store_incarnation: dwv_store::StoreIncarnationId(0),
             topology_epoch: TopologyEpoch(7),
             through: StoreWriteWatermark(through),
             capability_evidence_id: CapabilityEvidenceId(4),

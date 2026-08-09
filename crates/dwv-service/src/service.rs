@@ -12,8 +12,9 @@ use dwv_codec::Geometry as CodecGeometry;
 use dwv_core::{ByteRange, DurabilityIntent, MemberRole, TopologyEpoch, TopologySnapshot};
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumExtent, ChecksumRecord, ChecksumSetGeneration,
-    ChecksumTarget, FenceCertificate, IntegrityExtentId, InvalidationTarget, RecoveryGeneration,
-    RecoveryMutation, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId,
+    ChecksumTarget, DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, InvalidationTarget,
+    RecoveryGeneration, RecoveryMutation, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn,
+    RegionId, dirty_regions_for_range,
 };
 use dwv_store::{
     CompletionDisposition, FenceDomain, OperationId, OperationSlotToken, PersistenceEvidence,
@@ -81,28 +82,27 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             ));
         }
         let health = recovery.verify_integrity();
-        let (state, generation) = if health != RecoveryStoreHealth::Healthy {
-            (
-                ServiceState::Blocked(FailureClass::Recovery),
-                RecoveryGeneration::ZERO,
-            )
+        if health != RecoveryStoreHealth::Healthy {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                format!("recovery authority is not healthy: {health:?}"),
+            ));
+        }
+        let snapshot = recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let state = if snapshot.topology_epoch != topology.topology_epoch() {
+            ServiceState::Blocked(FailureClass::StaleTopology)
+        } else if snapshot
+            .dirty_regions
+            .iter()
+            .any(|region| !matches!(region.state, dwv_recovery::RegionState::Clean))
+        {
+            ServiceState::Recovering
         } else {
-            let snapshot = recovery
-                .load_assembly_snapshot()
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            let state = if snapshot.topology_epoch != topology.topology_epoch() {
-                ServiceState::Blocked(FailureClass::StaleTopology)
-            } else if snapshot
-                .dirty_regions
-                .iter()
-                .any(|region| !matches!(region.state, dwv_recovery::RegionState::Clean))
-            {
-                ServiceState::Recovering
-            } else {
-                ServiceState::Serving
-            };
-            (state, snapshot.generation)
+            ServiceState::Serving
         };
+        let generation = snapshot.generation;
         let checksums = checksum_authority(&topology, generation)?;
         Ok(Self {
             topology,
@@ -170,7 +170,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                         completion,
                         trace: empty_trace(
                             self.topology.topology_epoch(),
-                            self.recovery_generation(),
+                            self.recovery_generation()?,
                         )?,
                     },
                 ))
@@ -254,18 +254,25 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             .map_err(slot_error)?;
         let mut all_durable = true;
         for (member, child) in self.data.iter_mut().zip(&flush_children) {
-            let completion = member
+            let through = member
                 .store
-                .flush_file(*child, StoreWriteWatermark(u64::MAX));
+                .highest_accepted_watermark()
+                .unwrap_or(StoreWriteWatermark(0));
+            let completion = member.store.flush_file(*child, through);
             all_durable &= matches!(completion.disposition, CompletionDisposition::Success)
                 && completion.persistence.is_durable();
             self.admission
                 .complete(token, completion)
                 .map_err(slot_error)?;
         }
+        let parity_through = self
+            .parity
+            .store
+            .highest_accepted_watermark()
+            .unwrap_or(StoreWriteWatermark(0));
         let parity_completion = self.parity.store.flush_file(
             *flush_children.last().expect("parity child exists"),
-            StoreWriteWatermark(u64::MAX),
+            parity_through,
         );
         all_durable &= matches!(
             parity_completion.disposition,
@@ -290,7 +297,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 disposition: CompletionDisposition::Success,
                 persistence: PersistenceClaim::HostFenceOnly,
             },
-            trace: empty_trace(self.topology.topology_epoch(), self.recovery_generation())?,
+            trace: empty_trace(self.topology.topology_epoch(), self.recovery_generation()?)?,
         })
     }
 
@@ -306,34 +313,43 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         plan: &crate::range::RangePlan,
         token: OperationSlotToken,
     ) -> Result<OperationEvidence, ServiceError> {
-        let generation = self.recovery_generation();
+        let generation = self.recovery_generation()?;
         if generation != self.checksums.recovery_generation {
             return Err(ServiceError::io(
                 FailureClass::Recovery,
                 "checksum authority generation is stale",
             ));
         }
-        let region = region_for(data_slot, request.range);
+        let member_index = u32::try_from(data_slot).map_err(|_| {
+            ServiceError::io(
+                FailureClass::Range,
+                "data slot does not fit region identity",
+            )
+        })?;
+        let regions = dirty_regions_for_range(member_index, request.range, DIRTY_REGION_BYTES)
+            .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?;
         let checksum_extents = self.checksum_extents_for(data_slot, request.range)?;
         let stores = vec![self.data[data_slot].id, self.parity.id];
+        let mut parity_ranges = Vec::with_capacity(plan.ranges.len() * 2);
+        for range in &plan.ranges {
+            let region = dirty_regions_for_range(member_index, *range, DIRTY_REGION_BYTES)
+                .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| ServiceError::io(FailureClass::Range, "missing dirty region"))?;
+            parity_ranges.extend([
+                ParityRange::new(region, self.data[data_slot].id, *range),
+                ParityRange::new(region, self.parity.id, *range),
+            ]);
+        }
         let mut tx_plan = TransactionPlan::new(
             self.topology.topology_epoch(),
             generation,
-            self.config.fence_domain,
+            request.ordering.fence_domain,
         )
         .with_intent(IntentRequirement::FirstWrite)
-        .with_ranges(
-            plan.ranges
-                .iter()
-                .flat_map(|range| {
-                    [
-                        ParityRange::new(region, self.data[data_slot].id, *range),
-                        ParityRange::new(region, self.parity.id, *range),
-                    ]
-                })
-                .collect(),
-        )
-        .with_dirty_regions(vec![region])
+        .with_ranges(parity_ranges)
+        .with_dirty_regions(regions.clone())
         .with_checksum_extents(checksum_extents.clone())
         .with_reads(
             plan.ranges
@@ -362,20 +378,14 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 })
                 .collect(),
         )
-        .with_stores(stores.clone())
-        .with_watermarks(
-            stores
-                .iter()
-                .map(|store| StoreWatermark::new(*store, StoreWriteWatermark(u64::MAX)))
-                .collect(),
-        );
+        .with_stores(stores.clone());
         tx_plan.limits = TransactionLimits::default();
         let mut machine = TransactionMachine::new(tx_plan)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let target = InvalidationTarget::new(vec![region], checksum_extents.clone());
+        let target = InvalidationTarget::new(regions.clone(), checksum_extents.clone());
         let intent = self
             .checksums
             .invalidate_with_intent(&mut self.recovery, target)
@@ -455,9 +465,10 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         } else {
             WriteIntent::Preflush
         };
-        let mut fences = Vec::new();
+        let mut data_watermark = None;
+        let mut parity_watermark = None;
         for (index, (range, new_data, new_parity)) in computed.iter().enumerate() {
-            fences.push(write_member(
+            data_watermark = Some(write_member(
                 &mut self.data[data_slot].store,
                 &mut self.admission,
                 token,
@@ -466,7 +477,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 new_data,
                 write_intent,
             )?);
-            fences.push(write_member(
+            parity_watermark = Some(write_member(
                 &mut self.parity.store,
                 &mut self.admission,
                 token,
@@ -476,25 +487,41 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 write_intent,
             )?);
         }
+        let data_watermark = data_watermark
+            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "data write lacks watermark"))?;
+        let parity_watermark = parity_watermark
+            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "parity write lacks watermark"))?;
+        machine
+            .set_write_watermarks(vec![
+                StoreWatermark::for_incarnation(
+                    self.data[data_slot].id,
+                    self.data[data_slot].store.incarnation(),
+                    data_watermark,
+                ),
+                StoreWatermark::for_incarnation(
+                    self.parity.id,
+                    self.parity.store.incarnation(),
+                    parity_watermark,
+                ),
+            ])
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         machine
             .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
 
-        let data_id = self.data[data_slot].id;
-        let parity_id = self.parity.id;
         let data_fence = flush_member(
             &mut self.data[data_slot].store,
             &mut self.admission,
             token,
             flush_children[0],
-            data_id,
+            data_watermark,
         )?;
         let parity_fence = flush_member(
             &mut self.parity.store,
             &mut self.admission,
             token,
             flush_children[1],
-            parity_id,
+            parity_watermark,
         )?;
         let mut store_fences = Vec::new();
         for evidence in [data_fence, parity_fence] {
@@ -509,9 +536,13 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         let certificate = checksum_extents.iter().copied().fold(
             FenceCertificate::new(
                 self.topology.topology_epoch(),
-                self.config.fence_domain,
+                request.ordering.fence_domain,
                 store_fences,
-                vec![(region, intent.committed_generation)],
+                regions
+                    .iter()
+                    .copied()
+                    .map(|region| (region, intent.committed_generation))
+                    .collect(),
             ),
             |certificate, extent| {
                 certificate.with_integrity_extent(extent, intent.committed_generation)
@@ -534,10 +565,12 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         }
         let mut checkpoint = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
         checkpoint.push(RecoveryMutation::RecordHomeFence { fence: certificate });
-        checkpoint.push(RecoveryMutation::MarkRegionClean {
-            region,
-            through_generation: intent.committed_generation,
-        });
+        for region in regions {
+            checkpoint.push(RecoveryMutation::MarkRegionClean {
+                region,
+                through_generation: intent.committed_generation,
+            });
+        }
         let committed = self
             .recovery
             .commit_durable(checkpoint)
@@ -618,11 +651,11 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             .unwrap_or(self.topology.geometry().protected_length())
     }
 
-    fn recovery_generation(&self) -> RecoveryGeneration {
+    fn recovery_generation(&self) -> Result<RecoveryGeneration, ServiceError> {
         self.recovery
             .load_assembly_snapshot()
             .map(|snapshot| snapshot.generation)
-            .unwrap_or(RecoveryGeneration::ZERO)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
     }
 
     fn checksum_extents_for(
@@ -760,9 +793,9 @@ fn flush_member(
     admission: &mut OperationAdmission,
     token: OperationSlotToken,
     child: dwv_store::ChildOperationId,
-    _id: StoreId,
+    through: StoreWriteWatermark,
 ) -> Result<PersistenceEvidence, ServiceError> {
-    let result = store.flush_file(child, StoreWriteWatermark(u64::MAX));
+    let result = store.flush_file(child, through);
     let persistence = result.persistence;
     admission.complete(token, result).map_err(slot_error)?;
     Ok(persistence)
@@ -851,10 +884,6 @@ fn validate_request(
             "request addresses an unavailable data slot or has an invalid range",
         )),
     }
-}
-
-fn region_for(data_slot: usize, range: ByteRange) -> RegionId {
-    RegionId((u64::try_from(data_slot).unwrap_or(u64::MAX) << 32) ^ (range.offset / 4096))
 }
 
 fn empty_trace(
@@ -1391,7 +1420,7 @@ mod tests {
     }
 
     #[test]
-    fn assembly_rejects_data_parity_identity_alias() {
+    fn member_claim_rejects_data_parity_identity_alias() {
         let root = std::env::temp_dir().join(format!(
             "dwv-service-alias-{}-{}",
             std::process::id(),
@@ -1417,25 +1446,21 @@ mod tests {
         let data0 = open(data0_path.clone(), 1);
         let data1 = open(data1_path, 2);
         fs::hard_link(&data0_path, &parity_path).unwrap();
-        let parity = open(parity_path, 3);
-        let result = HealthyPortableService::open(
-            topology(epoch),
-            vec![
-                MemberStore::new(StoreId(1), data0),
-                MemberStore::new(StoreId(2), data1),
-            ],
-            MemberStore::new(StoreId(3), parity),
-            MemoryRecoveryStore::new(epoch),
-            ServiceConfig::default(),
-        );
         assert!(matches!(
-            result,
-            Err(ServiceError::Invalid {
-                class: FailureClass::Alias,
-                ..
-            })
+            FileStore::open(
+                FileStoreConfig::new(parity_path, LENGTH, BLOCK)
+                    .maximum_transfer(LENGTH)
+                    .create(true)
+                    .store_id(StoreId(3))
+                    .topology_epoch(epoch)
+                    .sync_mode(FileSyncMode::CallerFlush),
+            ),
+            Err(dwv_store_file::FileStoreError::Lease(
+                dwv_store_file::FileLeaseError::AlreadyHeld(_)
+            ))
         ));
-        drop(result);
+        drop(data0);
+        drop(data1);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1506,7 +1531,7 @@ mod tests {
     }
 
     #[test]
-    fn corrupt_recovery_opens_blocked_without_attempting_snapshot_load() {
+    fn corrupt_recovery_is_rejected_before_snapshot_load() {
         let (root, service) = fixture();
         drop(service);
         let epoch = TopologyEpoch(4);
@@ -1522,33 +1547,22 @@ mod tests {
         };
         let mut recovery = MemoryRecoveryStore::new(epoch);
         recovery.set_health(dwv_recovery::RecoveryStoreHealth::Corrupt);
-        let mut service = HealthyPortableService::open(
-            topology(epoch),
-            vec![
-                MemberStore::new(StoreId(1), open(1)),
-                MemberStore::new(StoreId(2), open(2)),
-            ],
-            MemberStore::new(StoreId(3), open(3)),
-            recovery,
-            ServiceConfig::default(),
-        )
-        .unwrap();
-        assert_eq!(
-            service.state(),
-            ServiceState::Blocked(FailureClass::Recovery)
-        );
-        let range = ByteRange::new(0, BLOCK as u64).unwrap();
         assert!(matches!(
-            service.write(PortableRequest::write(
-                RequestId(17),
-                epoch,
-                0,
-                range,
-                vec![0x44; BLOCK as usize],
-            )),
-            Err(ServiceError::Blocked(FailureClass::Recovery))
+            HealthyPortableService::open(
+                topology(epoch),
+                vec![
+                    MemberStore::new(StoreId(1), open(1)),
+                    MemberStore::new(StoreId(2), open(2)),
+                ],
+                MemberStore::new(StoreId(3), open(3)),
+                recovery,
+                ServiceConfig::default(),
+            ),
+            Err(ServiceError::Io {
+                class: FailureClass::Recovery,
+                ..
+            })
         ));
-        drop(service);
         fs::remove_dir_all(root).unwrap();
     }
 

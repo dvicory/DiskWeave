@@ -22,6 +22,7 @@ members = [
     "crates/dwv-format",
     "crates/dwv-transaction-proc",
     "crates/dwv-trace",
+    "crates/dwv-frontend-ublk",
     "xtask",
 ]
 resolver = "2"
@@ -31,6 +32,7 @@ blake3 = "1"
 dwv-codec = { path = "crates/dwv-codec" }
 dwv-core = { path = "crates/dwv-core" }
 dwv-recovery = { path = "crates/dwv-recovery" }
+dwv-frontend-ublk = { path = "crates/dwv-frontend-ublk" }
 dwv-recovery-sqlite = { path = "crates/dwv-recovery-sqlite" }
 dwv-format = { path = "crates/dwv-format" }
 dwv-service = { path = "crates/dwv-service" }

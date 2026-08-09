@@ -5,7 +5,7 @@
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryCutPoint {
-    BeforeIntent,
+    HomeMutationBeforeIntent,
     AfterIntentBeforeHome,
     AfterHomeMutationBeforeFence,
     AfterFenceBeforeCheckpoint,
@@ -72,7 +72,7 @@ impl RecoverySchedule {
         let extents = sorted_unique(extents);
 
         match self.cut_point {
-            RecoveryCutPoint::BeforeIntent => {
+            RecoveryCutPoint::HomeMutationBeforeIntent => {
                 state.outcome = Some(RecoveryModelOutcome::Blocked);
                 state.events.push(RecoveryModelEvent::IntentRefused);
             }
@@ -181,6 +181,29 @@ mod tests {
             assert_eq!(state.stale_extents, vec![10]);
             assert!(state.session_dirty);
         }
+    }
+
+    #[test]
+    fn mutation_before_durable_intent_is_refused_without_home_io() {
+        let state =
+            RecoverySchedule::first_write(RecoveryCutPoint::HomeMutationBeforeIntent).replay();
+        assert!(!state.home_mutation_emitted);
+        assert!(state.dirty_regions.is_empty());
+        assert_eq!(state.outcome, Some(RecoveryModelOutcome::Blocked));
+        assert!(state.events.contains(&RecoveryModelEvent::IntentRefused));
+    }
+
+    #[test]
+    fn crash_after_home_mutation_before_checkpoint_remains_dirty() {
+        let state =
+            RecoverySchedule::first_write(RecoveryCutPoint::AfterHomeMutationBeforeFence).replay();
+        assert!(state.home_mutation_emitted);
+        assert!(!state.checkpointed);
+        assert_eq!(state.dirty_regions, vec![1]);
+        assert_eq!(
+            state.outcome,
+            Some(RecoveryModelOutcome::ReconciliationRequired)
+        );
     }
 
     #[test]

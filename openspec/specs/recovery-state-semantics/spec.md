@@ -61,12 +61,33 @@ Transactions SHALL capture one topology epoch. A commit under a different epoch 
 ### Requirement: Semantic export and health are independent of storage engine layout
 <!-- dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout -->
 
-The reference store SHALL expose a bounded semantic snapshot/manifest and health classification. Missing, corrupt, or stale recovery state SHALL be observable and SHALL block new home mutations until an explicit recovery plan establishes a new generation. Export SHALL not expose SQLite pages, row IDs, or implementation pointers.
+The reference store SHALL expose a bounded semantic snapshot/manifest and health classification. Missing, corrupt, stale, unavailable, or failed-to-load recovery state SHALL remain an explicit conservative error and SHALL block new home mutations until an explicit recovery plan establishes a new generation. A caller SHALL NOT substitute generation zero, a clean snapshot, success, or a successful trace for failed recovery access. Export SHALL not expose SQLite pages, row IDs, or implementation pointers.
 
 #### Scenario: Recovery state is missing
 
 - **WHEN** an implementation reports no durable recovery snapshot
 - **THEN** health is not healthy and callers receive a conservative recovery decision rather than an implicit clean state
+
+#### Scenario: Recovery state cannot be loaded
+
+- **WHEN** snapshot access fails because state is corrupt, stale, locked, unavailable, or rejected
+- **THEN** the caller returns the corresponding conservative failure and does not continue with generation zero
+
+### Requirement: Writable recovery ownership is crash-releasing
+<!-- dwv:req req.recovery-state-semantics.writable-recovery-ownership-is-crash-releasing -->
+
+A writable recovery adapter SHALL hold its single-writer claim through an operating-system descriptor lock whose ownership is released by process death without destructor or cleanup execution. Marker content MAY aid diagnostics but marker existence SHALL NOT own the claim. Acquisition and reacquisition SHALL validate the current recovery identity, topology, schema, and health; every create/open failure SHALL release partial ownership and leave no residual claim.
+
+#### Scenario: Recovery owner process dies
+
+- **WHEN** one process holds the writable recovery claim and is killed without cleanup
+- **THEN** the operating system releases the claim and a new process may reacquire only after current recovery authority is revalidated
+
+#### Scenario: Recovery creation fails after claiming
+
+- **WHEN** `create_new` or later initialization fails after acquiring ownership
+- **THEN** the descriptor claim is released and no marker existence prevents a valid later acquisition
+
 
 ### Requirement: SQLite remains an evidence-driven adapter decision
 <!-- dwv:req req.recovery-state-semantics.sqlite-remains-an-evidence-driven-adapter-decision -->

@@ -36,7 +36,7 @@ A read SHALL validate the normalized byte range, split it at required boundaries
 ### Requirement: Writes follow the reference transaction and update single XOR parity
 <!-- dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity -->
 
-A protected write SHALL use OS-008/OS-010 ordering: acquire resources, durably record dirty/invalidation intent, read or use trusted full-overwrite data, compute/update single XOR parity, and write affected data/parity ranges. No protected home mutation may precede intent.
+A protected write SHALL use OS-008/OS-010 ordering: acquire resources; derive every intersecting dirty region through the canonical checked recovery-region mapping; durably invalidate all affected regions and integrity extents; read or use trusted full-overwrite data; compute/update single XOR parity; and write affected data/parity ranges. Transaction ranges SHALL remain bound to the correct regions. No protected home mutation may precede complete intent.
 
 #### Scenario: Partial write requires RMW
 
@@ -51,12 +51,12 @@ A protected write SHALL use OS-008/OS-010 ordering: acquire resources, durably r
 ### Requirement: Durable completion and clean checkpoint require fences
 <!-- dwv:req req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences -->
 
-Flush, FUA, and checkpoint behavior SHALL preserve the normalized durability intent. A write SHALL not clear dirty state or establish valid checksum evidence unless every required store has covering fence evidence and recovery generations still match. Unsupported durability requirements SHALL be rejected or explicitly reported weaker.
+Flush, FUA, and checkpoint behavior SHALL preserve the normalized durability intent. Each accepted data/parity write SHALL carry its store-assigned watermark. A write SHALL not clear dirty state or establish valid checksum evidence unless every affected region and required store is covered by matching durable fence evidence through at least the exact accepted write watermarks, recovery generations still match, and no fence cites a future, stale, partial, or cross-store watermark. Unsupported durability requirements SHALL be rejected or explicitly reported weaker.
 
 #### Scenario: All required stores are fenced
 
-- **WHEN** data and parity writes are terminal and matching durable fences cover them
-- **THEN** recovery may checkpoint the proven region and the service may return the corresponding durable completion
+- **WHEN** data and parity writes are terminal and matching durable fences cover every affected region and exact store watermark
+- **THEN** recovery may checkpoint only those proven regions and the service may return the corresponding durable completion
 
 #### Scenario: A fence is missing or volatile
 

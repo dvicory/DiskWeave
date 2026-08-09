@@ -192,6 +192,7 @@ pub fn fence_ref(
     StoreFenceRef {
         fence_id,
         store_id: store,
+        store_incarnation: dwv_store::StoreIncarnationId(0),
         topology_epoch,
         through,
         capability_evidence_id,

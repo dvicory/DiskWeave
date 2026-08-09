@@ -1,0 +1,25 @@
+[package]
+name = "dwv-frontend-ublk"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+
+[dependencies]
+blake3 = "1"
+dwv-core = { path = "../dwv-core" }
+dwv-recovery = { path = "../dwv-recovery" }
+dwv-recovery-sqlite = { path = "../dwv-recovery-sqlite" }
+dwv-service = { path = "../dwv-service" }
+dwv-store = { path = "../dwv-store" }
+dwv-store-file = { path = "../dwv-store-file" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
+libublk = "0.4.6"
+smol = "2"

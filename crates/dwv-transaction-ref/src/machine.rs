@@ -185,18 +185,6 @@ impl TransactionPlan {
         {
             return Err(PlanError::EmptyRange);
         }
-        for (index, store) in self.stores.iter().enumerate() {
-            if self.stores[..index].contains(store) {
-                return Err(PlanError::DuplicateStore);
-            }
-            if !self
-                .through
-                .iter()
-                .any(|watermark| watermark.store == *store)
-            {
-                return Err(PlanError::MissingWatermark);
-            }
-        }
         if self
             .ranges
             .iter()
@@ -318,6 +306,38 @@ impl TransactionMachine {
 
     pub fn plan(&self) -> &TransactionPlan {
         &self.plan
+    }
+
+    pub fn set_write_watermarks(
+        &mut self,
+        through: StoreWatermarks,
+    ) -> Result<(), TransactionError> {
+        if !matches!(
+            self.pending_action(),
+            Some(TransactionAction::WriteSet { .. })
+        ) {
+            return Err(TransactionError::InvalidResult(
+                "write watermarks may be recorded only for the pending write set",
+            ));
+        }
+        if through.len() != self.plan.stores.len()
+            || self.plan.stores.iter().any(|store| {
+                through
+                    .iter()
+                    .filter(|watermark| watermark.store == *store)
+                    .count()
+                    != 1
+            })
+            || through
+                .iter()
+                .any(|watermark| !self.plan.stores.contains(&watermark.store))
+        {
+            return Err(TransactionError::InvalidResult(
+                "write watermarks must name every planned store exactly once",
+            ));
+        }
+        self.plan.through = through;
+        Ok(())
     }
 
     pub fn state(&self) -> &TransactionState {
@@ -487,6 +507,11 @@ impl TransactionMachine {
             },
             (ActionKind::WriteSet, ActionResult::WriteSetComplete(result)) => match result {
                 SemanticIoResult::Complete => {
+                    if self.plan.through.len() != self.plan.stores.len() {
+                        return Err(TransactionError::InvalidResult(
+                            "complete write set lacks exact store watermarks",
+                        ));
+                    }
                     self.state.irreversible_boundary = true;
                     self.state.home_mutation_emitted = true;
                     Ok(Some(Stage::FlushSet))
@@ -775,6 +800,7 @@ mod tests {
             vec![StoreFenceRef {
                 fence_id: FenceId(1),
                 store_id: store,
+                store_incarnation: dwv_store::StoreIncarnationId(0),
                 topology_epoch: TopologyEpoch(7),
                 through: StoreWriteWatermark(8),
                 capability_evidence_id: CapabilityEvidenceId(1),
@@ -1133,8 +1159,9 @@ mod tests {
             certificate.with_integrity_extent(IntegrityExtentId(4), RecoveryGeneration(3));
 
         let mut machine =
-            TransactionMachine::new(plan().with_watermarks(vec![StoreWatermark::new(
+            TransactionMachine::new(plan().with_watermarks(vec![StoreWatermark::for_incarnation(
                 StoreId(1),
+                dwv_store::StoreIncarnationId(1),
                 StoreWriteWatermark(1),
             )]))
             .unwrap();

@@ -51,12 +51,23 @@ The store SHALL expose fixed geometry, alignment, transfer limits, write/flush s
 ### Requirement: Single-writer ownership and endpoint aliasing are explicit
 <!-- dwv:req req.file-backed-stores.single-writer-ownership-and-endpoint-aliasing-are-explicit -->
 
-The store layer SHALL acquire a bounded ephemeral lease before writable use, release it only after close, and reject a backing path that aliases an exported/proxy endpoint while active. Lease loss or conflicting ownership SHALL block writable assembly without modifying payload bytes.
+The store layer SHALL acquire a bounded ephemeral lease before writable use and hold ownership with an operating-system advisory lock on an open descriptor. Marker content MAY remain diagnostic, but marker-file existence SHALL NOT own the lease. A competing live process SHALL fail; process death SHALL release the lease without destructors or cleanup; partial multi-store acquisition failure SHALL release every acquired lease; and reacquisition SHALL revalidate identity, geometry, topology, and recovery authority. The store SHALL reject a backing path that aliases an exported/proxy endpoint while active. Lease loss or conflicting ownership SHALL block writable assembly without modifying payload bytes.
 
 #### Scenario: A second writer opens the same backing store
 
 - **WHEN** the lease already exists
 - **THEN** the second open fails deterministically and the existing payload remains untouched
+
+#### Scenario: A writer dies without cleanup
+
+- **WHEN** the process holding a backing-store lease is killed without running destructors
+- **THEN** the operating system releases the descriptor lock, and a new process may acquire only after identity and geometry revalidation
+
+#### Scenario: Multi-store claim acquisition fails
+
+- **WHEN** assembly acquires some required leases and a later member or recovery claim fails
+- **THEN** every partial lease is released and no writable endpoint or residual ownership marker remains
+
 
 #### Scenario: Backing and exported paths alias
 

@@ -11,3 +11,6 @@ blake3 = "1"
 dwv-core = { path = "../dwv-core" }
 dwv-store = { path = "../dwv-store" }
 serde = { version = "1", features = ["derive"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }

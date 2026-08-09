@@ -35,6 +35,11 @@ pub struct FenceId(pub u64);
 )]
 pub struct StoreWriteWatermark(pub u64);
 
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+pub struct StoreIncarnationId(pub u64);
+
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FrontendTag(pub u64);
 
@@ -386,6 +391,7 @@ pub enum PersistenceEvidence {
     DurableByFua {
         store_id: StoreId,
         topology_epoch: TopologyEpoch,
+        store_incarnation: StoreIncarnationId,
         through: StoreWriteWatermark,
     },
     DurableByFence {
@@ -398,6 +404,7 @@ pub struct StoreFenceRef {
     pub fence_id: FenceId,
     pub store_id: StoreId,
     pub topology_epoch: TopologyEpoch,
+    pub store_incarnation: StoreIncarnationId,
     pub through: StoreWriteWatermark,
     pub capability_evidence_id: CapabilityEvidenceId,
 }
@@ -412,20 +419,24 @@ impl PersistenceEvidence {
         store_id: StoreId,
         topology_epoch: TopologyEpoch,
         watermark: StoreWriteWatermark,
+        store_incarnation: StoreIncarnationId,
     ) -> bool {
         match self {
             Self::VolatileOrUnknown => false,
             Self::DurableByFua {
                 store_id: observed_store,
+                store_incarnation: observed_incarnation,
                 topology_epoch: observed_epoch,
                 through,
             } => {
                 observed_store == store_id
+                    && observed_incarnation == store_incarnation
                     && observed_epoch == topology_epoch
                     && through.0 >= watermark.0
             }
             Self::DurableByFence { fence } => {
                 fence.store_id == store_id
+                    && fence.store_incarnation == store_incarnation
                     && fence.topology_epoch == topology_epoch
                     && fence.through.0 >= watermark.0
             }
@@ -440,6 +451,7 @@ pub struct StoreCompletion {
     pub completed: CompletedRangeSet,
     pub disposition: CompletionDisposition,
     pub persistence: PersistenceEvidence,
+    pub write_watermark: Option<StoreWriteWatermark>,
 }
 
 impl StoreCompletion {
@@ -456,9 +468,15 @@ impl StoreCompletion {
             completed,
             disposition,
             persistence,
+            write_watermark: None,
         };
         completion.validate()?;
         Ok(completion)
+    }
+
+    pub fn with_write_watermark(mut self, watermark: StoreWriteWatermark) -> Self {
+        self.write_watermark = Some(watermark);
+        self
     }
 
     pub fn validate(&self) -> Result<(), StoreError> {

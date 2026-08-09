@@ -342,3 +342,42 @@ non_claims = [
   "Documentation acceptance does not certify DiskWeave runtime, platform, frontend, or hardware behavior.",
   "The accepted TOML section-brief representation is not claimed to be the final or universally best prose-authoring medium.",
 ]
+
+[[evidence]]
+id = "evidence.os-031-linux-ublk-ext4-acceptance"
+path = "docs/verification/os-031-linux-ublk-ext4-acceptance.md"
+claim = "OS-031 records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
+tier = "linux-arm64-file-backed-ublk"
+fault_model = ["unsupported kernel intent", "ownership conflict or process death", "stale publication state", "backing identity drift", "bounded resource exhaustion", "stale or duplicate completion", "trace divergence or abandonment", "incomplete shutdown", "missing recovery authority", "partial or cross-store fence evidence", "mutation crash point"]
+scope = ["ARM64 Linux ublk publication", "ext4 create and persistence workflow", "bounded normalized frontend trace replay", "clean shutdown and restart", "independent data-member readability", "deterministic recovery and fence models"]
+requirements = [
+  "req.linux-ublk-frontend.linux-prerequisite-probing-is-executable-and-non-destructive",
+  "req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics",
+  "req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe",
+  "req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow",
+  "req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority",
+  "req.linux-ublk-frontend.the-disposable-linux-fixture-remains-independently-inspectable",
+  "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
+  "req.linux-ublk-frontend.correction-evidence-covers-the-composed-correctness-boundaries",
+  "req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics",
+  "req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics",
+  "req.normalized-block-semantics.adapters-expose-bounded-deterministic-conformance-behavior",
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence",
+  "req.store-operation-contracts.store-failures-are-conservative-and-testable",
+  "req.dirty-integrity-invalidation.dirty-region-coverage-is-complete-and-checked",
+  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
+  "req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+  "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
+  "req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences",
+  "req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety",
+  "req.file-backed-stores.single-writer-ownership-and-endpoint-aliasing-are-explicit",
+  "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+  "req.recovery-state-semantics.writable-recovery-ownership-is-crash-releasing",
+]
+non_claims = [
+  "The evidence does not establish production concurrency, daemon or crash recovery, or deployment correctness.",
+  "The file-backed VM workflow does not establish raw-device, power-loss, or hardware durability.",
+  "FUA, discard, write-zeroes, broader filesystems, multi-device publication, and online topology mutation remain unsupported.",
+]

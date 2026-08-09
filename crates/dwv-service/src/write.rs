@@ -4,7 +4,7 @@ use crate::{
 };
 use dwv_codec::{Geometry as CodecGeometry, ParityCodec, XorReference};
 use dwv_core::ByteRange;
-use dwv_store::{CompletionDisposition, OperationSlotToken, PersistenceEvidence, WriteIntent};
+use dwv_store::{CompletionDisposition, OperationSlotToken, StoreWriteWatermark, WriteIntent};
 use dwv_store_file::FileStore;
 
 pub(crate) fn update_parity(
@@ -51,10 +51,10 @@ pub(crate) fn write_member(
     range: ByteRange,
     bytes: &[u8],
     intent: WriteIntent,
-) -> Result<PersistenceEvidence, ServiceError> {
+) -> Result<StoreWriteWatermark, ServiceError> {
     let result = store.write_bytes(child, range, bytes, intent);
-    let persistence = result.persistence;
     let disposition = result.disposition.clone();
+    let watermark = result.write_watermark;
     admission.complete(token, result).map_err(slot_error)?;
     if !matches!(disposition, CompletionDisposition::Success) {
         return Err(ServiceError::io(
@@ -62,5 +62,10 @@ pub(crate) fn write_member(
             "home mutation did not complete",
         ));
     }
-    Ok(persistence)
+    watermark.ok_or_else(|| {
+        ServiceError::io(
+            FailureClass::Fence,
+            "successful home mutation lacks a store write watermark",
+        )
+    })
 }

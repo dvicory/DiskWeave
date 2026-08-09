@@ -301,6 +301,7 @@ pub fn semantic_actions(plan: &TransactionPlan) -> Vec<TransactionAction> {
                 .map(|watermark| StoreFenceRef {
                     fence_id: FenceId(watermark.store.0),
                     store_id: watermark.store,
+                    store_incarnation: watermark.incarnation,
                     topology_epoch: plan.topology_epoch,
                     through: watermark.through,
                     capability_evidence_id: CapabilityEvidenceId(watermark.store.0),

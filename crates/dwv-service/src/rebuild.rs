@@ -110,11 +110,9 @@ impl VerificationStore for FileRebuildStore {
         if matches!(completion.disposition, CompletionDisposition::Success)
             && completion.completed.covers(range).unwrap_or(false)
         {
-            self.last_write_watermark = Some(StoreWriteWatermark(
-                u64::from(operation.index)
-                    .checked_add(1)
-                    .ok_or_else(|| VerificationStoreError::new("write watermark overflow"))?,
-            ));
+            self.last_write_watermark = Some(completion.write_watermark.ok_or_else(|| {
+                VerificationStoreError::new("replacement write lacks a store watermark")
+            })?);
             Ok(())
         } else {
             Err(VerificationStoreError::new(format!(

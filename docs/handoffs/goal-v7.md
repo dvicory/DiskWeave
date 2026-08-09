@@ -45,6 +45,21 @@ DiskWeave users SHALL NOT need to clone or compile upstream `ublksrv`. The suppo
 
 Inspect the post-goal-v6 repository before allocating a change name, crate, dependency, binary, or protocol. Reuse the existing semantic seams; do not create Linux-specific copies of portable behavior.
 
+### Goal-v7 correction baseline
+
+Before live acceptance can count, OS-031 SHALL close and verify the composed correctness seams exposed by the frontend:
+
+- `req.dirty-integrity-invalidation.dirty-region-coverage-is-complete-and-checked`: one checked recovery-owned mapping covers every region intersected by a write and rejects unrepresentable identities;
+- `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` plus `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence`: write completions carry real store watermarks and checkpoint/clear accepts only exact matching multi-store, multi-region fence coverage;
+- `req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout`: recovery access failure remains a failure and can never become generation zero;
+- `req.file-backed-stores.single-writer-ownership-and-endpoint-aliasing-are-explicit` and `req.recovery-state-semantics.writable-recovery-ownership-is-crash-releasing`: writable claims use crash-releasing descriptor locks, release partial acquisition, and revalidate after owner death;
+- `req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics`: the adapter preserves request/frontend identities, stable target slot, topology epoch, operation, range, buffer token, submission sequence, ordering intent, and durability intent.
+
+Completion evidence SHALL include the normal deterministic regressions plus a TLA+ mutation/crash model, a bounded Kani dirty-region mapping harness, an independent fence-coverage model, and a member-process crash/reacquisition integration case. Each artifact must name its property boundary. No layer substitutes for another.
+
+This correction does not select a production SQLite configuration or prove physical durability. Those remain explicit later gates.
+
+
 ---
 
 ## 2. User-visible acceptance story
@@ -272,6 +287,11 @@ Goal-v7 is complete only when:
 15. Exact environment support and non-claims are recorded.
 16. The one-data-slot Linux acceptance profile introduces no portable or persistent array-width limit, and wider topologies fail as unsupported without partial publication or mutation.
 17. Residual concurrency, daemon-loss, multi-member, topology-transition, workload, deployment, and hardware gaps remain explicit.
+18. Checked dirty-region derivation covers every touched region end to end; no service-local hard-coded mapping remains.
+19. Store-assigned monotonic watermarks and independent fence composition reject future, stale, partial, omitted-region, and cross-store evidence.
+20. Recovery snapshot failures remain explicit and never fall back to generation zero.
+21. Store and recovery claims are released by process death without marker cleanup, with partial-acquisition and reacquisition checks.
+22. The TLA+, Kani, independent model, process-crash integration, and deterministic regression evidence required by the correction baseline pass and are mapped to canonical requirements and v0.8 properties.
 
 ---
 
@@ -288,6 +308,11 @@ Goal-v7 is not satisfied by:
 - using unbounded tasks, buffers, queues, or logs;
 - copying parity/recovery semantics into the Linux adapter;
 - marking environment-gated live tests complete because they were skipped;
+- using guessed or sentinel store watermarks as fence evidence;
+- deriving one dirty region from a write start when the range may cross regions;
+- replacing recovery access failure with generation zero, clean state, or successful trace output;
+- treating marker-file existence or destructor cleanup as writable ownership;
+- treating a passing live ext4 path as a substitute for the required model, bounded proof, or process-crash evidence;
 - expanding into multi-member coherence or deployment before the single-device acceptance is solid.
 
 Final invariant:

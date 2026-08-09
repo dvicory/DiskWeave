@@ -42,6 +42,7 @@ pub enum CompletionFault {
 pub struct MediaConfig {
     pub store_id: StoreId,
     pub topology_epoch: TopologyEpoch,
+    pub store_incarnation: dwv_store::StoreIncarnationId,
     pub capabilities: StoreCapabilities,
     pub max_pending: usize,
     pub write_completion: CompletionFault,
@@ -63,6 +64,7 @@ impl MediaConfig {
         Self {
             store_id: StoreId(1),
             topology_epoch: TopologyEpoch(1),
+            store_incarnation: dwv_store::StoreIncarnationId(1),
             capabilities,
             max_pending: 64,
             write_completion: CompletionFault::Success,
@@ -757,6 +759,7 @@ impl MediaSimulator {
                 let persistence = if uses_fua(intent) {
                     PersistenceEvidence::DurableByFua {
                         store_id: self.config.store_id,
+                        store_incarnation: self.config.store_incarnation,
                         topology_epoch: self.config.topology_epoch,
                         through: StoreWriteWatermark(u64::from(operation_id.index) + 1),
                     }
@@ -852,6 +855,7 @@ impl MediaSimulator {
                     if uses_fua(intent) {
                         PersistenceEvidence::DurableByFua {
                             store_id: self.config.store_id,
+                            store_incarnation: self.config.store_incarnation,
                             topology_epoch: self.config.topology_epoch,
                             through: StoreWriteWatermark(u64::from(operation_id.index) + 1),
                         }
@@ -986,6 +990,7 @@ impl MediaSimulator {
                     fence: dwv_store::StoreFenceRef {
                         fence_id: FenceId(u64::from(operation_id.index)),
                         store_id: self.config.store_id,
+                        store_incarnation: self.config.store_incarnation,
                         topology_epoch: self.config.topology_epoch,
                         through,
                         capability_evidence_id: self.config.capabilities.evidence_id,

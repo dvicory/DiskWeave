@@ -145,6 +145,7 @@ mod tests {
                 fence: dwv_store::StoreFenceRef {
                     fence_id: dwv_store::FenceId(1),
                     store_id: dwv_store::StoreId(1),
+                    store_incarnation: dwv_store::StoreIncarnationId(0),
                     topology_epoch: dwv_core::TopologyEpoch(1),
                     through: dwv_store::StoreWriteWatermark(1),
                     capability_evidence_id: dwv_store::CapabilityEvidenceId(1),

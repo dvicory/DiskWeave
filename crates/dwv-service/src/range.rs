@@ -1,5 +1,6 @@
 use crate::failure::{FailureClass, ServiceError};
 use dwv_core::{ByteRange, ProtectedGeometry};
+use dwv_recovery::DIRTY_REGION_BYTES;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RangePlan {
@@ -34,7 +35,8 @@ pub fn split_range(
     let mut offset = range.offset;
     let mut remaining = range.length;
     while remaining != 0 {
-        let length = remaining.min(maximum_transfer);
+        let until_region_boundary = DIRTY_REGION_BYTES - (offset % DIRTY_REGION_BYTES);
+        let length = remaining.min(maximum_transfer).min(until_region_boundary);
         ranges.push(
             ByteRange::new(offset, length)
                 .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?,

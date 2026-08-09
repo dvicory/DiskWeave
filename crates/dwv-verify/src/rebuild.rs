@@ -432,6 +432,7 @@ mod tests {
             Ok(StoreFenceRef {
                 fence_id: FenceId(self.flushes as u64),
                 store_id: StoreId(90),
+                store_incarnation: dwv_store::StoreIncarnationId(0),
                 topology_epoch: TopologyEpoch(2),
                 through: StoreWriteWatermark(self.writes as u64),
                 capability_evidence_id: CapabilityEvidenceId(1),
