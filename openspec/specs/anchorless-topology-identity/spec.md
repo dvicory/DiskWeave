@@ -4,6 +4,7 @@
 This capability gives DiskWeave stable logical topology and deterministic identity evidence without requiring DiskWeave metadata inside ordinary data-member payloads.
 ## Requirements
 ### Requirement: Topology identities are explicit and immutable within an epoch
+<!-- dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch -->
 
 The system SHALL represent array identity, logical slot identity, member role, coding position, assignment-instance identity, assignment generation, protected geometry, and topology epoch as separate semantic values. A published topology snapshot SHALL be immutable for the lifetime of requests that captured its epoch.
 
@@ -18,6 +19,7 @@ The system SHALL represent array identity, logical slot identity, member role, c
 - **THEN** a new topology epoch is created and existing requests continue to resolve only against their captured snapshot
 
 ### Requirement: Topology validation rejects ambiguous or inconsistent assignments
+<!-- dwv:req req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments -->
 
 The system SHALL reject snapshots with duplicate logical slots, duplicate active coding positions, mismatched array/epoch identities, invalid protected lengths, or role/coding assignments that cannot be interpreted by the selected parity profile. Validation SHALL not use physical enumeration order as a substitute for a coding position.
 
@@ -32,6 +34,7 @@ The system SHALL reject snapshots with duplicate logical slots, duplicate active
 - **THEN** the same logical topology is produced and coding positions remain unchanged
 
 ### Requirement: Identity evidence is assessed from multiple observations
+<!-- dwv:req req.anchorless-topology-identity.identity-evidence-is-assessed-from-multiple-observations -->
 
 The identity resolver SHALL accept observations with source, normalized fingerprint, provenance, stability classification, and confidence. It SHALL return deterministic decisions for confident match, changed-but-explainable, ambiguous clone, insufficient evidence, conflicting assignment, and new unassigned device. Path names and probe order SHALL never be sufficient stable identity.
 
@@ -46,6 +49,7 @@ The identity resolver SHALL accept observations with source, normalized fingerpr
 - **THEN** the resolver reports the required deterministic confidence decision and records which evidence is missing or attested
 
 ### Requirement: Writable assembly fails closed on unresolved identity
+<!-- dwv:req req.anchorless-topology-identity.writable-assembly-fails-closed-on-unresolved-identity -->
 
 Writable assembly SHALL require exactly one confident or explicitly attested candidate for every required slot, matching role/coding position and compatible geometry. Ambiguous, conflicting, missing, stale, or unexplained replacement evidence SHALL produce a blocked/read-only decision rather than an automatic choice.
 
@@ -60,6 +64,7 @@ Writable assembly SHALL require exactly one confident or explicitly attested can
 - **THEN** the topology may be prepared for a staged transition but is not published until its durable commit step
 
 ### Requirement: Topology transitions are staged and recoverable
+<!-- dwv:req req.anchorless-topology-identity.topology-transitions-are-staged-and-recoverable -->
 
 Adding, removing, replacing, resizing, or role-changing a member SHALL follow prepared, verified, committed, and published stages. The old active topology SHALL remain authoritative until the new generation is durably committed and verified. Failure at any stage SHALL leave a deterministic recovery decision and SHALL not release the old assignment prematurely.
 
@@ -74,6 +79,7 @@ Adding, removing, replacing, resizing, or role-changing a member SHALL follow pr
 - **THEN** restart reconciles to the committed generation before publishing a new request-visible epoch
 
 ### Requirement: Identity and topology evidence is exportable for forensic recovery
+<!-- dwv:req req.anchorless-topology-identity.identity-and-topology-evidence-is-exportable-for-forensic-recovery -->
 
 The system SHALL expose bounded, versioned evidence reports that list candidates, observations, assessment, topology generation, and required operator action without exposing private runtime handles or requiring data-member metadata. A read-only report SHALL never itself authorize a destructive assignment.
 

@@ -6,6 +6,7 @@ stored, rendered, migrated, and replayed against portable backends without
 capturing filesystem paths or protected payload bytes.
 ## Requirements
 ### Requirement: Traces use a bounded canonical semantic format
+<!-- dwv:req req.normalized-trace-replay.traces-use-a-bounded-canonical-semantic-format -->
 
 A trace SHALL be a canonical JSON document with an explicit schema version,
 portable fixture geometry, symbolic payload descriptions, and an ordered event
@@ -27,6 +28,7 @@ than 1 MiB or containing more than 512 events.
   error without executing any event
 
 ### Requirement: Traces cover portable correctness boundaries
+<!-- dwv:req req.normalized-trace-replay.traces-cover-portable-correctness-boundaries -->
 
 The event vocabulary SHALL represent reads, writes, flushes, recovery intent,
 recovery checkpoints, checksum work, degraded reads, rebuild chunks, repair
@@ -47,6 +49,7 @@ durability class, decision class, and deterministic payload pattern metadata.
   outcome, and terminal result in event order
 
 ### Requirement: Replay is deterministic across portable backends
+<!-- dwv:req req.normalized-trace-replay.replay-is-deterministic-across-portable-backends -->
 
 The replay command SHALL construct the same deterministic fixture from the
 trace description, execute the normalized event sequence against the volatile
@@ -67,6 +70,7 @@ be a refusal/diagnostic, not a successful replay.
 - **AND** replay does not claim equivalence
 
 ### Requirement: Versioning and failure minimization are explicit
+<!-- dwv:req req.normalized-trace-replay.versioning-and-failure-minimization-are-explicit -->
 
 The importer SHALL support one documented migration from the immediately prior
 trace schema, reject unsupported future versions, and preserve canonical output

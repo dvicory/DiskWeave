@@ -4,6 +4,7 @@
 This capability provides the portable dirty-region protocol that atomically invalidates affected integrity evidence before protected home mutation and clears state only with generation-matched fence proof.
 ## Requirements
 ### Requirement: Durable intent precedes protected mutation
+<!-- dwv:req req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
 
 The recovery protocol SHALL durably mark every affected region `DIRTY` and every affected `VALID` checksum extent `STALE` before the first protected home mutation. A rejected, lost, or uncertain intent commit SHALL prevent protected home mutation.
 
@@ -18,6 +19,7 @@ The recovery protocol SHALL durably mark every affected region `DIRTY` and every
 - **THEN** no protected home mutation is permitted and the transaction returns a conservative failure
 
 ### Requirement: Already-dirty writes preserve the invalidation boundary
+<!-- dwv:req req.dirty-integrity-invalidation.already-dirty-writes-preserve-the-invalidation-boundary -->
 
 The protocol MAY avoid a redundant durable intent commit only when every affected region is already durably dirty and every affected valid checksum extent is already durably stale under the current topology and generation. Crossing any clean or valid boundary SHALL require new durable intent.
 
@@ -32,6 +34,7 @@ The protocol MAY avoid a redundant durable intent commit only when every affecte
 - **THEN** it commits a new intent before home mutation
 
 ### Requirement: Checkpoint and clear require fence evidence
+<!-- dwv:req req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence -->
 
 The protocol SHALL clear dirty state or install a clean checkpoint only when all required home and parity writes are terminal, each participating store has covering durable fence evidence, and captured topology, region, checksum, and capability generations still match current recovery state.
 
@@ -46,6 +49,7 @@ The protocol SHALL clear dirty state or install a clean checkpoint only when all
 - **THEN** checkpoint/clear is refused and dirty or reconciliation-required state remains
 
 ### Requirement: Failures and restart are conservative
+<!-- dwv:req req.dirty-integrity-invalidation.failures-and-restart-are-conservative -->
 
 Any short, failed, uncertain, abandoned, crashed, or post-intent recovery result SHALL preserve dirty/indeterminate evidence for every affected region. Restart SHALL discover that evidence and SHALL NOT infer clean state from elapsed time, process success, or a missing action result.
 
@@ -60,6 +64,7 @@ Any short, failed, uncertain, abandoned, crashed, or post-intent recovery result
 - **THEN** restart enters recovery/blocked handling with dirty evidence rather than assuming the write was clean
 
 ### Requirement: Dirty and integrity/session dimensions remain independent
+<!-- dwv:req req.dirty-integrity-invalidation.dirty-and-integrity-session-dimensions-remain-independent -->
 
 The protocol SHALL represent dirty-region state, checksum validity/coverage, parity cleanliness, and session-dirty state as separate dimensions. A clean parity state SHALL NOT establish current checksum coverage, and checksum validity SHALL NOT clear dirty state without the required transaction proof.
 
@@ -74,6 +79,7 @@ The protocol SHALL represent dirty-region state, checksum validity/coverage, par
 - **THEN** the session remains dirty even if individual regions were previously checkpointed
 
 ### Requirement: Transitions and evidence are deterministic
+<!-- dwv:req req.dirty-integrity-invalidation.transitions-and-evidence-are-deterministic -->
 
 The protocol SHALL emit stable semantic transitions containing transaction identity, topology epoch, affected ranges/extents, captured/current generations, and missing evidence. Replaying the same plan and results SHALL produce the same terminal state and error class.
 

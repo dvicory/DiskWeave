@@ -1,0 +1,1650 @@
+# Goal v6 — Open Traceable Knowledge and In-House AI-Maintained Documentation
+
+> Goal-v5 is treated as substantially complete and as evidence that the first custom documentation architecture preserved useful safety properties but built too much bespoke documentation machinery and produced projections that were not sufficiently useful.
+
+---
+
+# 0. Directive
+
+Build a repo-native, open-source knowledge and documentation system that allows autonomous agents to maintain genuinely useful DiskWeave documentation without requiring the product owner to write routine explanatory prose.
+
+The system SHALL remain in-house:
+
+- canonical DiskWeave semantics remain in canonical OpenSpecs and a small architecture constitution;
+- Rust implementation, executable scenarios, and verification evidence are linked to those semantics through a checked traceability spine;
+- human documentation is ordinary checked-in Markdown that can be read directly in the repository;
+- AI agents create and maintain that Markdown;
+- Sphinx, MyST Markdown, Sphinx-Needs, sphinx-codelinks, maintained Rust/Sphinx tooling, and other suitable open-source projects provide generic documentation, extraction, indexing, cross-reference, graph, and rendering behavior;
+- no proprietary editor, hosted documentation service, external wiki, or closed-source index is required to build, validate, regenerate, navigate, or maintain the documentation;
+- deterministic CI requires no model, provider credentials, editor extension, or network access.
+
+Do not continue extending the goal-v5 custom documentation CMS. Do not recreate it under another name, serialization format, renderer, or agent prompt.
+
+Implement only the DiskWeave-specific glue that mature open-source tools cannot supply.
+
+The governing rules are:
+
+> **OpenSpec owns intended semantics.**
+
+> **Rust and executable evidence expose implementation and behavior.**
+
+> **Sparse checked links connect intent, implementation, evidence, and explanation.**
+
+> **Sphinx projects those links.**
+
+> **AI writes and maintains ordinary Markdown.**
+
+> **Derive facts; maintain only irreducible relationships and pedagogical intent.**
+
+The central maintenance behavior is:
+
+> **A semantic change to a canonical requirement makes affected implementation, evidence, scenario, and documentation relationships suspect until an agent reviews and resolves them.**
+
+The central human outcome is:
+
+> **A strong software engineer without filesystem-development experience can learn DiskWeave from the checked-in Guide without reconstructing it from dense normative specifications.**
+
+---
+
+# 1. Why goal-v6 exists
+
+Goal-v5 established or clarified valuable guarantees:
+
+- canonical OpenSpecs should become first-class current semantic authority;
+- the hand-authored v0.8 architecture should become historical only after semantic normalization proves that no current contract was lost;
+- documentation is a projection rather than semantic authority;
+- documentation tooling belongs outside the production `dwv` dependency graph;
+- model, provider, or style-prompt changes alone must not churn accepted prose;
+- deterministic documentation checks must work without a model or network;
+- executable scenarios and evidence should ground explanations;
+- bootstrap handoffs must eventually become unnecessary.
+
+Its first implementation also exposed a missing architectural layer.
+
+It attempted to derive human and agent projections directly from OpenSpec prose plus manually maintained documentation registries. The result included:
+
+- a second semantic database under `docs/`;
+- coarse whole-document source bags instead of requirement-level provenance;
+- weak correspondence between canonical requirements and actual Rust ownership;
+- assurance data that copied claims and mechanisms instead of linking canonical properties to evidence;
+- agent context built from large source concatenations rather than exact semantic relationships;
+- a technically current but pedagogically poor book;
+- custom JSON schemas, state machines, page plans, and projection code for capabilities mature tools already provide.
+
+The missing spine is:
+
+```text
+canonical requirement or invariant
+        ↕
+Rust semantic owner
+        ↕
+verification / test / scenario / evidence
+        ↕
+human explanation
+```
+
+Goal-v6 SHALL build that spine, reuse mature open-source projection tooling, and prove that it improves both human learning and autonomous implementation work.
+
+---
+
+# 2. Desired end state
+
+```text
+                         CURRENT SEMANTIC AUTHORITY
+
+                        canonical OpenSpec requirements
+                                     +
+                         small architecture constitution
+                                     +
+                            accepted ADR rationale
+
+                                     │
+                                     ▼
+
+                         DISKWEAVE KNOWLEDGE SPINE
+
+                  stable IDs + semantic fingerprints + links
+
+        requirement/invariant ── implements ──> Rust semantic owner
+        requirement/invariant ─── verifies ───> test/model/Kani/evidence
+        requirement/invariant ─── exercises ──> executable scenario
+        requirement/invariant ─── explained-by -> Markdown claim/section
+        decision              ─── justified-by -> ADR
+
+                                     │
+                                     ▼
+
+                    generated open interchange and indexes
+                         under build output, never authority
+
+                                     │
+                  ┌──────────────────┴──────────────────┐
+                  ▼                                     ▼
+
+     MyST + Sphinx + Sphinx-Needs              Agent context and
+     + sphinx-codelinks + Rust docs             change-impact tools
+                  │                                     │
+       ┌──────────┼───────────┐                         ▼
+       ▼          ▼           ▼                 implementation/review agents
+ Human Guide   Assurance   Contributor /
+               Atlas       Architecture Reference
+```
+
+The durable repository should be understandable from ordinary sources:
+
+```text
+openspec/specs/       current semantic requirements
+docs/**/*.md          human explanation and learning paths
+Rust source           implementation structure and sparse semantic links
+verification/         executable evidence and evidence metadata
+docs/adr/             rationale
+small config/lock      irreducible pedagogical intent and reviewed-link state
+```
+
+Large inventories, graph exports, task packets, model responses, Sphinx interchange files, and rendered HTML belong under build or temporary state.
+
+---
+
+# 3. Authority and lifecycle
+
+## 3.1 Current semantic authority
+
+Current intended behavior SHALL be owned by:
+
+1. a small architecture constitution containing only genuinely cross-cutting product invariants;
+2. fine-grained canonical requirements under `openspec/specs/`;
+3. accepted ADRs as rationale, with every semantic outcome reflected in the canonical specs;
+4. canonical persistent-format, CLI, and schema contracts where applicable.
+
+Rust code is implementation, not the authority for intended behavior.
+
+A disagreement between Rust and canonical requirements is a visible conflict. The system SHALL NOT silently choose the implementation as truth or regenerate prose around the discrepancy.
+
+## 3.2 Non-authoritative material
+
+The following SHALL NOT silently become current semantic authority:
+
+- OS/VE work identifiers;
+- active or archived task checklists;
+- autonomous goal IDs;
+- handoffs and model responses;
+- archived change proposals/designs;
+- historical v0.6–v0.8 architecture snapshots after normalization;
+- generated Sphinx-Needs objects;
+- generated Architecture Reference pages;
+- AI-written explanatory prose;
+- generated traceability and context artifacts;
+- editor indexes or external documentation services.
+
+## 3.3 One owner, many links
+
+Each current semantic contract SHALL have one canonical owner.
+
+Many Rust symbols, tests, scenarios, evidence artifacts, agent packets, and human explanations may link to it.
+
+Duplicate explanation is acceptable and often useful. Duplicate authority is forbidden.
+
+## 3.4 Architecture history
+
+Keep architecture v0.6, v0.7, and v0.8 checked in as historical evidence.
+
+v0.8 may become historical only after goal-v5/v6 normalization evidence proves that every current normative unit has a durable owner.
+
+Historical architecture and handoffs SHALL be excluded from normal current-semantic extraction, documentation generation, and implementation-agent context unless explicitly requested for historical or rationale analysis.
+
+---
+
+# 4. Open-source reuse mandate
+
+## 4.1 General rule
+
+Before implementing a generic documentation, indexing, Rust parsing, graph rendering, trace extraction, source-link, requirements-view, or test-report capability, evaluate existing maintained open-source tooling and record one disposition:
+
+```text
+ADOPT
+ADAPT WITH THIN GLUE
+USE AS OPTIONAL COMPARISON
+REJECT WITH CONCRETE EVIDENCE
+```
+
+No generic custom subsystem may proceed merely because writing Rust feels convenient or because goal-v5 already contains similar code.
+
+For every proposed custom component, answer:
+
+- Which existing open-source tool was evaluated?
+- What exact required behavior is missing?
+- Can a thin adapter supply it?
+- Is the missing behavior genuinely DiskWeave-specific?
+- What is the replacement/removal seam?
+
+## 4.2 Foundational open-source stack
+
+Unless a bounded vertical-slice spike demonstrates a concrete blocker, use:
+
+- **MyST Markdown** for checked-in human documentation source;
+- **Sphinx** for navigation, cross-references, building, link checks, search, and presentation;
+- **Sphinx-Needs** for imported engineering objects, typed relationships, filters, tables, flows, backlinks, and validation;
+- **sphinx-codelinks** as the default source-marker extraction and Rust-scope association path;
+- an existing maintained **Rust/Sphinx or rustdoc integration** such as `sphinx-rust`, `sphinxcontrib-rust`, or the current maintained successor that best supplies Rust API/reference/source information;
+- **Cargo metadata** for workspace/package/dependency structure;
+- existing test/evidence interchange or Sphinx extensions where they reduce custom code without becoming another semantic authority.
+
+The exact compatible versions and integrations SHALL be selected and pinned from current evidence in an ADR or implementation decision.
+
+## 4.3 sphinx-codelinks default role
+
+Use sphinx-codelinks by default for the generic behavior it already supplies:
+
+- discovering configured Rust source;
+- parsing sparse machine-readable source markers;
+- associating markers with surrounding Rust scopes;
+- resolving references to existing Sphinx-Needs objects;
+- generating source links and backlinks;
+- exposing code-to-requirement relationships to Sphinx projections.
+
+Do not write a custom Rust tree-sitter marker parser or custom Sphinx backlink system unless the vertical slice demonstrates a specific unsupported requirement that cannot be supplied by thin integration.
+
+CodeLinks SHALL reference existing canonical requirement objects imported from OpenSpec. It SHALL NOT define new DiskWeave requirements in Rust comments.
+
+## 4.4 Rust documentation integrations
+
+Evaluate and adopt the smallest adequate maintained Rust/Sphinx integration for:
+
+- crates and modules;
+- structs, enums, traits, impls, functions, and methods;
+- signatures and documentation comments;
+- stable source locations and links;
+- Rust domain cross-references;
+- integration with MyST/Sphinx and Sphinx-Needs.
+
+Do not build another Rust API documentation generator inside `xtask`.
+
+Use custom Rust parsing only for genuinely missing DiskWeave-specific extraction after the existing integration and sphinx-codelinks have been exercised.
+
+## 4.5 Traceability and requirements projects
+
+Evaluate LOBSTER/lobster-rust, StrictDoc, Doorstop, Sphinx-Test-Reports or equivalent maintained tools, and related open-source projects for reusable:
+
+- trace interchange;
+- test/evidence import;
+- suspect-link semantics;
+- coverage and reporting;
+- source extraction;
+- relationship validation.
+
+OpenSpec remains canonical. Do not adopt another requirements authoring system merely because it has useful tracing machinery.
+
+A thin OpenSpec adapter into an existing open interchange is preferable to a broad DiskWeave-specific graph format when the existing model fits.
+
+## 4.6 Closed-source exclusion
+
+Closed-source tools, including ubCode, SHALL NOT be required for:
+
+- development;
+- CI;
+- documentation building;
+- trace extraction;
+- impact analysis;
+- agent workflows;
+- reconstruction;
+- completion criteria.
+
+An individual contributor may use a proprietary editor or index as a personal convenience, but it is outside the architecture and cannot be the only implementation of any required capability.
+
+External hosted documentation products may be used only as optional quality comparisons or reviewers. They are not authoritative, required, or relied upon for maintenance.
+
+---
+
+# 5. Canonical OpenSpec requirement identity
+
+## 5.1 Colocated stable ID
+
+Every canonical requirement that participates in implementation, verification, context, provenance, or documentation SHALL carry a stable intrinsic ID colocated with the requirement.
+
+By completion, prefer assigning stable IDs to every current canonical requirement unless a repository spike demonstrates a concrete reason not to.
+
+Conceptual syntax:
+
+```markdown
+### Requirement: Uncertainty cannot become CLEAN
+<!-- dwv:req recovery-state.never-false-clean -->
+
+DiskWeave SHALL NOT ...
+```
+
+The exact syntax SHALL be selected after inspecting current OpenSpec support. Prefer an OpenSpec-compatible, minimally invasive extension validated by repository tooling.
+
+The tag is the requirement primary key only. It does not duplicate the requirement prose.
+
+## 5.2 ID rules
+
+Requirement IDs SHALL:
+
+- be human-readable semantic identifiers;
+- be globally unique, or capability-scoped with deterministic global mapping;
+- survive title edits, section movement, formatting, and change archival;
+- normally remain stable when requirement wording or meaning changes;
+- be intentionally migrated when semantics split, merge, disappear, or are superseded.
+
+Requirement IDs SHALL NOT derive from:
+
+- OS/VE/goal numbers;
+- line numbers or byte offsets;
+- archived change paths;
+- model-generated titles;
+- random UUIDs unless an evidenced technical need outweighs readability.
+
+## 5.3 Change lifecycle
+
+An active `MODIFIED` requirement preserves the canonical ID.
+
+An `ADDED` requirement receives a new ID.
+
+A `REMOVED`, split, merged, or superseded requirement retains explicit migration information sufficient to resolve existing relationships honestly.
+
+Archiving a change must not cause prose or source links to churn merely because the active change path disappeared.
+
+## 5.4 Validation
+
+Repository tooling SHALL reject:
+
+- duplicate IDs;
+- malformed IDs;
+- links to unknown or historical-only requirements;
+- an ID changed without explicit migration;
+- a `MODIFIED` requirement that accidentally changes identity;
+- missing IDs where coverage policy requires one.
+
+## 5.5 Semantic fingerprint
+
+Calculate a normalized semantic fingerprint for each canonical requirement and architecture invariant.
+
+The normalizer may ignore non-semantic formatting but SHALL preserve changes to:
+
+- normative modality;
+- states and transitions;
+- ordering and durability meaning;
+- failure, refusal, and uncertainty outcomes;
+- identity and topology meaning;
+- geometry and range constraints;
+- evidence requirements;
+- persistent compatibility semantics;
+- assumptions and explicit non-claims.
+
+A fingerprint is a change detector, not proof of natural-language equivalence.
+
+## 5.6 Sphinx-compatible identity
+
+Generate a deterministic Sphinx-Needs ID from each canonical ID.
+
+For example:
+
+```text
+canonical: recovery-state.never-false-clean
+needs ID:  REQ_RECOVERY_STATE_NEVER_FALSE_CLEAN
+```
+
+The mapping SHALL be reversible and collision-checked.
+
+The canonical OpenSpec ID remains primary. The Sphinx ID is generated interchange identity.
+
+---
+
+# 6. Sparse checked Rust traceability
+
+## 6.1 Principle
+
+Trace semantic ownership boundaries, not every function.
+
+A source marker is acceptable only because it is machine parsed, resolved against a canonical requirement, associated with a real Rust scope, validated in deterministic tooling, and included in suspect-link review.
+
+An unchecked explanatory comment is not sufficient.
+
+## 6.2 CodeLinks marker model
+
+Use sparse CodeLinks-compatible markers that reference generated Sphinx-Needs requirement IDs.
+
+Conceptual example:
+
+```rust
+// @need-ids: REQ_RECOVERY_STATE_NEVER_FALSE_CLEAN
+impl RecoveryState {
+    pub fn promote(...) { ... }
+}
+```
+
+```rust
+// @need-ids: REQ_DIRTY_INTEGRITY_INTENT_BEFORE_MUTATION
+fn begin_protected_mutation(...) { ... }
+```
+
+```rust
+// @need-ids: REQ_RECOVERY_STATE_NEVER_FALSE_CLEAN
+#[kani::proof]
+fn clean_promotion_requires_durable_evidence() { ... }
+```
+
+Use the actual supported CodeLinks marker syntax selected by the spike rather than freezing these examples blindly.
+
+CodeLinks provides marker discovery, Rust-scope association, source links, and backlinks.
+
+A thin DiskWeave adapter may classify the relationship as `implements`, `verifies`, or another supported relation based on:
+
+- configured source root;
+- enclosing item kind;
+- explicit supported marker variant;
+- test/Kani/scenario registry metadata.
+
+Do not fork CodeLinks merely to encode a large custom ontology.
+
+## 6.3 Requirement definitions remain out of Rust
+
+Rust code SHALL only link to existing imported canonical requirements.
+
+Do not define new product requirements in Rust comments, attributes, or Sphinx objects.
+
+If CodeLinks supports defining needs in source, that feature SHALL be disabled or forbidden for canonical DiskWeave requirements.
+
+## 6.4 Normally trace
+
+Normally trace:
+
+- semantic state types and impl blocks;
+- subsystem or module ownership boundaries;
+- trait implementations of canonical adapter contracts;
+- irreversible or safety-sensitive state transitions;
+- persistence/format encoder-decoder boundaries;
+- important public/core semantic operations;
+- load-bearing unit/property tests;
+- Kani/model harnesses;
+- executable scenario registrations.
+
+## 6.5 Normally do not trace
+
+Normally do not trace:
+
+- utility functions;
+- arithmetic helpers whose semantics are already owned by a traced boundary;
+- constructors without independent semantic meaning;
+- forwarding wrappers;
+- trivial getters;
+- every call site;
+- every test;
+- every helper transitively involved in satisfying a requirement.
+
+The goal is tens or low hundreds of meaningful markers as the project grows, not annotation coverage over every Rust function.
+
+## 6.6 Requirement-centric coverage
+
+Do not measure success by marker count.
+
+Coverage is requirement-centric and policy-aware.
+
+Example:
+
+```text
+REQ recovery-state.never-false-clean
+
+Implementation owner:
+  RecoveryState / promote transition
+
+Verification:
+  Kani clean-promotion harness
+  property test for uncertain state
+
+Executable scenario:
+  write-crash-cutpoints
+
+Human explanation:
+  guide/a-write-interrupted.md#after-the-crash
+```
+
+Another requirement may legitimately need no human Guide chapter or no executable scenario. Coverage policy SHALL reflect criticality and lifecycle rather than forcing every link kind everywhere.
+
+## 6.7 Sidecar fallback
+
+Use a small checked sidecar relation only when a source marker is technically inappropriate, such as:
+
+- an external evidence artifact;
+- a generated scenario fixture;
+- a relationship spanning several symbols with no honest single owner;
+- a language/tool that CodeLinks cannot parse reliably.
+
+The sidecar SHALL contain relationships only:
+
+```text
+canonical requirement ID
+relation kind
+resolvable endpoint ID/path
+reviewed requirement fingerprint
+```
+
+It SHALL NOT duplicate requirement prose, implementation summaries, or assurance narratives.
+
+## 6.8 Enforcement strength
+
+At minimum, deterministic checks SHALL prove:
+
+- every marker target resolves to an imported current requirement;
+- the marker is attached to the intended Rust scope;
+- the referenced Rust source still exists;
+- configured relation classification is valid;
+- current/historical authority is respected;
+- reviewed links become suspect when requirement meaning changes.
+
+A proc-macro or generated Rust requirement namespace is not the default architecture once CodeLinks works.
+
+A compile-visible marker mechanism may be retained only as a fallback if the spike proves that CodeLinks plus deterministic validation cannot provide adequate endpoint integrity or refactor safety.
+
+## 6.9 Zero product-runtime impact
+
+Traceability SHALL have no runtime behavior and SHALL NOT add Sphinx, Python, model, or documentation dependencies to production storage crates.
+
+---
+
+# 7. Rust structure and API extraction
+
+Derive Rust facts rather than manually registering them.
+
+The knowledge layer should obtain, through adopted tooling where possible:
+
+- workspace crates and dependency edges;
+- modules and source files;
+- structs, enums, traits, impls, functions, and methods;
+- signatures and visibility;
+- source locations and repository links;
+- test functions and Kani harnesses where identifiable;
+- CodeLinks markers and associated scopes;
+- Rust documentation comments for reference projection.
+
+Use:
+
+1. Cargo metadata for workspace/package/dependency structure;
+2. adopted Rust/Sphinx or rustdoc tooling for API/reference information;
+3. sphinx-codelinks for source-marker scope association;
+4. a maintained Rust parser only for narrowly identified gaps.
+
+Do not use regex as the foundational Rust parser.
+
+Perfect whole-program call-graph analysis is not required.
+
+Do not manually maintain crate maps, symbol lists, line numbers, or source URLs that adopted tooling can derive.
+
+---
+
+# 8. Evidence and scenario traceability
+
+## 8.1 Evidence ownership
+
+Evidence metadata belongs with the evidence artifact or its canonical registry, not in a documentation-specific `assurance.json` that copies claims.
+
+Evidence records should carry only irreducible information such as:
+
+- stable evidence ID;
+- artifact/command/location;
+- evidence tier;
+- fault model/environment;
+- canonical requirements/properties supported or exercised;
+- explicit scope and non-claims;
+- freshness/currentness metadata.
+
+## 8.2 Evidence adapters
+
+Prefer existing open-source report/interchange adapters before writing custom importers.
+
+Evaluate reusable paths for:
+
+- unit/integration test reports;
+- property tests;
+- Kani harnesses/results;
+- model-checking results;
+- simulator schedules and normalized traces;
+- platform/hardware evidence;
+- LOBSTER-compatible trace output where useful.
+
+DiskWeave-specific scenario and evidence formats may require thin adapters.
+
+## 8.3 Executable scenarios
+
+Scenario facts SHALL come from executable simulator, normalized replay, model, or checked fixture outputs where available.
+
+A scenario link should resolve:
+
+```text
+canonical requirement
+    → scenario definition
+    → current deterministic output
+    → affected human explanation
+```
+
+The AI explains scenario facts. It does not invent them.
+
+---
+
+# 9. Reviewed links and suspect lifecycle
+
+## 9.1 Reviewed fingerprint
+
+Each durable relationship SHALL record the canonical requirement fingerprint against which it was last reviewed.
+
+Example:
+
+```text
+recovery-state.never-false-clean
+    implemented-by
+RecoveryState::promote
+
+reviewed requirement digest: abc123
+```
+
+## 9.2 Requirement change
+
+If the requirement fingerprint becomes `def456`, linked implementation, verification, scenario, and documentation relationships become `SUSPECT`.
+
+They do not automatically become false.
+
+They do not automatically become current.
+
+## 9.3 Resolution outcomes
+
+An agent SHALL resolve a suspect relationship as one of:
+
+```text
+STILL_VALID
+UPDATED
+REPLACED_BY
+NO_LONGER_APPLICABLE
+CONFLICT
+NEEDS_EVIDENCE
+```
+
+The resolution includes a concise reason and current evidence where policy requires it.
+
+The reviewed fingerprint is updated only after validation.
+
+## 9.4 Guardrails
+
+An agent SHALL NOT clear suspect state by:
+
+- editing hashes directly;
+- globally accepting every link;
+- deleting markers or documentation to evade coverage;
+- changing a requirement ID without explicit migration;
+- weakening coverage policy;
+- treating a passing Sphinx build as semantic review.
+
+## 9.5 Durable state
+
+Store irreducible reviewed-link state in one compact machine-owned lock or ledger.
+
+Do not create dozens of checked-in per-block JSON sidecars.
+
+Generated inventories, CodeLinks output, Sphinx-Needs interchange, context packets, tasks, responses, and rendered output belong under build state.
+
+---
+
+# 10. Generated knowledge interchange and Sphinx projection
+
+## 10.1 Generated objects
+
+Generate current engineering objects for Sphinx-Needs under the build directory.
+
+Types may include:
+
+```text
+REQ       canonical OpenSpec requirement
+INV       architecture invariant
+IMPL      Rust semantic owner or source link
+TEST      unit/property/Kani/model evidence
+SCENARIO  executable scenario
+EVIDENCE  evidence report/artifact
+DOC       load-bearing human claim/section
+ADR       rationale decision
+```
+
+The exact schema SHALL reuse Sphinx-Needs and any selected open interchange rather than creating a broad custom model unnecessarily.
+
+## 10.2 Import/injection
+
+Use Sphinx-Needs import/external-needs APIs, sphinx-codelinks integration, or a small open-source DiskWeave Sphinx extension to load current objects and links.
+
+Generated JSON is acceptable as ephemeral interchange under `target/` or `_build/`.
+
+It is not checked-in semantic authority.
+
+## 10.3 Validation
+
+Use Sphinx-Needs validation where it fits and Rust-side checks for DiskWeave-specific rules.
+
+Examples:
+
+- an implementation link must target a current canonical requirement/invariant;
+- a verification relationship must resolve to current evidence;
+- evidence must state the appropriate tier/scope where policy requires it;
+- a load-bearing human claim must resolve to at least one canonical requirement or executable fact;
+- historical requirements cannot satisfy current coverage;
+- broken CodeLinks markers fail the documentation/knowledge build;
+- imported/generated objects cannot become semantic authority.
+
+## 10.4 Generic projections
+
+Use Sphinx/Sphinx-Needs rather than custom Rust rendering for:
+
+- requirement tables;
+- requirement→implementation backlinks;
+- requirement→test/evidence matrices;
+- assurance tables and flows;
+- subsystem filters;
+- contributor/reference views;
+- current architecture relationship views;
+- source links and navigation.
+
+Create custom directives only where the existing stack cannot express a demonstrated DiskWeave-specific need cleanly.
+
+---
+
+# 11. Documentation source and repository layout
+
+The durable documentation source should resemble:
+
+```text
+docs/
+├── conf.py
+├── index.md
+├── curriculum.toml
+├── guide/
+│   ├── what-is-diskweave.md
+│   ├── a-small-pool.md
+│   ├── reading.md
+│   ├── writing.md
+│   ├── a-write-interrupted.md
+│   ├── parity-and-integrity.md
+│   ├── degraded-operation.md
+│   └── repair-recovery-rebaseline.md
+├── scenarios/
+├── assurance/
+├── contributors/
+├── reference/
+├── documentation-system/
+└── adr/
+```
+
+Exact pages follow the validated learning path rather than this illustrative list.
+
+A human opening `docs/` must primarily see understandable Markdown and a small amount of obvious build/configuration support.
+
+Place under `target/`, `_build/`, or another ignored build directory:
+
+- extracted requirement inventories;
+- Rust symbol indexes;
+- CodeLinks intermediate output;
+- generated Sphinx-Needs objects;
+- traceability reports;
+- page-impact plans;
+- context packets;
+- model tasks/responses;
+- rendered HTML;
+- generated diagrams used only for rendering.
+
+Use a dedicated pinned documentation tool environment following existing Nix/mise/Python conventions.
+
+No global Python packages are required.
+
+No Sphinx/Python dependency enters the production Rust runtime graph.
+
+---
+
+# 12. Small pedagogical curriculum
+
+## 12.1 Purpose
+
+The curriculum selects human learning experiences. It does not duplicate canonical semantics or define claims.
+
+## 12.2 Allowed content
+
+A chapter entry should contain only irreducible pedagogical intent:
+
+- stable chapter ID/title/path;
+- target audience and assumed knowledge;
+- concrete question being answered;
+- prerequisites;
+- canonical requirement IDs needed for grounding;
+- executable scenario IDs;
+- teaching devices;
+- misconceptions to correct;
+- terms introduced or deliberately deferred;
+- optional qualitative evaluation case IDs.
+
+Conceptual example:
+
+```toml
+[[chapter]]
+id = "write-interrupted"
+title = "A write, interrupted"
+path = "guide/a-write-interrupted.md"
+audience = "software-engineer-without-filesystem-background"
+question = "What can DiskWeave safely know if power disappears during a write?"
+prerequisites = ["a-small-pool"]
+requirements = [
+  "dirty-integrity.intent-before-mutation",
+  "store-operations.completion-evidence",
+  "recovery-state.never-false-clean",
+]
+scenarios = ["write-crash-cutpoints"]
+teach_with = ["timeline", "persistent-state-snapshots", "crash-cutpoints"]
+misconceptions = ["request completion implies durable media"]
+introduces = ["dirty intent", "durability evidence", "checkpoint"]
+```
+
+## 12.3 Forbidden content
+
+The curriculum SHALL NOT maintain:
+
+- free-text copies of canonical claims;
+- manually copied whole-spec source bags;
+- assurance mechanisms or invariants copied from specs;
+- generated page plans;
+- generation tasks/responses;
+- accepted prose hashes;
+- provider/model state;
+- migration or rebaseline flags;
+- Rust crate/symbol facts derivable from extraction.
+
+---
+
+# 13. AI-maintained Markdown
+
+## 13.1 Durable artifact
+
+AI agents SHALL create and maintain the actual MyST Markdown files.
+
+The product owner is not expected to write routine explanatory prose.
+
+Structured task/response formats may constrain ephemeral model interaction, but the durable documentation artifact is ordinary reviewed Markdown plus compact trace state.
+
+## 13.2 Load-bearing claim provenance
+
+Correctness-sensitive claims require provenance at claim or tightly bounded section granularity.
+
+Use a readable MyST directive, role, front-matter declaration, or stable comment syntax selected by the Sphinx spike.
+
+Conceptual form:
+
+````markdown
+```{dwv-claim} write-intent-precedes-mutation
+:supports: REQ_DIRTY_INTEGRITY_INTENT_BEFORE_MUTATION
+:scenario: SCN_WRITE_CRASH_CUTPOINTS
+
+Before DiskWeave changes protected home data, it records durable intent that
+recovery must treat the region conservatively.
+```
+````
+
+The rendered page should read naturally and expose an unobtrusive “Sources / Why this is true” view.
+
+Do not require every transitional sentence to become a trace object.
+
+## 13.3 Maintenance workflow
+
+```text
+canonical requirement or evidence changes
+        ↓
+related implementation/evidence/docs links become suspect
+        ↓
+knowledge tooling selects affected Markdown claim/section
+        ↓
+bounded task context is produced
+        ↓
+AI reads existing Markdown and chooses KEEP or edits it
+        ↓
+technical grounding review
+        ↓
+pedagogical review where appropriate
+        ↓
+minimality/no-thrash review
+        ↓
+reviewed relationship fingerprints update
+```
+
+## 13.4 Preservation behavior
+
+Use Git and stable Markdown claim/section IDs as the prose baseline.
+
+Required behavior:
+
+- **KEEP:** no Markdown change;
+- **targeted edit:** only affected claim/paragraph/section changes;
+- **broad rewrite:** permitted only when semantics, audience, or the existing teaching model materially changed or was proven defective;
+- model/provider/style-prompt changes alone do not cause rewrites;
+- non-semantic source formatting changes produce no prose diff;
+- an agent cannot clear suspect documentation merely by updating the lock.
+
+Do not rebuild the goal-v5 full-block CMS to implement these outcomes.
+
+## 13.5 Grounded context
+
+A human-documentation task should include only:
+
+- chapter intent from the curriculum;
+- exact canonical requirements and statuses;
+- relevant architecture invariants;
+- linked Rust excerpts where they help explain the mechanism;
+- executable scenario state/timeline facts;
+- evidence scope and explicit non-claims;
+- current Markdown claim/section;
+- terminology/prerequisite constraints;
+- semantic delta that caused review.
+
+Whole-spec concatenation until a byte limit is reached is not sufficient context selection.
+
+---
+
+# 14. Human documentation products
+
+## 14.1 Human Guide
+
+Teach DiskWeave through causal experiences, not taxonomy-first summaries.
+
+A likely progression is:
+
+```text
+what problem DiskWeave solves
+→ one tiny pool
+→ one read
+→ one write
+→ crash at meaningful points
+→ why dirty intent/recovery state exists
+→ parity
+→ why parity is not integrity
+→ lose a member
+→ degraded read
+→ rebuild and promotion
+→ corruption, scrub, repair, and rebaseline
+→ identity and topology generalization
+→ verification and remaining claim boundaries
+```
+
+Concrete problems should motivate abstractions.
+
+The Human Guide may omit details available in the Architecture Reference.
+
+## 14.2 Gold chapter gate
+
+The first proving chapter SHALL be a temporal correctness explanation such as:
+
+> **A write, interrupted**
+
+It must render executable facts and answer at each cut point:
+
+- What has happened?
+- What is durable?
+- What may the caller believe?
+- What would recovery observe?
+- What remains uncertain?
+- What is DiskWeave forbidden to infer?
+
+Do not scale the Guide until this chapter is materially more understandable than the corresponding architecture/OpenSpec material for the target reader.
+
+The chapter must be generated and maintained through the real trace/context/AI workflow, not written manually as a showcase.
+
+## 14.3 Scenario Book
+
+Scenario pages SHALL render actual executable or normalized facts.
+
+Do not substitute prose explaining what a Scenario Book ought to contain.
+
+Use Sphinx/MyST directives to include current deterministic scenario steps, state snapshots, fault cut points, outcomes, and forbidden conclusions.
+
+## 14.4 Assurance Atlas
+
+Assurance pages SHALL derive from:
+
+```text
+canonical requirement/property
+    → implementation owner
+    → verification/tests/Kani/models/scenarios
+    → evidence tier/fault model/scope
+    → explicit non-claims and gaps
+```
+
+Do not maintain a parallel free-text `assurance.json` that copies claims, mechanisms, invariants, and sources.
+
+## 14.5 Contributor Map and Architecture Reference
+
+Generate structural and reference views from adopted Rust documentation tooling, Cargo metadata, CodeLinks, canonical requirements, and Sphinx-Needs relationships.
+
+These projections may include:
+
+- crate/module ownership;
+- dependency direction;
+- requirement implementation coverage;
+- important source entry points;
+- scenarios/evidence associated with a subsystem;
+- current architecture relationships;
+- API/reference information.
+
+AI prose may orient the reader. It must not manually maintain facts that tools derive.
+
+The generated Architecture Reference replaces the long-term need for hand-authored v0.9-style monolithic architecture revisions.
+
+---
+
+# 15. Agent context
+
+## 15.1 Default context
+
+Implementation and review agents should normally consume canonical graph context, not the Human Guide.
+
+A task context should contain:
+
+- active change/task intent;
+- exact relevant canonical requirements;
+- relevant architecture invariants;
+- linked Rust owners and nearby structure;
+- affected or suspect relationships;
+- executable scenarios and fault cut points;
+- relevant tests/Kani/models/evidence;
+- explicit forbidden outcomes and non-claims;
+- ADR rationale only when useful.
+
+## 15.2 Selection
+
+Select context by explicit identities and graph traversal.
+
+Do not include generated human prose by default when canonical requirements and implementation/evidence links are available.
+
+Do not add embeddings, a vector database, or general RAG until a documented evaluation shows that explicit graph selection is insufficient.
+
+## 15.3 Proving gate
+
+Use one real post-goal-v6 implementation task.
+
+Compare:
+
+```text
+old baseline:
+  v0.8 + relevant OpenSpecs + manual source discovery
+
+new packet:
+  graph-selected canonical requirements, Rust owners,
+  scenarios, evidence, and forbidden outcomes
+```
+
+The new packet must:
+
+- preserve all known correctness-sensitive context;
+- materially reduce irrelevant material;
+- explain why each selected item is present;
+- be deterministic and reproducible;
+- let the agent complete/review the task without hunting for omitted semantic owners.
+
+---
+
+# 16. Agent-operability contract
+
+The knowledge/documentation system is incomplete if a fresh autonomous agent cannot use it correctly without reading goal-v6 or historical handoffs.
+
+## 16.1 Repo-local skill
+
+Create one concise repo-local Agent Skill for knowledge and documentation maintenance, using the primary agent harness’s supported skill format.
+
+The skill SHALL activate when an agent:
+
+- changes canonical OpenSpecs;
+- changes traced Rust semantic owners;
+- changes tests, Kani harnesses, scenarios, or evidence;
+- edits human documentation;
+- prepares a change for completion/archive;
+- encounters suspect trace or documentation relationships.
+
+The skill teaches procedure, not architecture prose.
+
+Its workflow is approximately:
+
+```text
+1. determine affected requirements and links
+2. resolve canonical semantic conflicts first
+3. inspect implementation/evidence traceability
+4. obtain bounded context for affected Markdown
+5. preserve current prose unless change is needed
+6. edit ordinary MyST Markdown
+7. run grounding, trace, Sphinx, and qualitative checks
+8. run the single readiness command
+```
+
+## 16.2 Minimal repository instruction
+
+Keep the repository-global agent instruction tiny.
+
+It should only direct agents to load the skill and run the readiness command when semantic or documentation impact is possible.
+
+Do not copy the entire goal or documentation architecture into `AGENTS.md`.
+
+## 16.3 Deterministic command surface
+
+Converge on commands similar to:
+
+```text
+cargo xtask knowledge extract
+cargo xtask knowledge check
+cargo xtask knowledge trace <requirement-or-symbol>
+cargo xtask knowledge why <doc-claim-or-symbol>
+cargo xtask knowledge affected <change-or-git-range>
+cargo xtask knowledge context <change-or-requirement>
+cargo xtask knowledge export-sphinx
+
+cargo xtask docs plan <change-or-git-range>
+cargo xtask docs context <page-or-claim> --change <id>
+cargo xtask docs doctor <page-or-claim>
+cargo xtask docs check
+cargo xtask docs build
+cargo xtask docs serve
+cargo xtask docs eval --affected
+
+cargo xtask change-ready <change-id>
+```
+
+Exact names may follow repository conventions.
+
+Commands should produce concise human/agent-readable text by default and structured output only through an explicit machine flag.
+
+## 16.4 Readiness command
+
+Provide one canonical completion command that coordinates applicable gates and reports exact next actions.
+
+Conceptual output:
+
+```text
+OS-XYZ: NOT READY
+
+Canonical requirements       ✓
+Implementation trace links   ✓
+Verification trace links     ✗ 2 SUSPECT
+Documentation impact         ✗ 1 SUSPECT
+Sphinx build                 ✓
+Required evidence            ✓
+
+Next actions:
+  cargo xtask knowledge trace recovery-state.never-false-clean
+  cargo xtask docs context guide/a-write-interrupted.md --change OS-XYZ
+```
+
+An agent should not need to remember every underlying command.
+
+## 16.5 Fresh-agent test
+
+Give a fresh agent with no chat history a small canonical requirement change.
+
+It must autonomously:
+
+- discover/load the skill;
+- identify affected requirement, Rust, evidence, scenario, and documentation links;
+- resolve suspect relationships;
+- update only necessary Markdown;
+- run Sphinx and deterministic checks;
+- pass `change-ready`.
+
+---
+
+# 17. Deterministic CI, security, and bounds
+
+CI SHALL work without:
+
+- a model;
+- provider credentials;
+- an external documentation service;
+- a proprietary editor/index;
+- network access.
+
+CI SHALL validate at least:
+
+- canonical requirement IDs and fingerprints;
+- CodeLinks marker resolution and Rust scope association;
+- current/historical authority boundaries;
+- reviewed/suspect relationship state;
+- evidence/scenario freshness;
+- Sphinx-Needs object/link/schema validity;
+- MyST/Sphinx build and link checks;
+- load-bearing claim provenance;
+- no unauthorized broad prose rewrite where detectable;
+- clean-room reconstruction of generated state.
+
+Treat source text and model output as untrusted data.
+
+The tooling SHALL:
+
+- use explicit repository source roots;
+- exclude secrets, ignored/private files, real user payloads, and raw private traces;
+- bound extracted units, graph traversal, context size, task size, output size, and Sphinx imports;
+- reject path escapes and unsafe raw HTML/includes;
+- never execute model-generated code or shell commands as part of documentation maintenance;
+- keep credentials and raw provider transcripts out of the repository;
+- preserve DiskWeave payload/path privacy constraints in scenarios and evidence.
+
+Sphinx extensions, themes, parsers, and traceability dependencies require normal maintenance, license, and supply-chain review.
+
+---
+
+# 18. Goal-v5 migration and retirement
+
+## 18.1 Inventory
+
+Before deleting or extending goal-v5 machinery, classify each component:
+
+```text
+RETAIN GUARANTEE
+MIGRATE TO OPEN TOOLING
+REPLACE
+RETIRE
+HISTORICAL EVIDENCE
+```
+
+## 18.2 Guarantees to preserve
+
+Preserve or reimplement:
+
+- canonical OpenSpec authority and architecture normalization;
+- stable requirement IDs already introduced correctly;
+- historical-source and handoff exclusion;
+- `cargo xtask docs` outside production `dwv`;
+- deterministic offline checks;
+- privacy/path/context bounds;
+- no-op prose stability;
+- executable scenario extraction;
+- evidence/non-claim distinctions;
+- atomic/failure-safe documentation maintenance;
+- clean-room reconstruction;
+- handoff extinction.
+
+## 18.3 Machinery likely to retire
+
+Retire or replace unless a concrete irreducible use remains:
+
+- checked-in `docs/model/*.json` semantic registries;
+- checked-in `docs/state/blocks/*.json`;
+- checked-in generation tasks/responses/inventories;
+- manually curated whole-spec source registries;
+- free-text assurance claim duplication;
+- structural pseudo-usefulness evaluations;
+- custom page-plan/projection CMS;
+- custom Rust source-link/backlink extraction superseded by CodeLinks;
+- custom Rust API/reference extraction superseded by maintained Rust/Sphinx tooling;
+- mdBook integration after Sphinx parity and migration;
+- full-block operations mislabeled as `PATCH`.
+
+## 18.4 Transition
+
+Do not run mdBook and Sphinx permanently.
+
+Maintain a bounded migration period, prove Sphinx/MyST source readability, rendering, navigation, traceability, and reconstruction, then remove the obsolete renderer/configuration.
+
+Current low-quality generated prose is not entitled to preservation. Migrate useful content selectively and regenerate defective projections through the new grounded workflow.
+
+After migration, `docs/` must primarily contain readable documentation and small comprehensible config.
+
+---
+
+# 19. Dependency-ordered execution program
+
+The agent SHALL inspect current post-goal-v5 repository state and create, amend, or supersede the smallest coherent dependency-ordered set of OpenSpec changes and ADRs needed to execute this goal.
+
+Do not mechanically create one OpenSpec per section.
+
+Do not stop after proposals/designs/tasks.
+
+A likely dependency sequence is:
+
+## A. Open-source reuse and knowledge-spine decision
+
+Record:
+
+- authority model;
+- selected Sphinx/MyST/Sphinx-Needs role;
+- sphinx-codelinks default role;
+- selected Rust/Sphinx integration;
+- closed-source exclusion;
+- evidence/test integration decisions;
+- goal-v5 migration policy;
+- security/toolchain boundaries;
+- exact remaining custom responsibilities.
+
+## B. Stable OpenSpec requirement IDs and fingerprints
+
+Implement requirement-level identity, validation, normalization, semantic fingerprints, and deterministic Sphinx ID mapping.
+
+## C. CodeLinks/Rust/evidence traceability and suspect lifecycle
+
+Implement sparse source markers, CodeLinks integration, relation classification, evidence/scenario links, reviewed digests, and suspect resolution.
+
+## D. Sphinx/MyST/Sphinx-Needs vertical slice
+
+Implement pinned open-source tooling, generated OpenSpec needs, CodeLinks backlinks, Rust reference integration, MyST pages, validation, and offline builds.
+
+## E. Agent skill and command contract
+
+Implement trace/affected/why/context/doctor/readiness commands and the repo-local maintenance skill.
+
+## F. Gold human chapter
+
+Generate and maintain the gold chapter through the real requirement→Rust→scenario/evidence→Markdown workflow.
+
+## G. Scenario, assurance, contributor, and architecture projections
+
+Render real graph-backed projections rather than duplicate registries or meta-pages.
+
+## H. Real agent-context proving task
+
+Exercise a real implementation change and compare against the old baseline.
+
+## I. Goal-v5 migration/retirement and project integration
+
+Remove obsolete state/rendering paths, integrate completion gates, prove reconstruction, and archive completed changes.
+
+Actual dependency evidence may justify combining or splitting these areas.
+
+---
+
+# 20. Required vertical slice
+
+Before broad migration, prove the architecture with approximately five high-value requirements spanning different concerns, such as:
+
+- intent before protected mutation;
+- uncertainty cannot become CLEAN;
+- acknowledgement/completion is distinct from durability;
+- ambiguous topology fails closed;
+- repair requires sufficient integrity/authority evidence.
+
+The spike SHALL demonstrate:
+
+1. stable requirement extraction from canonical OpenSpecs;
+2. semantic fingerprints and deterministic Sphinx IDs;
+3. OpenSpec requirements imported as Sphinx-Needs objects;
+4. sparse CodeLinks markers attached to meaningful Rust scopes;
+5. backlinks from requirements to Rust owners;
+6. at least one test/Kani/evidence relationship;
+7. at least one executable scenario relationship;
+8. requirement semantic change causing downstream links to become suspect;
+9. formatting-only change causing no suspect state or prose change;
+10. MyST page with a load-bearing claim linked to exact requirements and real scenario facts;
+11. assurance table/flow rendered from relationships;
+12. Rust contributor/reference information rendered by adopted tooling;
+13. offline deterministic Sphinx build and validation;
+14. AI review/update of one Markdown claim after a requirement change;
+15. fresh-agent use of the skill and readiness command.
+
+Do not scale the architecture until this slice is coherent and useful.
+
+---
+
+# 21. Verification and evaluation
+
+## 21.1 Requirement identity
+
+Test:
+
+- duplicate and malformed IDs;
+- `MODIFIED` requirement identity preservation;
+- split/merge/supersession migrations;
+- formatting-only edits;
+- normative/failure/state changes;
+- archived change rebinding without prose churn;
+- historical requirement rejection.
+
+## 21.2 CodeLinks/Rust traceability
+
+Test:
+
+- marker above a module/type/trait/impl/function/method;
+- marker above a test and Kani harness;
+- multiple requirements on one owner;
+- attributes/doc comments around markers;
+- nested scopes;
+- moved symbol;
+- deleted symbol or marker;
+- accidentally attached marker;
+- unknown need ID;
+- source outside configured roots;
+- relationship classification by source kind/configuration.
+
+## 21.3 Suspect lifecycle
+
+Demonstrate:
+
+- semantic requirement edit marks implementation, evidence, scenario, and docs links suspect;
+- formatting-only edit does not;
+- resolution requires a reason/current fingerprint;
+- direct lock manipulation cannot satisfy readiness;
+- links may remain `CONFLICT` or `NEEDS_EVIDENCE` without false completion.
+
+## 21.4 Reuse evidence
+
+For every retained custom generic component, record why the selected open-source tools were insufficient and why thin adaptation could not solve the gap.
+
+Demonstrate that CodeLinks, Sphinx-Needs, and the selected Rust/Sphinx integration own the generic capabilities assigned to them.
+
+## 21.5 Human usefulness
+
+Use a small consumer-side evaluation corpus.
+
+A fresh reader receives the human projection only and answers questions such as:
+
+- What does an acknowledged write prove?
+- Why must intent precede protected mutation?
+- What happens if power fails before or after a durability boundary?
+- Why is parity not sufficient integrity evidence?
+- What differs among degraded read, rebuild, repair, recovery, and rebaseline?
+
+A separate grader compares the answer with canonical requirements and detects overclaims, omissions, and unexplained jargon.
+
+Structural presence checks remain separate from comprehension evaluation.
+
+## 21.6 Agent usefulness
+
+For one real task, record:
+
+- old baseline context and size;
+- new graph-selected context;
+- retained and omitted requirements;
+- agent implementation/review outcome;
+- follow-up source hunting;
+- gaps detected by readiness checks.
+
+## 21.7 Reconstruction
+
+In a clean temporary copy:
+
+- delete generated knowledge/interchange/build state;
+- delete rendered Sphinx output;
+- retain canonical OpenSpecs, Markdown, curriculum, CodeLinks markers, evidence metadata, reviewed-link lock, tooling, and tests;
+- rebuild and check successfully without historical handoffs, closed-source tools, model access, provider access, or network access.
+
+---
+
+# 22. Anti-local-optimization constraints
+
+Goal-v6 is not satisfied by:
+
+- merely switching mdBook to Sphinx;
+- merely adding CodeLinks comments;
+- converting JSON to TOML;
+- moving goal-v5 JSON under `target/` while retaining duplicate semantics;
+- generating pretty traceability tables;
+- adding stable requirement IDs without checked links;
+- annotating every Rust function;
+- writing one good chapter manually;
+- adopting another requirements system as canonical;
+- creating a custom Sphinx clone;
+- writing a custom Rust parser before exercising CodeLinks and maintained Rust/Sphinx tooling;
+- adding a vector database;
+- globally regenerating prose with a better model;
+- using a proprietary tool as a required shortcut;
+- claiming correctness because traceability exists.
+
+Do not optimize for the smallest diff from goal-v5.
+
+Do not optimize for perfect static analysis before the vertical slice works.
+
+Do not create a second semantic store to avoid writing a thin adapter.
+
+Do not preserve accidental complexity merely because tests already exist for it.
+
+Optimize for the repository architecture we would still want after years of mostly autonomous AI development.
+
+---
+
+# 23. Completion criteria
+
+Goal-v6 is complete only when all of the following are true.
+
+## Canonical truth
+
+1. Canonical OpenSpec requirements and the small architecture constitution remain the only current semantic authority.
+2. Stable requirement IDs and semantic fingerprints exist at useful granularity.
+3. Generated Sphinx objects and human prose are explicitly non-authoritative.
+4. Historical architecture and handoffs are excluded from normal current-semantic use.
+
+## Open-source reuse
+
+5. Sphinx, MyST, Sphinx-Needs, and sphinx-codelinks are integrated or rejected only with concrete vertical-slice evidence.
+6. A maintained Rust/Sphinx or rustdoc integration supplies Rust API/reference information wherever adequate.
+7. No proprietary tool or hosted service is required by the architecture, CI, agent workflow, or reconstruction.
+8. Custom generic infrastructure is limited to evidenced gaps and has a replacement seam.
+
+## Traceability
+
+9. Correctness-critical implemented requirements have meaningful requirement→Rust-owner links.
+10. Important requirements link to appropriate tests/Kani/models/scenarios/evidence according to policy.
+11. CodeLinks markers are sparse and machine validated rather than passive comments.
+12. Code does not define canonical requirements.
+13. Requirement semantic changes create suspect downstream relationships.
+14. Suspect links require explicit agent resolution and cannot be cleared through hash churn.
+
+## Repository sanity
+
+15. `docs/` primarily contains readable MyST Markdown and small comprehensible configuration.
+16. Reconstructible inventories, graph exports, tasks, responses, and interchange files are not permanent docs clutter.
+17. No second manually maintained semantic requirements database remains under `docs/`.
+18. Irreducible reviewed-link state is compact and clearly machine-owned.
+
+## Documentation platform
+
+19. Sphinx/MyST/Sphinx-Needs builds offline from pinned repository tooling.
+20. OpenSpec requirements, Rust scopes, scenarios, and evidence appear through imported/generated objects and links rather than copied registries.
+21. Broken IDs, CodeLinks markers, source links, relationship types, and historical/current authority violations fail validation.
+22. mdBook/custom goal-v5 rendering machinery is retired after bounded migration.
+
+## Human documentation
+
+23. AI agents create and maintain ordinary checked-in Markdown; routine prose writing does not depend on the product owner.
+24. The gold temporal chapter materially improves target-reader understanding.
+25. The initial Guide applies the teaching model beyond the gold chapter.
+26. Scenario pages render actual executable facts.
+27. Assurance pages render actual requirement/property→implementation/evidence/non-claim relationships.
+28. Contributor and Architecture Reference facts are substantially generated from adopted tooling and the knowledge graph.
+29. Load-bearing claims expose exact semantic provenance without overwhelming the narrative.
+30. Model/provider/style-prompt changes alone do not thrash prose.
+31. Narrow semantic changes result in narrow Markdown changes.
+
+## Agent context and operability
+
+32. One real task-specific context packet is clearly more focused than the old monolithic baseline without known correctness-sensitive omission.
+33. Context selection is deterministic and identity/graph based.
+34. Human Guide prose is not required for normal implementation-agent semantic context.
+35. A repo-local maintenance skill exists and is discoverable.
+36. `knowledge trace`, `knowledge affected`, `knowledge why`, `docs doctor`, and equivalent commands make state understandable without historical goals.
+37. One readiness command tells the agent whether a change is complete and what remains.
+38. A fresh agent completes the proving change without chat history.
+
+## Autonomy and recovery
+
+39. Deterministic CI requires no model, provider credentials, closed-source tool, external documentation service, or network.
+40. Generated knowledge/build state can be reconstructed from durable repository inputs.
+41. goal-v6 and prior handoffs are not semantic dependencies.
+42. The next real DiskWeave change exercises the complete requirement→implementation/evidence/docs impact workflow.
+
+---
+
+# 24. Agent operating rules
+
+The implementation agent SHALL:
+
+- inspect current post-goal-v5 repository state before allocating IDs, files, crates, or OpenSpecs;
+- create/amend/supersede ADRs and OpenSpecs according to actual dependency order;
+- implement the architecture, not merely document it;
+- preserve good goal-v5 guarantees while deleting accidental machinery;
+- use open-source tooling for generic capabilities wherever adequate;
+- treat sphinx-codelinks as the default Rust marker/source-link path;
+- treat OpenSpec as canonical rather than authoring requirements in Rust or Sphinx;
+- keep Rust markers sparse and semantically meaningful;
+- make trace and evidence gaps visible rather than inventing relationships;
+- generate and maintain actual Markdown through AI;
+- stop and correct the projection contract if the gold chapter remains unreadable;
+- continue through dependency-ready work until completion criteria are satisfied;
+- leave commands, tests, evidence, status, residual risks, and next work in the repository.
+
+The implementation agent SHALL NOT:
+
+- create another `docs.json`, `assurance.json`, or equivalent semantic database;
+- use ubCode or another closed-source product as a required component;
+- define canonical requirements through CodeLinks comments or Sphinx needs;
+- preserve goal-v5 internals merely because they exist;
+- hand-author initial prose and silently bless it as generated;
+- make whole-file source bags the normal grounding mechanism;
+- annotate every Rust function;
+- update reviewed digests without semantic review;
+- put Python/Sphinx/model dependencies in the production runtime graph;
+- ask the product owner to choose routine APIs, schemas, filenames, prompts, or wording;
+- stop after a feasibility report or OpenSpec plan.
+
+Escalate only for a genuine irreversible product/API/format/licensing/security decision or a conflict in accepted DiskWeave semantics that cannot be resolved conservatively.
+
+---
+
+# 25. Required final handoff artifacts
+
+Before yielding goal-v6, leave:
+
+1. accepted ADRs and canonical OpenSpecs for the knowledge/documentation architecture;
+2. the open-source reuse/rejection matrix with evidence;
+3. requirement identity/fingerprint implementation and fixtures;
+4. OpenSpec→Sphinx-Needs export/injection;
+5. sphinx-codelinks configuration and Rust marker fixtures;
+6. selected Rust/Sphinx integration and generated contributor/reference output;
+7. reviewed/suspect relation lock and resolution workflow;
+8. evidence/scenario adapters and current relationships;
+9. pinned Sphinx/MyST/Sphinx-Needs/CodeLinks tool environment;
+10. checked-in MyST Human Guide source;
+11. gold chapter and usefulness evidence;
+12. real Scenario Book and Assurance Atlas examples;
+13. contributor and Architecture Reference projections;
+14. repo-local agent skill and readiness command;
+15. one real implementation-agent context comparison;
+16. goal-v5 migration/retirement evidence;
+17. model-free CI commands and clean-room reconstruction evidence;
+18. exact next dependency-ready DiskWeave work item.
+
+No durable architecture decision, semantic relationship, maintenance rule, or evidence gap may remain only in model output, chat history, ignored scratch state, or a proprietary tool index.
+
+---
+
+# 26. Final invariant
+
+Use this invariant to resolve implementation tradeoffs:
+
+> **OpenSpec says what DiskWeave must mean. Rust and executable artifacts show how that meaning is implemented and exercised. Sparse open-source trace links keep those correspondences reviewable. Sphinx projects the graph. AI writes and maintains the explanations.**
+
+Corollaries:
+
+> **AI should not be the database.**
+
+> **Sphinx should not be semantic authority.**
+
+> **CodeLinks should link code, not define requirements.**
+
+> **Rust should not be forced to contain the prose.**
+
+> **Closed-source convenience must not become project infrastructure.**
+
+> **The product owner should not have to write the prose.**
+
+> **Useful documentation is ordinary Markdown backed by strong traceability, not an extraordinary documentation database.**

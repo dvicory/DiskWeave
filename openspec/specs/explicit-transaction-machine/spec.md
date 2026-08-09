@@ -4,6 +4,7 @@
 This capability provides an auditable reference state machine that orders protected home-media actions around durable recovery intent, fences, checkpoints, abandonment, and crash reconciliation.
 ## Requirements
 ### Requirement: Transactions emit normalized semantic actions
+<!-- dwv:req req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions -->
 
 The reference machine SHALL expose actions for range acquisition, durable dirty/integrity invalidation intent, reads, parity computation, writes, flush/fence, checkpoint/clear, and range release. Actions SHALL contain semantic ranges, generations, identities, and evidence rather than backend child-operation or runtime types.
 
@@ -18,6 +19,7 @@ The reference machine SHALL expose actions for range acquisition, durable dirty/
 - **THEN** the reference trace records one semantic action and leaves child completion accounting to the operation-slot layer
 
 ### Requirement: Durable intent precedes every protected home mutation
+<!-- dwv:req req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation -->
 
 The machine SHALL not emit a home read/compute/write action that can mutate protected media until the recovery store reports a durable dirty and integrity-invalidation generation. A rejected, lost, or corrupt intent commit SHALL transition to a blocked or reconciliation-required state.
 
@@ -32,6 +34,7 @@ The machine SHALL not emit a home read/compute/write action that can mutate prot
 - **THEN** no protected write action is emitted and the transaction records the conservative failure
 
 ### Requirement: Clean and checkpoint claims require fence evidence
+<!-- dwv:req req.explicit-transaction-machine.clean-and-checkpoint-claims-require-fence-evidence -->
 
 The machine SHALL emit flush/fence actions after writes and SHALL not emit checkpoint/clear or release actions until required child operations are terminal and fence evidence covers the affected stores, watermarks, topology epoch, dirty regions, and integrity generations.
 
@@ -46,6 +49,7 @@ The machine SHALL emit flush/fence actions after writes and SHALL not emit check
 - **THEN** the transaction remains dirty/reconciliation-required and cannot report clean
 
 ### Requirement: Failure, abandonment, and crash states are conservative
+<!-- dwv:req req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative -->
 
 The machine SHALL distinguish failed, uncertain, abandoned, daemon-crashed, and reconciliation-required outcomes. Abandonment SHALL suppress frontend delivery interest only; it SHALL not cancel an irreversible home mutation or reclaim range/buffer ownership before backend and semantic reconciliation.
 
@@ -60,6 +64,7 @@ The machine SHALL distinguish failed, uncertain, abandoned, daemon-crashed, and 
 - **THEN** restart recovery sees dirty/indeterminate state and does not infer a clean checkpoint from the missing action result
 
 ### Requirement: Reference traces are deterministic and implementation-independent
+<!-- dwv:req req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent -->
 
 The machine SHALL emit versioned normalized action traces with stable error classes and semantic pre/post states. Equivalent implementations SHALL be compared by allowed trace normalization rather than private enum layout, batching, runtime, or database identity.
 

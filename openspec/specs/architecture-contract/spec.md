@@ -1,95 +1,85 @@
 # architecture-contract Specification
 
 ## Purpose
-OS-000 turns the v0.6 handoff into the repository-local OpenSpec source of truth for the portable contracts and dependency-ordered Phase 0 work. It governs artifact structure and evidence claims; it does not implement runtime behavior.
+
+DiskWeave is a portable block-parity engine beneath conventional filesystems. This constitution owns only the product boundary and invariants that must remain true across storage backends, frontends, persistence engines, and recovery implementations. Capability specifications define the detailed protocols within those boundaries.
+
 ## Requirements
-### Requirement: Architecture artifacts preserve the handoff contract
 
-The OS-000 artifacts SHALL cite the applicable handoff sections and decision IDs, classify accepted, provisional, validation, tunable, user-decision, deferred, rejected, and format-experimental choices where applicable, and make the handoff’s portable boundaries and fail-closed invariants normative. Every affected design SHALL contain the handoff’s twenty numbered sections in order.
+### Requirement: DiskWeave protects conventional member images at block level
+<!-- dwv:req req.architecture-contract.diskweave-protects-conventional-member-images-at-block-level -->
 
-#### Scenario: A later OpenSpec relies on an accepted decision
+DiskWeave SHALL provide parity protection for normalized block ranges beneath conventional filesystems. It SHALL NOT own a filesystem namespace, extent allocator, inode/object graph, snapshot or reflink model, per-file redundancy policy, or hidden namespace required to interpret a data member. A regular file placed through a namespace layer SHALL remain wholly on one conventional member.
 
-- **WHEN** a later change relies on a handoff invariant such as ordinary data images, replaceable frontend/runtime/database seams, bounded resources, or independent parity/integrity state
-- **THEN** its artifacts cite the relevant decision or format ID and preserve the invariant without choosing an implementation library as semantic truth
+#### Scenario: A data member is inspected independently
+- **WHEN** a conventional data-member image is opened outside DiskWeave
+- **THEN** its filesystem or block-image bytes remain usable without a DiskWeave namespace or proprietary data-member interpreter
 
-#### Scenario: A choice is provisional or validation-gated
+#### Scenario: A proposed feature adds filesystem ownership
+- **WHEN** a feature would split file extents, define inode or allocation state, or make a filesystem namespace authoritative for parity recovery
+- **THEN** it is outside this product boundary and requires a separate architecture and recovery contract
 
-- **WHEN** a change mentions SQLite, a frontend, a runtime, a codec implementation, a queue topology, or a durability behavior that the handoff classifies as provisional or validation-gated
-- **THEN** the artifact names the required evidence or ADR and does not present the choice as a stable format or platform guarantee
+### Requirement: Data payloads and protection metadata remain separate
+<!-- dwv:req req.architecture-contract.data-payloads-and-protection-metadata-remain-separate -->
 
-#### Scenario: The twenty-section contract is reviewed
+Required DiskWeave metadata SHALL NOT be embedded in ordinary data-member payloads. Parity payloads, recovery state, integrity records, and frontend exposure SHALL remain explicit separate layers. Parity consistency SHALL NOT be treated as proof of exact content or checksum validity.
 
-- **WHEN** an agent opens an OS-000, OS-001, or OS-002 design
-- **THEN** sections 1 through 20 appear in the prescribed order, with a concrete scope or a reasoned not-applicable statement in every section
+#### Scenario: Parity metadata changes
+- **WHEN** parity, recovery, integrity, or frontend metadata is migrated or lost
+- **THEN** ordinary data-member bytes retain their independent interpretation, while the affected protection or authority state becomes explicitly unavailable or requires re-establishment
 
-### Requirement: OpenSpec dependencies and readiness are explicit
+#### Scenario: Parity disagrees with present members
+- **WHEN** a parity equation disagrees with data bytes
+- **THEN** the system does not identify a corrupt target or authorize repair without independent current evidence
 
-OS-000 SHALL identify OS-001, OS-002, and OS-003 as its direct successors, and SHALL identify the dependency conditions for OS-004 and later Phase 0 work. Artifact status, task progress, and validation SHALL be recoverable from the OpenSpec CLI; no custom checker or parallel status registry is normative.
+### Requirement: Portable semantics are independent of implementation mechanisms
+<!-- dwv:req req.architecture-contract.portable-semantics-are-independent-of-implementation-mechanisms -->
 
-#### Scenario: OS-000 is validated
+Portable block, topology, parity, integrity, recovery, transaction, and evidence semantics SHALL NOT depend on a particular filesystem, kernel, database, asynchronous runtime, codec library, or frontend type. Implementations SHALL cross those boundaries through explicit adapters that preserve observable ranges, identities, ordering, ownership, durability intent, and terminal outcomes.
 
-- **WHEN** the four OS-000 artifacts pass `openspec validate`
-- **THEN** an agent can use `openspec status` and `openspec instructions apply` to identify the current change and the next dependency-ready OpenSpecs
+#### Scenario: An implementation mechanism is replaced
+- **WHEN** a storage backend, persistence engine, runtime, codec, or frontend is replaced
+- **THEN** the portable semantic contract and its allowed outcomes remain comparable without importing the mechanism's types into the semantic core
 
-#### Scenario: A correctness-critical predecessor is incomplete
+#### Scenario: An adapter cannot preserve intent
+- **WHEN** an adapter lacks evidence to implement a requested range, ordering, durability, or lifecycle intent
+- **THEN** it rejects or reports the weaker result explicitly instead of silently changing the semantic request
 
-- **WHEN** a later change requires OS-000 or another predecessor whose artifacts/evidence are incomplete
-- **THEN** the later task remains blocked or explicitly pending and the artifact does not claim readiness
+### Requirement: Identity and topology authority are explicit and conservative
+<!-- dwv:req req.architecture-contract.identity-and-topology-authority-are-explicit-and-conservative -->
 
-#### Scenario: A task checkbox is stale
+Logical slots, member roles, coding positions, assignment instances, protected geometry, and topology epochs SHALL be distinct semantic identities. A request SHALL retain the topology snapshot under which it was admitted. Writable assembly and topology publication SHALL fail closed when identity, geometry, role, generation, or assignment evidence is ambiguous, stale, conflicting, or incomplete.
 
-- **WHEN** a task is checked but its required artifact or evidence is absent
-- **THEN** the task is reconciled before completion and CLI validation is not treated as proof of runtime or hardware behavior
+#### Scenario: Two physical observations could satisfy one slot
+- **WHEN** identity evidence cannot distinguish candidates or a role/coding assignment is inconsistent
+- **THEN** writable assembly is refused or restricted to an explicitly read-only decision; the system does not choose by path or enumeration order
 
-### Requirement: Portable boundaries and safety invariants are normative
+#### Scenario: A topology changes during an operation
+- **WHEN** the current topology epoch or assignment generation differs from the captured request snapshot
+- **THEN** the operation is rejected or reconciled under an explicit transition and does not reinterpret the request against the new topology
 
-The architecture contract SHALL keep portable semantic behavior independent of ublk, FSKit, io_uring, SQLite, async runtimes, `procmachines`, and namespace implementation types. It SHALL preserve ordinary independently readable data payloads, fail-closed ambiguous identity/recovery behavior, explicit durability evidence, bounded resources, independent parity and integrity state, and no stable format promise before its recovery and independent-decoder gates.
+### Requirement: Durable authority and uncertainty are not inferred
+<!-- dwv:req req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred -->
 
-#### Scenario: A later implementation selects a library
+Acknowledgement, completion, persistence, durability, clean state, integrity validity, and recovery authorization SHALL remain distinct facts. Protected mutation SHALL require the applicable durable intent and current authority evidence. Failed, short, cancelled, abandoned, crashed, lost, stale, or uncertain effects SHALL remain visible and SHALL NOT be converted into clean state, valid integrity, writable authorization, or proof that an irreversible effect did not occur.
 
-- **WHEN** a later implementation selects a frontend, database, runtime, or codec library
-- **THEN** the selection stays behind the semantic boundary and does not redefine portable behavior, recovery truth, or durable format semantics
+#### Scenario: A protected write is acknowledged before a fence
+- **WHEN** a write completes from the caller's perspective but covering durable fence evidence is unavailable
+- **THEN** the request may report completion only at the established scope and recovery state remains dirty, uncertain, or otherwise conservative
 
-#### Scenario: Evidence is uncertain
+#### Scenario: A caller abandons an operation
+- **WHEN** completion interest is dropped after submission
+- **THEN** delivery may be suppressed, but media effects, resource ownership, and recovery reconciliation remain governed by the operation and are not rolled back by abandonment
 
-- **WHEN** identity, topology, completion, durability, integrity, or reconstruction evidence is unknown or ambiguous
-- **THEN** the relevant contract retains `UNKNOWN`/`DIRTY`/stale state or refuses the operation and does not infer safe success or repair
+### Requirement: Recovery and repair never promote algebraic possibility to authority
+<!-- dwv:req req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority -->
 
-#### Scenario: A persistent representation is unproven
+Read reconstruction, rebuild, repair, rebaseline, and format interpretation SHALL use explicit current identity, geometry, generation, integrity, and durability evidence. Mathematical computability or a successful process return alone SHALL NOT authorize serving data as healthy, publishing a replacement, clearing dirty state, accepting a checksum, or interpreting an unknown format as writable.
 
-- **WHEN** a schema, parity envelope, trace, or manifest lacks crash, capacity, migration, or independent-reader evidence
-- **THEN** it remains experimental or deferred and is not described as a stable compatibility promise
+#### Scenario: A missing member is mathematically reconstructible
+- **WHEN** surviving bytes permit a candidate reconstruction but required authority or integrity evidence is missing, stale, or conflicting
+- **THEN** the system refuses or marks the result degraded/uncertain and performs no unauthorized protected mutation
 
-### Requirement: Completion is evidence-backed and scope-accurate
-
-OS-000 and its successor artifacts SHALL define observable outcomes, failure behavior, acceptance criteria, forbidden outcomes, compatibility consequences, and next unlocked work. Portable tests may establish portable semantics only; unavailable Linux, macOS, device, power-loss, or hardware evidence SHALL remain explicitly unmet or gated.
-
-#### Scenario: The active artifact set is validated
-
-- **WHEN** an agent runs `openspec validate` for an affected change
-- **THEN** malformed delta structure and missing required artifacts are reported before the change is considered artifact-complete
-
-#### Scenario: A portable test passes
-
-- **WHEN** a standard-library contract test passes
-- **THEN** the artifact may claim the corresponding portable semantic behavior but not a platform, physical durability, or production certification
-
-#### Scenario: Platform evidence is unavailable
-
-- **WHEN** a criterion requires Linux, macOS, a real database crash, power loss, or hardware and that environment is unavailable
-- **THEN** the criterion remains visible as gated/unmet and no task or design claims it passed
-
-### Requirement: Agent workflow uses only OpenSpec artifacts and CLI
-
-OS-000 SHALL define the handoff read → dependency selection → artifact refinement → implementation/evidence → validation → archive workflow. It SHALL forbid repository-specific architecture-checker code, duplicate decision registries, and hidden chat-only readiness state.
-
-#### Scenario: An agent resumes without chat history
-
-- **WHEN** an agent reads the committed artifacts and runs the OpenSpec status/instructions commands
-- **THEN** it can identify scope, prerequisites, remaining work, evidence gaps, and next dependency-ready changes
-
-#### Scenario: A proposed shortcut changes the architecture boundary
-
-- **WHEN** a shortcut would add a checker, choose a crate as durable truth, or claim unavailable evidence
-- **THEN** the artifact records the shortcut as forbidden or deferred and preserves the semantic seam
-
+#### Scenario: An unknown format is encountered
+- **WHEN** a tool cannot establish the payload offsets, coding profile, topology, or recovery semantics of a format family
+- **THEN** it refuses writable interpretation while allowing only bounded safe inspection or direct ordinary-payload access

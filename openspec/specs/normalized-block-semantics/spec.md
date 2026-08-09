@@ -4,6 +4,7 @@
 The normalized block contract gives every DiskWeave frontend one portable vocabulary for byte ranges, operations, ordering, durability intent, lifecycle events, capabilities, and terminal results without importing platform or runtime types.
 ## Requirements
 ### Requirement: Requests have validated frontend-neutral semantics
+<!-- dwv:req req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics -->
 
 The system SHALL represent each block request with stable request and frontend identities, target slot, captured topology epoch, operation, byte range, optional generational buffer handle, submission sequence, ordering intent, and durability intent. Byte ranges SHALL use checked end arithmetic. The operation vocabulary SHALL support read, write, flush, write-zeroes, and discard while explicitly rejecting unsupported zoned operations.
 
@@ -23,6 +24,7 @@ The system SHALL represent each block request with stable request and frontend i
 - **THEN** normalization rejects the request without submitting backend I/O
 
 ### Requirement: Ordering and durability intent cannot be silently weakened
+<!-- dwv:req req.normalized-block-semantics.ordering-and-durability-intent-cannot-be-silently-weakened -->
 
 The system SHALL preserve submission sequence, preflush intent, fence domain, ordinary-write intent, FUA intent, and explicit flush intent through normalization and adapter translation. An adapter MAY reject unsupported intent or emulate it only when equivalent capability evidence exists; it SHALL NOT silently discard or strengthen the intent and SHALL report only the persistence evidence actually established.
 
@@ -42,6 +44,7 @@ The system SHALL preserve submission sequence, preflush intent, fence domain, or
 - **THEN** the normalized action order retains preflush before the write and preserves the same fence domain
 
 ### Requirement: Frontend lifecycle events have explicit abandonment semantics
+<!-- dwv:req req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics -->
 
 The system SHALL represent frontend abandonment, quiescence, loss, recovery, and completion-interest state. Abandonment SHALL suppress completion delivery interest only; it SHALL NOT cancel or roll back an irreversible transaction. Loss SHALL preserve duplicate-delivery uncertainty, and quiescence SHALL identify the sequence drained without being treated as media durability.
 
@@ -61,6 +64,7 @@ The system SHALL represent frontend abandonment, quiescence, loss, recovery, and
 - **THEN** the core records N as ordering evidence without conflating it with persistence evidence
 
 ### Requirement: Adapters expose bounded deterministic conformance behavior
+<!-- dwv:req req.normalized-block-semantics.adapters-expose-bounded-deterministic-conformance-behavior -->
 
 An adapter SHALL translate operations and flags without silent semantic changes, advertise only limits the complete path can satisfy, apply backpressure before unbounded allocation, retain frontend-owned resources until semantic reclamation is safe, and map terminal core results deterministically. Backing and exported endpoints SHALL never alias while active.
 
@@ -80,6 +84,7 @@ An adapter SHALL translate operations and flags without silent semantic changes,
 - **THEN** the adapter retains tags/resources until the operation lifetime contract permits reclamation and then delivers the mapped outcome unless completion interest was abandoned
 
 ### Requirement: Portable evidence does not imply platform certification
+<!-- dwv:req req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification -->
 
 The normalized contract SHALL identify portable tests separately from macOS, Linux, device, power-loss, and hardware tests. Passing request/event tests SHALL not be reported as proof of physical flush, FUA, frontend, or production behavior.
 

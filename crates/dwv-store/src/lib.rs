@@ -1223,6 +1223,7 @@ struct SlotRecord {
     retry_count: usize,
 }
 
+/// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
 pub struct OperationSlotTable {
     slots: Vec<Option<SlotRecord>>,
     next_generations: Vec<u32>,

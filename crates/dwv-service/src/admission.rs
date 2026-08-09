@@ -18,6 +18,7 @@ impl Default for AdmissionConfig {
     }
 }
 
+/// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
 pub struct OperationAdmission {
     table: OperationSlotTable,
 }

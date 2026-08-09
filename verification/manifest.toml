@@ -1,0 +1,342 @@
+schema = "dwv.verification.manifest.v1"
+
+[[evidence]]
+id = "evidence.architecture-normalization-v08"
+path = "docs/verification/architecture-normalization-v08.md"
+claim = "The v0.8 normalization audit records current semantic dispositions and historical isolation decisions."
+tier = "documentation-migration"
+fault_model = ["duplicate semantic registry", "historical-source leakage"]
+scope = ["canonical requirement discovery", "v0.8 disposition audit"]
+requirements = [
+  "req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry",
+  "req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only",
+  "req.documentation-knowledge-architecture.durable-documentation-configuration-is-small-and-state-is-reconstructible",
+  "req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable",
+]
+non_claims = [
+  "This record is migration evidence, not a product requirement.",
+  "It does not certify runtime or platform behavior.",
+]
+
+[[evidence]]
+id = "evidence.architecture-v07-conformance"
+path = "docs/verification/architecture-v07-conformance.md"
+claim = "The architecture conformance record bounds portable claims and names deferred platform evidence."
+tier = "portable-analysis"
+fault_model = ["unbounded architecture claim", "historical handoff authority"]
+scope = ["portable architecture conformance", "simulator and trace boundaries"]
+requirements = [
+  "req.architecture-contract.portable-semantics-are-independent-of-implementation-mechanisms",
+  "req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority",
+  "req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only",
+]
+non_claims = [
+  "This record does not certify a deployed frontend, device, or power-loss path.",
+  "Historical handoff statements remain non-authoritative.",
+]
+
+[[evidence]]
+id = "evidence.macos-demo-v0"
+path = "docs/verification/macos-demo-v0.md"
+claim = "The offline demo evidence exercises owned file-backed behavior without claiming a live bridge or hardware durability."
+tier = "portable-file-backed"
+fault_model = ["ordinary-file operation failure", "missing platform bridge"]
+scope = ["healthy demo", "recoverable demo"]
+requirements = [
+  "req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior",
+  "req.macos-demo-cli.demo-fixture-ownership-is-explicit",
+  "req.evidence-boundaries.evidence-scope-is-explicit",
+]
+non_claims = [
+  "It does not claim a live virtual-disk bridge, Linux frontend, or hardware durability.",
+  "It does not claim degraded writes or P/Q behavior.",
+]
+
+[[evidence]]
+id = "evidence.os-007-parity-envelope-profiles"
+path = "docs/verification/os-007-parity-envelope-profiles.md"
+claim = "The parity-envelope evidence compares bounded experimental profiles and preserves conservative disagreement handling."
+tier = "experimental-profile"
+fault_model = ["envelope disagreement", "capacity or geometry mismatch"]
+scope = ["bounded parity-envelope comparison", "conservative session disposition"]
+requirements = [
+  "req.parity-envelope-profiles.envelope-profiles-remain-experimental-and-capacity-safe",
+  "req.parity-envelope-profiles.envelope-copies-are-independently-inspectable",
+  "req.parity-envelope-profiles.envelope-disagreement-resolves-conservatively",
+  "req.parity-envelope-profiles.envelope-migration-is-bounded-and-interruptible",
+]
+non_claims = [
+  "These profiles do not authorize production format selection or clean recovery.",
+  "They do not establish device or power-loss durability.",
+]
+
+[[evidence]]
+id = "evidence.os-009-transaction-engine-evidence-comparison"
+path = "docs/verification/os-009-transaction-engine-evidence-comparison.md"
+claim = "The transaction comparison records normalized semantic actions and conservative terminal evidence."
+tier = "portable-reference-comparison"
+fault_model = ["interrupted write", "uncertain completion"]
+scope = ["normalized transaction actions", "terminal evidence comparison"]
+requirements = [
+  "req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions",
+  "req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation",
+  "req.explicit-transaction-machine.clean-and-checkpoint-claims-require-fence-evidence",
+  "req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
+]
+non_claims = [
+  "The comparison does not select a production executor or backend.",
+  "It does not establish filesystem, bridge, or physical durability behavior.",
+]
+
+[[evidence]]
+id = "evidence.os-013-healthy-portable-io"
+path = "docs/verification/os-013-healthy-portable-io.md"
+claim = "The healthy portable I/O record covers bounded ordinary-file behavior and keeps frontend and hardware claims gated."
+tier = "portable-file-backed"
+fault_model = ["range I/O failure", "durability-fence uncertainty"]
+scope = ["healthy reads and writes", "flush and checkpoint evidence"]
+requirements = [
+  "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
+  "req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence",
+  "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
+  "req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences",
+  "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable",
+]
+non_claims = [
+  "It does not claim a live bridge, Linux frontend, or physical power-loss durability.",
+  "It does not establish production hardware flush semantics.",
+]
+
+[[evidence]]
+id = "evidence.os-014-exhaustive-verification-repair"
+path = "docs/verification/os-014-exhaustive-verification-repair.md"
+claim = "The exhaustive verification record separates parity mismatch classification from independently authorized repair."
+tier = "portable-file-backed"
+fault_model = ["parity mismatch", "independent repair ambiguity"]
+scope = ["exhaustive single-parity verification", "separate-target repair planning"]
+requirements = [
+  "req.parity-verification-repair.exhaustive-verification-is-a-read-only-full-scan",
+  "req.parity-verification-repair.mismatch-classification-requires-independent-evidence",
+  "req.parity-verification-repair.selective-repair-is-separately-targeted-and-verified",
+  "req.parity-verification-repair.reports-are-bounded-and-preserve-authority-boundaries",
+]
+non_claims = [
+  "It does not claim metadata-loss recovery, degraded service, or platform attachment.",
+  "It does not authorize parity-only repair without independent evidence.",
+]
+
+[[evidence]]
+id = "evidence.os-015-metadata-loss-recovery"
+path = "docs/verification/os-015-metadata-loss-recovery.md"
+claim = "The metadata-loss record enumerates conservative recovery dispositions and requires explicit evidence before a new baseline."
+tier = "portable-recovery-plus-evaluation-sqlite"
+fault_model = ["metadata loss", "ambiguous recovery baseline"]
+scope = ["conservative recovery matrix", "fresh semantic-state audit"]
+requirements = [
+  "req.metadata-loss-recovery.evidence-gates-control-recovery-authorization",
+  "req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed",
+  "req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit",
+  "req.metadata-loss-recovery.the-metadata-loss-matrix-is-total-and-conservative",
+]
+non_claims = [
+  "It does not claim certified envelope execution, degraded reads, live bridge behavior, or hardware durability.",
+  "The SQLite target is evaluation-only and not a production durability claim.",
+]
+
+[[evidence]]
+id = "evidence.os-016-degraded-reads-offline-rebuild"
+path = "docs/verification/os-016-degraded-reads-offline-rebuild.md"
+claim = "The degraded-read and offline-rebuild record proves separate-target byte equality within the portable file-backed evidence boundary."
+tier = "portable-macos-file-backed"
+fault_model = ["known single erasure", "interrupted replacement write"]
+scope = ["read-only degraded reconstruction", "resumable separate-target rebuild"]
+requirements = [
+  "req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed",
+  "req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes",
+  "req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target",
+  "req.degraded-read-offline-rebuild.rebuild-resumes-and-completes-only-after-full-verification",
+  "req.degraded-read-offline-rebuild.portable-and-macos-file-backed-acceptance-remains-independent",
+]
+non_claims = [
+  "It does not claim degraded writes, online rebuild, P/Q, two erasures, or a live bridge.",
+  "It does not claim Linux frontend or physical-device power-loss durability.",
+]
+
+[[evidence]]
+id = "evidence.os-017-checksum-scrub-verified-repair"
+path = "docs/verification/os-017-checksum-scrub-verified-repair.md"
+claim = "The checksum scrub and repair record preserves conservative classification, unique-solution authorization, and verified separate targets."
+tier = "portable-file-backed"
+fault_model = ["checksum mismatch", "non-unique repair solution"]
+scope = ["bounded checksum scrub", "verified separate-target repair"]
+requirements = [
+  "req.checksum-scrub-verified-repair.scrub-classifies-every-selected-extent-conservatively",
+  "req.checksum-scrub-verified-repair.automatic-repair-requires-one-unique-verified-solution",
+  "req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback",
+]
+non_claims = [
+  "It does not claim in-place replacement, online scrub, P/Q repair, or platform attachment.",
+  "It does not establish a stable checksum format or physical power-loss durability.",
+]
+
+[[evidence]]
+id = "evidence.os-020-macos-bridge-feasibility"
+path = "docs/verification/os-020-macos-bridge-feasibility.md"
+claim = "The macOS bridge spike records regular-file feasibility and explicitly leaves privileged bridge and hardware behavior unresolved."
+tier = "macos-host-feasibility"
+fault_model = ["missing toolchain", "unprivileged attachment"]
+scope = ["regular-file bridge baseline", "candidate bridge feasibility"]
+requirements = [
+  "req.macos-bridge-feasibility.the-probe-uses-a-fixed-size-seekable-proxy",
+  "req.macos-bridge-feasibility.candidate-bridges-are-compared-at-the-normalized-boundary",
+  "req.macos-bridge-feasibility.synchronization-and-cache-behavior-are-evidenced",
+  "req.macos-bridge-feasibility.installation-and-platform-constraints-are-explicit",
+  "req.macos-bridge-feasibility.the-outcome-is-a-bounded-portable-demo-decision",
+]
+non_claims = [
+  "It does not establish FSKit, macFUSE, DiskImages, cache coherence, or detach behavior.",
+  "It does not claim physical power-loss durability.",
+]
+
+[[evidence]]
+id = "evidence.os-024-normalized-trace-replay"
+path = "docs/verification/os-024-normalized-trace-replay.md"
+claim = "The normalized trace replay record demonstrates deterministic event and terminal-state reproduction from a bounded fixture."
+tier = "portable-normalized-trace"
+fault_model = ["fault cut point", "trace replay divergence"]
+scope = ["bounded trace vocabulary", "deterministic terminal-state replay"]
+requirements = [
+  "req.normalized-trace-replay.traces-use-a-bounded-canonical-semantic-format",
+  "req.normalized-trace-replay.traces-cover-portable-correctness-boundaries",
+  "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
+  "req.normalized-trace-replay.versioning-and-failure-minimization-are-explicit",
+]
+non_claims = [
+  "It does not claim Linux ublk, a live bridge, backend equivalence outside the trace, or hardware durability.",
+  "It does not cover online rebuild, degraded writes, or P/Q semantics.",
+]
+
+[[evidence]]
+id = "evidence.os-025-derived-documentation-foundation"
+path = "docs/verification/os-025-derived-documentation-foundation.md"
+claim = "The documentation foundation record demonstrates offline derivation from canonical sources and bounded projection state."
+tier = "documentation-projection"
+fault_model = ["stale generated state", "historical source leakage"]
+scope = ["canonical-source derivation", "bounded projection reconstruction"]
+requirements = [
+  "req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry",
+  "req.documentation-knowledge-architecture.durable-documentation-configuration-is-small-and-state-is-reconstructible",
+  "req.documentation-knowledge-architecture.projections-render-useful-facts-for-their-intended-consumers",
+  "req.documentation-knowledge-architecture.provenance-is-claim-and-fragment-level",
+]
+non_claims = [
+  "It does not claim complete curriculum coverage or semantic prose usefulness.",
+  "It does not certify runtime, platform, or bootstrap-retirement behavior.",
+]
+
+[[evidence]]
+id = "evidence.portable-demo-baseline"
+path = "docs/verification/portable-demo-baseline.md"
+claim = "The portable demo baseline records the bounded workflow and the evidence tier it does not exceed."
+tier = "portable-file-backed"
+fault_model = ["bounded fixture failure", "unsupported platform inference"]
+scope = ["offline demo workflow", "evidence-tier boundary"]
+requirements = [
+  "req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior",
+  "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable",
+  "req.evidence-boundaries.evidence-scope-is-explicit",
+]
+non_claims = [
+  "It does not claim a virtual-disk bridge, Linux frontend, hardware durability, P/Q, or degraded writes.",
+  "The demo is not a production deployment certificate.",
+]
+
+[[evidence]]
+id = "evidence.portable-verification-evidence"
+path = "docs/verification/portable-verification-evidence.md"
+claim = "The portable verification evidence records deterministic checks without promoting them to platform or hardware certification."
+tier = "portable-bounded"
+fault_model = ["hostile range input", "finite model coverage"]
+scope = ["bounded arithmetic and simulator evidence", "reproducible verification artifacts"]
+requirements = [
+  "req.evidence-boundaries.verification-artifacts-are-deterministic-and-bounded",
+  "req.evidence-boundaries.unknown-and-ambiguous-evidence-fail-closed",
+  "req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification",
+]
+non_claims = [
+  "It does not claim arbitrary-width formal proof, broad concurrency, filesystem behavior, or hardware durability.",
+  "Finite evidence does not substitute for platform or power-loss certification.",
+]
+
+[[scenarios]]
+id = "scenario.basic-write"
+fixture = "verification/corpus/basic-write.schedule"
+title = "A basic acknowledged write"
+runner = "dwv-sim"
+fixture_size = 8
+requirements = [
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
+  "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects",
+]
+evidence = ["evidence.os-009-transaction-engine-evidence-comparison"]
+required_events = ["submitted", "delivered"]
+claims = [
+  "The bounded simulator separates acknowledged volatile effects from durable media state.",
+]
+non_claims = [
+  "This schedule does not establish physical power-loss durability.",
+  "Completion delivery does not prove that the write was durably fenced.",
+]
+
+[[scenarios]]
+id = "scenario.normalized-recovery"
+fixture = "verification/corpus/normalized-recovery.trace.json"
+title = "A normalized recovery trace"
+runner = "dwv-trace"
+requirements = [
+  "req.normalized-trace-replay.traces-use-a-bounded-canonical-semantic-format",
+  "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence",
+]
+evidence = ["evidence.os-024-normalized-trace-replay"]
+required_events = [
+  "open",
+  "write",
+  "flush",
+  "read",
+  "recovery_intent",
+  "checkpoint",
+  "checksum",
+  "degraded_read",
+  "rebuild_chunk",
+  "repair_decision",
+  "outcome",
+]
+claims = [
+  "The bounded trace replays a fixed event vocabulary to a deterministic terminal state.",
+]
+non_claims = [
+  "The trace does not certify a live backend, Linux frontend, bridge, or hardware behavior.",
+  "A successful trace outcome does not authorize mutation outside the modeled evidence.",
+]
+
+[[evidence]]
+id = "evidence.os-030-open-traceable-knowledge"
+path = "docs/verification/os-030-open-traceable-knowledge.md"
+claim = "OS-030 completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, provider-neutral change impact, and deterministic offline reconstruction."
+tier = "documentation-acceptance"
+fault_model = ["reader incomprehension", "agent source hunting", "missing revision baseline", "stale generated state"]
+scope = ["Human Guide sampled usefulness", "fresh-agent bounded context", "change-boundary impact", "offline documentation reconstruction"]
+requirements = [
+  "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority",
+  "req.documentation-knowledge-architecture.agent-context-is-graph-selected-and-reproducible",
+  "req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded",
+  "req.documentation-knowledge-architecture.usefulness-and-correctness-are-separate-checks",
+  "req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable",
+]
+non_claims = [
+  "One reader and one fresh agent do not establish usefulness for every audience, task, or model.",
+  "Documentation acceptance does not certify DiskWeave runtime, platform, frontend, or hardware behavior.",
+  "The accepted TOML section-brief representation is not claimed to be the final or universally best prose-authoring medium.",
+]

@@ -4,6 +4,7 @@
 This capability serves one known missing single-XOR data member read-only when recovery evidence proves a range reconstructable, and materializes a verified replacement through a durable resumable offline rebuild.
 ## Requirements
 ### Requirement: Degraded-read eligibility is explicit and fail-closed
+<!-- dwv:req req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed -->
 
 The portable engine SHALL authorize a reconstructed read only when exactly one data slot is a known erasure, the validated topology identifies that stable slot and its coding position, the captured topology and recovery generations remain current, the requested range is parity-clean or replay-proven, every required survivor is readable and not excluded by current integrity evidence, and writes are quiesced. Eligibility SHALL be decided per requested range and SHALL NOT be inferred from algebraic solvability alone.
 
@@ -23,6 +24,7 @@ The portable engine SHALL authorize a reconstructed read only when exactly one d
 - **THEN** degraded service is unavailable and no survivor is selected or mutated by discovery order
 
 ### Requirement: Known-erasure reads reconstruct exact requested bytes
+<!-- dwv:req req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes -->
 
 An authorized single-XOR degraded read SHALL read the parity range and every surviving data operand, apply the documented zero-tail rules, reconstruct only the requested missing-slot bytes, and return exact completion evidence marked degraded. It SHALL perform zero payload writes and SHALL NOT label the result healthy or clean.
 
@@ -42,6 +44,7 @@ An authorized single-XOR degraded read SHALL read the parity range and every sur
 - **THEN** its documented tail contributes zeros while a physical short read inside its declared protected length still fails
 
 ### Requirement: Dirty or excluded ranges refuse reconstruction
+<!-- dwv:req req.degraded-read-offline-rebuild.dirty-or-excluded-ranges-refuse-reconstruction -->
 
 Dirty, indeterminate, uncovered, or stale-checkpoint ranges SHALL NOT be automatically reconstructed. A survivor with current integrity evidence identifying it as invalid SHALL be excluded; if the remaining verified operands are insufficient, the read SHALL fail. A refusal SHALL not clear dirty state, advance integrity coverage, or write any payload.
 
@@ -56,6 +59,7 @@ Dirty, indeterminate, uncovered, or stale-checkpoint ranges SHALL NOT be automat
 - **THEN** the request is beyond the declared single-parity tolerance and fails without best-effort output
 
 ### Requirement: Offline rebuild writes only a separate replacement target
+<!-- dwv:req req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target -->
 
 The first rebuild implementation SHALL require read-only/quiesced source topology and a distinct empty replacement identity. It SHALL process deterministic bounded ranges in increasing order, reconstruct each range with the same eligibility rules as degraded reads, write only the replacement, verify exact readback and the parity equation, durably flush the replacement range, and only then advance the durable rebuild cursor. It SHALL never overwrite the missing member path, parity, or surviving data.
 
@@ -75,6 +79,7 @@ The first rebuild implementation SHALL require read-only/quiesced source topolog
 - **THEN** rebuild is refused before the first payload write
 
 ### Requirement: Rebuild resumes and completes only after full verification
+<!-- dwv:req req.degraded-read-offline-rebuild.rebuild-resumes-and-completes-only-after-full-verification -->
 
 An interrupted rebuild SHALL resume from its durable cursor only when the rebuild identity, source topology/generation, missing stable slot/coding position, replacement assignment instance, geometry, and replacement identity all match. Completion SHALL require the cursor to cover the full protected length and a final complete replacement digest/equation verification pass. A partial or mismatched rebuild SHALL remain resumable or blocked and SHALL NOT be represented as verified.
 
@@ -94,6 +99,7 @@ An interrupted rebuild SHALL resume from its durable cursor only when the rebuil
 - **THEN** the rebuild remains unverified and topology promotion is unavailable
 
 ### Requirement: Replacement promotion preserves logical identity
+<!-- dwv:req req.degraded-read-offline-rebuild.replacement-promotion-preserves-logical-identity -->
 
 A verified data replacement SHALL retain the old stable slot and coding position, use a new assignment instance and generation for the replacement store, and produce a prepared topology newer than the active topology. Verification SHALL NOT itself publish the topology; durable topology commit and publication remain explicit separate protocol stages.
 
@@ -108,6 +114,7 @@ A verified data replacement SHALL retain the old stable slot and coding position
 - **THEN** no prepared replacement topology can be produced
 
 ### Requirement: Portable and macOS file-backed acceptance remains independent
+<!-- dwv:req req.degraded-read-offline-rebuild.portable-and-macos-file-backed-acceptance-remains-independent -->
 
 The degraded read and rebuild semantics SHALL run without Linux frontend types, async-runtime types, SQLite handles, or filesystem metadata inside data members. A macOS regular/sparse-file fixture SHALL prove a rebuilt raw image byte-equals the reference member and remains directly readable after the service stops. An environment-gated macOS fixture SHALL additionally prove that a rebuilt detached APFS disk image attaches independently after every DiskWeave store closes. This change SHALL make no live APFS bridge, Linux request, physical-device durability, or P/Q conformance claim.
 

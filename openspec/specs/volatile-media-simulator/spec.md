@@ -6,6 +6,7 @@ The volatile-media simulator is a deterministic oracle for separating acknowledg
 The simulator is the handoff's bounded Phase 0 fault model. Recovery-state and parity-envelope objects are semantic fixtures, not SQLite pages or a selected persistent format.
 ## Requirements
 ### Requirement: Media state separates durable and process-visible effects
+<!-- dwv:req req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects -->
 
 The simulator SHALL maintain durable media, acknowledged volatile writes, pending operations, completion delivery, a configured fault model, and store availability as distinct state. A daemon crash SHALL discard process-owned pending operations and undelivered completions while preserving device volatile state. A power loss SHALL resolve pending volatile writes according to the configured deterministic policy and SHALL discard unresolved volatile state that the policy does not persist.
 
@@ -25,6 +26,7 @@ The simulator SHALL maintain durable media, acknowledged volatile writes, pendin
 - **THEN** durable bytes remain unchanged by unflushed writes and volatile state is empty after recovery
 
 ### Requirement: Operations use exact normalized ranges and structured evidence
+<!-- dwv:req req.volatile-media-simulator.operations-use-exact-normalized-ranges-and-structured-evidence -->
 
 Simulator submissions SHALL use exact byte ranges, generation-bearing child operation identities, and the OS-002 completion dispositions and persistence evidence. Short completion SHALL expose only the completed subset. Failed and uncertain outcomes SHALL preserve the evidence needed to decide whether retry is legal; the simulator SHALL not silently turn them into success.
 
@@ -39,6 +41,7 @@ Simulator submissions SHALL use exact byte ranges, generation-bearing child oper
 - **THEN** the completion reports `Uncertain` and volatile or durable evidence is not promoted to a stronger claim merely because the call returned
 
 ### Requirement: Schedules are deterministic, serializable, and minimizable
+<!-- dwv:req req.volatile-media-simulator.schedules-are-deterministic-serializable-and-minimizable -->
 
 The simulator SHALL execute a finite ordered schedule of submissions, completion deliveries, crashes, disappearance/reappearance, and power-loss actions. The same serialized schedule and configuration SHALL produce the same durable snapshot and delivery trace. A minimizer SHALL remove schedule steps greedily while preserving a caller-supplied failure predicate, and minimized schedules SHALL be serializable regression fixtures.
 
@@ -53,6 +56,7 @@ The simulator SHALL execute a finite ordered schedule of submissions, completion
 - **THEN** the minimizer returns a no-longer-reducible schedule that still satisfies the predicate and round-trips through the reproducer format
 
 ### Requirement: The simulator exposes conservative fault boundaries
+<!-- dwv:req req.volatile-media-simulator.the-simulator-exposes-conservative-fault-boundaries -->
 
 The simulator SHALL model read, write, flush, FUA-like write, short, backend failure, uncertain completion, duplicate delivery, store disappearance/reappearance, daemon crash, and power loss. It SHALL expose durable snapshots and delivery traces for invariant checkers. It SHALL not claim physical power-loss certification or infer a durable write from an ordinary completion.
 
@@ -67,6 +71,7 @@ The simulator SHALL model read, write, flush, FUA-like write, short, backend fai
 - **THEN** the trace records a duplicate delivery without mutating media a second time
 
 ### Requirement: Core safety invariants are executable
+<!-- dwv:req req.volatile-media-simulator.core-safety-invariants-are-executable -->
 
 The simulator SHALL provide checks for no durable mutation from discarded volatile writes, exact range bounds, no successful incomplete completion, and stable serialized replay. A later transaction OpenSpec MAY add dirty-region, integrity, and parity-envelope invariants; OS-004 SHALL keep those concerns outside this media primitive.
 
@@ -76,6 +81,7 @@ The simulator SHALL provide checks for no durable mutation from discarded volati
 - **THEN** durable bytes, volatile bytes, pending-state count, and delivery trace are identical
 
 ### Requirement: Destructive range operations and torn media effects are explicit
+<!-- dwv:req req.volatile-media-simulator.destructive-range-operations-and-torn-media-effects-are-explicit -->
 
 The simulator SHALL model write-zeroes and discard as distinct normalized store operations. The deterministic simulator profile SHALL represent discard as a logical zeroing effect and SHALL not claim physical deallocation. Short, torn, failed, and uncertain effects SHALL remain distinguishable in delivery evidence; a torn effect SHALL never be reported as a complete successful operation.
 
@@ -95,6 +101,7 @@ The simulator SHALL model write-zeroes and discard as distinct normalized store 
 - **THEN** only that modeled prefix may change, completion evidence is uncertain, and the trace records the torn fault
 
 ### Requirement: Independent recovery-state and parity-envelope faults are modeled
+<!-- dwv:req req.volatile-media-simulator.independent-recovery-state-and-parity-envelope-faults-are-modeled -->
 
 The simulator SHALL maintain durable recovery-state bytes and at least two independently addressable parity-envelope copy fixtures. Recovery-state commit failure SHALL not advance the committed generation optimistically. Uncertain or torn commits SHALL be visible in the snapshot. A torn envelope commit SHALL invalidate the affected copy and SHALL not silently make the copy authoritative.
 
@@ -109,6 +116,7 @@ The simulator SHALL maintain durable recovery-state bytes and at least two indep
 - **THEN** only that copy is marked invalid/uncertain and the other copy remains unchanged
 
 ### Requirement: Controller reset and latent corruption are separate transitions
+<!-- dwv:req req.volatile-media-simulator.controller-reset-and-latent-corruption-are-separate-transitions -->
 
 The simulator SHALL model controller reset separately from daemon crash and power loss. Controller reset SHALL discard pending controller work while preserving durable media and acknowledged volatile state. A latent-corruption action SHALL mutate exactly the requested durable range using a deterministic mask and SHALL be visible in the trace.
 
@@ -123,6 +131,7 @@ The simulator SHALL model controller reset separately from daemon crash and powe
 - **THEN** only the selected durable bytes change and a subsequent read can observe the corruption
 
 ### Requirement: Bounded schedule coverage is deterministic
+<!-- dwv:req req.volatile-media-simulator.bounded-schedule-coverage-is-deterministic -->
 
 The simulator SHALL expose a finite one-range schedule enumerator covering the new operation and fault transitions. Enumeration SHALL be deterministic and SHALL enforce an explicit maximum schedule count. Every emitted schedule SHALL be serializable and replayable through the existing reproducer format.
 

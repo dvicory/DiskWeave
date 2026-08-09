@@ -4,6 +4,7 @@
 The XOR reference model defines portable single-parity byte semantics and independently testable geometry so every transaction, simulator, and optimized codec can be compared against one exact oracle.
 ## Requirements
 ### Requirement: XOR parity uses explicit protected geometry
+<!-- dwv:req req.xor-reference-model.xor-parity-uses-explicit-protected-geometry -->
 
 The system SHALL map each data slot and parity slot through explicit protected lengths and byte ranges. Parity SHALL be the bytewise XOR of all data ranges with logical zero extension for shorter members. A parity payload SHALL be at least as large as the largest protected data payload, and virtual byte zero SHALL map to data-store byte zero.
 
@@ -30,6 +31,7 @@ Protected lengths and range invariants SHALL be established by checked construct
 - **THEN** the reference model rejects it before computing or mutating parity rather than silently truncating the extra bytes
 
 ### Requirement: Incremental updates and full recomputation are equivalent
+<!-- dwv:req req.xor-reference-model.incremental-updates-and-full-recomputation-are-equivalent -->
 
 For a write to data slot `k`, the reference model SHALL compute `P_new = P_old XOR D_k_old XOR D_k_new` over the affected range and SHALL produce the same result as recomputing parity from all current data. Partial writes SHALL be merged only within the declared protected range.
 
@@ -44,6 +46,7 @@ For a write to data slot `k`, the reference model SHALL compute `P_new = P_old X
 - **THEN** the reference model rejects it rather than truncating or silently changing protection coverage
 
 ### Requirement: Every single known erasure reconstructs exact bytes
+<!-- dwv:req req.xor-reference-model.every-single-known-erasure-reconstructs-exact-bytes -->
 
 Given parity and all data slots except one known missing slot over a valid range, the reference model SHALL reconstruct the missing bytes exactly. It SHALL refuse reconstruction when the missing slot, coding position, range, or surviving geometry is ambiguous or insufficient.
 
@@ -68,6 +71,7 @@ Given parity and all data slots except one known missing slot over a valid range
 - **THEN** reconstruction rejects the input rather than treating the extra bytes as an unprotected or implicitly shifted range
 
 ### Requirement: Reference vectors and the future P/Q seam are portable
+<!-- dwv:req req.xor-reference-model.reference-vectors-and-the-future-p-q-seam-are-portable -->
 
 The project SHALL maintain deterministic golden vectors and property checks for parity, update, reconstruction, capacity, and checked arithmetic. The reference model SHALL expose a codec seam that does not depend on device I/O, frontend tags, runtime tasks, or CPU vector width. P/Q semantics SHALL remain unspecified until a separate fully parameterized profile is accepted.
 

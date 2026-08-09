@@ -221,6 +221,7 @@ impl Iterator for RebuildRangePlan {
     }
 }
 
+/// dwv:req req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target
 pub fn execute_rebuild_chunk<S: VerificationStore, T: RebuildTarget>(
     rebuild: RebuildBinding,
     authorization: &KnownErasureAuthorization,
@@ -548,6 +549,7 @@ mod tests {
         assert!(plan_rebuild_ranges(12, 3, 0, 4).is_err());
     }
 
+    /// dwv:req req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target
     #[test]
     fn chunk_receipt_exists_only_after_readback_equation_and_flush() {
         let range = ByteRange::new(0, 4).unwrap();

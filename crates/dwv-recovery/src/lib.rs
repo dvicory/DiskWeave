@@ -733,6 +733,7 @@ impl RecoveryTxn {
     }
 }
 
+/// dwv:req req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation
 pub trait RecoveryStateStore {
     fn load_assembly_snapshot(&self) -> Result<RecoverySnapshot, RecoveryError>;
     fn verify_integrity(&self) -> RecoveryStoreHealth;

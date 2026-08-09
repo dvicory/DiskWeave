@@ -14,6 +14,10 @@ Do not assume cancellation means rollback, I/O completion means durability, or d
 
 For reversible implementation choices, use good judgment and proceed. Escalate choices that materially affect architecture or correctness semantics.
 
+## Knowledge workflow
+
+Before changing correctness-sensitive behavior or documentation, follow `.agents/skills/diskweave-knowledge/SKILL.md` and run `cargo xtask docs knowledge readiness`.
+
 ## Comments
 
 Prefer self-explanatory code over comments. Add comments only when they preserve

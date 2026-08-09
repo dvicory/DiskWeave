@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "fixture": {"size": 16, "seed": 7, "write_length": 4},
+  "events": [
+    {"sequence": 0, "kind": {"Open": {"size": 16}}},
+    {"sequence": 1, "kind": {"Write": {"store": 0, "offset": 0, "length": 4, "pattern": {"Counter": {"seed": 17}}}}},
+    {"sequence": 2, "kind": {"Flush": {"store": 0, "through": 1}}},
+    {"sequence": 3, "kind": {"Read": {"store": 0, "offset": 0, "length": 4}}},
+    {"sequence": 4, "kind": {"RecoveryIntent": {"generation": 1}}},
+    {"sequence": 5, "kind": {"Checkpoint": {"generation": 1, "durable": true}}},
+    {"sequence": 6, "kind": {"Checksum": {"region": 0, "outcome": "CurrentMatch"}}},
+    {"sequence": 7, "kind": {"DegradedRead": {"slot": 1, "offset": 0, "length": 4}}},
+    {"sequence": 8, "kind": {"RebuildChunk": {"offset": 0, "length": 4, "verified": true}}},
+    {"sequence": 9, "kind": {"RepairDecision": {"target": 20, "decision": "Verified"}}},
+    {"sequence": 10, "kind": {"Outcome": {"outcome": "Success"}}}
+  ]
+}

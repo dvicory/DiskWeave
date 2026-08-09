@@ -376,6 +376,7 @@ impl IdentityAssessor {
     }
 }
 
+/// dwv:req req.anchorless-topology-identity.identity-evidence-is-assessed-from-multiple-observations
 pub fn assess_identity(
     profile: &IdentityProfile,
     candidates: &[IdentityCandidate],

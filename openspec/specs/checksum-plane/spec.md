@@ -4,6 +4,7 @@
 This capability provides independent generational checksum evidence for data and parity extents, with asynchronous revalidation that cannot install a digest for different bytes or unsupported durability evidence.
 ## Requirements
 ### Requirement: Checksum coverage names targets and extents
+<!-- dwv:req req.checksum-plane.checksum-coverage-names-targets-and-extents -->
 
 The checksum plane SHALL identify each data, P, and optional Q target by stable semantic identity and map it to explicit bounded checksum extents. Each record SHALL carry a profile ID, checksum-set generation, target content generation, extent range, digest, and state.
 
@@ -18,6 +19,7 @@ The checksum plane SHALL identify each data, P, and optional Q target by stable 
 - **THEN** each affected extent is independently invalidated and revalidated under its own generation
 
 ### Requirement: Validity is generation-bound
+<!-- dwv:req req.checksum-plane.validity-is-generation-bound -->
 
 A checksum record SHALL become `VALID` only through a durable recovery commit that names the digest profile/set, target content generation, and fence evidence covering the exact target bytes. Missing, stale, unknown, or unsupported evidence SHALL remain non-valid.
 
@@ -32,6 +34,7 @@ A checksum record SHALL become `VALID` only through a durable recovery commit th
 - **THEN** the result is rejected and the record remains stale/absent
 
 ### Requirement: Invalidation precedes protected mutation
+<!-- dwv:req req.checksum-plane.invalidation-precedes-protected-mutation -->
 
 Every write that touches a `VALID` checksum extent SHALL use the dirty/integrity invalidation protocol to durably mark that extent `STALE` before home mutation. Checksum validity SHALL remain independent from parity `CLEAN`/`DIRTY` state.
 
@@ -46,6 +49,7 @@ Every write that touches a `VALID` checksum extent SHALL use the dirty/integrity
 - **THEN** the system reports the two dimensions separately and never upgrades stale records from parity state alone
 
 ### Requirement: Revalidation rejects stale worker results
+<!-- dwv:req req.checksum-plane.revalidation-rejects-stale-worker-results -->
 
 Checksum jobs SHALL capture target identity, extent, profile/set generation, content generation, and read/fence evidence. A result that races with invalidation, topology/capability change, or another active set SHALL be rejected without changing current validity.
 
@@ -60,6 +64,7 @@ Checksum jobs SHALL capture target identity, extent, profile/set generation, con
 - **THEN** one idempotent durable record may be committed and the other is a no-op, with identical semantic result
 
 ### Requirement: Full-overwrite hashing is equivalent to fenced readback
+<!-- dwv:req req.checksum-plane.full-overwrite-hashing-is-equivalent-to-fenced-readback -->
 
 A full-overwrite operation MAY compute a checksum from trusted final buffers without rereading the extent only when it covers the complete extent, the final bytes are the bytes durably fenced to the target, and the generation rules are satisfied. Otherwise revalidation SHALL read the target extent.
 
@@ -74,6 +79,7 @@ A full-overwrite operation MAY compute a checksum from trusted final buffers wit
 - **THEN** the optimization is not used and the record remains stale until a valid revalidation
 
 ### Requirement: Profile migration is explicit and interruptible
+<!-- dwv:req req.checksum-plane.profile-migration-is-explicit-and-interruptible -->
 
 Checksum profiles and active checksum sets SHALL have stable IDs. Migration SHALL build a parallel set and switch the active set atomically only after required records are valid; an interrupted or unsupported set SHALL NOT relabel or invalidate the old set’s evidence implicitly.
 

@@ -1007,6 +1007,7 @@ impl Simulator {
         Ok(())
     }
 
+    /// dwv:req req.normalized-trace-replay.replay-is-deterministic-across-portable-backends
     pub fn deterministic_replay(
         initial_media: Vec<u8>,
         config: SimulatorConfig,
@@ -1550,6 +1551,7 @@ mod tests {
         );
     }
 
+    /// dwv:req req.normalized-trace-replay.replay-is-deterministic-across-portable-backends
     #[test]
     fn replay_is_stable_and_read_sees_acknowledged_volatile_bytes() {
         let mut simulator = Simulator::new(vec![0; 8], SimulatorConfig::for_size(8)).unwrap();

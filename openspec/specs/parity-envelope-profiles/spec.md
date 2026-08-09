@@ -6,6 +6,7 @@ independent inspection so DiskWeave can evaluate crash-safe recovery metadata
 without embedding metadata in ordinary data payloads or freezing a stable format.
 ## Requirements
 ### Requirement: Envelope profiles remain experimental and capacity-safe
+<!-- dwv:req req.parity-envelope-profiles.envelope-profiles-remain-experimental-and-capacity-safe -->
 
 The system SHALL compare the bare parity, redundant-envelope, and
 redundant-envelope-plus-bitmap profiles as explicitly experimental profiles.
@@ -33,6 +34,7 @@ capacity.
   reservations are added to an ordinary data member
 
 ### Requirement: Envelope copies are independently inspectable
+<!-- dwv:req req.parity-envelope-profiles.envelope-copies-are-independently-inspectable -->
 
 The system SHALL provide an independent bounded decoder that can inspect an
  envelope without relying on the writer's in-memory representation. The decoder
@@ -60,6 +62,7 @@ The system SHALL provide an independent bounded decoder that can inspect an
   unbounded buffer
 
 ### Requirement: Envelope disagreement resolves conservatively
+<!-- dwv:req req.parity-envelope-profiles.envelope-disagreement-resolves-conservatively -->
 
 The system SHALL evaluate multiple envelope copies by generation, topology,
 profile, integrity, and session state. Missing, torn, stale, cloned,
@@ -87,6 +90,7 @@ than optimistic clean evidence.
   reported explicitly
 
 ### Requirement: Session transitions have ordered recovery semantics
+<!-- dwv:req req.parity-envelope-profiles.session-transitions-have-ordered-recovery-semantics -->
 
 The envelope protocol SHALL represent enough session state to distinguish
 prepared/active, dirty/unknown, and clean/closed transitions. A clean state
@@ -115,6 +119,7 @@ its evidence gate is proven.
   and reports the conservative recoverable state
 
 ### Requirement: Envelope migration is bounded and interruptible
+<!-- dwv:req req.parity-envelope-profiles.envelope-migration-is-bounded-and-interruptible -->
 
 The system SHALL treat profile or envelope-generation migration as a separate
 experimental operation. Migration SHALL preserve the previously interpretable

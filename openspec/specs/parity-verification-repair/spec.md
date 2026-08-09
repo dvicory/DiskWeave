@@ -6,6 +6,7 @@ and permits selective repair only when independent current integrity evidence
 uniquely identifies the bad shard.
 ## Requirements
 ### Requirement: Exhaustive verification is a read-only full scan
+<!-- dwv:req req.parity-verification-repair.exhaustive-verification-is-a-read-only-full-scan -->
 
 The verifier SHALL read every configured data and parity byte in each selected
 protected region, compare the observed parity with the configured XOR equation,
@@ -26,6 +27,7 @@ parity writes and SHALL remain distinguishable from a parity rewrite.
   clean authorization is produced
 
 ### Requirement: Sampling cannot establish clean state
+<!-- dwv:req req.parity-verification-repair.sampling-cannot-establish-clean-state -->
 
 The verifier MAY run a bounded sample for diagnostics, but sampled agreement
 SHALL never be represented as exhaustive verification or authorize a `CLEAN`
@@ -38,6 +40,7 @@ transition.
   verification and clean certification outstanding
 
 ### Requirement: Mismatch classification requires independent evidence
+<!-- dwv:req req.parity-verification-repair.mismatch-classification-requires-independent-evidence -->
 
 For an equation mismatch, the verifier SHALL classify a parity shard as the
 repair candidate only when all required data evidence is current and valid and
@@ -67,6 +70,7 @@ evidence-conflict result with no automatic repair candidate.
   automatic repair
 
 ### Requirement: Selective repair is separately targeted and verified
+<!-- dwv:req req.parity-verification-repair.selective-repair-is-separately-targeted-and-verified -->
 
 The repair planner SHALL create a candidate only from an identified mismatch
 and SHALL require a separate repair target by default. A repair result SHALL be
@@ -95,6 +99,7 @@ SHALL remain available for audit and forensic handling.
   and no clean or valid state is asserted
 
 ### Requirement: Reports are bounded and preserve authority boundaries
+<!-- dwv:req req.parity-verification-repair.reports-are-bounded-and-preserve-authority-boundaries -->
 
 Verification reports SHALL contain ranges, dispositions, evidence summaries,
 error classes, and repair decisions without requiring payload bytes or raw

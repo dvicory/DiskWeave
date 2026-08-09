@@ -83,6 +83,7 @@ struct RebuildBinding {
 }
 
 /// Durable semantic state for one separately targeted offline rebuild.
+/// dwv:req req.degraded-read-offline-rebuild.rebuild-resumes-and-completes-only-after-full-verification
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct RebuildState {
     id: RebuildId,
@@ -749,6 +750,7 @@ mod tests {
         ));
     }
 
+    /// dwv:req req.degraded-read-offline-rebuild.rebuild-resumes-and-completes-only-after-full-verification
     #[test]
     fn interrupted_manifest_round_trip_resumes_from_first_unprocessed_byte() {
         let mut store = store_with_rebuild(StoreId(90));

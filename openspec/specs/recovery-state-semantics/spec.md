@@ -4,6 +4,7 @@
 Recovery state is a durable protocol authority, not a mirror of home-media bytes. It records the evidence and generations needed to decide whether future writes, clean transitions, and integrity claims are allowed. SQLite may implement this interface later, but SQL tables and row IDs SHALL not define the portable semantics.
 ## Requirements
 ### Requirement: Recovery transactions are generation-checked and atomic
+<!-- dwv:req req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic -->
 
 Each transaction SHALL capture an expected recovery generation and topology epoch. Commit SHALL apply all valid mutations together or none at all. A generation mismatch, invalid topology epoch, or failed mutation SHALL leave the durable snapshot unchanged.
 
@@ -18,6 +19,7 @@ Each transaction SHALL capture an expected recovery generation and topology epoc
 - **THEN** the stale transaction is rejected with no durable side effect
 
 ### Requirement: Home mutation requires durable dirty and integrity invalidation intent
+<!-- dwv:req req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent -->
 
 The semantic store SHALL support marking affected regions dirty and affected valid integrity extents stale before a caller records home-media mutation. Dirty and stale generations SHALL survive later in-memory process loss until a subsequent explicit recovery transaction changes them.
 
@@ -32,6 +34,7 @@ The semantic store SHALL support marking affected regions dirty and affected val
 - **THEN** the snapshot remains unchanged and a caller cannot treat the rejected intent as permission for home mutation
 
 ### Requirement: Clean and valid claims require typed fence evidence
+<!-- dwv:req req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
 
 The store SHALL record typed store-fence evidence with store identity, topology epoch, watermark, and capability evidence. A region SHALL not become clean, a writable session SHALL not close cleanly, and an integrity record SHALL not become valid unless the required fence/checkpoint evidence is present and matches the captured topology.
 
@@ -46,6 +49,7 @@ The store SHALL record typed store-fence evidence with store identity, topology 
 - **THEN** the mutation is rejected and the region remains dirty or indeterminate
 
 ### Requirement: Topology snapshots are immutable within a transaction
+<!-- dwv:req req.recovery-state-semantics.topology-snapshots-are-immutable-within-a-transaction -->
 
 Transactions SHALL capture one topology epoch. A commit under a different epoch SHALL fail. Preparing a new topology SHALL create an explicit pending snapshot; publication requires a separate commit mutation and SHALL not rewrite the epoch of an existing transaction.
 
@@ -55,6 +59,7 @@ Transactions SHALL capture one topology epoch. A commit under a different epoch 
 - **THEN** the transaction is rejected or invalidated and no mutation is applied under the old snapshot
 
 ### Requirement: Semantic export and health are independent of storage engine layout
+<!-- dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout -->
 
 The reference store SHALL expose a bounded semantic snapshot/manifest and health classification. Missing, corrupt, or stale recovery state SHALL be observable and SHALL block new home mutations until an explicit recovery plan establishes a new generation. Export SHALL not expose SQLite pages, row IDs, or implementation pointers.
 
@@ -64,6 +69,7 @@ The reference store SHALL expose a bounded semantic snapshot/manifest and health
 - **THEN** health is not healthy and callers receive a conservative recovery decision rather than an implicit clean state
 
 ### Requirement: SQLite remains an evidence-driven adapter decision
+<!-- dwv:req req.recovery-state-semantics.sqlite-remains-an-evidence-driven-adapter-decision -->
 
 The project SHALL keep SQLite, journal mode, synchronization, checkpoint policy, connection topology, schema, and migration details behind the semantic interface. OS-005 SHALL record evaluation cases and reject selecting a mode from folklore or a successful process-local commit alone.
 
@@ -73,6 +79,7 @@ The project SHALL keep SQLite, journal mode, synchronization, checkpoint policy,
 - **THEN** the selected mode is recorded with its evidence, and unsupported or untested durability claims remain unavailable
 
 ### Requirement: Semantic schema, migrations, and exports are versioned independently of SQLite
+<!-- dwv:req req.recovery-state-semantics.semantic-schema-migrations-and-exports-are-versioned-independently-of-sqlite -->
 
 The portable recovery boundary SHALL expose a versioned semantic schema descriptor, an explicit migration plan, and a bounded export manifest. These representations SHALL contain recovery concepts, generations, topology, evidence, and state, but SHALL NOT expose SQL table names, row IDs, pages, journal files, connection handles, or crate-specific database types.
 
@@ -87,6 +94,7 @@ The portable recovery boundary SHALL expose a versioned semantic schema descript
 - **THEN** the plan is rejected without changing the recovery snapshot
 
 ### Requirement: Evaluation fixtures cover candidate durability and reset boundaries
+<!-- dwv:req req.recovery-state-semantics.evaluation-fixtures-cover-candidate-durability-and-reset-boundaries -->
 
 OS-005 SHALL provide deterministic fixtures covering candidate journal modes, synchronization modes, checkpoint policies, process reset, VM reset, power loss, commit rejection, lost commit acknowledgement, missing state, main-state corruption, and journal-state corruption. Each fixture SHALL state the conservative semantic disposition and evidence still required; fixture presence SHALL NOT select a production SQLite mode.
 
@@ -101,6 +109,7 @@ OS-005 SHALL provide deterministic fixtures covering candidate journal modes, sy
 - **THEN** the expected disposition blocks writable assembly and permits only an explicit recovery/rebuild plan
 
 ### Requirement: Recovery adapters report conservative commit observations
+<!-- dwv:req req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations -->
 
 The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corrupt commit observations. The semantic store SHALL accept a transaction as a protocol fact only when the adapter reports durable commitment; uncertain or failed observations SHALL not be converted into a clean checkpoint, valid digest, or writable authorization.
 
@@ -110,6 +119,7 @@ The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corr
 - **THEN** the semantic disposition is reconciliation-required and no clean claim is inferred
 
 ### Requirement: The SQLite prototype remains evaluation-only and storage-independent at the semantic boundary
+<!-- dwv:req req.recovery-state-semantics.the-sqlite-prototype-remains-evaluation-only-and-storage-independent-at-the-semantic-boundary -->
 
 The project SHALL provide an evaluation-only SQLite prototype in a separate adapter package. The prototype SHALL apply the checked-in candidate migration, exercise candidate journal/synchronization/checkpoint settings, persist a bounded semantic recovery header, export it, run an integrity check, and make missing or corrupt state observable. It SHALL NOT expose SQLite handles, SQL row identity, or SQLite layout types through `dwv-recovery`, and it SHALL NOT claim production durability.
 
@@ -129,6 +139,7 @@ The project SHALL provide an evaluation-only SQLite prototype in a separate adap
 - **THEN** the direct-data bytes remain readable and the recovery adapter reports missing state rather than claiming those bytes are clean or unreconciled
 
 ### Requirement: Offline rebuild progress is durable semantic authority
+<!-- dwv:req req.recovery-state-semantics.offline-rebuild-progress-is-durable-semantic-authority -->
 
 Recovery state SHALL represent an offline rebuild with a stable rebuild identifier, source array/topology/recovery generation, missing stable slot and coding position, replacement assignment instance and store identity, protected geometry, first-unprocessed-byte cursor, and lifecycle state. Cursor advancement and verified completion SHALL be generation-checked recovery mutations, bounded in semantic export, and independent of SQL rows, file paths, runtime handles, or executor objects.
 

@@ -2,6 +2,11 @@
 /target/
 **/target/
 
+# Python runtime artifacts
+__pycache__/
+*.py[cod]
+.venv/
+
 # SwiftPM build artifacts
 tools/macos-bridge-probe/.build/
 
@@ -16,3 +21,4 @@ tools/macos-bridge-probe/.build/
 
 # macOS metadata
 .DS_Store
+

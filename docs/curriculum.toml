@@ -1,0 +1,345 @@
+schema = "dwv.docs.curriculum.v1"
+
+# This file describes reader intent and stable relationships only.
+# Canonical wording, evidence facts, package ownership, bounds, execution policy,
+# plans, state, and generated answers are derived outside the curriculum.
+
+[[entries]]
+id = "guide.write-before-crash"
+title = "A write before the crash"
+path = "guide/01-write-before-crash.md"
+order = 10
+projection = "human_guide"
+audience = "newcomer"
+question = "What can a caller believe when a write is acknowledged and the machine stops before flush?"
+starting_knowledge = ["An ordinary file can accept a write before its bytes are durable."]
+prerequisites = []
+misconceptions = ["I/O completion is durability", "A cancelled request proves no write happened"]
+introduces = ["acknowledgement", "volatile effect", "durable fence", "dirty intent"]
+defers = ["parity equations", "degraded reads", "rebuild"]
+requirements = [
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
+  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+  "req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation",
+  "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"
+]
+scenarios = ["scenario.basic-write"]
+teaching_devices = ["cut-point timeline", "caller-belief versus media-state table"]
+
+[[entries.sections]]
+heading = "Start with four bytes"
+focus = "Establish one ordinary data-member range and the exact byte mutation before introducing protocol terms."
+must_answer = ["Which bytes change?", "What does the concrete example deliberately leave unproven?"]
+requirements = ["req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"]
+scenarios = ["scenario.basic-write"]
+non_claims = ["The example does not establish durability or a clean recovery state."]
+
+[[entries.sections]]
+heading = "The safe order"
+focus = "Walk dirty intent, data/parity mutation, completion, fence, and clean checkpoint in causal order."
+must_answer = ["What must be durable before protected mutation?", "Which event permits a later clean claim?"]
+requirements = [
+  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
+  "req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation"
+]
+scenarios = ["scenario.basic-write"]
+non_claims = ["Ordering alone does not certify a platform's physical flush behavior."]
+
+[[entries.sections]]
+heading = "Completion is not durability"
+focus = "Stop the executable scenario after completion but before fencing and compare caller belief, process-visible state, and durable media."
+must_answer = ["What may the caller know after completion?", "What remains unknown after a crash?", "Why does cancellation not imply rollback?"]
+requirements = [
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
+  "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"
+]
+scenarios = ["scenario.basic-write"]
+non_claims = ["Completion does not prove a durable fence.", "A dropped request does not prove the write had no effect."]
+
+[[entries.sections]]
+heading = "What a flush adds"
+focus = "Explain the stronger evidence supplied by a successful declared fence and retain its platform evidence boundary."
+must_answer = ["Which uncertainty does a fence resolve?", "Which hardware or platform claim remains outside portable evidence?"]
+requirements = [
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred"
+]
+scenarios = []
+non_claims = ["Portable flush semantics do not certify physical power-loss durability."]
+
+[[entries]]
+id = "guide.recovery-uncertainty"
+title = "What recovery can and cannot know"
+path = "guide/02-recovery-uncertainty.md"
+order = 20
+projection = "human_guide"
+audience = "operator"
+question = "After restart, which facts are durable, which are observable, and which must remain uncertain?"
+starting_knowledge = ["A write may have an acknowledged but not durable effect."]
+prerequisites = ["guide.write-before-crash"]
+misconceptions = ["A successful process return proves a clean checkpoint", "Elapsed time repairs missing evidence"]
+introduces = ["recovery generation", "topology epoch", "checkpoint", "reconciliation"]
+defers = ["automatic repair", "platform bridge selection"]
+requirements = [
+  "req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence",
+  "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+  "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
+  "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority"
+]
+scenarios = ["scenario.normalized-recovery"]
+teaching_devices = ["normalized trace", "known versus unknown evidence ledger"]
+
+[[entries.sections]]
+heading = "Inventory what survived"
+focus = "Resume after the crash and separate durable records, readable bytes, stable identities, and facts that existed only in memory."
+must_answer = ["What can recovery observe?", "Which prior events remain unknowable?"]
+requirements = [
+  "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence"
+]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["Readable bytes do not by themselves establish current authority."]
+
+[[entries.sections]]
+heading = "Why identity and generation matter"
+focus = "Tie every recovery fact to member identity, topology epoch, and recovery generation before allowing transitions."
+must_answer = ["Why can stale but valid-looking evidence not be reused?", "What mismatch stops a transition?"]
+requirements = ["req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic"]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["Elapsed time does not repair stale identity or generation evidence."]
+
+[[entries.sections]]
+heading = "Availability is not repair authority"
+focus = "Show that serving an eligible reconstructed read is narrower than mutating protected state."
+must_answer = ["What permits a degraded read?", "What additional authority would repair require?"]
+requirements = ["req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence"]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["Successful reconstruction is not automatic repair authorization."]
+
+[[entries.sections]]
+heading = "Recovery's practical checklist"
+focus = "Give the operator a decision order that preserves unknowns rather than filling gaps with plausible history."
+must_answer = ["Which facts are checked first?", "When must recovery stop or remain uncertain?"]
+requirements = [
+  "req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic",
+  "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends"
+]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["A checklist cannot manufacture missing evidence."]
+
+[[entries]]
+id = "guide.parity-and-integrity"
+title = "How parity helps—and where it stops"
+path = "guide/03-parity-and-integrity.md"
+order = 30
+projection = "human_guide"
+audience = "newcomer"
+question = "What can parity reconstruct, and why does that not prove the bytes are correct?"
+starting_knowledge = ["Recovery distinguishes known effects from uncertain effects."]
+prerequisites = ["guide.recovery-uncertainty"]
+misconceptions = ["Parity is backup", "Parity agreement proves checksum validity", "A computed repair is automatically authorized"]
+introduces = ["protected geometry", "integrity evidence", "degraded read", "separate repair target"]
+defers = ["multi-parity envelope experiments"]
+requirements = [
+  "req.architecture-contract.data-payloads-and-protection-metadata-remain-separate",
+  "req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority",
+  "req.checksum-plane.invalidation-precedes-protected-mutation",
+  "req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback",
+  "req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes",
+  "req.parity-verification-repair.mismatch-classification-requires-independent-evidence"
+]
+scenarios = ["scenario.normalized-recovery"]
+teaching_devices = ["parity-versus-integrity comparison", "repair authorization checklist"]
+
+[[entries.sections]]
+heading = "Reconstruct one known erasure"
+focus = "Begin with healthy concrete XOR bytes, remove one identified member, and calculate the exact requested byte."
+must_answer = ["What does the XOR equation compute?", "Which known-erasure assumptions make the read eligible?"]
+requirements = ["req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes"]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["The computed candidate is not yet integrity or repair evidence."]
+
+[[entries.sections]]
+heading = "Why the equation is not enough"
+focus = "Corrupt one surviving byte and enumerate the different internally consistent corrections."
+must_answer = ["Why can several repairs satisfy XOR?", "Which independent evidence is needed to choose?"]
+requirements = [
+  "req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority",
+  "req.parity-verification-repair.mismatch-classification-requires-independent-evidence"
+]
+scenarios = []
+non_claims = ["Parity agreement does not prove historical correctness or checksum validity."]
+
+[[entries.sections]]
+heading = "Follow four different evidence journeys"
+focus = "Carry the same bytes through degraded read, offline rebuild, ambiguous mismatch and verified repair, then loss of authority and rebaseline."
+must_answer = ["What may each operation mutate?", "What evidence authorizes it?", "What happens across interruption?"]
+requirements = [
+  "req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes",
+  "req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback",
+  "req.parity-verification-repair.mismatch-classification-requires-independent-evidence"
+]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["A degraded read is not a rebuild.", "A rebuild does not resolve ambiguous corruption.", "Rebaseline does not recover historical truth."]
+
+[[entries.sections]]
+heading = "Compare authority, result, and non-claim"
+focus = "End with a compact operation comparison after the reader has followed each journey."
+must_answer = ["How are degraded read, rebuild, verified repair, and rebaseline different?"]
+requirements = ["req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority"]
+scenarios = []
+non_claims = ["The summary must not replace the preceding causal explanations."]
+
+[[entries]]
+id = "guide.boundary-and-demo"
+title = "What DiskWeave is, and what the demo proves"
+path = "guide/04-boundary-and-demo.md"
+order = 40
+projection = "human_guide"
+audience = "contributor"
+question = "What product boundary does DiskWeave protect, and what evidence remains outside this demo?"
+starting_knowledge = ["A protected write has separate acknowledgement, durability, and recovery evidence."]
+prerequisites = ["guide.parity-and-integrity"]
+misconceptions = ["DiskWeave is a filesystem", "A portable test certifies Linux, macOS, or hardware durability"]
+introduces = ["portable semantic core", "ordinary member payload", "evidence tier"]
+defers = ["Linux frontend deployment", "physical power-loss certification"]
+requirements = [
+  "req.architecture-contract.diskweave-protects-conventional-member-images-at-block-level",
+  "req.architecture-contract.portable-semantics-are-independent-of-implementation-mechanisms",
+  "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable",
+  "req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification",
+  "req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior",
+  "req.evidence-boundaries.evidence-scope-is-explicit"
+]
+scenarios = ["scenario.normalized-recovery"]
+teaching_devices = ["portable demo", "evidence-tier boundary table"]
+
+[[entries.sections]]
+heading = "Inspect the disposable layout"
+focus = "Show ordinary member payload files, parity, replacement, reference, envelopes, and recovery control state before running commands."
+must_answer = ["Which files contain ordinary payload bytes?", "Which files are disposable control or evidence state?"]
+requirements = [
+  "req.architecture-contract.diskweave-protects-conventional-member-images-at-block-level",
+  "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable"
+]
+scenarios = []
+non_claims = ["The layout is not a mounted filesystem or production virtual disk."]
+
+[[entries.sections]]
+heading = "Run the implemented journey"
+focus = "Present initialization, healthy I/O, degraded read, separate-target rebuild, exhaustive verification, and trace replay in operational order."
+must_answer = ["Which real crates and paths execute?", "Which outputs prove each stage completed?"]
+requirements = [
+  "req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior",
+  "req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification"
+]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["A successful demo does not prove an unavailable frontend or physical device path."]
+
+[[entries.sections]]
+heading = "Map observations to evidence"
+focus = "Connect each command result to scenario and assurance artifacts with exact evidence tier and non-claims."
+must_answer = ["Where can a reader inspect the trace and assurance record?", "What tier does each result reach?"]
+requirements = ["req.evidence-boundaries.evidence-scope-is-explicit"]
+scenarios = ["scenario.normalized-recovery"]
+non_claims = ["Evidence strength does not transfer across platform boundaries."]
+
+[[entries.sections]]
+heading = "State what is still missing"
+focus = "Close with frontend, installation, live mount, hardware durability, and certification gaps plus their owning work."
+must_answer = ["What can actually be used now?", "Which production claims remain unsupported?"]
+requirements = [
+  "req.architecture-contract.portable-semantics-are-independent-of-implementation-mechanisms",
+  "req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification",
+  "req.evidence-boundaries.evidence-scope-is-explicit"
+]
+scenarios = []
+non_claims = ["Portable file-backed behavior is not Linux, macOS bridge, or hardware certification."]
+
+
+[[entries]]
+id = "scenarios"
+title = "Scenario book"
+path = "scenarios.md"
+order = 110
+projection = "scenario_book"
+audience = "operator"
+question = "What executable state transitions and fault boundaries does each scenario actually exercise?"
+starting_knowledge = ["A scenario is evidence with an explicit scope, not a product claim by itself."]
+prerequisites = []
+misconceptions = ["A simulator result is hardware evidence", "A normalized trace describes an unbounded real device"]
+introduces = ["scenario fixture", "fault cut point", "forbidden inference"]
+defers = []
+requirements = [
+  "req.normalized-trace-replay.traces-cover-portable-correctness-boundaries",
+  "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
+  "req.evidence-boundaries.verification-artifacts-are-deterministic-and-bounded"
+]
+scenarios = ["scenario.basic-write", "scenario.normalized-recovery"]
+teaching_devices = ["event timeline", "terminal disposition"]
+
+[[entries]]
+id = "assurance"
+title = "Assurance boundaries"
+path = "assurance.md"
+order = 120
+projection = "assurance_atlas"
+audience = "reviewer"
+question = "Which canonical properties does an evidence artifact exercise, and what remains unsupported?"
+starting_knowledge = ["Canonical requirements own the semantic properties being reviewed."]
+prerequisites = []
+misconceptions = ["A source digest is claim provenance", "Evidence strength transfers across platform boundaries"]
+introduces = ["evidence tier", "fault model", "unsupported boundary"]
+defers = []
+requirements = [
+  "req.evidence-boundaries.evidence-scope-is-explicit",
+  "req.evidence-boundaries.unknown-and-ambiguous-evidence-fail-closed",
+  "req.documentation-knowledge-architecture.provenance-is-claim-and-fragment-level"
+]
+scenarios = ["scenario.basic-write", "scenario.normalized-recovery"]
+teaching_devices = ["property-to-evidence graph"]
+
+[[entries]]
+id = "documentation-system"
+title = "Documentation system"
+path = "documentation-system.md"
+order = 130
+projection = "maintainer_runbook"
+audience = "maintainer"
+question = "How can a maintainer reconstruct current documentation facts without a handoff, provider, or chat history?"
+starting_knowledge = ["Generated state is disposable and canonical requirements are discoverable."]
+prerequisites = []
+misconceptions = ["Generated page state is semantic authority", "A missing provider response authorizes guessed prose"]
+introduces = ["reconstructible state", "provenance", "preservation-first update"]
+defers = []
+requirements = [
+  "req.documentation-knowledge-architecture.durable-documentation-configuration-is-small-and-state-is-reconstructible",
+  "req.documentation-knowledge-architecture.preservation-first-updates-are-truly-narrow",
+  "req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded",
+  "req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable"
+]
+scenarios = []
+teaching_devices = ["clean-room reconstruction checklist"]
+
+[[entries]]
+id = "reference"
+title = "Documentation reference"
+path = "reference.md"
+order = 140
+projection = "reference_index"
+audience = "contributor"
+question = "Where can a reviewer find current architecture, canonical requirements, evidence, and generated state?"
+starting_knowledge = ["The reference index is a projection, not product authority."]
+prerequisites = []
+misconceptions = ["Historical handoffs override current OpenSpecs"]
+introduces = ["authority and lifecycle"]
+defers = []
+requirements = [
+  "req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry",
+  "req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only"
+]
+scenarios = []
+teaching_devices = ["authority lookup table"]
+

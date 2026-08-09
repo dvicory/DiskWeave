@@ -4,6 +4,7 @@
 The store and operation contract separates portable range semantics from concrete files or devices while making partial completion, persistence evidence, uncertain effects, identity, capability limits, and resource lifetime explicit.
 ## Requirements
 ### Requirement: Stores report exact range outcomes and persistence evidence
+<!-- dwv:req req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence -->
 
 Each store operation SHALL identify the operation, requested range, exact completed ranges, a disposition of success, short, failed, uncertain, or duplicate, a stable error class when known, and persistence evidence. Reads, writes, flushes, write-zeroes, and discard use exact-range semantics. A timeout or lost completion with unknown media effect SHALL be uncertain rather than hidden by an adapter retry.
 
@@ -23,6 +24,7 @@ Each store operation SHALL identify the operation, requested range, exact comple
 - **THEN** the store reports uncertain persistence and the caller does not infer durable success or safe retry
 
 ### Requirement: Capability evidence determines the allowed safety profile
+<!-- dwv:req req.store-operation-contracts.capability-evidence-determines-the-allowed-safety-profile -->
 
 The system SHALL represent logical and physical geometry, alignment, transfer limits, flush and FUA support, ordering, torn-write model, volatile-cache model, write-zeroes and discard support, sparse behavior, cancellation behavior, and identity sources as evidence. It SHALL distinguish simulation-certified, portable-demo, production-read-only, and production-write-safe profiles and refuse a profile whose required evidence is absent or unknown.
 
@@ -42,6 +44,7 @@ The system SHALL represent logical and physical geometry, alignment, transfer li
 - **THEN** the store rejects or explicitly adapts the operation and reports the constraint rather than issuing unsafe I/O
 
 ### Requirement: Operation slots own backend lifetimes and generations
+<!-- dwv:req req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
 
 Every admitted logical operation SHALL reserve a generation-bearing operation slot before backend submission. The slot SHALL own in-flight buffers, frontend tags, child-operation identities, submitted watermarks, drain state, and terminal evidence. It SHALL become reclaimable only after all children are terminal and required reconciliation is recorded.
 
@@ -61,6 +64,7 @@ Every admitted logical operation SHALL reserve a generation-bearing operation sl
 - **THEN** the duplicate is recorded and ignored without changing the semantic result or reclaiming resources early
 
 ### Requirement: Resource admission and identity remain bounded and explicit
+<!-- dwv:req req.store-operation-contracts.resource-admission-and-identity-remain-bounded-and-explicit -->
 
 The system SHALL bound live operation slots, buffers, backend submissions, retries, range locks, and background work. Store disappearance or identity/geometry change SHALL invalidate operations under the captured topology without rewriting that snapshot. Callers SHALL decide retry legality from explicit idempotence and duplicate semantics.
 
@@ -80,6 +84,7 @@ The system SHALL bound live operation slots, buffers, backend submissions, retri
 - **THEN** the caller does not blindly retry it and preserves the uncertain evidence for reconciliation
 
 ### Requirement: Store failures are conservative and testable
+<!-- dwv:req req.store-operation-contracts.store-failures-are-conservative-and-testable -->
 
 Store contracts SHALL define deterministic behavior for EIO, timeout, delayed/out-of-order completion, duplicate/stale delivery, disappearance/reappearance, unsupported capability, topology-generation mismatch, and bounded exhaustion. Unknown, ambiguous, or indeterminate evidence SHALL remain visible and SHALL not authorize automatic repair, clean state, or unsafe writable assembly.
 
@@ -99,6 +104,7 @@ Store contracts SHALL define deterministic behavior for EIO, timeout, delayed/ou
 - **THEN** writable assembly and automatic reconstruction are refused pending an explicit topology decision
 
 ### Requirement: Portable evidence does not certify concrete stores
+<!-- dwv:req req.store-operation-contracts.portable-evidence-does-not-certify-concrete-stores -->
 
 The store artifacts SHALL distinguish standard-library/fake-adapter and simulator evidence from file-backed, SQLite, Linux, macOS, device, power-loss, and hardware evidence. A validated portable contract SHALL not be presented as production-write-safe certification.
 

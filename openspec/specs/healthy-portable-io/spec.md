@@ -4,6 +4,7 @@
 This capability provides the first end-to-end portable single-parity path: normalized requests are admitted through stable topology and operation slots, executed against ordinary file-backed members, and completed only with the recovery and integrity evidence required by the handoff.
 ## Requirements
 ### Requirement: Assembly and request admission are bounded and identity-safe
+<!-- dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe -->
 
 The service SHALL assemble only an unambiguous stable topology with compatible capabilities, reject backing/export aliases, and admit requests through generational operation slots. It SHALL reject stale topology or slot generations before child I/O.
 
@@ -18,6 +19,7 @@ The service SHALL assemble only an unambiguous stable topology with compatible c
 - **THEN** assembly/request admission fails closed without mutating a member
 
 ### Requirement: Healthy reads preserve exact-range evidence
+<!-- dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence -->
 
 A read SHALL validate the normalized byte range, split it at required boundaries, read the selected data member through the store contract, and return exact completed-range/disposition/persistence evidence. It SHALL not fabricate bytes for short or uncertain reads.
 
@@ -32,6 +34,7 @@ A read SHALL validate the normalized byte range, split it at required boundaries
 - **THEN** the service returns structured partial/uncertain evidence and does not report a full successful read
 
 ### Requirement: Writes follow the reference transaction and update single XOR parity
+<!-- dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity -->
 
 A protected write SHALL use OS-008/OS-010 ordering: acquire resources, durably record dirty/invalidation intent, read or use trusted full-overwrite data, compute/update single XOR parity, and write affected data/parity ranges. No protected home mutation may precede intent.
 
@@ -46,6 +49,7 @@ A protected write SHALL use OS-008/OS-010 ordering: acquire resources, durably r
 - **THEN** the service may avoid old-data reads only under the codec contract while producing parity bytes equal to full recomputation
 
 ### Requirement: Durable completion and clean checkpoint require fences
+<!-- dwv:req req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences -->
 
 Flush, FUA, and checkpoint behavior SHALL preserve the normalized durability intent. A write SHALL not clear dirty state or establish valid checksum evidence unless every required store has covering fence evidence and recovery generations still match. Unsupported durability requirements SHALL be rejected or explicitly reported weaker.
 
@@ -60,6 +64,7 @@ Flush, FUA, and checkpoint behavior SHALL preserve the normalized durability int
 - **THEN** the service leaves the region dirty/uncertain and does not report clean or valid integrity
 
 ### Requirement: Abandonment, restart, and failure preserve operation safety
+<!-- dwv:req req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety -->
 
 Frontend abandonment SHALL suppress delivery interest only; the logical transaction and operation-slot resources SHALL drain or persist conservative recovery evidence. Short, failed, uncertain, crash, and restart paths SHALL not reuse slots/buffers or blindly reissue non-idempotent writes.
 
@@ -74,6 +79,7 @@ Frontend abandonment SHALL suppress delivery interest only; the logical transact
 - **THEN** it reopens in recovery/blocked handling and never infers a clean state from the missing completion
 
 ### Requirement: Portable members remain ordinary and control state is disposable
+<!-- dwv:req req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable -->
 
 Data and parity member files SHALL contain no required DiskWeave metadata. Loss of disposable control state SHALL not make intact payloads unreadable or authorize unsafe writes; recovery state and topology evidence remain the authority for protected mutation.
 

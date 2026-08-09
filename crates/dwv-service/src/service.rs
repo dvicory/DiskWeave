@@ -135,6 +135,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         self.admission.usage()
     }
 
+    /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
     pub fn read(
         &mut self,
         request: PortableRequest,
@@ -181,6 +182,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         }
     }
 
+    /// dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity
     pub fn write(&mut self, request: PortableRequest) -> Result<OperationEvidence, ServiceError> {
         self.state.require_writes()?;
         let data_slot = validate_request(&self.topology, &request)?;
@@ -1021,6 +1023,8 @@ mod tests {
         (root, service)
     }
 
+    /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
+    /// dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity
     #[test]
     fn write_updates_data_and_single_xor_parity_then_reads_exact_bytes() {
         let (root, mut service) = fixture();

@@ -4,6 +4,7 @@
 This capability makes loss, corruption, staleness, or disagreement of DiskWeave recovery metadata a conservative, executable recovery plan. It follows handoff Sections 8.10, 12.5, 17.6, 22.3, 26.3, 26.5, and 26.6; it does not treat algebraic solvability or a process-local database write as historical correctness.
 ## Requirements
 ### Requirement: The metadata-loss matrix is total and conservative
+<!-- dwv:req req.metadata-loss-recovery.the-metadata-loss-matrix-is-total-and-conservative -->
 
 The portable recovery layer SHALL expose a bounded plan for every Section 12.5 case: all-data single-parity certified/uncertified, all-data dual-parity certified/uncertified, all data with parity lost, one-data erasure with certified/uncertified P or P/Q, two-data erasures with certified P/Q or lost coding positions, all metadata lost with all data present, ambiguous topology, ambiguous parity identity, a validated backup, disagreeing replicas, surviving checksum evidence, and unavailable checksum evidence. Each plan SHALL name its disposition, required evidence, operator confirmation requirements, payload-write policy, and whether a fresh checksum baseline is required.
 
@@ -28,6 +29,7 @@ The portable recovery layer SHALL expose a bounded plan for every Section 12.5 c
 - **THEN** the certified-envelope row remains a non-authorizing plan and cannot create fresh state from a caller-selected classification alone
 
 ### Requirement: Evidence gates control recovery authorization
+<!-- dwv:req req.metadata-loss-recovery.evidence-gates-control-recovery-authorization -->
 
 A plan SHALL distinguish certified-clean evidence, exhaustive matching, verified evidence-gated repairs, explicit data-authoritative rebaseline, ambiguous mismatch, incomplete scan, validated backup, and conflicting/absent evidence. Ambiguous or incomplete outcomes SHALL NOT authorize a fresh clean state or writable assembly. A parity equation mismatch SHALL not identify a culprit without current valid independent evidence.
 
@@ -52,6 +54,7 @@ A plan SHALL distinguish certified-clean evidence, exhaustive matching, verified
 - **THEN** ordinary authorization fails and only the explicit operator-confirmed authorization path can acknowledge the destructive loss of forensic certainty
 
 ### Requirement: Identity and topology ambiguity fails closed
+<!-- dwv:req req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed -->
 
 Recovery discovery SHALL preserve all candidates and require an unambiguous topology/profile/coding-position interpretation before writable assembly. Duplicate clone evidence, ambiguous parity candidates, lost historical Q coding positions, and unresolved assignment mappings SHALL produce read-only or refused outcomes. When all data survive and historical identity is unnecessary, a new array lineage SHALL be explicit rather than silently reusing an old assignment.
 
@@ -71,6 +74,7 @@ Recovery discovery SHALL preserve all candidates and require an unambiguous topo
 - **THEN** automatic decode and writable assembly are refused; the plan explains that guessing coefficients is unsafe
 
 ### Requirement: Fresh recovery state records a new baseline and audit
+<!-- dwv:req req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit -->
 
 After an authorized completed all-data/single-parity recovery, the implementation SHALL be able to create a bounded semantic manifest with the selected validated topology, generation zero, a new checksum-baseline obligation, and a metadata-loss audit record. P/Q, parity rebuild, missing-member reconstruction, and new-lineage plans SHALL NOT create fresh state until later changes provide verified completion receipts. The operation SHALL not depend on SQLite pages, row IDs, paths, or data-member payload metadata, and deletion of recovery state SHALL not delete direct payload files.
 
@@ -90,6 +94,7 @@ After an authorized completed all-data/single-parity recovery, the implementatio
 - **THEN** export returns bounded semantic header data and direct regular-file payload bytes remain unchanged and readable
 
 ### Requirement: Dry-run reporting is bounded and portable
+<!-- dwv:req req.metadata-loss-recovery.dry-run-reporting-is-bounded-and-portable -->
 
 The metadata-loss dry run SHALL enumerate the complete matrix with stable case IDs, dispositions, evidence requirements, confirmation requirements, and payload-write policy. It SHALL omit payload bytes, paths, SQLite handles, OS/frontend types, and unbounded operator text. The dry run SHALL be diagnostic and SHALL not authorize `CLEAN`, writable assembly, or payload mutation.
 

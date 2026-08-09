@@ -4,6 +4,7 @@
 This capability defines the smallest experimental operator boundary needed to run and inspect a disposable macOS file-backed DiskWeave demo. It makes the first workflow scriptable without freezing the future production command tree, daemon protocol, or persistent data format.
 ## Requirements
 ### Requirement: The demo CLI has a versioned observable contract
+<!-- dwv:req req.macos-demo-cli.the-demo-cli-has-a-versioned-observable-contract -->
 
 The demo SHALL expose a `dwv` entrypoint with a documented command surface for fixture initialization, status, inspection, verification, rebuild planning, rebuild execution, and the bounded end-to-end demo workflow. Every command SHALL identify its command name and contract version in machine-readable output. Human-readable output SHALL describe the same semantic result rather than exposing a separate truth source.
 
@@ -23,6 +24,7 @@ The demo SHALL expose a `dwv` entrypoint with a documented command surface for f
 - **THEN** the result uses the documented versioned envelope, contains no payload bytes or private runtime handles, and is sufficient for a script to distinguish success from each refusal class
 
 ### Requirement: Demo fixture ownership is explicit
+<!-- dwv:req req.macos-demo-cli.demo-fixture-ownership-is-explicit -->
 
 The demo SHALL operate on a bounded disposable fixture root containing an identifiable demo manifest and all referenced files. Initialization SHALL establish ownership and expected identities for the root, member payloads, parity payload, recovery state, replacement targets, and evidence. Commands SHALL resolve fixture references within that owned root and SHALL refuse missing, ambiguous, aliased, or ownership-inconsistent entries before payload mutation.
 
@@ -37,6 +39,7 @@ The demo SHALL operate on a bounded disposable fixture root containing an identi
 - **THEN** the command refuses the operation before mutating payload or recovery state and reports the required reconciliation
 
 ### Requirement: The offline demo exercises healthy and recoverable behavior
+<!-- dwv:req req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior -->
 
 The first demo SHALL be runnable without a live macOS bridge or Linux frontend. Its documented workflow SHALL create or open a file-backed single-XOR array, exercise healthy reads, writes, and flushes, close and reopen the fixture, simulate one known missing data member, reconstruct an authorized read-only range, rebuild the missing member to a separate replacement target, resume from an interrupted checkpoint, complete final verification, and report source/parity preservation and replacement byte equality.
 
@@ -56,6 +59,7 @@ The first demo SHALL be runnable without a live macOS bridge or Linux frontend. 
 - **THEN** rebuild planning or execution refuses before the first replacement payload write
 
 ### Requirement: Inspection and verification are read-only
+<!-- dwv:req req.macos-demo-cli.inspection-and-verification-are-read-only -->
 
 Status, state explanation, member/identity evidence, capability evidence, inspection, and exhaustive verification commands SHALL be usable without a daemon for the file-backed demo. These commands SHALL not alter payload bytes, parity bytes, topology, recovery generations, or integrity evidence. Sampled checks MAY report diagnostic confidence but SHALL NOT certify clean state.
 
@@ -70,6 +74,7 @@ Status, state explanation, member/identity evidence, capability evidence, inspec
 - **THEN** the CLI reports the bounded diagnostic or refusal and does not promote clean state or perform automatic repair
 
 ### Requirement: State-changing workflows require an identity-bound plan
+<!-- dwv:req req.macos-demo-cli.state-changing-workflows-require-an-identity-bound-plan -->
 
 Every state-changing demo workflow SHALL first produce a plan containing the expected fixture/member identities, topology and recovery generations, protected ranges, evidence used, persistent-state impact, and rollback limits. Execution SHALL require a confirmation value that matches the displayed plan and SHALL revalidate the plan before any irreversible payload mutation. A plan or confirmation mismatch SHALL preserve the fixture and recovery state.
 
@@ -84,6 +89,7 @@ Every state-changing demo workflow SHALL first produce a plan containing the exp
 - **THEN** execution refuses before payload mutation and reports the stale or mismatched plan
 
 ### Requirement: The CLI remains a replaceable boundary over portable semantics
+<!-- dwv:req req.macos-demo-cli.the-cli-remains-a-replaceable-boundary-over-portable-semantics -->
 
 The demo CLI SHALL expose portable service, verification, recovery, and store behavior without making command handlers the authority for parity equations, recovery eligibility, topology transitions, durability ordering, or identity assessment. The offline demo SHALL not require Linux frontend types, an async runtime, a live bridge, or filesystem metadata embedded in data payloads. Any future daemon interaction SHALL remain behind a versioned replaceable local boundary.
 

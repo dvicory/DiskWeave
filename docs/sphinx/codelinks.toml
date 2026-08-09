@@ -1,0 +1,28 @@
+[codelinks]
+outdir = "codelinks-output"
+set_local_url = true
+set_remote_url = false
+
+[codelinks.projects.dwv.source_discover]
+src_dir = "../rust-source"
+include = ["**/*.rs"]
+exclude = []
+gitignore = true
+follow_links = false
+comment_type = "rust"
+
+[codelinks.projects.dwv.analyse]
+get_need_id_refs = false
+get_oneline_needs = true
+get_rst = false
+
+[codelinks.projects.dwv.analyse.oneline_comment_style]
+start_sequence = "@dwv "
+end_sequence = "\n"
+field_split_char = ","
+needs_fields = [
+  { name = "title" },
+  { name = "id" },
+  { name = "type", default = "srctrace" },
+  { name = "links", type = "list[str]", default = [] },
+]

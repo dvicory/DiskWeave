@@ -403,6 +403,7 @@ impl TopologyAssignment {
     }
 }
 
+/// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologySnapshot {
     array_id: ArrayId,
@@ -593,6 +594,7 @@ impl CommittedTransition {
     }
 }
 
+/// dwv:req req.anchorless-topology-identity.topology-transitions-are-staged-and-recoverable
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TopologyAuthority {
     active: TopologySnapshot,
