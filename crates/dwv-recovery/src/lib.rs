@@ -9,9 +9,11 @@ use dwv_core::{FenceDomain, TopologyEpoch};
 use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
+mod baseline;
 mod checkpoint;
 mod extent;
 mod generation;
+mod inspection;
 mod intent;
 mod invalidation;
 mod job;
@@ -23,12 +25,20 @@ mod rebuild;
 mod record;
 mod transition;
 
+pub use baseline::{
+    ChecksumBaseline, ChecksumBaselineInvalidReason, ChecksumBaselineProvenance,
+    ChecksumBaselineStatus, assess_checksum_baseline, expected_checksum_extents,
+    new_checksum_baseline, pending_checksum_baseline_extents,
+};
 pub use checkpoint::{
     CheckpointDecision, CheckpointRefusal, CheckpointRequest, RequiredFence, evaluate_checkpoint,
     fence_ref,
 };
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
+pub use inspection::{
+    RecoveryFormatLayer, RecoveryInspection, RecoveryReconciliation, reconcile_uncertain_commit,
+};
 pub use intent::IntentCommit;
 pub use invalidation::{
     IntentBoundary, IntentCoverage, IntentDecision, IntentEvidence, InvalidationTarget,
@@ -139,7 +149,7 @@ pub struct RecoveryCursor(pub u64);
 )]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(3);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(4);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -147,6 +157,7 @@ pub enum RecoveryRecordKind {
     Topology,
     DirtyRegion,
     IntegrityEvidence,
+    ChecksumBaseline,
     StoreFence,
     WritableSession,
     MaintenanceCheckpoint,
@@ -175,6 +186,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
             RecoveryRecordKind::MigrationState,
             RecoveryRecordKind::MetadataLossAudit,
             RecoveryRecordKind::OfflineRebuild,
+            RecoveryRecordKind::ChecksumBaseline,
         ],
     }
 }
@@ -184,6 +196,7 @@ pub enum RecoveryMigrationStep {
     InitializeSemanticSchemaV1,
     AddMetadataLossAuditV2,
     AddOfflineRebuildV3,
+    AddChecksumBaselineV4,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -207,20 +220,38 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::InitializeSemanticSchemaV1,
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
             ],
-            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
+            (RecoverySchemaVersion(0), RecoverySchemaVersion(3)) => vec![
                 RecoveryMigrationStep::InitializeSemanticSchemaV1,
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
             ],
+            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::InitializeSemanticSchemaV1,
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+            ],
             (RecoverySchemaVersion(1), RecoverySchemaVersion(2)) => {
                 vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
             }
-            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => vec![
+            (RecoverySchemaVersion(1), RecoverySchemaVersion(3)) => vec![
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
             ],
-            (RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA) => {
+            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::AddMetadataLossAuditV2,
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+            ],
+            (RecoverySchemaVersion(2), RecoverySchemaVersion(3)) => {
                 vec![RecoveryMigrationStep::AddOfflineRebuildV3]
+            }
+            (RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+            ],
+            (RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA) => {
+                vec![RecoveryMigrationStep::AddChecksumBaselineV4]
             }
             _ => {
                 return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
@@ -538,6 +569,7 @@ pub struct RecoverySnapshot {
     pub writable_session: Option<WritableSession>,
     pub dirty_regions: Vec<DirtyRegionRecord>,
     pub integrity_records: Vec<IntegrityRecord>,
+    pub checksum_baseline: Option<ChecksumBaseline>,
     pub fences: Vec<FenceCertificate>,
     pub maintenance_checkpoints: Vec<MaintenanceCheckpoint>,
     pub metadata_loss_audit: Option<MetadataLossAudit>,
@@ -604,6 +636,7 @@ pub enum RecoveryError {
         to: RecoverySchemaVersion,
     },
     ExportLimitExceeded(RecoveryRecordKind),
+    ChecksumBaseline(ExtentError),
     Rebuild(RebuildError),
 }
 
@@ -668,6 +701,7 @@ impl fmt::Display for RecoveryError {
                 write!(formatter, "recovery export limit exceeded for {kind:?}")
             }
             Self::Rebuild(error) => error.fmt(formatter),
+            Self::ChecksumBaseline(error) => error.fmt(formatter),
         }
     }
 }
@@ -831,6 +865,7 @@ impl MemoryRecoveryStore {
                 writable_session: None,
                 dirty_regions: Vec::new(),
                 integrity_records: Vec::new(),
+                checksum_baseline: None,
                 fences: Vec::new(),
                 maintenance_checkpoints: Vec::new(),
                 metadata_loss_audit: None,
@@ -850,6 +885,9 @@ impl MemoryRecoveryStore {
         store
     }
 
+    pub(crate) fn set_checksum_baseline(&mut self, baseline: ChecksumBaseline) {
+        self.snapshot.checksum_baseline = Some(baseline);
+    }
     pub(crate) fn set_metadata_loss_audit(&mut self, audit: MetadataLossAudit) {
         self.snapshot.metadata_loss_audit = Some(audit);
     }
@@ -1313,6 +1351,15 @@ fn validate_export_limits(
     if snapshot.integrity_records.len() > limits.max_integrity_records {
         return Err(RecoveryError::ExportLimitExceeded(
             RecoveryRecordKind::IntegrityEvidence,
+        ));
+    }
+    if snapshot
+        .checksum_baseline
+        .as_ref()
+        .is_some_and(|baseline| baseline.expected_extents.len() > limits.max_integrity_records)
+    {
+        return Err(RecoveryError::ExportLimitExceeded(
+            RecoveryRecordKind::ChecksumBaseline,
         ));
     }
     if snapshot.fences.len() > limits.max_fences {
@@ -1999,6 +2046,7 @@ mod tests {
                 RecoveryMigrationStep::InitializeSemanticSchemaV1,
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
             ]
         );
         assert_eq!(
@@ -2008,13 +2056,23 @@ mod tests {
             vec![
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
             ]
         );
         assert_eq!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::AddOfflineRebuildV3]
+            vec![
+                RecoveryMigrationStep::AddOfflineRebuildV3,
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+            ]
+        );
+        assert_eq!(
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA)
+                .unwrap()
+                .steps,
+            vec![RecoveryMigrationStep::AddChecksumBaselineV4]
         );
         assert!(
             current_recovery_schema()
@@ -2024,7 +2082,7 @@ mod tests {
         assert!(
             current_recovery_schema()
                 .records
-                .contains(&RecoveryRecordKind::OfflineRebuild)
+                .contains(&RecoveryRecordKind::ChecksumBaseline)
         );
         assert!(matches!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), CURRENT_RECOVERY_SCHEMA),

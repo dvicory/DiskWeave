@@ -1920,6 +1920,54 @@ fn write_manifest(root: &Path, manifest: &FixtureManifest) -> Result<(), DemoErr
     fs::write(root.join(MANIFEST_FILE), bytes).map_err(|error| DemoError::failed(error.to_string()))
 }
 
+pub fn write_array_policy(root: &Path) -> Result<(), DemoError> {
+    let (_, manifest) = load_fixture(root)?;
+    let policy = json!({
+        "schema": "dwv.array-policy.v1",
+        "array_id": hex_bytes(&manifest.array_id),
+        "topology_epoch": manifest.topology_epoch,
+        "protected_length": manifest.protected_length,
+        "logical_block_size": manifest.logical_block_size,
+        "recovery": { "path": manifest.recovery_file },
+        "members": [
+            {
+                "path": manifest.data_files[0],
+                "role": "data",
+                "expected_identity": hex_bytes(&manifest.data_identities[0]),
+                "slot_id": hex_bytes(&[1; 16]),
+                "coding_position": 0,
+                "assignment_instance": hex_bytes(&[11; 16]),
+                "assignment_generation": 1,
+                "store_id": 10,
+            },
+            {
+                "path": manifest.data_files[1],
+                "role": "data",
+                "expected_identity": hex_bytes(&manifest.data_identities[1]),
+                "slot_id": hex_bytes(&[2; 16]),
+                "coding_position": 1,
+                "assignment_instance": hex_bytes(&[12; 16]),
+                "assignment_generation": 1,
+                "store_id": 11,
+            },
+            {
+                "path": manifest.parity_file,
+                "role": "parity",
+                "expected_identity": hex_bytes(&manifest.parity_identity),
+                "slot_id": hex_bytes(&[3; 16]),
+                "coding_position": 2,
+                "assignment_instance": hex_bytes(&[13; 16]),
+                "assignment_generation": 1,
+                "store_id": 12,
+            },
+        ],
+        "frontend": null,
+    });
+    let bytes =
+        serde_json::to_vec_pretty(&policy).map_err(|error| DemoError::failed(error.to_string()))?;
+    fs::write(root.join("array.json"), bytes).map_err(|error| DemoError::failed(error.to_string()))
+}
+
 fn write_plan(path: &Path, plan: &RebuildPlan) -> Result<(), DemoError> {
     let bytes =
         serde_json::to_vec_pretty(plan).map_err(|error| DemoError::failed(error.to_string()))?;

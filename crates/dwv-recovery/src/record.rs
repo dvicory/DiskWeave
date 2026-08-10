@@ -6,28 +6,30 @@ use crate::{
 
 pub type Digest = [u8; 32];
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct ContentGeneration(pub RecoveryGeneration);
 
 impl ContentGeneration {
     pub const ZERO: Self = Self(RecoveryGeneration::ZERO);
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum ChecksumState {
     Absent,
     Stale,
     Valid,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct FenceEvidence {
     pub fence: StoreFenceRef,
     pub topology_epoch: dwv_core::TopologyEpoch,
     pub recovery_generation: RecoveryGeneration,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ChecksumRecord {
     pub extent: ChecksumExtent,
     pub profile: ChecksumProfileId,

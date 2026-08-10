@@ -3,11 +3,15 @@
 use std::fmt;
 
 /// Stable identifier for the semantic digest profile, not a provider version.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct ChecksumProfileId(pub u32);
 
 /// Monotonic identity for a parallel checksum set.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct ChecksumSetGeneration(pub u64);
 
 impl ChecksumSetGeneration {
@@ -18,7 +22,9 @@ impl ChecksumSetGeneration {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct ChecksumProfile {
     pub id: ChecksumProfileId,
     pub extent_size: u64,
@@ -77,14 +83,14 @@ impl ChecksumProfile {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum ChecksumSetState {
     Building,
     Active,
     Interrupted,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ChecksumSet {
     pub generation: ChecksumSetGeneration,
     pub profile: ChecksumProfile,

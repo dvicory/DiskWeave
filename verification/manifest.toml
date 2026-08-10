@@ -381,6 +381,7 @@ requirements = [
   "req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics",
   "req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe",
   "req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow",
+  "req.operator-recovery.start-composes-admission-and-actual-publication",
   "req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority",
   "req.linux-ublk-frontend.the-disposable-linux-fixture-remains-independently-inspectable",
   "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
@@ -405,4 +406,29 @@ non_claims = [
   "The evidence does not establish production concurrency, daemon or crash recovery, or deployment correctness.",
   "The file-backed VM workflow does not establish raw-device, power-loss, or hardware durability.",
   "FUA, discard, write-zeroes, broader filesystems, multi-device publication, and online topology mutation remain unsupported.",
+]
+
+[[evidence]]
+id = "evidence.m9"
+path = "docs/verification/m9.md"
+claim = "The Milestone 9 record integrates bounded production operator observation, recovery preview/apply, persisted checksum-baseline admission, exact outcome composition, and actual narrow Linux publication."
+tier = "integrated-milestone-acceptance"
+fault_model = ["stale operator policy", "missing or unreadable recovery state", "uncertain recovery commit", "incomplete checksum baseline", "ambiguous damage", "admission without publication"]
+scope = ["production operator CLI", "metadata-loss recovery and baseline", "ordinary-file reopen behavior", "ARM64 Linux narrow ublk publication"]
+requirements = [
+  "req.checksum-plane.current-baseline-completion-is-persisted-and-exact",
+  "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
+  "req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow",
+  "req.operator-recovery.declarative-array-policy-locates-but-does-not-authorize",
+  "req.operator-recovery.production-assessment-is-observational-and-multidimensional",
+  "req.operator-recovery.recovery-preview-is-read-only-and-apply-re-establishes-authority",
+  "req.operator-recovery.start-composes-admission-and-actual-publication",
+  "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+  "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+  "req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit",
+]
+non_claims = [
+  "This record does not establish raw-device deployment, production SQLite durability, or physical power-loss safety.",
+  "It does not broaden frontend profiles, degraded service, repair, replacement, or P/Q recovery.",
+  "Newly calculated checksum evidence is current coverage and not historical correctness proof.",
 ]

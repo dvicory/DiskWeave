@@ -28,4 +28,7 @@ pub use rebuild::{
     FileRebuildStore, OfflineRebuildCommitError, commit_verified_rebuild_chunk,
     commit_verified_rebuild_completion, validate_rebuild_resume,
 };
-pub use service::{HealthyPortableService, MemberBinding, ServiceConfig};
+pub use service::{
+    HealthyPortableService, MemberBinding, ServiceConfig, WritableStartAssessment,
+    assess_writable_start,
+};

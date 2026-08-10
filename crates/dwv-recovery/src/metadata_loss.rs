@@ -3,8 +3,9 @@
 //! Plans are portable: they carry no paths, payload bytes, storage-engine layout, or frontend state.
 
 use crate::{
-    MemoryRecoveryStore, RecoveryError, RecoveryGeneration, RecoveryManifest, RecoveryStateStore,
-    RecoveryStoreHealth, TopologySnapshot,
+    BLAKE3_256_PROFILE, ChecksumSetGeneration, MemoryRecoveryStore, RecoveryError,
+    RecoveryGeneration, RecoveryManifest, RecoveryStateStore, RecoveryStoreHealth,
+    TopologySnapshot, new_checksum_baseline,
 };
 use dwv_core::{ArrayId, TopologyEpoch};
 use std::fmt;
@@ -773,7 +774,25 @@ pub fn create_fresh_manifest(
         source_health,
         topology_epoch,
     };
+    let baseline = matches!(
+        audit.baseline,
+        BaselineDisposition::NewChecksumBaselineRequired
+            | BaselineDisposition::NewParityAndChecksumBaselineRequired
+    )
+    .then(|| {
+        new_checksum_baseline(
+            &topology,
+            RecoveryGeneration::ZERO,
+            BLAKE3_256_PROFILE,
+            ChecksumSetGeneration::INITIAL,
+        )
+    })
+    .transpose()
+    .map_err(|error| MetadataLossError::Recovery(RecoveryError::ChecksumBaseline(error)))?;
     let mut recovery = MemoryRecoveryStore::with_active_topology(topology);
+    if let Some(baseline) = baseline {
+        recovery.set_checksum_baseline(baseline);
+    }
     recovery.set_metadata_loss_audit(audit);
     recovery
         .export_manifest(RecoveryGeneration::ZERO)

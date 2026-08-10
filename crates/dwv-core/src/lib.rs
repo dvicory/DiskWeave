@@ -37,7 +37,7 @@ impl BufferToken {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ByteRange {
     pub offset: u64,
     pub length: u64,

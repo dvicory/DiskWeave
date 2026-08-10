@@ -16,6 +16,46 @@ use std::fmt;
 use std::path::Path;
 
 pub use fixture::{Fixture, FixtureInspection, FixtureManifest, OpenFixture};
+
+pub fn array_policy(root: &Path) -> Result<serde_json::Value, AdapterError> {
+    let fixture = Fixture::load(root)?;
+    let manifest = fixture.manifest();
+    Ok(serde_json::json!({
+        "schema": "dwv.array-policy.v1",
+        "array_id": identity_hex(&manifest.array_id),
+        "topology_epoch": manifest.topology_epoch,
+        "protected_length": manifest.protected_length,
+        "logical_block_size": manifest.logical_block_size,
+        "recovery": { "path": manifest.recovery_file },
+        "members": [
+            {
+                "path": manifest.data_files[0],
+                "role": "data",
+                "expected_identity": identity_hex(&manifest.data_identities[0]),
+                "slot_id": identity_hex(&crate::DATA_SLOT.as_bytes()),
+                "coding_position": 0,
+                "assignment_instance": identity_hex(&[11; 16]),
+                "assignment_generation": 1,
+                "store_id": 10,
+            },
+            {
+                "path": manifest.parity_file,
+                "role": "parity",
+                "expected_identity": identity_hex(&manifest.parity_identity),
+                "slot_id": identity_hex(&fixture::PARITY_SLOT.as_bytes()),
+                "coding_position": 1,
+                "assignment_instance": identity_hex(&[12; 16]),
+                "assignment_generation": 1,
+                "store_id": 20,
+            },
+        ],
+        "frontend": "linux-ublk",
+    }))
+}
+
+fn identity_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
 pub use trace::{
     KernelCompletion, MAX_TRACE_BYTES, NormalizedTraceRequest, TRACE_SCHEMA, TraceBounds,
     TraceDocument, TraceDurability, TraceLog, TraceRecord, TraceReplaySummary, TraceReservation,
@@ -423,13 +463,42 @@ pub fn inspect(root: &Path) -> Result<FixtureInspection, AdapterError> {
     Fixture::load(root)?.inspect()
 }
 
-#[cfg(target_os = "linux")]
 pub fn serve(root: &Path, device_id: i32) -> Result<serde_json::Value, AdapterError> {
-    linux::serve(root, device_id)
+    serve_with_publication(root, device_id, |_| {})
+}
+
+/// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow
+#[cfg(target_os = "linux")]
+pub fn serve_with_publication<F>(
+    root: &Path,
+    device_id: i32,
+    on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    linux::serve_with_publication(root, device_id, on_published)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn serve(_root: &Path, _device_id: i32) -> Result<serde_json::Value, AdapterError> {
+pub fn serve_with_publication<F>(
+    _root: &Path,
+    _device_id: i32,
+    _on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    Err(AdapterError::Unsupported("ublk serving requires Linux"))
+}
+
+#[cfg(target_os = "linux")]
+pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
+    linux::live_publication(root)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn live_publication(_root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
 }
 

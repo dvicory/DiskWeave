@@ -8,8 +8,9 @@
 //! power-loss behavior.
 
 use dwv_recovery::{
-    MemoryRecoveryStore, MetadataLossAuthorization, RecoveryError, RecoveryGeneration,
-    RecoveryManifest, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
+    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, MetadataLossAuthorization, RecoveryError,
+    RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
+    RecoveryMigrationPlan, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
     RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase, SqliteJournalMode,
     SqliteSynchronousMode, TopologySnapshot,
 };
@@ -228,17 +229,25 @@ impl SqlitePrototype {
     }
 
     pub fn load_manifest(&self) -> Result<RecoveryManifest, SqlitePrototypeError> {
-        if !self.integrity_check()? {
+        self.load_manifest_with(false)
+    }
+
+    fn load_manifest_with(
+        &self,
+        read_only: bool,
+    ) -> Result<RecoveryManifest, SqlitePrototypeError> {
+        if !self.integrity_check_with(read_only)? {
             return Err(SqlitePrototypeError::ManifestIntegrity);
         }
-        let storage_schema = self.storage_schema_version()?;
+        let storage_schema = self.storage_schema_version_with(read_only)?;
         if storage_schema != CURRENT_RECOVERY_SQLITE_SCHEMA {
             return Err(SqlitePrototypeError::UnsupportedStorageSchema(
                 storage_schema,
             ));
         }
-        let output = self.run(
+        let output = self.run_with(
             "SELECT schema_version || '|' || generation || '|' || topology_epoch || '|' || hex(CAST(manifest_json AS BLOB)) || '|' || manifest_digest FROM recovery_state WHERE singleton=1;\n",
+            read_only,
         )?;
         let line = output
             .lines()
@@ -323,10 +332,31 @@ impl SqlitePrototype {
     /// Returns the adapter's physical SQLite schema version. This is distinct
     /// from the semantic recovery manifest schema stored in each row.
     pub fn storage_schema_version(&self) -> Result<u64, SqlitePrototypeError> {
+        self.storage_schema_version_with(false)
+    }
+
+    fn storage_schema_version_with(&self, read_only: bool) -> Result<u64, SqlitePrototypeError> {
         parse_u64(
-            self.run("PRAGMA user_version;\n")?.lines().next(),
+            self.run_with("PRAGMA user_version;\n", read_only)?
+                .lines()
+                .next(),
             "user_version",
         )
+    }
+
+    fn semantic_schema_version_with(&self, read_only: bool) -> Result<u64, SqlitePrototypeError> {
+        let output = match self.run_with(
+            "SELECT schema_version FROM recovery_state WHERE singleton=1;\n",
+            read_only,
+        ) {
+            Err(SqlitePrototypeError::CommandFailed { stderr, .. })
+                if stderr.contains("no such table") =>
+            {
+                return Err(SqlitePrototypeError::MissingState);
+            }
+            result => result?,
+        };
+        parse_u64(output.lines().next(), "schema_version")
     }
 
     pub fn export_header(&self) -> Result<SemanticHeader, SqlitePrototypeError> {
@@ -362,7 +392,14 @@ impl SqlitePrototype {
     }
 
     pub fn integrity_check(&self) -> Result<bool, SqlitePrototypeError> {
-        Ok(self.run("PRAGMA integrity_check;\n")?.trim() == "ok")
+        self.integrity_check_with(false)
+    }
+
+    fn integrity_check_with(&self, read_only: bool) -> Result<bool, SqlitePrototypeError> {
+        Ok(self
+            .run_with("PRAGMA integrity_check;\n", read_only)?
+            .trim()
+            == "ok")
     }
 
     pub fn delete_state(&self) -> Result<(), SqlitePrototypeError> {
@@ -375,12 +412,19 @@ impl SqlitePrototype {
     }
 
     fn run(&self, sql: &str) -> Result<String, SqlitePrototypeError> {
+        self.run_with(sql, false)
+    }
+
+    fn run_with(&self, sql: &str, read_only: bool) -> Result<String, SqlitePrototypeError> {
         if !self.available() {
             return Err(SqlitePrototypeError::SqliteUnavailable);
         }
-        let mut child = Command::new(&self.sqlite_program)
-            .arg("-batch")
-            .arg("-noheader")
+        let mut command = Command::new(&self.sqlite_program);
+        command.arg("-batch").arg("-noheader");
+        if read_only {
+            command.arg("-readonly");
+        }
+        let mut child = command
             .arg(&self.database_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -442,6 +486,20 @@ impl fmt::Display for SqliteRecoveryStoreError {
 
 impl std::error::Error for SqliteRecoveryStoreError {}
 
+/// Exclusive claim for publishing or replacing one recovery-state artifact.
+///
+/// The claim uses the same crash-releasing sidecar lock as writable stores but
+/// does not create, initialize, migrate, or inspect the target artifact.
+pub struct SqliteRecoveryClaim {
+    lock: File,
+}
+
+impl Drop for SqliteRecoveryClaim {
+    fn drop(&mut self) {
+        let _ = File::unlock(&self.lock);
+    }
+}
+
 pub struct SqliteRecoveryStore {
     prototype: SqlitePrototype,
     memory: MemoryRecoveryStore,
@@ -449,6 +507,14 @@ pub struct SqliteRecoveryStore {
 }
 
 impl SqliteRecoveryStore {
+    pub fn claim(
+        database_path: impl Into<PathBuf>,
+    ) -> Result<SqliteRecoveryClaim, SqliteRecoveryStoreError> {
+        let database_path = database_path.into();
+        let (_lock_path, lock) = acquire_lock(&database_path)?;
+        Ok(SqliteRecoveryClaim { lock })
+    }
+
     pub fn create_new(
         database_path: impl Into<PathBuf>,
         manifest: RecoveryManifest,
@@ -510,6 +576,76 @@ impl SqliteRecoveryStore {
                 _lock: lock,
             }),
             Err(error) => Err(error),
+        }
+    }
+
+    /// Observes recovery state without taking a writer lease or running DDL,
+    /// initialization, or migration.
+    /// dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout
+    pub fn inspect(database_path: impl Into<PathBuf>) -> RecoveryInspection {
+        let database_path = database_path.into();
+        if !database_path.exists() {
+            return RecoveryInspection::Absent;
+        }
+        if !database_path.is_file() {
+            return RecoveryInspection::CorruptOrUnreadable;
+        }
+        let prototype = SqlitePrototype::new(database_path);
+        let storage_schema = match prototype.storage_schema_version_with(true) {
+            Ok(version) => version,
+            Err(SqlitePrototypeError::SqliteUnavailable) => {
+                return RecoveryInspection::Unsupported {
+                    layer: RecoveryFormatLayer::Storage,
+                    version: None,
+                };
+            }
+            Err(_) => return RecoveryInspection::CorruptOrUnreadable,
+        };
+        if storage_schema != CURRENT_RECOVERY_SQLITE_SCHEMA {
+            return if storage_schema < CURRENT_RECOVERY_SQLITE_SCHEMA {
+                RecoveryInspection::MigrationRequired {
+                    layer: RecoveryFormatLayer::Storage,
+                    from: storage_schema,
+                    to: CURRENT_RECOVERY_SQLITE_SCHEMA,
+                }
+            } else {
+                RecoveryInspection::Unsupported {
+                    layer: RecoveryFormatLayer::Storage,
+                    version: Some(storage_schema),
+                }
+            };
+        }
+
+        let semantic_schema = match prototype.semantic_schema_version_with(true) {
+            Ok(version) => version,
+            Err(_) => return RecoveryInspection::CorruptOrUnreadable,
+        };
+        if semantic_schema != u64::from(CURRENT_RECOVERY_SCHEMA.0) {
+            let from = u16::try_from(semantic_schema)
+                .ok()
+                .map(RecoverySchemaVersion);
+            return if from.is_some_and(|from| {
+                RecoveryMigrationPlan::plan(from, CURRENT_RECOVERY_SCHEMA).is_ok()
+            }) {
+                RecoveryInspection::MigrationRequired {
+                    layer: RecoveryFormatLayer::Semantic,
+                    from: semantic_schema,
+                    to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
+                }
+            } else {
+                RecoveryInspection::Unsupported {
+                    layer: RecoveryFormatLayer::Semantic,
+                    version: Some(semantic_schema),
+                }
+            };
+        }
+        match prototype.load_manifest_with(true) {
+            Ok(manifest) => RecoveryInspection::Supported(Box::new(manifest)),
+            Err(SqlitePrototypeError::SqliteUnavailable) => RecoveryInspection::Unsupported {
+                layer: RecoveryFormatLayer::Storage,
+                version: None,
+            },
+            Err(_) => RecoveryInspection::CorruptOrUnreadable,
         }
     }
 
@@ -957,6 +1093,23 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
     #[test]
+    fn publication_claim_excludes_writable_store_without_creating_the_target() {
+        let path = temp_database();
+        let claim = SqliteRecoveryStore::claim(&path).unwrap();
+        assert!(!path.exists());
+        let initial = MemoryRecoveryStore::new(TopologyEpoch(0));
+        let manifest = initial.export_manifest(RecoveryGeneration::ZERO).unwrap();
+        assert!(matches!(
+            SqliteRecoveryStore::create_new(&path, manifest.clone()),
+            Err(SqliteRecoveryStoreError::LockHeld(_))
+        ));
+        drop(claim);
+        let store = SqliteRecoveryStore::create_new(&path, manifest).unwrap();
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn durable_store_is_exclusive_and_reopens_generation_checked_state() {
         let path = temp_database();
         let initial = MemoryRecoveryStore::new(TopologyEpoch(0));
@@ -1024,6 +1177,55 @@ mod tests {
         );
 
         drop(reopened);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn inspection_is_read_only_and_classifies_supported_missing_and_migration() {
+        let path = temp_database();
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::Absent
+        );
+        assert!(!path.exists());
+
+        let adapter = SqlitePrototype::new(&path);
+        assert!(adapter.available());
+        adapter.initialize().unwrap();
+        let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        let manifest = recovery.export_manifest(RecoveryGeneration::ZERO).unwrap();
+        adapter.write_manifest(&manifest).unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+        let before_metadata = std::fs::metadata(&path).unwrap();
+
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::Supported(Box::new(manifest))
+        );
+        let after_metadata = std::fs::metadata(&path).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        assert_eq!(after_metadata.len(), before_metadata.len());
+        assert_eq!(
+            after_metadata.permissions().readonly(),
+            before_metadata.permissions().readonly()
+        );
+        assert_eq!(
+            after_metadata.modified().unwrap(),
+            before_metadata.modified().unwrap()
+        );
+
+        adapter
+            .run("UPDATE recovery_state SET schema_version=3 WHERE singleton=1;\n")
+            .unwrap();
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::MigrationRequired {
+                layer: RecoveryFormatLayer::Semantic,
+                from: 3,
+                to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
+            }
+        );
+
         let _ = std::fs::remove_file(path);
     }
 

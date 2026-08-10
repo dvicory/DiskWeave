@@ -25,7 +25,7 @@ const DEFAULT_EPOCH: u64 = 1;
 const DATA_STORE: StoreId = StoreId(10);
 const PARITY_STORE: StoreId = StoreId(20);
 const ARRAY_ID: [u8; 16] = [0x31; 16];
-const PARITY_SLOT: SlotId = SlotId([2; 16]);
+pub(crate) const PARITY_SLOT: SlotId = SlotId([2; 16]);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct FixtureManifest {

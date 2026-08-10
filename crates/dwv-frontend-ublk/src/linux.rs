@@ -46,7 +46,14 @@ pub fn probe() -> ProbeReport {
     }
 }
 
-pub fn serve(root: &Path, device_id: i32) -> Result<serde_json::Value, AdapterError> {
+pub fn serve_with_publication<F>(
+    root: &Path,
+    device_id: i32,
+    on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
     STOP_REQUESTED.store(false, Ordering::SeqCst);
     QUEUE_FAILED.store(false, Ordering::SeqCst);
     install_signal_handlers()?;
@@ -143,6 +150,7 @@ pub fn serve(root: &Path, device_id: i32) -> Result<serde_json::Value, AdapterEr
         if let Ok(bytes) = serde_json::to_vec_pretty(&ready) {
             let _ = fs::write(ready_root.join("ready.json"), bytes);
         }
+        on_published(&ready);
         while !STOP_REQUESTED.load(Ordering::SeqCst) {
             std::thread::sleep(Duration::from_millis(25));
         }
@@ -209,6 +217,22 @@ pub fn serve(root: &Path, device_id: i32) -> Result<serde_json::Value, AdapterEr
         "trace_bound": MAX_TRACE_RECORDS,
         "trace_digest": trace_digest,
     }))
+}
+
+pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
+    let fixture = Fixture::load(root)?;
+    let digest = fixture.manifest().digest()?;
+    let devices = owned_devices(&digest);
+    match devices.as_slice() {
+        [] => Ok(None),
+        [device_id] => Ok(Some(json!({
+            "device_id": device_id,
+            "device_path": format!("/dev/ublkb{device_id}"),
+        }))),
+        _ => Err(AdapterError::ReconciliationRequired(format!(
+            "multiple owned ublk endpoints exist: {devices:?}"
+        ))),
+    }
 }
 
 pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, AdapterError> {

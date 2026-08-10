@@ -29,6 +29,7 @@ resolver = "2"
 
 [dependencies]
 blake3 = "1"
+clap = { version = "4", features = ["derive"] }
 dwv-codec = { path = "crates/dwv-codec" }
 dwv-core = { path = "crates/dwv-core" }
 dwv-recovery = { path = "crates/dwv-recovery" }

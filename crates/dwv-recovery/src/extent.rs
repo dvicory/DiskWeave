@@ -4,7 +4,9 @@ use crate::{IntegrityExtentId, ProfileError};
 use dwv_core::{ByteRange, CodingPosition, SlotId};
 use std::fmt;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub enum ChecksumTarget {
     Data { slot: SlotId },
     Parity { position: CodingPosition },
@@ -29,7 +31,7 @@ impl ChecksumTarget {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct ChecksumExtent {
     pub id: IntegrityExtentId,
     pub target: ChecksumTarget,

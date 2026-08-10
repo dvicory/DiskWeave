@@ -33,6 +33,65 @@ cargo build --bin dwv
 rm -rf "$fixture" /var/tmp/dwv-too-small /var/tmp/dwv-negative /var/tmp/dwv-recovery-loss /var/tmp/dwv-cleanup-conflict /var/tmp/dwv-owner-death
 mkdir -p "$mountpoint"
 ./target/debug/dwv demo disk init --root "$fixture" --size 67108864 > /tmp/dwv-init.json
+jq '
+  def hex:
+    [ .[] | . as $n |
+      "0123456789abcdef"[($n / 16 | floor):(($n / 16 | floor) + 1)] +
+      "0123456789abcdef"[($n % 16):(($n % 16) + 1)]
+    ] | join("");
+  {
+    schema: "dwv.array-policy.v1",
+    array_id: (.array_id | hex),
+    topology_epoch,
+    protected_length,
+    logical_block_size,
+    recovery: {path: .recovery_file},
+    members: [
+      {
+        path: .data_files[0],
+        role: "data",
+        expected_identity: (.data_identities[0] | hex),
+        slot_id: "01010101010101010101010101010101",
+        coding_position: 0,
+        assignment_instance: "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+        assignment_generation: 1,
+        store_id: 10
+      },
+      {
+        path: .parity_file,
+        role: "parity",
+        expected_identity: (.parity_identity | hex),
+        slot_id: "02020202020202020202020202020202",
+        coding_position: 1,
+        assignment_instance: "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+        assignment_generation: 1,
+        store_id: 20
+      }
+    ],
+    frontend: "linux-ublk"
+  }
+' "$fixture/fixture.json" > "$fixture/array.json"
+./target/debug/dwv status --array "$fixture/array.json" --json > /tmp/dwv-production-status.json
+./target/debug/dwv start --array "$fixture/array.json" --json \
+  > /tmp/dwv-production-start.json 2> /tmp/dwv-production-start-error.json &
+server_pid=$!
+if ! wait_ready; then
+  cat /tmp/dwv-production-status.json /tmp/dwv-production-start.json \
+    /tmp/dwv-production-start-error.json >&2
+  exit 1
+fi
+kill -TERM "$server_pid"
+wait "$server_pid"
+server_pid=
+[[ ! -e "$fixture/ready.json" ]]
+jq -e '
+  .schema == "dwv.operator.v1" and
+  .command == "start" and
+  .outcome == "success" and
+  .reason_code == "frontend-published" and
+  .publication.status == "published" and
+  .publication.device_path == "/dev/ublkb0"
+' /tmp/dwv-production-start.json >/dev/null
 if ./target/debug/dwv demo disk init --root /var/tmp/dwv-too-small --size 4096 2> /tmp/dwv-resource-bound.json; then
   echo "fixture initializer unexpectedly accepted an undersized device" >&2
   exit 1
@@ -193,6 +252,7 @@ jq -n \
   --slurpfile first_shutdown /tmp/dwv-serve-first.json \
   --slurpfile second_shutdown /tmp/dwv-serve-second.json \
   --slurpfile inspect /tmp/dwv-inspect.json \
+  --slurpfile production_start /tmp/dwv-production-start.json \
   --slurpfile first_trace /tmp/dwv-trace-first.json \
   --slurpfile second_trace /tmp/dwv-trace-second.json \
   --slurpfile first_trace_replay /tmp/dwv-trace-first-replay.json \
@@ -215,6 +275,7 @@ jq -n \
     architecture: $architecture,
     probe: $probe[0],
     init: $init[0],
+    production_start: $production_start[0],
     workload: {
       filesystem: "ext4",
       operations: ["format", "mount", "create", "fsync", "overwrite", "rename", "read", "delete", "unmount", "restart", "read-only-remount"],

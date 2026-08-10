@@ -13,10 +13,11 @@ use dwv_core::{
     DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
 };
 use dwv_recovery::{
-    BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumExtent, ChecksumRecord, ChecksumSetGeneration,
-    ChecksumTarget, DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, InvalidationTarget,
-    RecoveryGeneration, RecoveryMutation, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn,
-    RegionId, dirty_regions_for_range,
+    BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent, ChecksumRecord,
+    ChecksumSetGeneration, ChecksumTarget, ContentGeneration, DIRTY_REGION_BYTES, FenceCertificate,
+    FenceEvidence as ChecksumFenceEvidence, IntegrityExtentId, IntegrityState, InvalidationTarget,
+    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
+    RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
     CompletionDisposition, FenceDomain, OperationSlotToken, PersistenceEvidence, StoreId,
@@ -76,6 +77,45 @@ impl Default for ServiceConfig {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WritableStartAssessment {
+    Available,
+    RecoveryUnavailable,
+    RecoveryRequired,
+    MembersUnavailable,
+    BaselineRequired,
+    BaselineInvalid,
+}
+
+/// Read-only preflight owned by the service admission boundary. Actual service
+/// open still revalidates topology, member claims, recovery health, and capabilities.
+pub fn assess_writable_start(
+    snapshot: Option<&RecoverySnapshot>,
+    members_current: bool,
+) -> WritableStartAssessment {
+    let Some(snapshot) = snapshot else {
+        return WritableStartAssessment::RecoveryUnavailable;
+    };
+    if !members_current {
+        return WritableStartAssessment::MembersUnavailable;
+    }
+    if snapshot
+        .dirty_regions
+        .iter()
+        .any(|region| !matches!(region.state, dwv_recovery::RegionState::Clean))
+    {
+        return WritableStartAssessment::RecoveryRequired;
+    }
+    match assess_checksum_baseline(snapshot) {
+        ChecksumBaselineStatus::NotRequired | ChecksumBaselineStatus::Complete { .. } => {
+            WritableStartAssessment::Available
+        }
+        ChecksumBaselineStatus::Required { .. } | ChecksumBaselineStatus::Partial { .. } => {
+            WritableStartAssessment::BaselineRequired
+        }
+        ChecksumBaselineStatus::Invalid(_) => WritableStartAssessment::BaselineInvalid,
+    }
+}
 
 pub struct HealthyPortableService<R: RecoveryStateStore> {
     topology: TopologySnapshot,
@@ -89,6 +129,7 @@ pub struct HealthyPortableService<R: RecoveryStateStore> {
 
 impl<R: RecoveryStateStore> HealthyPortableService<R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
+    /// dwv:req req.checksum-plane.current-baseline-completion-is-persisted-and-exact
     pub fn open(
         topology: TopologySnapshot,
         members: Vec<MemberBinding>,
@@ -124,7 +165,30 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             ServiceState::Serving
         };
         let generation = snapshot.generation;
-        let checksums = checksum_authority(&topology, generation)?;
+        let checksums = match assess_checksum_baseline(&snapshot) {
+            ChecksumBaselineStatus::NotRequired => checksum_authority(&topology, generation)?,
+            ChecksumBaselineStatus::Complete { .. } => persisted_checksum_authority(&snapshot)?,
+            ChecksumBaselineStatus::Required { total } => {
+                return Err(ServiceError::io(
+                    FailureClass::Recovery,
+                    format!("mandatory checksum baseline is required for {total} extents"),
+                ));
+            }
+            ChecksumBaselineStatus::Partial { valid, total } => {
+                return Err(ServiceError::io(
+                    FailureClass::Recovery,
+                    format!(
+                        "mandatory checksum baseline is partial: {valid} of {total} extents are current"
+                    ),
+                ));
+            }
+            ChecksumBaselineStatus::Invalid(reason) => {
+                return Err(ServiceError::io(
+                    FailureClass::Recovery,
+                    format!("mandatory checksum baseline is invalid: {reason:?}"),
+                ));
+            }
+        };
         Ok(Self {
             topology,
             members,
@@ -774,6 +838,62 @@ fn checksum_authority(
     Ok(authority)
 }
 
+fn persisted_checksum_authority(
+    snapshot: &RecoverySnapshot,
+) -> Result<ChecksumAuthority, ServiceError> {
+    let baseline = snapshot.checksum_baseline.as_ref().ok_or_else(|| {
+        ServiceError::io(
+            FailureClass::Recovery,
+            "complete checksum baseline has no descriptor",
+        )
+    })?;
+    let mut authority = ChecksumAuthority::new(baseline.topology_epoch, baseline.set_generation);
+    authority.recovery_generation = snapshot.generation;
+    for extent in baseline.expected_extents.iter().copied() {
+        let persisted = snapshot
+            .integrity_records
+            .iter()
+            .find(|record| record.extent == extent.id)
+            .ok_or_else(|| {
+                ServiceError::io(
+                    FailureClass::Recovery,
+                    "complete checksum baseline is missing an extent record",
+                )
+            })?;
+        let IntegrityState::Valid {
+            content_generation,
+            durable_fence,
+            digest,
+            ..
+        } = &persisted.state
+        else {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "complete checksum baseline contains non-valid evidence",
+            ));
+        };
+        let digest: [u8; 32] = digest.as_slice().try_into().map_err(|_| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "complete checksum baseline contains a malformed digest",
+            )
+        })?;
+        authority.register(ChecksumRecord::valid(
+            extent,
+            baseline.profile.id,
+            baseline.set_generation,
+            ContentGeneration(*content_generation),
+            digest,
+            ChecksumFenceEvidence {
+                fence: *durable_fence,
+                topology_epoch: baseline.topology_epoch,
+                recovery_generation: *content_generation,
+            },
+        ));
+    }
+    Ok(authority)
+}
+
 fn read_child(
     store: &mut FileStore,
     admission: &mut OperationAdmission,
@@ -1205,6 +1325,124 @@ mod tests {
         )
         .unwrap();
         (root, service)
+    }
+    #[test]
+    fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
+        let root = std::env::temp_dir().join(format!(
+            "dwv-service-baseline-{}-{}",
+            std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let epoch = TopologyEpoch(4);
+        let topology = topology(epoch);
+        let recovery_topology = dwv_recovery::TopologySnapshot::from_core(
+            topology.clone(),
+            vec![StoreId(1), StoreId(2), StoreId(3)],
+        )
+        .unwrap();
+        let authorization = dwv_recovery::MetadataLossPlan::for_case(
+            dwv_recovery::MetadataLossCase::AllDataSingleParityUncertified,
+        )
+        .authorize(dwv_recovery::MetadataLossVerification::ExhaustiveMatches)
+        .unwrap();
+        let mut manifest = authorization
+            .fresh_manifest(recovery_topology, RecoveryStoreHealth::Missing)
+            .unwrap();
+        assert!(matches!(
+            assess_checksum_baseline(&manifest.snapshot),
+            ChecksumBaselineStatus::Required { total: 3 }
+        ));
+
+        let open_members = || {
+            bindings(&topology, |index| {
+                FileStore::open(
+                    FileStoreConfig::new(root.join(format!("member-{index}.raw")), LENGTH, BLOCK)
+                        .maximum_transfer(LENGTH)
+                        .create(true)
+                        .store_id(StoreId(index))
+                        .topology_epoch(epoch)
+                        .sync_mode(FileSyncMode::CallerFlush),
+                )
+                .unwrap()
+            })
+        };
+        let blocked = HealthyPortableService::open(
+            topology.clone(),
+            open_members(),
+            MemoryRecoveryStore::from_manifest(manifest.clone()).unwrap(),
+            ServiceConfig::default(),
+        );
+        assert!(matches!(
+            blocked,
+            Err(ServiceError::Io {
+                class: FailureClass::Recovery,
+                detail,
+                ..
+            }) if detail.contains("baseline is required")
+        ));
+
+        manifest.snapshot.generation = RecoveryGeneration(1);
+        let extents = manifest
+            .snapshot
+            .checksum_baseline
+            .as_ref()
+            .unwrap()
+            .expected_extents
+            .clone();
+        let mut store_fences = Vec::new();
+        for extent in &extents {
+            let fence = dwv_store::StoreFenceRef {
+                fence_id: dwv_store::FenceId(extent.id.0 + 1),
+                store_id: StoreId(extent.id.0 + 1),
+                topology_epoch: epoch,
+                store_incarnation: dwv_store::StoreIncarnationId(0),
+                through: StoreWriteWatermark(0),
+                capability_evidence_id: dwv_store::CapabilityEvidenceId(1),
+            };
+            store_fences.push(fence);
+            manifest
+                .snapshot
+                .integrity_records
+                .push(dwv_recovery::IntegrityRecord {
+                    extent: extent.id,
+                    state: IntegrityState::Valid {
+                        content_generation: RecoveryGeneration::ZERO,
+                        durable_fence: fence,
+                        digest: vec![0; 32],
+                        verified_at: RecoveryGeneration(1),
+                    },
+                });
+        }
+        let mut certificate =
+            FenceCertificate::new(epoch, FenceDomain(1), store_fences, Vec::new());
+        for extent in extents {
+            certificate = certificate.with_integrity_extent(extent.id, RecoveryGeneration::ZERO);
+        }
+        manifest.snapshot.fences.push(certificate);
+        assert_eq!(
+            assess_checksum_baseline(&manifest.snapshot),
+            ChecksumBaselineStatus::Complete { total: 3 }
+        );
+
+        let service = HealthyPortableService::open(
+            topology.clone(),
+            open_members(),
+            MemoryRecoveryStore::from_manifest(manifest).unwrap(),
+            ServiceConfig::default(),
+        )
+        .unwrap();
+        assert_eq!(service.checksums().records().len(), 3);
+        assert!(
+            service
+                .checksums()
+                .records()
+                .iter()
+                .all(dwv_recovery::ChecksumRecord::is_valid)
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
     }
 
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
