@@ -11,6 +11,7 @@ cargo xtask docs doctor
 cargo xtask docs knowledge readiness
 cargo xtask docs knowledge inspect <semantic-id>
 cargo xtask docs knowledge context <semantic-id>
+cargo xtask docs knowledge ownership <semantic-id>
 cargo xtask docs knowledge affected --path <repo-relative-path>
 cargo xtask docs knowledge doctor --path <repo-relative-path>
 cargo xtask docs check

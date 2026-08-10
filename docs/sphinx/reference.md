@@ -9,6 +9,7 @@ The offline graph projections are generated from current repository inputs:
 
 - [Scenario fixtures and manifest facts](scenarios.md)
 - [Requirement assurance mapping](assurance-generated.md)
+- [Canonical semantic ownership and dependency graph](ownership-generated.md)
 - [Cargo packages, targets, and dependencies](contributors-generated.md)
 
 Contributor output comes from `cargo metadata --format-version 1 --no-deps`; semantic ownership
@@ -20,5 +21,6 @@ not authority for product behavior, execution results, platform support, or hard
 
 scenarios
 assurance-generated
+ownership-generated
 contributors-generated
 ```

@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
 use std::path::Path;
 use std::process::Command;
@@ -10,13 +10,14 @@ use super::{
     safe_join, write_json,
 };
 
-const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v1";
-const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v1";
-const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v1";
+const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v2";
+const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v2";
+const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v1";
+const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v2";
 const OBJECTS_PATH: &str = "target/dwv-docs/knowledge/objects.json";
 const REVIEWED_PATH: &str = "docs/reviewed-requirements.toml";
-const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v1";
-const REVIEWED_SCHEMA: &str = "dwv.knowledge.reviewed-links.v1";
+const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v2";
+const REVIEWED_SCHEMA: &str = "dwv.knowledge.reviewed-links.v2";
 const OUTCOMES: [&str; 4] = ["reviewed", "reference-only", "deferred", "superseded"];
 
 const ACTIVE_ROADMAP_MARKER: &str = "<!-- dwv:active-architecture-roadmap -->";
@@ -30,7 +31,12 @@ pub(super) struct RequirementObject {
     pub capability: String,
     pub source_path: String,
     pub heading_path: Vec<String>,
-    pub normalized_fingerprint: String,
+    pub local_semantic_fingerprint: String,
+    pub effective_semantic_fingerprint: String,
+    pub requires: Vec<String>,
+    pub refines: Vec<String>,
+    pub required_by: Vec<String>,
+    pub refined_by: Vec<String>,
     pub body: String,
 }
 
@@ -49,7 +55,9 @@ struct Reference {
 struct ReviewedState {
     schema: String,
     #[serde(default)]
-    requirements: BTreeMap<String, String>,
+    local_fingerprints: BTreeMap<String, String>,
+    #[serde(default)]
+    effective_fingerprints: BTreeMap<String, String>,
     #[serde(default)]
     outcomes: BTreeMap<String, String>,
     #[serde(default)]
@@ -64,19 +72,39 @@ struct ScanRef {
     line: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct SemanticRelationship {
+    source: String,
+    kind: String,
+    target: String,
+    source_path: String,
+    line: usize,
+}
+
+struct KnowledgeModel {
+    objects: Vec<RequirementObject>,
+    relationships: Vec<SemanticRelationship>,
+}
+
 pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
+    Ok(knowledge_model(app)?.objects)
+}
+
+fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
     let root = app.root.join("openspec/specs");
     let mut dirs = entries(&root, "spec_discovery_failed")?
         .into_iter()
         .filter(|entry| {
             entry
                 .file_type()
-                .map(|t| t.is_dir() && !t.is_symlink())
+                .map(|kind| kind.is_dir() && !kind.is_symlink())
                 .unwrap_or(false)
         })
         .collect::<Vec<_>>();
     dirs.sort_by_key(|entry| entry.file_name());
+
     let mut objects = Vec::new();
+    let mut relationships = Vec::new();
     let mut ids = BTreeSet::new();
     for dir in dirs {
         let capability = dir.file_name().to_string_lossy().into_owned();
@@ -90,7 +118,7 @@ pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
         for (index, heading) in headings
             .iter()
             .enumerate()
-            .filter(|(_, h)| h.title.starts_with("Requirement: "))
+            .filter(|(_, heading)| heading.title.starts_with("Requirement: "))
         {
             let id = colocated_id(&text, heading, &capability)?;
             validate_semantic_id(&id)?;
@@ -107,6 +135,7 @@ pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
             if body.len() > app.bounds.max_source_bytes {
                 return Err(AppError::new("unit_bound_exceeded", id));
             }
+            relationships.extend(extract_relationships(&text, heading, end, &id, &relative)?);
             objects.push(RequirementObject {
                 semantic_id: id.clone(),
                 sphinx_id: sphinx_id(&id),
@@ -114,7 +143,12 @@ pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
                 capability: capability.clone(),
                 source_path: relative.clone(),
                 heading_path: heading.path.clone(),
-                normalized_fingerprint: digest_text(&body),
+                local_semantic_fingerprint: digest_text(&body),
+                effective_semantic_fingerprint: String::new(),
+                requires: Vec::new(),
+                refines: Vec::new(),
+                required_by: Vec::new(),
+                refined_by: Vec::new(),
                 body,
             });
         }
@@ -125,22 +159,384 @@ pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
             objects.len().to_string(),
         ));
     }
-    objects.sort_by(|a, b| a.semantic_id.cmp(&b.semantic_id));
+    objects.sort_by(|left, right| left.semantic_id.cmp(&right.semantic_id));
+    relationships.sort();
     check_mapping_collisions(
         objects
             .iter()
-            .map(|o| (o.semantic_id.as_str(), o.sphinx_id.as_str())),
+            .map(|object| (object.semantic_id.as_str(), object.sphinx_id.as_str())),
     )?;
-    Ok(objects)
+    validate_relationships(&objects, &relationships)?;
+
+    let indexes = objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.semantic_id.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let mut outgoing = BTreeMap::<String, Vec<SemanticRelationship>>::new();
+    for relationship in &relationships {
+        outgoing
+            .entry(relationship.source.clone())
+            .or_default()
+            .push(relationship.clone());
+        let source = indexes[&relationship.source];
+        let target = indexes[&relationship.target];
+        match relationship.kind.as_str() {
+            "requires" => {
+                objects[source].requires.push(relationship.target.clone());
+                objects[target]
+                    .required_by
+                    .push(relationship.source.clone());
+            }
+            "refines" => {
+                objects[source].refines.push(relationship.target.clone());
+                objects[target].refined_by.push(relationship.source.clone());
+            }
+            _ => unreachable!("relationship kinds are validated"),
+        }
+    }
+    for object in &mut objects {
+        object.requires.sort();
+        object.refines.sort();
+        object.required_by.sort();
+        object.refined_by.sort();
+    }
+    let locals = objects
+        .iter()
+        .map(|object| {
+            (
+                object.semantic_id.clone(),
+                object.local_semantic_fingerprint.clone(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut effective = BTreeMap::new();
+    for id in indexes.keys() {
+        effective_fingerprint(id, &locals, &outgoing, &mut effective);
+    }
+    for object in &mut objects {
+        object.effective_semantic_fingerprint = effective[&object.semantic_id].clone();
+    }
+    Ok(KnowledgeModel {
+        objects,
+        relationships,
+    })
+}
+
+fn extract_relationships(
+    text: &str,
+    heading: &super::Heading,
+    end: usize,
+    source: &str,
+    source_path: &str,
+) -> Result<Vec<SemanticRelationship>, AppError> {
+    let section = &text[heading.start..end];
+    let lines = section.lines().collect::<Vec<_>>();
+    let identity = lines
+        .iter()
+        .enumerate()
+        .skip(1)
+        .find(|(_, line)| !line.trim().is_empty())
+        .map(|(index, _)| index)
+        .ok_or_else(|| AppError::new("missing_requirement_id", source))?;
+    let first_line = text[..heading.start]
+        .bytes()
+        .filter(|byte| *byte == b'\n')
+        .count()
+        + 1;
+    let mut relationships = Vec::new();
+    let mut cursor = identity + 1;
+    while cursor < lines.len() {
+        let Some((kind, target)) = parse_relationship_marker(lines[cursor]) else {
+            break;
+        };
+        let relationship = SemanticRelationship {
+            source: source.to_owned(),
+            kind: kind.to_owned(),
+            target: target.to_owned(),
+            source_path: source_path.to_owned(),
+            line: first_line + cursor,
+        };
+        if validate_semantic_id(target).is_err() {
+            return Err(relationship_error(
+                "invalid_relationship_target",
+                "relationship target is not a valid requirement ID",
+                &relationship,
+                None,
+            ));
+        }
+        relationships.push(relationship);
+        cursor += 1;
+    }
+    for (offset, line) in lines.iter().enumerate().skip(cursor) {
+        if line.contains("<!-- dwv:requires") || line.contains("<!-- dwv:refines") {
+            let relationship = parse_relationship_marker(line);
+            let (kind, target) = relationship.unwrap_or(("unknown", "unknown"));
+            let (code, message) = if offset == cursor && relationship.is_none() {
+                (
+                    "invalid_relationship_marker",
+                    "relationship marker syntax is invalid",
+                )
+            } else {
+                (
+                    "misplaced_relationship_marker",
+                    "relationship markers must be contiguous immediately after the intrinsic identity",
+                )
+            };
+            let relationship = SemanticRelationship {
+                source: source.to_owned(),
+                kind: kind.to_owned(),
+                target: target.to_owned(),
+                source_path: source_path.to_owned(),
+                line: first_line + offset,
+            };
+            return Err(relationship_error(code, message, &relationship, None));
+        }
+    }
+    Ok(relationships)
+}
+
+fn parse_relationship_marker(line: &str) -> Option<(&str, &str)> {
+    for kind in ["requires", "refines"] {
+        if let Some(target) = line
+            .strip_prefix(&format!("<!-- dwv:{kind} "))
+            .and_then(|value| value.strip_suffix(" -->"))
+        {
+            return Some((kind, target));
+        }
+    }
+    None
+}
+
+fn validate_relationships(
+    objects: &[RequirementObject],
+    relationships: &[SemanticRelationship],
+) -> Result<(), AppError> {
+    let ids = objects
+        .iter()
+        .map(|object| object.semantic_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut pairs = BTreeMap::<(&str, &str), &SemanticRelationship>::new();
+    for relationship in relationships {
+        if relationship.source == relationship.target {
+            return Err(relationship_error(
+                "self_relationship",
+                "a requirement cannot relate to itself",
+                relationship,
+                None,
+            ));
+        }
+        if !ids.contains(relationship.target.as_str()) {
+            return Err(relationship_error(
+                "unknown_relationship_target",
+                "relationship target is not a current canonical requirement",
+                relationship,
+                None,
+            ));
+        }
+        if let Some(previous) =
+            pairs.insert((&relationship.source, &relationship.target), relationship)
+        {
+            let (code, message) = if previous.kind == relationship.kind {
+                ("duplicate_relationship", "duplicate relationship edge")
+            } else {
+                (
+                    "mixed_relationship_kind",
+                    "a source-target pair cannot use both relationship kinds",
+                )
+            };
+            return Err(relationship_error(code, message, relationship, None));
+        }
+    }
+    if let Some(cycle) = smallest_cycle(relationships) {
+        let relationship = relationships
+            .iter()
+            .find(|relationship| relationship.source == cycle[0] && relationship.target == cycle[1])
+            .expect("cycle edges come from relationships");
+        return Err(relationship_error(
+            "relationship_cycle",
+            "combined requires/refines graph contains a cycle",
+            relationship,
+            Some(&cycle),
+        ));
+    }
+    Ok(())
+}
+
+fn relationship_error(
+    code: &str,
+    message: &str,
+    relationship: &SemanticRelationship,
+    cycle: Option<&[String]>,
+) -> AppError {
+    AppError::new(code, message).details(json!({
+        "source_path": relationship.source_path,
+        "line": relationship.line,
+        "source_id": relationship.source,
+        "relation_kind": relationship.kind,
+        "target_id": relationship.target,
+        "cycle": cycle.unwrap_or_default(),
+    }))
+}
+
+fn smallest_cycle(relationships: &[SemanticRelationship]) -> Option<Vec<String>> {
+    let mut adjacency = BTreeMap::<String, Vec<String>>::new();
+    let mut nodes = BTreeSet::new();
+    for relationship in relationships {
+        adjacency
+            .entry(relationship.source.clone())
+            .or_default()
+            .push(relationship.target.clone());
+        nodes.insert(relationship.source.clone());
+        nodes.insert(relationship.target.clone());
+    }
+    for targets in adjacency.values_mut() {
+        targets.sort();
+        targets.dedup();
+    }
+    let mut best: Option<Vec<String>> = None;
+    for start in nodes {
+        let mut queue = VecDeque::from([start.clone()]);
+        let mut parents = BTreeMap::<String, String>::new();
+        let mut visited = BTreeSet::from([start.clone()]);
+        while let Some(node) = queue.pop_front() {
+            for target in adjacency.get(&node).into_iter().flatten() {
+                if target == &start {
+                    let mut cursor = node.clone();
+                    let mut cycle = vec![cursor.clone()];
+                    while cursor != start {
+                        cursor = parents[&cursor].clone();
+                        cycle.push(cursor.clone());
+                    }
+                    cycle.reverse();
+                    cycle.push(start.clone());
+                    let cycle = normalize_cycle(cycle);
+                    if best.as_ref().is_none_or(|candidate| {
+                        (cycle.len(), &cycle) < (candidate.len(), candidate)
+                    }) {
+                        best = Some(cycle);
+                    }
+                } else if visited.insert(target.clone()) {
+                    parents.insert(target.clone(), node.clone());
+                    queue.push_back(target.clone());
+                }
+            }
+        }
+    }
+    best
+}
+
+fn normalize_cycle(cycle: Vec<String>) -> Vec<String> {
+    let nodes = &cycle[..cycle.len() - 1];
+    let mut rotations = (0..nodes.len())
+        .map(|offset| {
+            let mut rotation = nodes[offset..].to_vec();
+            rotation.extend_from_slice(&nodes[..offset]);
+            rotation.push(rotation[0].clone());
+            rotation
+        })
+        .collect::<Vec<_>>();
+    rotations.sort();
+    rotations.remove(0)
+}
+
+fn effective_fingerprint(
+    id: &str,
+    locals: &BTreeMap<String, String>,
+    outgoing: &BTreeMap<String, Vec<SemanticRelationship>>,
+    memo: &mut BTreeMap<String, String>,
+) -> String {
+    if let Some(fingerprint) = memo.get(id) {
+        return fingerprint.clone();
+    }
+    let imported = outgoing
+        .get(id)
+        .into_iter()
+        .flatten()
+        .map(|relationship| {
+            (
+                relationship.kind.clone(),
+                relationship.target.clone(),
+                effective_fingerprint(&relationship.target, locals, outgoing, memo),
+            )
+        })
+        .collect::<Vec<_>>();
+    let encoded = serde_json::to_string(&(locals[id].as_str(), imported))
+        .expect("fingerprint input serializes");
+    let fingerprint = digest_text(&encoded);
+    memo.insert(id.to_owned(), fingerprint.clone());
+    fingerprint
 }
 
 pub(super) fn export(app: &App) -> Result<Value, AppError> {
-    let records = objects(app)?;
-    let value = json!({"schema": OBJECTS_SCHEMA, "objects": records});
+    let model = knowledge_model(app)?;
+    let capabilities = capability_aggregation(&model.objects);
+    let reading_order = topological_order(
+        &model,
+        &model
+            .objects
+            .iter()
+            .map(|object| object.semantic_id.clone())
+            .collect(),
+    );
+    let value = json!({
+        "schema": OBJECTS_SCHEMA,
+        "objects": model.objects,
+        "capabilities": capabilities,
+        "reading_order": reading_order,
+    });
     write_json(&app.root, OBJECTS_PATH, &value)?;
-    Ok(
-        json!({"schema": OBJECTS_SCHEMA, "objects": value["objects"].as_array().map_or(0, Vec::len), "path": OBJECTS_PATH}),
-    )
+    Ok(json!({
+        "schema": OBJECTS_SCHEMA,
+        "objects": value["objects"].as_array().map_or(0, Vec::len),
+        "relationships": model.relationships.len(),
+        "capabilities": value["capabilities"].as_object().map_or(0, serde_json::Map::len),
+        "path": OBJECTS_PATH,
+    }))
+}
+
+fn capability_aggregation(objects: &[RequirementObject]) -> Value {
+    let mut requirements = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut requires = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut refines = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut required_by = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut refined_by = BTreeMap::<String, BTreeSet<String>>::new();
+    for object in objects {
+        requirements
+            .entry(object.capability.clone())
+            .or_default()
+            .insert(object.semantic_id.clone());
+        for (targets, forward, reverse) in [
+            (&object.requires, &mut requires, &mut required_by),
+            (&object.refines, &mut refines, &mut refined_by),
+        ] {
+            for target in targets {
+                let target_capability = target.split('.').nth(1).unwrap_or_default().to_owned();
+                forward
+                    .entry(object.capability.clone())
+                    .or_default()
+                    .insert(target_capability.clone());
+                reverse
+                    .entry(target_capability)
+                    .or_default()
+                    .insert(object.capability.clone());
+            }
+        }
+    }
+    let mut result = serde_json::Map::new();
+    for capability in requirements.keys() {
+        result.insert(
+            capability.clone(),
+            json!({
+                "requirements": requirements.get(capability).into_iter().flatten().collect::<Vec<_>>(),
+                "requires": requires.get(capability).into_iter().flatten().collect::<Vec<_>>(),
+                "refines": refines.get(capability).into_iter().flatten().collect::<Vec<_>>(),
+                "required_by": required_by.get(capability).into_iter().flatten().collect::<Vec<_>>(),
+                "refined_by": refined_by.get(capability).into_iter().flatten().collect::<Vec<_>>(),
+            }),
+        );
+    }
+    Value::Object(result)
 }
 
 pub(super) fn inspect(app: &App, id: String) -> Result<Value, AppError> {
@@ -150,50 +546,103 @@ pub(super) fn inspect(app: &App, id: String) -> Result<Value, AppError> {
         .map(|object| serde_json::to_value(object).expect("object serializes"))
         .ok_or_else(|| AppError::new("unknown_requirement", id))
 }
-
 pub(super) fn context(app: &App, id: String) -> Result<Value, AppError> {
-    let requirement = inspect(app, id.clone())?;
+    ownership_packet(app, id, CONTEXT_SCHEMA)
+}
+
+pub(super) fn ownership(app: &App, id: String) -> Result<Value, AppError> {
+    ownership_packet(app, id, OWNERSHIP_SCHEMA)
+}
+
+fn ownership_packet(app: &App, id: String, schema: &str) -> Result<Value, AppError> {
+    let model = knowledge_model(app)?;
+    let requirement = model
+        .objects
+        .iter()
+        .find(|object| object.semantic_id == id)
+        .cloned()
+        .ok_or_else(|| AppError::new("unknown_requirement", &id))?;
+    let state: ReviewedState = read_toml(&app.root, REVIEWED_PATH)?;
+    if state.schema != REVIEWED_SCHEMA {
+        return Err(AppError::new(
+            "reviewed_state_schema_mismatch",
+            state.schema,
+        ));
+    }
+    let mut implementation = Vec::new();
+    let mut evidence = Vec::new();
+    let mut curriculum = Vec::new();
+    let mut documentation = Vec::new();
     let mut refs = scan_references(app)?;
     refs.retain(|reference| reference.id == id);
     refs.sort_by(|a, b| (&a.kind, &a.path, a.line).cmp(&(&b.kind, &b.path, b.line)));
-    let mut inbound = Vec::new();
-    let mut outbound = Vec::new();
     for reference in refs {
-        let relation = match reference.kind.as_str() {
-            "rust" => "implements",
-            "verification" => "verifies",
-            _ => "explained_by",
+        let (relation, destination) = if reference.kind == "rust" {
+            ("implements", &mut implementation)
+        } else if reference.kind == "verification" {
+            ("verifies", &mut evidence)
+        } else if reference.path == "docs/curriculum.toml" {
+            ("curriculum", &mut curriculum)
+        } else {
+            ("explained_by", &mut documentation)
         };
-        let value = Reference {
+        destination.push(Reference {
             kind: reference.kind,
             id: id.clone(),
             path: reference.path,
             relation: relation.to_owned(),
             line: Some(reference.line),
-        };
-        if relation == "implements" {
-            inbound.push(value);
-        } else {
-            outbound.push(value);
-        }
+        });
     }
-    let inbound_total = inbound.len();
-    let outbound_total = outbound.len();
-    inbound.truncate(app.bounds.max_units);
-    outbound.truncate(app.bounds.max_units);
+    let order = owner_before_dependent_order(&model, &id);
+    let totals = [
+        ("implementation", implementation.len()),
+        ("evidence", evidence.len()),
+        ("curriculum", curriculum.len()),
+        ("documentation", documentation.len()),
+        ("reading_order", order.len()),
+    ]
+    .into_iter()
+    .collect::<BTreeMap<_, _>>();
+    implementation.truncate(app.bounds.max_units);
+    evidence.truncate(app.bounds.max_units);
+    curriculum.truncate(app.bounds.max_units);
+    documentation.truncate(app.bounds.max_units);
+    let mut order = order;
+    order.truncate(app.bounds.max_units);
     let value = json!({
-        "schema": CONTEXT_SCHEMA,
+        "schema": schema,
         "requirement": requirement,
-        "inbound": inbound,
-        "outbound": outbound,
+        "relationships": {
+            "requires": requirement.requires,
+            "refines": requirement.refines,
+            "required_by": requirement.required_by,
+            "refined_by": requirement.refined_by,
+        },
+        "reading_order": order,
+        "reviewed": {
+            "local_fingerprint": state.local_fingerprints.get(&id),
+            "effective_fingerprint": state.effective_fingerprints.get(&id),
+            "outcome": state.outcomes.get(&id),
+            "reason": state.reasons.get(&id),
+        },
+        "references": {
+            "implementation": implementation,
+            "evidence": evidence,
+            "curriculum": curriculum,
+            "documentation": documentation,
+        },
         "bounds": {
-            "max_references_per_direction": app.bounds.max_units,
-            "max_context_bytes": app.bounds.max_context_bytes
+            "max_items_per_category": app.bounds.max_units,
+            "max_context_bytes": app.bounds.max_context_bytes,
         },
         "omitted": {
-            "inbound": inbound_total.saturating_sub(app.bounds.max_units),
-            "outbound": outbound_total.saturating_sub(app.bounds.max_units)
-        }
+            "implementation": totals["implementation"].saturating_sub(app.bounds.max_units),
+            "evidence": totals["evidence"].saturating_sub(app.bounds.max_units),
+            "curriculum": totals["curriculum"].saturating_sub(app.bounds.max_units),
+            "documentation": totals["documentation"].saturating_sub(app.bounds.max_units),
+            "reading_order": totals["reading_order"].saturating_sub(app.bounds.max_units),
+        },
     });
     if serde_json::to_vec(&value)
         .map(|bytes| bytes.len())
@@ -203,6 +652,68 @@ pub(super) fn context(app: &App, id: String) -> Result<Value, AppError> {
         return Err(AppError::new("context_bound_exceeded", id));
     }
     Ok(value)
+}
+
+fn owner_before_dependent_order(model: &KnowledgeModel, selected: &str) -> Vec<String> {
+    let mut neighbors = BTreeMap::<String, BTreeSet<String>>::new();
+    for relationship in &model.relationships {
+        neighbors
+            .entry(relationship.source.clone())
+            .or_default()
+            .insert(relationship.target.clone());
+        neighbors
+            .entry(relationship.target.clone())
+            .or_default()
+            .insert(relationship.source.clone());
+    }
+    let mut component = BTreeSet::from([selected.to_owned()]);
+    let mut queue = VecDeque::from([selected.to_owned()]);
+    while let Some(id) = queue.pop_front() {
+        for neighbor in neighbors.get(&id).into_iter().flatten() {
+            if component.insert(neighbor.clone()) {
+                queue.push_back(neighbor.clone());
+            }
+        }
+    }
+    topological_order(model, &component)
+}
+
+fn topological_order(model: &KnowledgeModel, component: &BTreeSet<String>) -> Vec<String> {
+    let mut dependents = BTreeMap::<String, BTreeSet<String>>::new();
+    let mut prerequisites = component
+        .iter()
+        .map(|id| (id.clone(), 0usize))
+        .collect::<BTreeMap<_, _>>();
+    for relationship in &model.relationships {
+        if component.contains(&relationship.source) && component.contains(&relationship.target) {
+            *prerequisites
+                .get_mut(&relationship.source)
+                .expect("component contains source") += 1;
+            dependents
+                .entry(relationship.target.clone())
+                .or_default()
+                .insert(relationship.source.clone());
+        }
+    }
+    let mut ready = prerequisites
+        .iter()
+        .filter(|(_, count)| **count == 0)
+        .map(|(id, _)| id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut order = Vec::with_capacity(component.len());
+    while let Some(id) = ready.pop_first() {
+        order.push(id.clone());
+        for dependent in dependents.get(&id).into_iter().flatten() {
+            let count = prerequisites
+                .get_mut(dependent)
+                .expect("component contains dependent");
+            *count -= 1;
+            if *count == 0 {
+                ready.insert(dependent.clone());
+            }
+        }
+    }
+    order
 }
 
 pub(super) fn affected(
@@ -216,7 +727,8 @@ pub(super) fn affected(
             "affected requires a requirement ID or --path <repo-relative-path>",
         ));
     }
-    let requirements = objects(app)?;
+    let model = knowledge_model(app)?;
+    let requirements = &model.objects;
     let current = requirements
         .iter()
         .map(|requirement| (requirement.semantic_id.as_str(), requirement))
@@ -245,24 +757,26 @@ pub(super) fn affected(
             let changed = canonical
                 .into_iter()
                 .filter(|requirement| {
-                    reviewed.requirements.get(&requirement.semantic_id)
-                        != Some(&requirement.normalized_fingerprint)
+                    reviewed
+                        .effective_fingerprints
+                        .get(&requirement.semantic_id)
+                        != Some(&requirement.effective_semantic_fingerprint)
                 })
                 .map(|requirement| requirement.semantic_id.clone())
                 .collect::<BTreeSet<_>>();
             for id in &changed {
                 let impact = selected.entry(id.clone()).or_default();
-                impact
-                    .0
-                    .insert(format!("canonical semantics changed in {relative}"));
+                impact.0.insert(format!(
+                    "canonical effective semantics changed in {relative}"
+                ));
                 impact.1 = true;
             }
             path_impacts.push(json!({
                 "path": relative,
-                "classification": if changed.is_empty() { "canonical_fingerprints_unchanged" } else { "canonical_semantics_changed" },
+                "classification": if changed.is_empty() { "canonical_effective_fingerprints_unchanged" } else { "canonical_effective_semantics_changed" },
                 "review_required": !changed.is_empty(),
                 "current_ids": changed,
-                "baseline": "reviewed requirement fingerprints"
+                "baseline": "reviewed effective semantic fingerprints"
             }));
             continue;
         }
@@ -320,6 +834,24 @@ pub(super) fn affected(
         }));
     }
 
+    let seeds = selected
+        .iter()
+        .filter(|(_, (_, review_required))| *review_required)
+        .map(|(id, _)| id.clone())
+        .collect::<Vec<_>>();
+    for seed in seeds {
+        for dependent in dependent_closure(&model, &seed) {
+            if dependent == seed {
+                continue;
+            }
+            let impact = selected.entry(dependent).or_default();
+            impact
+                .0
+                .insert(format!("semantic-prerequisite-changed through {seed}"));
+            impact.1 = true;
+        }
+    }
+
     if selected.len() > app.bounds.max_units {
         return Err(AppError::new(
             "affected_unit_bound_exceeded",
@@ -329,7 +861,7 @@ pub(super) fn affected(
     let mut impacts = Vec::new();
     for (id, (reasons, review_required)) in selected {
         let packet = context(app, id.clone())?;
-        let pages = packet["outbound"]
+        let pages = packet["references"]["documentation"]
             .as_array()
             .into_iter()
             .flatten()
@@ -368,6 +900,21 @@ pub(super) fn affected(
     });
     enforce_context_bound(app, "affected_context_bound_exceeded", &value)?;
     Ok(value)
+}
+
+fn dependent_closure(model: &KnowledgeModel, source: &str) -> BTreeSet<String> {
+    let mut closure = BTreeSet::from([source.to_owned()]);
+    let mut queue = VecDeque::from([source.to_owned()]);
+    while let Some(id) = queue.pop_front() {
+        for object in &model.objects {
+            if (object.requires.contains(&id) || object.refines.contains(&id))
+                && closure.insert(object.semantic_id.clone())
+            {
+                queue.push_back(object.semantic_id.clone());
+            }
+        }
+    }
+    closure
 }
 
 pub(super) fn doctor(app: &App, changed_paths: Vec<String>) -> Result<Value, AppError> {
@@ -640,7 +1187,7 @@ fn revision_path_absent(stderr: &[u8]) -> bool {
 fn relationship_ids(relative: &str, text: &str) -> BTreeSet<String> {
     if relative.ends_with(".rs") {
         text.lines()
-            .filter(|line| line.contains("dwv:req"))
+            .filter(|line| line.contains("/// dwv:req "))
             .flat_map(extract_ids)
             .collect()
     } else {
@@ -700,7 +1247,8 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
         ));
     }
 
-    let requirements = objects(app)?;
+    let model = knowledge_model(app)?;
+    let requirements = &model.objects;
     let requirement_ids = requirements
         .iter()
         .map(|requirement| requirement.semantic_id.as_str())
@@ -724,8 +1272,10 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
             let ids = canonical
                 .into_iter()
                 .filter(|requirement| {
-                    reviewed.requirements.get(&requirement.semantic_id)
-                        != Some(&requirement.normalized_fingerprint)
+                    reviewed
+                        .effective_fingerprints
+                        .get(&requirement.semantic_id)
+                        != Some(&requirement.effective_semantic_fingerprint)
                 })
                 .map(|requirement| requirement.semantic_id.clone())
                 .collect::<BTreeSet<_>>();
@@ -736,7 +1286,7 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
                 ));
                 entries.push(json!({
                     "path": relative,
-                    "classification": "canonical_semantics_changed",
+                    "classification": "canonical_effective_semantics_changed",
                     "review_required": true,
                     "requirement_ids": ids
                 }));
@@ -766,7 +1316,7 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
         if all_ids.is_empty() {
             continue;
         }
-        let unknown = all_ids
+        let unknown = current_ids
             .iter()
             .filter(|id| !requirement_ids.contains(id.as_str()))
             .cloned()
@@ -774,31 +1324,55 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
         if !unknown.is_empty() {
             diagnostics.push(json!({
                 "path": relative,
-                "kind": "unknown_or_removed_canonical_requirement",
+                "kind": "unknown_canonical_requirement",
                 "requirement_ids": unknown
             }));
         }
+        let removed_current = removed
+            .iter()
+            .filter(|id| requirement_ids.contains(id.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
+        let removed_noncurrent = removed
+            .difference(&removed_current)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         added_relationships += added.len();
-        let review_required = baseline.available && !removed.is_empty();
+        let review_required = baseline.available && !removed_current.is_empty();
         if review_required {
-            review_ids.extend(all_ids.iter().cloned());
+            review_ids.extend(removed_current.iter().cloned());
             next_actions.insert(format!(
                 "cargo xtask docs knowledge affected --path {relative}"
             ));
             entries.push(json!({
                 "path": relative,
-                "classification": "requirement_relationship_removed_or_reassigned",
+                "classification": "current_requirement_relationship_removed_or_reassigned",
                 "review_required": true,
-                "current_ids": current_ids,
                 "added_ids": added,
-                "removed_ids": removed,
+                "removed_current_ids": removed_current,
+                "removed_noncurrent_ids": removed_noncurrent,
                 "baseline": baseline.source
             }));
-        } else if baseline.available && added.is_empty() {
+        } else if baseline.available && !removed_noncurrent.is_empty() {
+            entries.push(json!({
+                "path": relative,
+                "classification": "noncurrent_reference_removed",
+                "review_required": false,
+                "removed_ids": removed_noncurrent,
+                "baseline": baseline.source
+            }));
+        } else if baseline.available && !added.is_empty() {
+            context_ids.extend(added);
+        } else if baseline.available {
             unchanged_relationship_files += 1;
             context_ids.extend(current_ids);
         }
     }
+    for id in review_ids.clone() {
+        review_ids.extend(dependent_closure(&model, &id));
+    }
+    context_ids.retain(|id| !review_ids.contains(id));
+
     let value = json!({
         "schema": "dwv.knowledge.change-impact.v1",
         "baseline_available": true,
@@ -1180,30 +1754,50 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
     let current_ids = current.keys().copied().collect::<BTreeSet<_>>();
     let mut uncovered = current_ids
         .iter()
-        .filter(|id| !state.requirements.contains_key(**id))
+        .filter(|id| {
+            !state.local_fingerprints.contains_key(**id)
+                || !state.effective_fingerprints.contains_key(**id)
+        })
         .map(|id| (*id).to_owned())
         .collect::<Vec<_>>();
     uncovered.sort();
     uncovered.dedup();
-    let suspect = current
+    let local_suspect = current
         .iter()
-        .filter_map(|(id, record)| {
+        .filter(|(id, record)| {
             state
-                .requirements
-                .get(*id)
-                .filter(|fingerprint| *fingerprint != &record.normalized_fingerprint)
-                .map(|_| (*id).to_owned())
+                .local_fingerprints
+                .get(**id)
+                .is_some_and(|fingerprint| fingerprint != &record.local_semantic_fingerprint)
         })
+        .map(|(id, _)| (*id).to_owned())
+        .collect::<Vec<_>>();
+    let prerequisite_suspect = current
+        .iter()
+        .filter(|(id, record)| {
+            state
+                .local_fingerprints
+                .get(**id)
+                .is_some_and(|fingerprint| fingerprint == &record.local_semantic_fingerprint)
+                && state
+                    .effective_fingerprints
+                    .get(**id)
+                    .is_some_and(|fingerprint| {
+                        fingerprint != &record.effective_semantic_fingerprint
+                    })
+        })
+        .map(|(id, _)| (*id).to_owned())
         .collect::<Vec<_>>();
     let mut orphaned = BTreeSet::new();
     for id in state
-        .requirements
+        .local_fingerprints
         .keys()
+        .chain(state.effective_fingerprints.keys())
         .chain(state.outcomes.keys())
         .chain(state.reasons.keys())
     {
         let outcome = state.outcomes.get(id).map(String::as_str);
-        if (!current_ids.contains(id.as_str()) && outcome != Some("superseded"))
+        if !current_ids.contains(id.as_str())
             || outcome.is_some_and(|value| !OUTCOMES.contains(&value))
             || (outcome.is_some()
                 && state
@@ -1215,13 +1809,24 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         }
     }
     let unknown = refs.iter().filter(|reference| !current_ids.contains(reference.id.as_str())).map(|reference| json!({"semantic_id": reference.id, "kind": reference.kind, "path": reference.path, "line": reference.line})).collect::<Vec<_>>();
-    let counts = json!({"uncovered": uncovered.len(), "fingerprint-suspect": suspect.len(), "orphaned-state": orphaned.len(), "unknown-reference": unknown.len(), "historical-reference": 0, "mapping-collision": 0});
+    let counts = json!({
+        "uncovered": uncovered.len(),
+        "local-fingerprint-suspect": local_suspect.len(),
+        "semantic-prerequisite-changed": prerequisite_suspect.len(),
+        "orphaned-state": orphaned.len(),
+        "unknown-reference": unknown.len(),
+        "historical-reference": 0,
+        "mapping-collision": 0,
+    });
     let mut diagnostics = Vec::new();
     for id in uncovered {
         diagnostics.push(json!({"gate": "uncovered", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
     }
-    for id in suspect {
-        diagnostics.push(json!({"gate": "fingerprint-suspect", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
+    for id in local_suspect {
+        diagnostics.push(json!({"gate": "local-fingerprint-suspect", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
+    }
+    for id in prerequisite_suspect {
+        diagnostics.push(json!({"gate": "semantic-prerequisite-changed", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
     }
     for id in orphaned {
         diagnostics.push(json!({"gate": "orphaned-state", "semantic_id": id, "next_action": "remove orphaned state or resolve as superseded"}));
@@ -1264,14 +1869,15 @@ pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Resul
             state.schema,
         ));
     }
-    if current.is_none() && (outcome != "superseded" || !state.requirements.contains_key(id)) {
+    let Some(record) = current else {
         return Err(AppError::new("unknown_requirement", id));
-    }
-    if let Some(record) = current.filter(|_| outcome != "superseded") {
-        state
-            .requirements
-            .insert(id.to_owned(), record.normalized_fingerprint.clone());
-    }
+    };
+    state
+        .local_fingerprints
+        .insert(id.to_owned(), record.local_semantic_fingerprint.clone());
+    state
+        .effective_fingerprints
+        .insert(id.to_owned(), record.effective_semantic_fingerprint.clone());
     state.outcomes.insert(id.to_owned(), outcome.to_owned());
     state
         .reasons
@@ -1537,6 +2143,64 @@ mod tests {
         )
     }
 
+    fn reviewed_state(objects: &[RequirementObject]) -> ReviewedState {
+        ReviewedState {
+            schema: REVIEWED_SCHEMA.to_owned(),
+            local_fingerprints: objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.semantic_id.clone(),
+                        object.local_semantic_fingerprint.clone(),
+                    )
+                })
+                .collect(),
+            effective_fingerprints: objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.semantic_id.clone(),
+                        object.effective_semantic_fingerprint.clone(),
+                    )
+                })
+                .collect(),
+            outcomes: BTreeMap::new(),
+            reasons: BTreeMap::new(),
+        }
+    }
+
+    fn write_reviewed(root: &Path, objects: &[RequirementObject]) {
+        fs::create_dir_all(root.join("docs")).unwrap();
+        fs::write(
+            root.join(REVIEWED_PATH),
+            toml::to_string(&reviewed_state(objects)).unwrap(),
+        )
+        .unwrap();
+    }
+
+    type SpecEntry<'a> = (&'a str, &'a [(&'a str, &'a str)], &'a str);
+
+    fn specification(entries: &[SpecEntry<'_>]) -> String {
+        let mut text = "# cap Specification\n\n## Requirements\n".to_owned();
+        for (id, relationships, body) in entries {
+            text.push_str(&format!("\n### Requirement: {id}\n<!-- dwv:req {id} -->\n"));
+            for (kind, target) in *relationships {
+                text.push_str(&format!("<!-- dwv:{kind} {target} -->\n"));
+            }
+            text.push_str(&format!("\n{body}\n"));
+        }
+        text
+    }
+
+    fn write_roadmap(root: &Path) {
+        fs::create_dir_all(root.join("docs/handoffs")).unwrap();
+        fs::write(
+            root.join("docs/handoffs/architecture.md"),
+            "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n",
+        )
+        .unwrap();
+    }
+
     #[test]
     fn malformed_missing_duplicate_ids_rejected() {
         assert!(validate_semantic_id("").is_err());
@@ -1563,8 +2227,33 @@ mod tests {
     #[test]
     fn unknown_references_are_not_current() {
         let current = BTreeSet::from(["req.a.one".to_owned()]);
+
         let ids = extract_ids("req.a.one req.unknown.two");
         assert!(ids.difference(&current).any(|id| id == "req.unknown.two"));
+    }
+    fn commit_git_fixture(root: &Path) {
+        for args in [
+            vec!["init", "-q"],
+            vec!["add", "."],
+            vec![
+                "-c",
+                "user.name=DiskWeave Test",
+                "-c",
+                "user.email=test@diskweave.invalid",
+                "commit",
+                "-qm",
+                "baseline",
+            ],
+        ] {
+            assert!(
+                Command::new("git")
+                    .args(args)
+                    .current_dir(root)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
+        }
     }
     #[test]
     fn references_exclude_history_hidden_and_milestones() {
@@ -1596,9 +2285,20 @@ mod tests {
                 .iter()
                 .all(|reference| !reference.path.starts_with("docs/milestones/"))
         );
+        write_reviewed(&root, &objects(&app).unwrap());
         let packet = context(&app, "req.cap.one".to_owned()).unwrap();
-        assert!(packet["inbound"].as_array().unwrap().is_empty());
-        assert!(packet["outbound"].as_array().unwrap().is_empty());
+        assert!(
+            packet["references"]["implementation"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            packet["references"]["documentation"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -1610,7 +2310,8 @@ mod tests {
             root.join(REVIEWED_PATH),
             toml::to_string(&ReviewedState {
                 schema: REVIEWED_SCHEMA.to_owned(),
-                requirements: BTreeMap::new(),
+                local_fingerprints: BTreeMap::new(),
+                effective_fingerprints: BTreeMap::new(),
                 outcomes: BTreeMap::new(),
                 reasons: BTreeMap::new(),
             })
@@ -1635,7 +2336,7 @@ mod tests {
     #[test]
     fn rust_relationship_recovery_reads_only_markers() {
         let marker = [
-            "let sample = \"req.a.fake\";\n/// dwv:",
+            "let sample = \"req.a.fake\";\nlet fixture = \"<!-- dwv:req req.a.fixture -->\";\n/// dwv:",
             "req req.a.real\nfn owner() {}\n",
         ]
         .concat();
@@ -1658,38 +2359,7 @@ mod tests {
         }
         let (root, _) = fixture("git-impact");
         fs::write(root.join("tracked.rs"), "fn before() {}\n").unwrap();
-        assert!(
-            Command::new("git")
-                .args(["init", "-q"])
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            Command::new("git")
-                .args(["add", "tracked.rs"])
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success()
-        );
-        assert!(
-            Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=DiskWeave Test",
-                    "-c",
-                    "user.email=test@diskweave.invalid",
-                    "commit",
-                    "-qm",
-                    "baseline",
-                ])
-                .current_dir(&root)
-                .status()
-                .unwrap()
-                .success()
-        );
+        commit_git_fixture(&root);
         fs::write(root.join("tracked.rs"), "fn after() {}\n").unwrap();
         fs::write(root.join("untracked.rs"), "fn added() {}\n").unwrap();
 
@@ -1697,6 +2367,44 @@ mod tests {
         assert_eq!(
             paths,
             BTreeSet::from(["tracked.rs".to_owned(), "untracked.rs".to_owned()])
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn change_impact_does_not_broaden_a_retired_reference_removal() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (root, app) = fixture("retired-reference-impact");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_reviewed(&root, &objects(&app).unwrap());
+        fs::create_dir_all(root.join("verification")).unwrap();
+        let manifest = root.join("verification/manifest.toml");
+        fs::write(&manifest, "req.cap.one\nreq.cap.retired\n").unwrap();
+        commit_git_fixture(&root);
+        fs::write(&manifest, "req.cap.one\n").unwrap();
+
+        let result = change_impact(&app, Some("HEAD")).unwrap();
+        assert_eq!(result["review_required"], false);
+        assert!(
+            result["review_requirement_ids"]
+                .as_array()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(result["diagnostics"].as_array().unwrap().is_empty());
+        assert_eq!(
+            result["entries"][0]["classification"],
+            "noncurrent_reference_removed"
+        );
+        assert_eq!(
+            result["entries"][0]["removed_ids"],
+            json!(["req.cap.retired"])
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -1739,7 +2447,7 @@ mod tests {
     #[test]
     fn no_op_rendering_is_stable() {
         let state: ReviewedState = toml::from_str(
-            "schema = 'dwv.knowledge.reviewed-links.v1'\n[requirements]\n\"req.a.one\" = \"abc\"\n",
+            "schema = 'dwv.knowledge.reviewed-links.v2'\n[local_fingerprints]\n\"req.a.one\" = \"abc\"\n[effective_fingerprints]\n\"req.a.one\" = \"def\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -1754,15 +2462,7 @@ mod tests {
         let spec = root.join("openspec/specs/cap/spec.md");
         fs::write(&spec, requirement("The system SHALL remain stable.")).unwrap();
         let object = objects(&app).unwrap().remove(0);
-        let state = ReviewedState {
-            schema: REVIEWED_SCHEMA.to_owned(),
-            requirements: BTreeMap::from([(
-                object.semantic_id.clone(),
-                object.normalized_fingerprint,
-            )]),
-            outcomes: BTreeMap::new(),
-            reasons: BTreeMap::new(),
-        };
+        let state = reviewed_state(std::slice::from_ref(&object));
         fs::create_dir_all(root.join("docs")).unwrap();
         fs::write(root.join("docs/one.md"), "First req.cap.one explanation.\n").unwrap();
         fs::write(
@@ -1782,7 +2482,10 @@ mod tests {
         .unwrap();
         assert_eq!(result["impacts"].as_array().unwrap().len(), 1);
         assert_eq!(result["impacts"][0]["semantic_id"], "req.cap.one");
-        assert_eq!(result["impacts"][0]["context"]["omitted"]["outbound"], 1);
+        assert_eq!(
+            result["impacts"][0]["context"]["omitted"]["documentation"],
+            1
+        );
         assert_eq!(result["impacts"][0]["pages"].as_array().unwrap().len(), 1);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1793,15 +2496,7 @@ mod tests {
         let spec = root.join("openspec/specs/cap/spec.md");
         fs::write(&spec, requirement("The system SHALL remain stable.")).unwrap();
         let object = objects(&app).unwrap().remove(0);
-        let state = ReviewedState {
-            schema: REVIEWED_SCHEMA.to_owned(),
-            requirements: BTreeMap::from([(
-                object.semantic_id.clone(),
-                object.normalized_fingerprint,
-            )]),
-            outcomes: BTreeMap::new(),
-            reasons: BTreeMap::new(),
-        };
+        let state = reviewed_state(std::slice::from_ref(&object));
         fs::create_dir_all(root.join("docs")).unwrap();
         fs::create_dir_all(root.join("docs/handoffs")).unwrap();
         fs::write(
@@ -1824,12 +2519,21 @@ mod tests {
         let error = readiness(&app).unwrap_err();
         assert_eq!(error.code, "knowledge_not_ready");
         assert_eq!(
-            error.details.unwrap()["gate_counts"]["fingerprint-suspect"],
+            error.details.unwrap()["gate_counts"]["local-fingerprint-suspect"],
             1
         );
         let packet = context(&app, "req.cap.one".to_owned()).unwrap();
-        assert_eq!(packet["outbound"].as_array().unwrap().len(), 1);
-        assert_eq!(packet["outbound"][0]["path"], "docs/affected.md");
+        assert_eq!(
+            packet["references"]["documentation"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            packet["references"]["documentation"][0]["path"],
+            "docs/affected.md"
+        );
         fs::write(
             &affected,
             "Updated durability explanation for req.cap.one.\n",
@@ -1843,6 +2547,307 @@ mod tests {
         assert_eq!(result["changed"], false);
         assert_eq!(fs::read(root.join(REVIEWED_PATH)).unwrap(), first);
         assert!(readiness(&app).is_ok());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relationships_derive_backlinks_aggregation_and_owner_first_order() {
+        let (root, app) = fixture("relationship-graph");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                ("req.cap.a", &[("requires", "req.cap.b")], "A SHALL use B."),
+                (
+                    "req.cap.b",
+                    &[("refines", "req.cap.c")],
+                    "B SHALL specialize C.",
+                ),
+                ("req.cap.c", &[], "C SHALL own the policy."),
+            ]),
+        )
+        .unwrap();
+        let model = knowledge_model(&app).unwrap();
+        let a = model
+            .objects
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        let b = model
+            .objects
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.b")
+            .unwrap();
+        assert_eq!(a.requires, ["req.cap.b"]);
+        assert_eq!(b.required_by, ["req.cap.a"]);
+        assert_eq!(b.refines, ["req.cap.c"]);
+        assert_eq!(
+            owner_before_dependent_order(&model, "req.cap.a"),
+            ["req.cap.c", "req.cap.b", "req.cap.a"]
+        );
+        let aggregation = capability_aggregation(&model.objects);
+        assert_eq!(
+            aggregation["cap"]["requirements"].as_array().unwrap().len(),
+            3
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn invalid_relationship_edges_fail_with_structured_diagnostics() {
+        let cases = [
+            (
+                "self",
+                specification(&[("req.cap.a", &[("requires", "req.cap.a")], "A SHALL exist.")]),
+                "self_relationship",
+            ),
+            (
+                "duplicate",
+                specification(&[
+                    (
+                        "req.cap.a",
+                        &[("requires", "req.cap.b"), ("requires", "req.cap.b")],
+                        "A SHALL use B.",
+                    ),
+                    ("req.cap.b", &[], "B SHALL exist."),
+                ]),
+                "duplicate_relationship",
+            ),
+            (
+                "mixed",
+                specification(&[
+                    (
+                        "req.cap.a",
+                        &[("requires", "req.cap.b"), ("refines", "req.cap.b")],
+                        "A SHALL use B.",
+                    ),
+                    ("req.cap.b", &[], "B SHALL exist."),
+                ]),
+                "mixed_relationship_kind",
+            ),
+            (
+                "retired",
+                specification(&[(
+                    "req.cap.a",
+                    &[("requires", "req.cap.retired")],
+                    "A SHALL use the retired owner.",
+                )]),
+                "unknown_relationship_target",
+            ),
+        ];
+        for (name, spec, code) in cases {
+            let (root, app) = fixture(name);
+            fs::write(root.join("openspec/specs/cap/spec.md"), spec).unwrap();
+            if name == "retired" {
+                fs::create_dir_all(root.join("openspec/changes/archive/old/specs/cap")).unwrap();
+                fs::write(
+                    root.join("openspec/changes/archive/old/specs/cap/spec.md"),
+                    specification(&[("req.cap.retired", &[], "Historical only.")]),
+                )
+                .unwrap();
+            }
+            let error = objects(&app).unwrap_err();
+            assert_eq!(error.code, code);
+            let details = error.details.unwrap();
+            assert_eq!(details["source_id"], "req.cap.a");
+            assert!(
+                details["source_path"]
+                    .as_str()
+                    .unwrap()
+                    .ends_with("spec.md")
+            );
+            assert!(details["line"].as_u64().unwrap() > 0);
+            fs::remove_dir_all(root).unwrap();
+        }
+
+        let (root, app) = fixture("misplaced");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            "# cap Specification\n\n## Requirements\n\n### Requirement: A\n<!-- dwv:req req.cap.a -->\n\n<!-- dwv:requires req.cap.b -->\n\nA SHALL use B.\n\n### Requirement: B\n<!-- dwv:req req.cap.b -->\n\nB SHALL exist.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "misplaced_relationship_marker"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn direct_and_multi_node_cycles_report_the_smallest_stable_cycle() {
+        let cases = [
+            (
+                "direct-cycle",
+                specification(&[
+                    ("req.cap.a", &[("requires", "req.cap.b")], "A SHALL use B."),
+                    (
+                        "req.cap.b",
+                        &[("refines", "req.cap.a")],
+                        "B SHALL specialize A.",
+                    ),
+                ]),
+                vec!["req.cap.a", "req.cap.b", "req.cap.a"],
+            ),
+            (
+                "multi-cycle",
+                specification(&[
+                    ("req.cap.a", &[("requires", "req.cap.b")], "A SHALL use B."),
+                    ("req.cap.b", &[("requires", "req.cap.c")], "B SHALL use C."),
+                    (
+                        "req.cap.c",
+                        &[("refines", "req.cap.a")],
+                        "C SHALL specialize A.",
+                    ),
+                ]),
+                vec!["req.cap.a", "req.cap.b", "req.cap.c", "req.cap.a"],
+            ),
+        ];
+        for (name, spec, expected) in cases {
+            let (root, app) = fixture(name);
+            fs::write(root.join("openspec/specs/cap/spec.md"), spec).unwrap();
+            let error = objects(&app).unwrap_err();
+            assert_eq!(error.code, "relationship_cycle");
+            assert_eq!(
+                error.details.unwrap()["cycle"],
+                serde_json::to_value(expected).unwrap()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn effective_fingerprints_invalidate_dependency_closure_only() {
+        let (root, app) = fixture("effective-fingerprint");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        let chain = |c_body: &str| {
+            specification(&[
+                ("req.cap.a", &[("requires", "req.cap.b")], "A SHALL use B."),
+                ("req.cap.b", &[("requires", "req.cap.c")], "B SHALL use C."),
+                ("req.cap.c", &[], c_body),
+                ("req.cap.d", &[], "D SHALL remain unrelated."),
+            ])
+        };
+        fs::write(&spec, chain("C SHALL own the policy.")).unwrap();
+        let before = objects(&app).unwrap();
+        write_reviewed(&root, &before);
+        write_roadmap(&root);
+        fs::write(&spec, chain("C SHALL own the durable policy.")).unwrap();
+
+        let error = readiness(&app).unwrap_err();
+        let diagnostics = error.details.unwrap()["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|diagnostic| {
+                (
+                    diagnostic["semantic_id"].as_str().unwrap().to_owned(),
+                    diagnostic["gate"].as_str().unwrap().to_owned(),
+                )
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            diagnostics,
+            BTreeSet::from([
+                (
+                    "req.cap.a".to_owned(),
+                    "semantic-prerequisite-changed".to_owned(),
+                ),
+                (
+                    "req.cap.b".to_owned(),
+                    "semantic-prerequisite-changed".to_owned(),
+                ),
+                (
+                    "req.cap.c".to_owned(),
+                    "local-fingerprint-suspect".to_owned(),
+                ),
+            ])
+        );
+        let after = objects(&app).unwrap();
+        let d_before = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.d")
+            .unwrap();
+        let d_after = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.d")
+            .unwrap();
+        assert_eq!(
+            d_before.effective_semantic_fingerprint,
+            d_after.effective_semantic_fingerprint
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relationship_only_change_is_semantic_and_ownership_output_is_bounded() {
+        let (root, mut app) = fixture("relationship-only");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        fs::write(
+            &spec,
+            specification(&[
+                ("req.cap.a", &[], "A SHALL remain stable."),
+                ("req.cap.b", &[], "B SHALL own the policy."),
+            ]),
+        )
+        .unwrap();
+        let before = objects(&app).unwrap();
+        write_reviewed(&root, &before);
+        write_roadmap(&root);
+        fs::write(
+            &spec,
+            specification(&[
+                (
+                    "req.cap.a",
+                    &[("requires", "req.cap.b")],
+                    "A SHALL remain stable.",
+                ),
+                ("req.cap.b", &[], "B SHALL own the policy."),
+            ]),
+        )
+        .unwrap();
+        let after = objects(&app).unwrap();
+        let a_before = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        let a_after = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        assert_eq!(
+            a_before.local_semantic_fingerprint,
+            a_after.local_semantic_fingerprint
+        );
+        assert_ne!(
+            a_before.effective_semantic_fingerprint,
+            a_after.effective_semantic_fingerprint
+        );
+        let error = readiness(&app).unwrap_err();
+        assert_eq!(
+            error.details.unwrap()["diagnostics"][0]["gate"],
+            "semantic-prerequisite-changed"
+        );
+
+        write_reviewed(&root, &after);
+        for index in 0..3 {
+            fs::write(
+                root.join(format!("docs/reference-{index}.md")),
+                "Explanation for req.cap.a.\n",
+            )
+            .unwrap();
+        }
+        app.bounds.max_units = 2;
+        let packet = ownership(&app, "req.cap.a".to_owned()).unwrap();
+        assert_eq!(packet["schema"], OWNERSHIP_SCHEMA);
+        assert_eq!(packet["reading_order"], json!(["req.cap.b", "req.cap.a"]));
+        assert_eq!(
+            packet["references"]["documentation"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(packet["omitted"]["documentation"], 1);
+        assert!(packet.get("verdict").is_none());
         fs::remove_dir_all(root).unwrap();
     }
 

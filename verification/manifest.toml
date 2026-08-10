@@ -358,7 +358,6 @@ requirements = [
   "req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority",
   "req.linux-ublk-frontend.the-disposable-linux-fixture-remains-independently-inspectable",
   "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
-  "req.linux-ublk-frontend.correction-evidence-covers-the-composed-correctness-boundaries",
   "req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics",
   "req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics",
   "req.normalized-block-semantics.adapters-expose-bounded-deterministic-conformance-behavior",

@@ -5,6 +5,9 @@ This capability serves one known missing single-XOR data member read-only when r
 ## Requirements
 ### Requirement: Degraded-read eligibility is explicit and fail-closed
 <!-- dwv:req req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed -->
+<!-- dwv:requires req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments -->
+<!-- dwv:requires req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout -->
+<!-- dwv:requires req.xor-reference-model.every-single-known-erasure-reconstructs-exact-bytes -->
 
 The portable engine SHALL authorize a reconstructed read only when exactly one data slot is a known erasure, the validated topology identifies that stable slot and its coding position, the captured topology and recovery generations remain current, the requested range is parity-clean or replay-proven, every required survivor is readable and not excluded by current integrity evidence, and writes are quiesced. Eligibility SHALL be decided per requested range and SHALL NOT be inferred from algebraic solvability alone.
 
@@ -60,8 +63,10 @@ Dirty, indeterminate, uncovered, or stale-checkpoint ranges SHALL NOT be automat
 
 ### Requirement: Offline rebuild writes only a separate replacement target
 <!-- dwv:req req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target -->
+<!-- dwv:requires req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed -->
+<!-- dwv:requires req.recovery-state-semantics.offline-rebuild-progress-is-durable-semantic-authority -->
 
-The first rebuild implementation SHALL require read-only/quiesced source topology and a distinct empty replacement identity. It SHALL process deterministic bounded ranges in increasing order, reconstruct each range with the same eligibility rules as degraded reads, write only the replacement, verify exact readback and the parity equation, durably flush the replacement range, and only then advance the durable rebuild cursor. It SHALL never overwrite the missing member path, parity, or surviving data.
+The first rebuild implementation SHALL require read-only or quiesced source topology and a distinct empty replacement identity. It SHALL process deterministic bounded ranges in increasing order, reconstruct each range with the degraded-read eligibility rules, write only the replacement, verify exact readback and the parity equation, durably flush the replacement range, and only then advance the durable rebuild cursor. It SHALL never overwrite the missing member path, parity, or surviving data.
 
 #### Scenario: One rebuild chunk completes
 
@@ -127,4 +132,3 @@ The degraded read and rebuild semantics SHALL run without Linux frontend types, 
 
 - **WHEN** no ublk or Linux kernel frontend is available
 - **THEN** all portable degraded-read, rebuild, interruption, and direct-file acceptance tests remain runnable without a Linux conformance claim
-

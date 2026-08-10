@@ -86,15 +86,14 @@ An adapter SHALL translate operations and flags without silent semantic changes,
 ### Requirement: Portable evidence does not imply platform certification
 <!-- dwv:req req.normalized-block-semantics.portable-evidence-does-not-imply-platform-certification -->
 
-The normalized contract SHALL identify portable tests separately from macOS, Linux, device, power-loss, and hardware tests. Passing request/event tests SHALL not be reported as proof of physical flush, FUA, frontend, or production behavior.
+The normalized contract SHALL identify portable request and lifecycle tests separately from macOS, Linux, concrete-store, power-loss, and hardware tests. Passing portable request or event tests SHALL not be reported as proof of physical flush, FUA, a live frontend, or production behavior.
 
-#### Scenario: The current host lacks a platform adapter
+#### Scenario: Only portable request evidence is available
 
-- **WHEN** OS-001 is validated without ublk, FSKit, or a real store
-- **THEN** portable contract evidence may pass while platform integration remains a visible successor gate
+- **WHEN** the normalized contract is validated without a live frontend or real store
+- **THEN** portable contract evidence may pass while each platform and concrete-store acceptance boundary remains visible and unmet
 
-#### Scenario: A later adapter is introduced
+#### Scenario: A platform adapter is introduced
 
 - **WHEN** a Linux or macOS adapter translates flags and completions
-- **THEN** it must pass this semantic conformance contract and retain separate platform evidence rather than changing the portable API
-
+- **THEN** it passes the normalized semantic conformance contract and retains separate platform evidence rather than changing the portable API

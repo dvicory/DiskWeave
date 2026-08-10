@@ -125,7 +125,7 @@ fn dispatch(args: &[String]) -> Result<Value, AppError> {
     let app = App::new(workspace_root());
     match operation {
         "knowledge" => dispatch_knowledge(&app, &args[2..]),
-        "inspect" | "context" | "trace" | "why" | "affected" | "readiness" => {
+        "inspect" | "context" | "trace" | "why" | "ownership" | "affected" | "readiness" => {
             dispatch_knowledge(&app, args.get(1..).unwrap_or_default())
         }
         "doctor" => {
@@ -192,6 +192,7 @@ fn dispatch_knowledge(app: &App, args: &[String]) -> Result<Value, AppError> {
         "export" | "extract" | "export-sphinx" => knowledge::export(app),
         "inspect" => knowledge::inspect(app, required_id(args, "inspect")?),
         "context" | "trace" | "why" => knowledge::context(app, required_id(args, command)?),
+        "ownership" => knowledge::ownership(app, required_id(args, "ownership")?),
         "affected" => {
             let mut ids = option_values(args, "--id");
             if let Some(id) = args.get(1).filter(|value| !value.starts_with("--")) {
@@ -393,7 +394,8 @@ fn help_value() -> Value {
     json!({"schema": CLI_SCHEMA, "usage": "cargo xtask docs <operation>", "operations": [
         "help", "schema", "doctor", "check [--base <revision>]", "build", "serve", "clean-room",
         "knowledge export|extract|export-sphinx", "inspect <id>",
-        "context|trace|why <id>", "affected <id>|--id <id>|--path <repo-relative-path>",
+        "context|trace|why <id>", "ownership <id>",
+        "affected <id>|--id <id>|--path <repo-relative-path>",
         "knowledge doctor --path <repo-relative-path>", "readiness|check",
         "resolve <id> --outcome <reviewed|reference-only|deferred|superseded> --reason <text>"
     ], "guarantees": ["offline deterministic scans", "bounded relation context", "atomic reviewed state"]})
@@ -401,8 +403,9 @@ fn help_value() -> Value {
 
 fn schema_value() -> Value {
     json!({"schema": CLI_SCHEMA, "commands": {
-        "knowledge_objects": "dwv.knowledge.objects.v1", "knowledge_context": "dwv.knowledge.context.v1",
-        "knowledge_readiness": "dwv.knowledge.readiness.v1", "reviewed_state": "dwv.knowledge.reviewed-links.v1",
+        "knowledge_objects": "dwv.knowledge.objects.v2", "knowledge_context": "dwv.knowledge.context.v2",
+        "knowledge_ownership": "dwv.knowledge.ownership.v1", "knowledge_readiness": "dwv.knowledge.readiness.v2",
+        "reviewed_state": "dwv.knowledge.reviewed-links.v2",
         "source_inventory": INVENTORY_SCHEMA
     }})
 }
