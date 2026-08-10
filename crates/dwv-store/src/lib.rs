@@ -10,15 +10,19 @@ mod identity;
 
 pub use identity::*;
 
-pub use dwv_core::{BufferToken, ByteRange, FenceDomain, SubmissionSequence, TopologyEpoch};
+pub use dwv_core::{
+    BlockRequest, BufferToken, ByteRange, FenceDomain, SubmissionSequence, TopologyEpoch,
+};
+
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+pub struct OperationId(pub u64);
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]
 pub struct StoreId(pub u64);
-
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct OperationId(pub u64);
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -1199,8 +1203,7 @@ pub struct ChildOperationSnapshot {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SlotSnapshot {
     pub token: OperationSlotToken,
-    pub request_id: OperationId,
-    pub topology_epoch: TopologyEpoch,
+    pub request: BlockRequest,
     pub state: SlotState,
     pub buffers: Vec<BufferToken>,
     pub frontend_tags: Vec<FrontendTag>,
@@ -1226,8 +1229,7 @@ struct ChildRecord {
 #[derive(Clone, Debug)]
 struct SlotRecord {
     token: OperationSlotToken,
-    request_id: OperationId,
-    topology_epoch: TopologyEpoch,
+    request: BlockRequest,
     state: SlotState,
     buffers: Vec<BufferToken>,
     frontend_tags: Vec<FrontendTag>,
@@ -1241,7 +1243,7 @@ struct SlotRecord {
     retry_count: usize,
 }
 
-/// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
+/// dwv:req req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations
 pub struct OperationSlotTable {
     slots: Vec<Option<SlotRecord>>,
     next_generations: Vec<u32>,
@@ -1265,11 +1267,7 @@ impl OperationSlotTable {
         self.admission.usage()
     }
 
-    pub fn reserve(
-        &mut self,
-        request_id: OperationId,
-        topology_epoch: TopologyEpoch,
-    ) -> Result<OperationSlotToken, SlotError> {
+    pub fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, SlotError> {
         let index = self.slots.iter().position(Option::is_none).ok_or_else(|| {
             SlotError::Admission(AdmissionError::Exhausted {
                 resource: ResourceKind::OperationSlots,
@@ -1286,14 +1284,21 @@ impl OperationSlotTable {
         self.admission
             .try_acquire(ResourceKind::OperationSlots)
             .map_err(SlotError::Admission)?;
+        if request.buffer.is_some()
+            && let Err(error) = self.admission.try_acquire(ResourceKind::Buffers)
+        {
+            self.admission
+                .release(ResourceKind::OperationSlots)
+                .expect("operation slot acquisition must be balanced");
+            return Err(SlotError::Admission(error));
+        }
         self.next_generations[index] = next;
         let token = OperationSlotToken::new(index as u32, generation);
         self.slots[index] = Some(SlotRecord {
             token,
-            request_id,
-            topology_epoch,
+            request,
             state: SlotState::Reserved,
-            buffers: Vec::new(),
+            buffers: request.buffer.into_iter().collect(),
             frontend_tags: Vec::new(),
             children: Vec::new(),
             submitted_watermark: None,
@@ -1305,28 +1310,6 @@ impl OperationSlotTable {
             retry_count: 0,
         });
         Ok(token)
-    }
-
-    pub fn attach_buffer(
-        &mut self,
-        token: OperationSlotToken,
-        buffer: BufferToken,
-    ) -> Result<(), SlotError> {
-        let index = self.active_index(token)?;
-        self.admission
-            .try_acquire(ResourceKind::Buffers)
-            .map_err(SlotError::Admission)?;
-        if let Some(slot) = self.slots[index].as_mut() {
-            if slot.state == SlotState::Reclaimable {
-                let _ = self.admission.release(ResourceKind::Buffers);
-                return Err(SlotError::InvalidState {
-                    token,
-                    state: slot.state,
-                });
-            }
-            slot.buffers.push(buffer);
-        }
-        Ok(())
     }
 
     pub fn attach_frontend_tag(
@@ -1584,8 +1567,7 @@ impl OperationSlotTable {
         let slot = self.slots[index].as_ref().expect("active index has a slot");
         Ok(SlotSnapshot {
             token: slot.token,
-            request_id: slot.request_id,
-            topology_epoch: slot.topology_epoch,
+            request: slot.request,
             state: slot.state,
             buffers: slot.buffers.clone(),
             frontend_tags: slot.frontend_tags.clone(),
@@ -1659,6 +1641,25 @@ impl OperationSlotTable {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dwv_core::{BlockOp, DurabilityIntent, FrontendId, OrderingIntent, RequestId, SlotId};
+
+    fn request(request_id: u64, epoch: u64) -> BlockRequest {
+        BlockRequest::new(
+            RequestId(request_id),
+            FrontendId(7),
+            SlotId::from_bytes([9; 16]),
+            TopologyEpoch(epoch),
+            BlockOp::Read,
+            RANGE,
+            Some(BufferToken::new(3, 4)),
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(11),
+                preflush: false,
+                fence_domain: FenceDomain(12),
+            },
+            DurabilityIntent::Ordinary,
+        )
+    }
 
     const RANGE: ByteRange = ByteRange {
         offset: 0,
@@ -1867,9 +1868,9 @@ mod tests {
     #[test]
     fn stale_generations_and_duplicate_delivery_are_safe() {
         let mut table = OperationSlotTable::new(limits());
-        let token = table.reserve(OperationId(1), TopologyEpoch(1)).unwrap();
-        table.attach_buffer(token, BufferToken::new(0, 1)).unwrap();
+        let token = table.reserve(request(1, 1)).unwrap();
         let operation_id = table.register_child(token, RANGE).unwrap();
+        assert_eq!(table.snapshot(token).unwrap().request, request(1, 1));
         table.mark_submitted(token).unwrap();
         let completion = full_success(operation_id);
         assert_eq!(
@@ -1889,7 +1890,7 @@ mod tests {
             .unwrap();
         table.release(token).unwrap();
 
-        let replacement = table.reserve(OperationId(2), TopologyEpoch(2)).unwrap();
+        let replacement = table.reserve(request(2, 2)).unwrap();
         assert_ne!(token.generation, replacement.generation);
         assert!(matches!(
             table.apply_completion(
@@ -1904,9 +1905,25 @@ mod tests {
     }
 
     #[test]
+    fn equal_numeric_request_ids_from_distinct_frontends_do_not_collide() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(2, 2, 1, 1, 1, 1));
+        let first_request = request(42, 1);
+        let second_request = BlockRequest {
+            frontend_id: FrontendId(8),
+            buffer: Some(BufferToken::new(4, 4)),
+            ..first_request
+        };
+        let first = table.reserve(first_request).unwrap();
+        let second = table.reserve(second_request).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(table.snapshot(first).unwrap().request, first_request);
+        assert_eq!(table.snapshot(second).unwrap().request, second_request);
+    }
+
+    #[test]
     fn uncertain_completion_requires_drain_and_reconciliation() {
         let mut table = OperationSlotTable::new(limits());
-        let token = table.reserve(OperationId(1), TopologyEpoch(1)).unwrap();
+        let token = table.reserve(request(1, 1)).unwrap();
         let operation_id = table.register_child(token, RANGE).unwrap();
         let uncertain = StoreCompletion::new(
             operation_id,
@@ -1932,17 +1949,18 @@ mod tests {
     #[test]
     fn admission_bounds_slots_buffers_children_and_retries() {
         let mut table = OperationSlotTable::new(limits());
-        let token = table.reserve(OperationId(1), TopologyEpoch(1)).unwrap();
+        let token = table.reserve(request(1, 1)).unwrap();
         assert!(matches!(
-            table.reserve(OperationId(2), TopologyEpoch(1)),
+            table.reserve(request(2, 1)),
             Err(SlotError::Admission(AdmissionError::Exhausted {
                 resource: ResourceKind::OperationSlots,
                 ..
             }))
         ));
-        table.attach_buffer(token, BufferToken::new(0, 1)).unwrap();
+        let mut buffer_table = OperationSlotTable::new(ResourceLimits::new(2, 1, 1, 1, 1, 1));
+        buffer_table.reserve(request(3, 1)).unwrap();
         assert!(matches!(
-            table.attach_buffer(token, BufferToken::new(1, 1)),
+            buffer_table.reserve(request(4, 1)),
             Err(SlotError::Admission(AdmissionError::Exhausted {
                 resource: ResourceKind::Buffers,
                 ..
@@ -2112,7 +2130,7 @@ mod tests {
         assert_eq!(before.compare(&after), IdentityComparison::Changed);
 
         let mut table = OperationSlotTable::new(limits());
-        let token = table.reserve(OperationId(1), TopologyEpoch(1)).unwrap();
+        let token = table.reserve(request(1, 1)).unwrap();
         table
             .invalidate(token, StoreInvalidationReason::IdentityChanged)
             .unwrap();
@@ -2121,7 +2139,7 @@ mod tests {
             snapshot.invalidated_by,
             Some(StoreInvalidationReason::IdentityChanged)
         );
-        assert_eq!(snapshot.topology_epoch, TopologyEpoch(1));
+        assert_eq!(snapshot.request.topology_epoch, TopologyEpoch(1));
     }
 
     fn full_success_for(operation_id: ChildOperationId, range: ByteRange) -> StoreCompletion {

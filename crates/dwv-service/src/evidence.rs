@@ -1,4 +1,4 @@
-use dwv_core::ByteRange;
+use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{CompletionDisposition, PersistenceEvidence};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -25,8 +25,10 @@ pub struct CompletionEvidence {
     pub persistence: PersistenceClaim,
 }
 
+/// dwv:req req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OperationEvidence {
+    pub request: BlockRequest,
     pub completion: CompletionEvidence,
     pub trace: dwv_transaction_ref::Trace,
 }

@@ -1,3 +1,4 @@
+use dwv_core::BlockRequest;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,14 +23,17 @@ pub enum ServiceError {
     NotServing,
     Blocked(FailureClass),
     IncompleteRead {
+        request: Box<BlockRequest>,
         bytes: Vec<u8>,
         evidence: crate::evidence::CompletionEvidence,
     },
     Invalid {
+        request: Option<Box<BlockRequest>>,
         class: FailureClass,
         detail: String,
     },
     Io {
+        request: Option<Box<BlockRequest>>,
         class: FailureClass,
         detail: String,
     },
@@ -38,6 +42,7 @@ pub enum ServiceError {
 impl ServiceError {
     pub(crate) fn invalid(class: FailureClass, detail: impl Into<String>) -> Self {
         Self::Invalid {
+            request: None,
             class,
             detail: detail.into(),
         }
@@ -45,16 +50,53 @@ impl ServiceError {
 
     pub(crate) fn io(class: FailureClass, detail: impl Into<String>) -> Self {
         Self::Io {
+            request: None,
             class,
             detail: detail.into(),
         }
     }
 
     pub(crate) fn incomplete_read(
+        request: BlockRequest,
         bytes: Vec<u8>,
         evidence: crate::evidence::CompletionEvidence,
     ) -> Self {
-        Self::IncompleteRead { bytes, evidence }
+        Self::IncompleteRead {
+            request: Box::new(request),
+            bytes,
+            evidence,
+        }
+    }
+
+    pub(crate) fn with_request(self, request: BlockRequest) -> Self {
+        match self {
+            Self::IncompleteRead {
+                bytes, evidence, ..
+            } => Self::IncompleteRead {
+                request: Box::new(request),
+                bytes,
+                evidence,
+            },
+            Self::Invalid { class, detail, .. } => Self::Invalid {
+                request: Some(Box::new(request)),
+                class,
+                detail,
+            },
+            Self::Io { class, detail, .. } => Self::Io {
+                request: Some(Box::new(request)),
+                class,
+                detail,
+            },
+            error => error,
+        }
+    }
+
+    pub fn request(&self) -> Option<BlockRequest> {
+        match self {
+            Self::IncompleteRead { request, .. } => Some(**request),
+            Self::Invalid { request, .. } | Self::Io { request, .. } => request.as_deref().copied(),
+            Self::NotServing | Self::Blocked(_) => None,
+        }
     }
 }
 
@@ -68,8 +110,8 @@ impl fmt::Display for ServiceError {
                 "read completed only {}/{} bytes: {:?}",
                 evidence.completed, evidence.requested.length, evidence.disposition
             ),
-            Self::Invalid { class, detail } => write!(formatter, "{class:?}: {detail}"),
-            Self::Io { class, detail } => write!(formatter, "{class:?}: {detail}"),
+            Self::Invalid { class, detail, .. } => write!(formatter, "{class:?}: {detail}"),
+            Self::Io { class, detail, .. } => write!(formatter, "{class:?}: {detail}"),
         }
     }
 }

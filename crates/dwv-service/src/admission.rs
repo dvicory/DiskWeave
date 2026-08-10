@@ -1,6 +1,6 @@
-use dwv_core::{ByteRange, TopologyEpoch};
+use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{
-    AdmissionError, CompletedRangeSet, CompletionDisposition, OperationId, OperationSlotTable,
+    AdmissionError, CompletedRangeSet, CompletionDisposition, OperationSlotTable,
     OperationSlotToken, PersistenceEvidence, ResourceLimits, ResourceUsage, SlotError,
     StoreCompletion,
 };
@@ -32,20 +32,8 @@ impl OperationAdmission {
     pub fn usage(&self) -> ResourceUsage {
         self.table.usage()
     }
-    pub fn reserve(
-        &mut self,
-        request_id: OperationId,
-        epoch: TopologyEpoch,
-    ) -> Result<OperationSlotToken, SlotError> {
-        self.table.reserve(request_id, epoch)
-    }
-    pub fn attach_buffer(
-        &mut self,
-        token: OperationSlotToken,
-        index: u32,
-    ) -> Result<(), SlotError> {
-        self.table
-            .attach_buffer(token, dwv_store::BufferToken::new(index, token.generation))
+    pub fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, SlotError> {
+        self.table.reserve(request)
     }
     pub fn child(
         &mut self,
@@ -156,22 +144,44 @@ pub(crate) fn _admission_type(_: AdmissionError) {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dwv_core::{
+        BlockOp, BufferToken, DurabilityIntent, FenceDomain, FrontendId, OrderingIntent, RequestId,
+        SlotId, SubmissionSequence, TopologyEpoch,
+    };
+
+    fn request(request_id: u64) -> BlockRequest {
+        BlockRequest::new(
+            RequestId(request_id),
+            FrontendId(3),
+            SlotId::from_bytes([4; 16]),
+            TopologyEpoch(2),
+            BlockOp::Read,
+            ByteRange::new(0, 4).unwrap(),
+            Some(BufferToken::new(0, 1)),
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(request_id),
+                preflush: false,
+                fence_domain: FenceDomain(5),
+            },
+            DurabilityIntent::Ordinary,
+        )
+    }
 
     #[test]
     fn bounded_slots_reject_exhaustion_and_reuse_with_new_generation() {
         let mut admission = OperationAdmission::new(AdmissionConfig {
             limits: ResourceLimits::new(1, 1, 1, 1, 1, 1),
         });
-        let first = admission.reserve(OperationId(1), TopologyEpoch(2)).unwrap();
+        let first = admission.reserve(request(1)).unwrap();
         assert!(matches!(
-            admission.reserve(OperationId(2), TopologyEpoch(2)),
+            admission.reserve(request(2)),
             Err(SlotError::Admission(AdmissionError::Exhausted {
                 resource: dwv_store::ResourceKind::OperationSlots,
                 ..
             }))
         ));
         admission.reclaim(first, false).unwrap();
-        let second = admission.reserve(OperationId(2), TopologyEpoch(2)).unwrap();
+        let second = admission.reserve(request(2)).unwrap();
         assert_ne!(first, second);
         assert_eq!(admission.usage().operation_slots, 1);
         admission.reclaim(second, false).unwrap();
@@ -183,7 +193,7 @@ mod tests {
         let mut admission = OperationAdmission::new(AdmissionConfig {
             limits: ResourceLimits::new(1, 1, 3, 1, 1, 1),
         });
-        let token = admission.reserve(OperationId(9), TopologyEpoch(2)).unwrap();
+        let token = admission.reserve(request(9)).unwrap();
         let ranges = [
             ByteRange::new(0, 4).unwrap(),
             ByteRange::new(4, 4).unwrap(),
@@ -226,13 +236,36 @@ mod tests {
     }
 
     #[test]
+    fn abandonment_before_admission_or_irreversible_work_owns_no_backend_resources() {
+        let mut admission = OperationAdmission::new(AdmissionConfig {
+            limits: ResourceLimits::new(1, 1, 1, 1, 1, 1),
+        });
+        let empty = ResourceUsage {
+            operation_slots: 0,
+            buffers: 0,
+            backend_submissions: 0,
+            retries: 0,
+            range_locks: 0,
+            background_work: 0,
+        };
+        assert_eq!(admission.usage(), empty);
+
+        let token = admission.reserve(request(11)).unwrap();
+        admission.abandon(token).unwrap();
+        let snapshot = admission.snapshot(token).unwrap();
+        assert!(snapshot.abandoned);
+        assert_eq!(snapshot.buffers, vec![BufferToken::new(0, 1)]);
+        assert!(snapshot.children.is_empty());
+        admission.reclaim(token, false).unwrap();
+        assert_eq!(admission.usage(), empty);
+    }
+
+    #[test]
     fn abandonment_keeps_the_slot_until_uncertain_children_reconcile() {
         let mut admission = OperationAdmission::new(AdmissionConfig {
             limits: ResourceLimits::new(1, 1, 1, 1, 1, 1),
         });
-        let token = admission
-            .reserve(OperationId(10), TopologyEpoch(2))
-            .unwrap();
+        let token = admission.reserve(request(10)).unwrap();
         let range = ByteRange::new(0, 4).unwrap();
         let child = admission.child(token, range).unwrap();
         admission.submit_all(token, 1).unwrap();
@@ -269,7 +302,7 @@ mod tests {
                 limits: ResourceLimits::new(1, 1, ranges.len(), 1, 1, 1),
             });
             let token = admission
-                .reserve(OperationId(100 + completed_count as u64), TopologyEpoch(2))
+                .reserve(request(100 + completed_count as u64))
                 .unwrap();
             let children = admission.children(token, &ranges).unwrap();
             admission.submit_all(token, children.len()).unwrap();

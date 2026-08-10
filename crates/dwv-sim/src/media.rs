@@ -638,18 +638,6 @@ impl MediaSimulator {
         id
     }
 
-    fn submit_operation(&self, operation_id: ChildOperationId) -> StoreRequest {
-        StoreRequest {
-            operation_id: dwv_store::OperationId(u64::from(operation_id.index)),
-            store_id: self.config.store_id,
-            topology_epoch: self.config.topology_epoch,
-            kind: StoreRequestKind::Flush {
-                through: StoreWriteWatermark(0),
-            },
-            buffer: None,
-        }
-    }
-
     fn validate_submission(
         &self,
         operation_id: ChildOperationId,
@@ -659,10 +647,14 @@ impl MediaSimulator {
         if !self.available {
             return Err(MediaError::StoreUnavailable);
         }
-        let mut request = self.submit_operation(operation_id);
-        request.kind = kind;
-        request.buffer = buffer;
-        request.validate(&self.config.capabilities)?;
+        StoreRequest {
+            operation_id: dwv_store::OperationId(u64::from(operation_id.index)),
+            store_id: self.config.store_id,
+            topology_epoch: self.config.topology_epoch,
+            kind,
+            buffer,
+        }
+        .validate(&self.config.capabilities)?;
         Ok(())
     }
 

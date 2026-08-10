@@ -4,13 +4,14 @@ use crate::{
     failure::ServiceError,
     range::RangePlan,
 };
-use dwv_core::ByteRange;
+use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{CompletionDisposition, OperationSlotToken, PersistenceEvidence, StoreError};
 use dwv_store_file::FileStore;
 
 pub(crate) fn read_member(
     store: &mut FileStore,
     admission: &mut crate::OperationAdmission,
+    request: BlockRequest,
     token: OperationSlotToken,
     plan: &RangePlan,
 ) -> Result<(Vec<u8>, CompletionEvidence), ServiceError> {
@@ -71,6 +72,7 @@ pub(crate) fn read_member(
                 CompletionDisposition::Short
             };
             return Err(ServiceError::incomplete_read(
+                request,
                 bytes,
                 CompletionEvidence {
                     requested,

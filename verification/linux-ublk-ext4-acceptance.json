@@ -1,6 +1,6 @@
 {
   "schema": "dwv.verification.linux-ublk-ext4.v1",
-  "source_snapshot_sha256": "522259d739f8caf723581e0b0791b0ef7de3df667fc514c8345ab8d90c0cb547",
+  "source_snapshot_sha256": "161b38983951cbbddf31d2ab6d616aaed41222e5a7a8d4969806ce858bb92426",
   "kernel_release": "7.0.0-28-generic",
   "architecture": "aarch64",
   "probe": {
@@ -123,8 +123,8 @@
     "shutdown": "clean",
     "state": "stopped",
     "trace_bound": 4096,
-    "trace_count": 458,
-    "trace_digest": "c7945a3d00cfd9249fcfe1a4de81daf56bba5e2dabd9ece6fbd9d54ca1d6a99d"
+    "trace_count": 453,
+    "trace_digest": "30b773868e67969810208a8d6dde6e5ded2938b77c422dd899643753d3134a52"
   },
   "second_shutdown": {
     "command": "demo.disk.serve",
@@ -138,13 +138,13 @@
     "state": "stopped",
     "trace_bound": 4096,
     "trace_count": 81,
-    "trace_digest": "56f8bd3603c2e4a636261e1c826f433ac1516e395a1cc2ac19180180a2b06294"
+    "trace_digest": "f58d7f081d8ec21e72f785fe9661e8265e6b0aa3031d8c58a95411b3d65d1823"
   },
   "live_traces": [
     {
       "phase": "first-shutdown",
       "retained_file": "linux-ublk-trace-first.json",
-      "sha256": "040a6515fa324d73af00a4771c41fd06c22d46a29d7c7f70ce278918d0d6eb57",
+      "sha256": "1ecf091313fdcdd1907298a20a0d5549a492e52b5ee2c1358133323945f05171",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
       "bounds": {
@@ -153,7 +153,7 @@
         "maximum_records": 4096
       },
       "exhausted_records": 0,
-      "record_count": 458,
+      "record_count": 453,
       "replay": {
         "clean": true,
         "command": "demo.disk.trace-replay",
@@ -161,14 +161,14 @@
         "diagnostics": [],
         "ok": true,
         "outcome": "success",
-        "record_count": 458,
+        "record_count": 453,
         "schema": "dwv.cli.v0"
       }
     },
     {
       "phase": "second-shutdown",
       "retained_file": "linux-ublk-trace-second.json",
-      "sha256": "73eaf4ca520bf9840499a74354eafe777bed7233702edca311fb495928d5a8b7",
+      "sha256": "9793698021ba48cace5f2c3d4f115282918452964e6ef1919bb2642f7986b726",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
       "bounds": {
@@ -193,22 +193,22 @@
   "backing_file": {
     "independently_mounted_read_only": true,
     "content_sha256": "d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7",
-    "data_sha256": "33aa9543635fd4a41a7f14e10fcab56e5b857809ec2e32c5337b2fd5b8140762",
-    "parity_sha256": "33aa9543635fd4a41a7f14e10fcab56e5b857809ec2e32c5337b2fd5b8140762",
+    "data_sha256": "7a088635b8c3680d0cb79f527a9f74ca326ffbe88c9e152c3979f84fd511718c",
+    "parity_sha256": "7a088635b8c3680d0cb79f527a9f74ca326ffbe88c9e152c3979f84fd511718c",
     "data_equals_parity": true
   },
   "inspect": {
     "command": "demo.disk.inspect",
     "contract": "dwv.cli.v0",
-    "data_hash": "31df9de72bfdf7c5dc4f49e7dafc37975a34b8f8d21b1ad8d369a48648e61ec3",
+    "data_hash": "4aa9abe5117723cec83faeadfa11a76b8ad9c8545fa5e98c3cf19a33627ac660",
     "diagnostics": [],
     "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
     "ok": true,
     "outcome": "success",
-    "parity_hash": "31df9de72bfdf7c5dc4f49e7dafc37975a34b8f8d21b1ad8d369a48648e61ec3",
+    "parity_hash": "4aa9abe5117723cec83faeadfa11a76b8ad9c8545fa5e98c3cf19a33627ac660",
     "parity_matches_data": true,
     "protected_length": 67108864,
-    "recovery_generation": 243,
+    "recovery_generation": 237,
     "recovery_integrity": "Healthy",
     "schema": "dwv.cli.v0",
     "topology_epoch": 1
@@ -247,8 +247,8 @@
         "shutdown": "clean",
         "state": "stopped",
         "trace_bound": 4096,
-        "trace_count": 16,
-        "trace_digest": "3325525a6c6402a524a0ca48afb2f3d36738fc7bd13829d0914bba580526454c"
+        "trace_count": 10,
+        "trace_digest": "78f822948794f2cb0db1b7236e8311df060cf35735dd2d5425a25819dc33baa8"
       }
     },
     "partial_fence_coverage_rejected_by": "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"
