@@ -2,7 +2,7 @@
 
 All 25 current capability specifications, 152 stable current requirement IDs, and 349 current scenarios were inspected before this change. Current specifications remain semantic authority; the active architecture roadmap was used only for coherence. Detailed mutation, fence, abandonment, and routing predicates are repeated across reusable owners and consumers. Current relationship discovery is untyped, reviewed state hashes only local prose, and seven in-scope capabilities still import authority from retired work identities or historical artifacts.
 
-This design is the external-review checkpoint. No delta is applied, no relationship/fingerprint tooling or reviewed state is changed, no evidence mapping is migrated, and no archive or successor change starts before approval.
+This revised design incorporates the three narrow corrections required by the first external review. No delta is applied, no relationship/fingerprint tooling or reviewed state is changed, no evidence mapping is migrated, and no archive or successor change starts before renewed approval.
 
 ## Goals / Non-Goals
 
@@ -10,7 +10,7 @@ This design is the external-review checkpoint. No delta is applied, no relations
 
 - select one complete owner for every affected detailed operational policy;
 - leave refiners, composers, and adapters with only their local responsibility;
-- make consequential `requires` and `refines` edges mechanically inspectable;
+- make every consequential `requires` and `refines` edge explicit and mechanically inspectable without inferring semantics from arbitrary prose;
 - invalidate every direct and transitive semantic dependent when effective semantics change;
 - preserve stable IDs for semantics-preserving ownership relocation and clarification;
 - retain evidence while retiring one completed correction-program requirement.
@@ -32,8 +32,8 @@ Classification counts are non-exclusive because one current duplicate cluster be
 
 | Classification | Count | Disposition |
 |---|---:|---|
-| owner + valid refinement | 6 | Preserve owners; narrow recovery, transaction, checksum, dirty-clear, and repair consumers |
-| owner + composition | 4 | Healthy admission, write, durable-completion, and failure requirements retain service-only composition |
+| owner + valid refinement | 5 | Preserve dirty-intent, typed-authority/clear, transaction-checkpoint, and adapter specializations; repair and service consumers instead require independent owners |
+| owner + composition | 4 | Healthy admission, write, durable-completion, and failure requirements retain service-only composition through `requires` edges |
 | owner + adapter conformance | 3 | Linux request mapping, volatile simulator store behavior, and macOS bridge selection remain adapter-local |
 | constitutional constraint + detailed owner | 3 | Architecture, security, and evidence constraints remain high-level and do not duplicate operational state machines |
 | duplicate ownership | 3 | Protected intent, complete fence predicates, and generic abandonment/failure wording are consolidated |
@@ -63,7 +63,7 @@ Classification counts are non-exclusive because one current duplicate cluster be
 | `parity-envelope-profiles` | 5 | Envelope evidence is not recovery authorization; no delta |
 | `checksum-plane` | 6 | Generation-bound checksum validity owner and invalidation refiner |
 | `parity-verification-repair` | 5 | Read-only equation scan and mismatch-classification owner; target only |
-| `checksum-scrub-verified-repair` | 5 | Unique independent-evidence repair authority and repair-local durability mapping |
+| `checksum-scrub-verified-repair` | 5 | Unique independent-evidence repair authority and repair-local behavior with dirty/recovery dependencies |
 | `degraded-read-offline-rebuild` | 7 | Known-erasure eligibility and separate-target rebuild owner |
 | `metadata-loss-recovery` | 5 | Distinct metadata-loss decision boundary; its authority cleanup is deliberately deferred |
 | `normalized-trace-replay` | 4 | Trace normalization/replay evidence is distinct; no delta |
@@ -81,27 +81,27 @@ Confirmed cross-capability non-problems:
 
 ## Final ownership reconciliation
 
-| Semantic policy | Current requirements | Selected owner | Refiners | Composers | Adapters | Scenario disposition | Semantic classification |
+| Semantic policy | Current requirements | Selected owner | Refiners | Dependencies/composers | Adapters | Scenario disposition | Semantic classification |
 |---|---|---|---|---|---|---|---|
-| Protected home mutation requires durable dirty and integrity intent | dirty intent; recovery home mutation; transaction intent; checksum invalidation; healthy write | `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation` | recovery one-generation persistence; transaction action emission; checksum `VALID`→`STALE`; repair-local persistence | healthy protected write | none | Keep owner success/failure; split recovery reject/mismatch from lost/corrupt/indeterminate; preserve transaction, checksum, repair, RMW, and full-overwrite local cases | duplicate ownership → owner + valid refinements/composition |
-| Exact range outcome and persistence evidence | store outcomes; simulator outcomes; healthy writes | `req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence` | simulator exact-range adapter behavior; healthy write mapping | healthy write | volatile simulator | Preserve short/uncertain outcomes and exact store-write composition | owner + adapter conformance/composition |
-| Raw store watermark truth | store watermark; recovery fence; dirty clear; transaction checkpoint; healthy completion | `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` | recovery admissibility, dirty clear, transaction release, healthy completion | healthy durable completion | none | Remove repeated complete fence predicates; preserve local acceptance/rejection cases | duplicate ownership → owner + valid refinements/composition |
-| Typed authority for clean/valid/session claims | recovery typed fence; dirty clear; transaction checkpoint; healthy completion; repair acceptance | `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence` | dirty exact-region clear; transaction action/release; repair-local acceptance | healthy durable completion | none | Preserve valid and invalid evidence cases with owner/local boundaries explicit | owner + valid refinement/composition |
-| Exact dirty-region clear subset and generation checks | dirty clear; transaction checkpoint; healthy completion | `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence` | transaction release mapping | healthy durable completion | none | Preserve covering and omitted/stale evidence cases under dirty owner | owner + valid refinement/composition |
-| Frontend abandonment and delivery-interest semantics | normalized lifecycle; dirty failure; transaction failure; healthy failure; Linux resources | `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics` | none | dirty durable consequence; transaction state; healthy failure | Linux frontend mapping remains local | Preserve abandonment before/after irreversible work and reconciliation cases | duplicate ownership → owner + composition |
-| Backend operation/tag/buffer lifetime and generation reuse | store slots; transaction failure; healthy admission/failure; Linux tags | `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations` | healthy admission/failure composition | transaction failure and healthy service | Linux request/tag handling | Preserve exhaustion, stale/duplicate completion, abandonment, and delayed release | owner + composition/adapter conformance |
-| Transaction action order, terminal state, and release points | transaction actions; transaction intent/checkpoint/failure; healthy write/failure | `req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions` plus its three local state requirements | transaction durable-intent, checkpoint, and failure requirements refine imported owner policies | healthy write/failure | none | Rename generic owner scenarios to transaction-local accepted/unavailable/authority/reconciliation outcomes | owner + valid refinement |
-| Durable dirty/restart consequence | dirty failure/restart; transaction failure; healthy failure; Linux restart | `req.dirty-integrity-invalidation.failures-and-restart-are-conservative` | none | transaction and healthy failure handling | Linux reacquisition | Preserve home-write failure; rename daemon crash to process loss; never infer clean from missing completion | owner + composition |
-| Slot, role, coding position, assignment, generation, and epoch identity | topology validation; normalized request target; healthy admission; Linux mapping; degraded eligibility | `anchorless-topology-identity` for topology meaning; normalized request requirement for request-carried fields | healthy admission mapping; Linux request mapping | healthy admission | Linux request adapter | Preserve healthy/stale assembly and add reordered collection plus positional-mismatch cases | clarification, owner + composition/adapter conformance |
-| Normalized request validation, ordering, and durability intent | normalized request and ordering; healthy admission; Linux mapping | the two `normalized-block-semantics` request/ordering requirements | healthy admission and Linux mapping | healthy service | Linux frontend | Preserve supported/unsupported/range/mapping/replay cases; remove historical gate language | owner + composition/adapter conformance |
-| XOR parity update and known-erasure reconstruction | XOR update/reconstruction; healthy write; degraded read | corresponding `xor-reference-model` requirements | none | healthy write and degraded read consume exact math | none | Preserve RMW/full overwrite, single-erasure, and beyond-tolerance cases | confirmed no-problem |
-| Read-only mismatch classification and automatic repair authority | parity mismatch classification; checksum validity; checksum automatic repair | parity verifier owns read-only classification; checksum scrub owns unique independent-evidence repair authorization | none | repair plan combines independent facts | none | Preserve unique parity/data target and ambiguous/beyond-tolerance cases | confirmed distinct owners |
-| Separate-target repair durability and verified readback | checksum repair; dirty intent; recovery typed fence | `req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback` for repair-local action; imported owners retain durability authority | repair requirement refines dirty intent and recovery fence policy | none | none | Preserve success and target-write/readback failure cases | owner + valid refinement |
-| Degraded read eligibility and offline rebuild/promotion | degraded eligibility/rebuild; topology; recovery export/cursor; XOR | the two `degraded-read-offline-rebuild` requirements | none | degraded requirements consume independent prerequisites | none | Preserve known erasure, stale evidence, ambiguity, chunk, unknown durability, and alias refusal | confirmed distinct owner + requirements |
+| Protected home mutation requires durable dirty and integrity intent | dirty intent; recovery home mutation; transaction intent; checksum invalidation; healthy write | `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation` | recovery one-generation persistence; transaction action emission; checksum `VALID`→`STALE` | healthy protected write and separate-target repair require the owner | none | Keep owner success/failure; split recovery reject/mismatch from lost/corrupt/indeterminate; preserve transaction, checksum, repair, RMW, and full-overwrite local cases | duplicate ownership → owner + valid refinements/dependencies |
+| Exact range outcome and persistence evidence | store outcomes; simulator outcomes; healthy writes | `req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence` | simulator exact-range adapter realization | healthy write requires exact store outcomes | volatile simulator | Preserve short/uncertain outcomes and exact store-write composition | owner + adapter refinement/dependency |
+| Raw store watermark truth | store watermark; recovery fence; dirty clear; transaction checkpoint; healthy completion | `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` | none | recovery admissibility, dirty clear, transaction release, and healthy durable completion require watermark evidence | none | Remove repeated complete fence predicates; preserve local acceptance/rejection cases | duplicate ownership → owner + dependencies |
+| Typed authority for clean/valid/session claims | recovery typed fence; dirty clear; transaction checkpoint; healthy completion; repair acceptance | `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence` | dirty exact-region clear | transaction action/release, healthy completion, and repair acceptance require typed authority | none | Preserve valid and invalid evidence cases with owner/local boundaries explicit | owner + valid refinement/dependencies |
+| Exact dirty-region clear subset and generation checks | dirty clear; transaction checkpoint; healthy completion | `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence` | transaction checkpoint/release realization | healthy completion requires the exact clear decision | none | Preserve covering and omitted/stale evidence cases under dirty owner | owner + valid refinement/dependency |
+| Frontend abandonment and delivery-interest semantics | normalized lifecycle; dirty failure; transaction failure; healthy failure; Linux resources | `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics` | none | dirty durable consequence, transaction state, and healthy failure require the lifecycle meaning | Linux frontend mapping remains local | Preserve abandonment before/after irreversible work and reconciliation cases | duplicate ownership → owner + dependencies |
+| Backend operation/tag/buffer lifetime and generation reuse | store slots; transaction failure; healthy admission/failure; Linux tags | `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations` | none | transaction failure and healthy admission/failure require operation lifetime | Linux request/tag handling | Preserve exhaustion, stale/duplicate completion, abandonment, and delayed release | owner + dependencies/adapter conformance |
+| Transaction action order, terminal state, and release points | transaction actions; transaction intent/checkpoint/failure; healthy write/failure | `req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions` plus its three local state requirements | durable-intent action and checkpoint/release requirements specialize imported owner policies | transaction failure requires independent lifecycle/lifetime/dirty facts; healthy write/failure require transaction behavior | none | Rename generic owner scenarios to transaction-local accepted/unavailable/authority/reconciliation outcomes | transaction-local ownership + valid refinements/dependencies |
+| Durable dirty/restart consequence | dirty failure/restart; transaction failure; healthy failure; Linux restart | `req.dirty-integrity-invalidation.failures-and-restart-are-conservative` | none | transaction and healthy failure handling require the durable consequence | Linux reacquisition | Preserve home-write failure; rename daemon crash to process loss; never infer clean from missing completion | owner + dependencies |
+| Slot, role, coding position, assignment, generation, and epoch identity | topology validation; normalized request target; healthy admission; Linux mapping; degraded eligibility | `anchorless-topology-identity` for topology meaning; normalized request requirement for request-carried fields | none | healthy admission and degraded eligibility require topology identity | Linux request mapping remains adapter-local | Preserve healthy/stale assembly and add reordered collection plus positional-mismatch cases | clarification, owner + dependencies/adapter conformance |
+| Normalized request validation, ordering, and durability intent | normalized request and ordering; healthy admission; Linux mapping | the two `normalized-block-semantics` request/ordering requirements | Linux kernel request translation | healthy admission requires normalized request semantics | Linux frontend | Preserve supported/unsupported/range/mapping/replay cases; remove historical gate language | owner + dependency/adapter refinement |
+| XOR parity update and known-erasure reconstruction | XOR update/reconstruction; healthy write; degraded read | corresponding `xor-reference-model` requirements | none | healthy write and degraded read require exact math | none | Preserve RMW/full overwrite, single-erasure, and beyond-tolerance cases | confirmed no-problem |
+| Read-only mismatch classification and automatic repair authority | parity mismatch classification; checksum validity; checksum automatic repair | parity verifier owns read-only classification; checksum scrub owns unique independent-evidence repair authorization | none | repair plan requires independent facts | none | Preserve unique parity/data target and ambiguous/beyond-tolerance cases | confirmed distinct owners |
+| Separate-target repair durability and verified readback | checksum repair; dirty intent; recovery typed fence | `req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback` owns separate-target write/readback verification; imported owners retain invalidation and typed durability authority | none | repair requires dirty intent and typed recovery authority | none | Preserve success and target-write/readback failure cases | distinct owner + dependencies |
+| Degraded read eligibility and offline rebuild/promotion | degraded eligibility/rebuild; topology; recovery export/cursor; XOR | the two `degraded-read-offline-rebuild` requirements | none | degraded requirements require independent prerequisites | none | Preserve known erasure, stale evidence, ambiguity, chunk, unknown durability, and alias refusal | confirmed distinct owner + dependencies |
 | Metadata-loss recovery and envelope evidence | metadata-loss matrix; parity envelope; verifier; repair; recovery export | `metadata-loss-recovery` owns decisions; `parity-envelope-profiles` owns non-authorizing envelope facts | none in this change | none | none | Preserve all cases; certificate-authority repair and historical wording are deferred to the dedicated successor change | confirmed no-problem |
 | Constitutional product, security, and evidence boundaries | architecture, security, evidence requirements | each capability owns its own high-level constraint | none | detailed capabilities remain constrained | none | No scenario movement | constitutional constraint + detailed owner |
-| Canonical relationship graph and semantic freshness | canonical discovery; change impact; context | new `req.documentation-knowledge-architecture.canonical-semantic-relationships-are-colocated-and-derived` | none | change-impact and context commands require it | tooling implementation waits for review | Add valid/invalid graph, A→B→C propagation, and formatting-stability cases | missing canonical behavior |
-| Platform adapter conformance and evidence scope | normalized adapter contract; simulator; macOS bridge; Linux mapping/acceptance; evidence scope | portable semantics remain with normalized/store owners; each platform requirement owns only translation/evidence | simulator, healthy, and Linux mapping use typed `refines` where they specialize an owner | none | simulator, macOS candidate, Linux frontend | Preserve platform refusal/non-claim cases; separate Linux declared profile from exact recorded environment | owner + adapter conformance |
+| Canonical relationship graph and semantic freshness | canonical discovery; change impact; context | new `req.documentation-knowledge-architecture.canonical-semantic-relationships-are-colocated-and-derived` | none | change-impact and context commands require it | tooling implementation waits for approval | Add conditional authorship, valid/invalid graph, A→B→C propagation, and formatting-stability cases | missing canonical behavior |
+| Platform adapter conformance, Linux support authority, and evidence scope | normalized adapter contract; simulator; macOS bridge; Linux mapping/profile/acceptance; evidence scope | portable semantics remain with normalized/store owners; the canonical Linux publication-profile requirement owns supported profile; each platform requirement owns only translation or evidence | simulator exact-store realization and Linux normalized-request translation | healthy composition requires portable owners; Linux acceptance requires canonical profile and evidence scope | simulator, macOS candidate, Linux frontend | Preserve platform refusal/non-claim cases; require the canonical Linux profile and separate exact recorded environment | owner + dependencies/adapter refinement |
 | Linux correction evidence program | correction-program requirement plus durable requirements already mapped by its manifest entry | no product owner; the program is complete | none | none | none | Delete its two program-completion scenarios with the requirement; retain artifacts under the exact durable targets in the removal migration | obsolete requirement retirement |
 
 ## Scenario disposition
@@ -111,9 +111,9 @@ Every scenario in a modified, added, or removed requirement has one of these exp
 | Requirement | Disposition |
 |---|---|
 | Linux kernel request mapping | Preserve all five current scenarios. Keep read/write/flush and overflow unchanged; generalize unsupported-intent wording without weakening it; preserve unrepresentable completion and retained-trace replay as distinct adapter conformance cases. |
-| Linux live acceptance | Replace “complete VM workflow passes” with “declared supported profile passes”; move exact guest/kernel/queue/trace/source facts to evidence; preserve unavailable-environment and stronger-claim refusal. |
+| Linux live acceptance | Replace “complete VM workflow passes” with a canonically supported profile passing in a recorded environment; add an additional-environment non-authority case; preserve unavailable-environment and stronger-claim refusal. |
 | Linux correction evidence | Delete “one proof layer is unavailable” and “evidence records the acceptance boundary” only because the completed program requirement is retired; the first remains covered by evidence fail-closed/bounded-artifact owners and the second by scope-accurate Linux acceptance plus direct mappings. |
-| New canonical relationship requirement | Add valid owner/refiner extraction, invalid graph, A→B→C propagation with unrelated D, and formatting-only stability. |
+| New canonical relationship requirement | Add conditional `requires`/`refines` authorship, no-consequential-edge, valid extraction, invalid graph, A→B→C propagation with unrelated D, and formatting-only stability. |
 | Documentation change impact | Replace generic relationship-change wording with dependency-closure semantic-prerequisite invalidation; preserve unavailable-baseline failure disclosure. |
 | Documentation context | Preserve current-selection and context-bound failure scenarios while adding typed relationships, effective fingerprints, and derived reading order to their results. |
 | Recovery home mutation | Preserve valid extent mutation. Replace one generic commit-failure scenario with separate rejected/generation-mismatched-before-commit and lost/corrupt/indeterminate-observation scenarios. |
@@ -154,6 +154,12 @@ Every scenario in a modified, added, or removed requirement has one of these exp
 
 Documentation history-isolation scenarios intentionally mention handoffs and old goals as excluded test inputs; they do not import authority. Metadata-loss historical references are outside this delta and remain assigned to `metadata-certificate-authority-gate`.
 
+## Linux acceptance authority
+
+1. `req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow` owns which initial Linux publication/acceptance profile is canonically supported.
+2. `req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate` requires bounded execution of that canonically supported profile and cannot declare support itself.
+3. The verification record owns the exact architecture, guest, kernel, endpoint, queue and transfer bounds, source digest, trace counts, and other run-specific facts. A successful run in another environment records evidence for that run but does not create or broaden a canonical supported profile.
+
 ## Relationship syntax and extraction
 
 Accept zero or more contiguous markers immediately after an intrinsic marker:
@@ -164,37 +170,50 @@ Accept zero or more contiguous markers immediately after an intrinsic marker:
 <!-- dwv:refines req.owner.complete-policy -->
 ```
 
-`requires` means the local requirement depends on another independently owned semantic fact. `refines` means the target owns the underlying detailed operational policy and the local requirement defines that policy's narrower local specialization, composition mapping, or adapter conformance. One source-target pair cannot use both kinds.
+`requires` means the source requirement's own semantics depend on an independently owned semantic fact. `refines` means the target requirement owns the same underlying detailed operational policy and the source defines a narrower specialization or adapter realization of that policy. Composition alone is not refinement. One source-target pair cannot use both kinds.
 
-The canonical extractor records each edge with source path and line. A relation marker outside the contiguous marker block is invalid. The combined graph fails on unknown or non-current targets, self edges, duplicate edges, mixed-kind duplicates, and cycles. Diagnostics include source path, line, source ID, kind, target, and the smallest deterministic cycle.
+Semantic reconciliation determines which consequential edges must be authored. The deterministic extractor validates the authored representation and does not infer a missing relationship from arbitrary English prose. It records each edge with source path and line. A relation marker outside the contiguous marker block is invalid. The combined graph fails on unknown or non-current targets, self edges, duplicate edges, mixed-kind duplicates, and cycles. Diagnostics include source path, line, source ID, kind, target, and the smallest deterministic cycle.
 
 Only forward edges persist. `required_by`, `refined_by`, capability aggregation, and owner-before-dependent reading order are derived in stable order under existing bounds.
 
-The 48 proposed markers comprise 23 `requires` and 25 `refines` edges. The combined graph is acyclic. Relationship kinds were reviewed under the exact rule above: Linux request mapping refines normalized request/ordering semantics and separately requires operation-slot lifetime; no source-target pair uses both kinds.
+The 49 proposed markers comprise 41 `requires` and 8 `refines` edges across 45 participating nodes. The combined graph is acyclic. Every remaining `refines` edge is a narrower specialization or adapter realization of the same detailed policy; healthy service composition and separate-target repair use `requires`; no source-target pair uses both kinds.
+
+Every remaining `refines` edge passed the tightened same-policy test:
+
+| Source | Target | Narrower specialization or adapter realization |
+|---|---|---|
+| checksum invalidation | canonical durable invalidation intent | The checksum layer narrows the shared policy to the affected generation-bound `VALID`→`STALE` integrity transition. |
+| dirty checkpoint/clear | typed recovery clean/valid authority | The dirty layer narrows typed authority to the exact region subset and generation checks that permit dirty clear. |
+| transaction checkpoint/release | dirty checkpoint/clear | The transaction machine realizes the same clear policy as ordered checkpoint/clear/release action emission after terminal children. |
+| transaction protected-mutation action | canonical durable invalidation intent | The transaction machine narrows the shared policy to whether it may emit protected mutation actions. |
+| Linux kernel request translation | normalized ordering/durability semantics | The Linux adapter realizes the same portable ordering and durability-intent policy in kernel operations and flags. |
+| Linux kernel request translation | normalized request semantics | The Linux adapter realizes the same portable request fields, validation, and outcomes at the kernel boundary. |
+| recovery-store intent persistence | canonical durable invalidation intent | The recovery store narrows the shared policy to atomic one-generation persistence and commit observation. |
+| volatile-media simulator operations | canonical store range/outcome/evidence semantics | The simulator realizes the same portable store contract with adapter-local volatile-media outcomes. |
 
 Deliberately implicit edges:
 
-- universal architecture/security/evidence constraints are not repeated on every detailed requirement;
+- universal architecture, security, and evidence constraints are not repeated on every detailed requirement;
 - metadata-loss decision edges wait for its dedicated authority change to avoid overlapping semantics;
 - reverse edges are derived, never authored;
-- implementation call graphs, co-testing, lexical similarity, and optional future work are not semantic edges;
+- lexical or terminology similarity, shared tests or evidence, implementation call graphs, and optional or future work do not create semantic edges;
 - offline rebuild relies transitively on topology/XOR through degraded eligibility instead of duplicating those edges;
 - healthy failure relies on durable dirty consequences rather than redundantly linking every recovery-state observation.
 
 ## Fingerprints and dependency-closure semantic re-review
 
-**Local semantic fingerprint:** digest of normalized local requirement prose and scenarios, excluding intrinsic and relationship comments and formatting-only changes.
+**Local semantic fingerprint:** a formatting-stable digest of the local requirement's normative prose and scenarios, excluding intrinsic and relationship marker comments and non-semantic formatting.
 
-**Effective semantic/review fingerprint:** after validating the combined semantic graph is acyclic, compute prerequisite-first a deterministic digest of the local semantic fingerprint, sorted outgoing `(relation kind, target ID)` pairs, and each target's effective semantic fingerprint.
+**Effective semantic/review fingerprint:** after validating the combined semantic graph is acyclic, compute prerequisite-first a deterministic digest of the local semantic fingerprint, sorted outgoing `(relation kind, target ID)` pairs, and each target's effective semantic/review fingerprint.
 
-Reviewed state stores and compares the effective fingerprint under a bumped schema. Each stale requirement requires an individual review and concrete reason; bulk acceptance remains forbidden. Changing only a review outcome/reason does not affect either fingerprint.
+Reviewed state stores and compares the effective semantic/review fingerprint under a bumped schema. Each stale requirement requires an individual review and concrete reason; bulk acceptance remains forbidden. Changing only a review outcome or reason does not affect either semantic fingerprint.
 
 For `A → B → C` where B imports A and C imports B:
 
-- changing A's local semantics changes A's effective fingerprint, then B's, then C's;
-- formatting-only A changes preserve A, B, and C;
+- changing A's local semantics changes A's effective semantic/review fingerprint, then B's, then C's;
+- a formatting-only change to A preserves the effective semantic/review fingerprints of A, B, and C;
 - unrelated D remains stable;
-- changing B's edge set changes B and C, but not unrelated A or D unless the new edge itself imports them.
+- changing B's outgoing semantic edge set changes B and C, but not unrelated A or D unless the new edge itself imports them.
 
 `knowledge affected`, readiness, and `docs check` report `semantic-prerequisite-changed` for every direct and transitive stale dependent.
 

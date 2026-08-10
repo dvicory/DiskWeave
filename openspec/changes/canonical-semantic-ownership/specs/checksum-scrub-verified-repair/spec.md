@@ -24,8 +24,8 @@ A repair plan SHALL be created only when current generation-bound integrity evid
 
 ### Requirement: Repairs use a separate target and verified readback
 <!-- dwv:req req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback -->
-<!-- dwv:refines req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
-<!-- dwv:refines req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
+<!-- dwv:requires req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
+<!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
 
 An authorized repair SHALL write only to a separate replacement target through the owning integrity-invalidation and durability protocols. Acceptance SHALL require complete target readback, current checksum verification for the repaired generation, and a recomputed parity equation. The original mismatch report SHALL remain available.
 

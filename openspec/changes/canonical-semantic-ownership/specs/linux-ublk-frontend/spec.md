@@ -36,18 +36,24 @@ The Linux adapter SHALL validate every kernel-provided operation, flag, range, c
 ### Requirement: Live ext4 acceptance evidence is bounded and scope-accurate
 <!-- dwv:req req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate -->
 <!-- dwv:requires req.evidence-boundaries.evidence-scope-is-explicit -->
+<!-- dwv:requires req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow -->
 
-A declared supported Linux acceptance profile SHALL run a reproducible bounded workflow that creates the disposable fixture, publishes a real DiskWeave-owned ublk endpoint, formats and mounts ext4, performs bounded create/overwrite/rename/fsync/read/delete operations, verifies exact content, unmounts and cleanly stops, restarts against the same fixture, remounts and verifies retained content, inspects parity/recovery/integrity disposition, and mounts the ordinary data member read-only after final shutdown. Evidence SHALL record the exact environment, configured bounds, source digest, and correlated kernel submission, normalized request, semantic result, and completion without payload bytes, raw pointers, or private host paths.
+A Linux acceptance profile already declared supported by current canonical Linux requirements SHALL run a reproducible bounded workflow that creates the disposable fixture, publishes a real DiskWeave-owned ublk endpoint, formats and mounts ext4, performs bounded create/overwrite/rename/fsync/read/delete operations, verifies exact content, unmounts and cleanly stops, restarts against the same fixture, remounts and verifies retained content, inspects parity/recovery/integrity disposition, and mounts the ordinary data member read-only after final shutdown. Evidence SHALL record the exact environment, configured bounds, source digest, and correlated kernel submission, normalized request, semantic result, and completion without payload bytes, raw pointers, or private host paths. A successful run in any environment SHALL NOT create or broaden a canonically supported profile.
 
-#### Scenario: The declared supported profile passes
+#### Scenario: A canonically supported profile passes
 
-- **WHEN** every required operation and lifecycle transition succeeds in the declared acceptance profile
-- **THEN** evidence may claim functional file-backed Linux ublk/ext4 behavior only for that recorded profile and environment
+- **WHEN** every required operation and lifecycle transition succeeds for a profile already supported by current canonical Linux requirements
+- **THEN** evidence may claim functional file-backed Linux ublk/ext4 behavior only for that canonical profile in the recorded environment and does not establish another supported profile
 
 #### Scenario: Live execution is unavailable
 
 - **WHEN** the required architecture, VM, kernel capability, permission, or tool is unavailable
 - **THEN** deterministic adapter tests may pass but Linux frontend and ext4 acceptance remain explicitly unmet rather than skipped as success
+
+#### Scenario: The canonical profile passes in another environment
+
+- **WHEN** the same canonically supported profile completes successfully in an additional environment
+- **THEN** evidence records that environment but the successful run does not create or broaden canonical Linux support
 
 #### Scenario: A stronger claim is requested
 

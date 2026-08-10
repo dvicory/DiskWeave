@@ -4,15 +4,17 @@ Current requirements repeat detailed mutation, fence, abandonment, request-routi
 
 ## What Changes
 
-- Consolidate each affected detailed operational policy under one current requirement while preserving narrower recovery-store, transaction, checksum, service-composition, and adapter refinements.
+- Consolidate each affected detailed operational policy under one current requirement while preserving genuine recovery-store, transaction, checksum, and adapter refinements and expressing service composition and repair use as dependencies on independent owners.
 - Remove normative dependencies on historical work IDs, handoff sections, roadmap properties, gates, and phases from current specifications.
 - Clarify stable-slot request admission so collection order cannot select a logical member.
 - Retire the completed Linux correction-program requirement while retaining and remapping its evidence to durable requirements.
-- Separate the durable Linux acceptance contract from the exact retained evidence environment without broadening the accepted profile.
-- Add colocated `requires` and `refines` markers, deterministic graph validation and ownership views, and dependency-closure semantic review invalidation.
+- Keep supported Linux publication/acceptance authority in current canonical Linux requirements while separating the durable live-acceptance contract from exact retained evidence-environment facts without broadening support.
+- Require every consequential forward `requires` or `refines` marker, validate and derive the graph deterministically, and invalidate dependency-closure semantic review state when effective semantics change.
 - **BREAKING**: Retire one current requirement ID and bump knowledge/review schemas for the new relationship and fingerprint contract.
 
 Non-goals: merge capability files, choose a production recovery adapter or transaction engine, broaden Linux claims, infer semantic equivalence automatically, create an ownership registry, or change metadata-certificate authorization or service request APIs in this change.
+
+The first external review accepted the ownership selections, scenario dispositions, stable-ID decisions, recovery uncertainty distinction, Linux correction-program retirement, and dependency-closure review model, subject to three corrections incorporated here: composition uses `requires` rather than `refines`; consequential semantic relationships are conditionally mandatory and authored through semantic reconciliation; and live Linux acceptance depends on the canonically supported initial publication profile rather than allowing evidence to declare support.
 
 ## Capabilities
 
@@ -30,7 +32,7 @@ None.
 - `normalized-block-semantics`: Retain request and frontend-lifecycle ownership without historical gates.
 - `volatile-media-simulator`: Remove historical work identifiers while preserving the media fault model.
 - `macos-bridge-feasibility`: Remove roadmap-number authority from the accepted adapter boundary.
-- `linux-ublk-frontend`: Retire the completed correction program and separate durable acceptance from its evidence environment.
-- `documentation-knowledge-architecture`: Add canonical forward relationships, derived ownership views, and transitive effective-semantic review semantics.
-- `checksum-scrub-verified-repair`: Expose independent-evidence repair authority relationships.
+- `linux-ublk-frontend`: Retire the completed correction program, keep support authority in canonical Linux profile semantics, and separate durable acceptance from its evidence environment.
+- `documentation-knowledge-architecture`: Require consequential canonical forward relationships, derived ownership views, and transitive effective-semantic review semantics.
+- `checksum-scrub-verified-repair`: Expose independent-evidence repair authority and dependencies on invalidation and typed durability authority.
 - `degraded-read-offline-rebuild`: Expose topology, recovery, and reconstruction prerequisites.
