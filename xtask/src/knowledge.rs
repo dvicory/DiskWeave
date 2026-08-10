@@ -2670,6 +2670,21 @@ mod tests {
             "misplaced_relationship_marker"
         );
         fs::remove_dir_all(root).unwrap();
+
+        let (root, app) = fixture("missing-edge-boundary");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        fs::write(&spec, requirement("A SHALL stand alone.")).unwrap();
+        assert_eq!(objects(&app).unwrap().len(), 1);
+        fs::write(
+            &spec,
+            "# cap Specification\n\n## Requirements\n\n### Requirement: A\n<!-- dwv:req req.cap.a -->\n<!-- dwv:requires -->\n\nA SHALL use an owner.\n",
+        )
+        .unwrap();
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "invalid_relationship_marker"
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -2762,6 +2777,22 @@ mod tests {
             ])
         );
         let after = objects(&app).unwrap();
+        let c_before = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.c")
+            .unwrap();
+        let c_after = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.c")
+            .unwrap();
+        assert_ne!(
+            c_before.local_semantic_fingerprint,
+            c_after.local_semantic_fingerprint
+        );
+        assert_ne!(
+            c_before.effective_semantic_fingerprint,
+            c_after.effective_semantic_fingerprint
+        );
         let d_before = before
             .iter()
             .find(|object| object.semantic_id == "req.cap.d")
@@ -2821,6 +2852,40 @@ mod tests {
             a_before.effective_semantic_fingerprint,
             a_after.effective_semantic_fingerprint
         );
+        fs::write(
+            &spec,
+            specification(&[
+                ("req.cap.a", &[], "A SHALL remain stable."),
+                ("req.cap.b", &[], "B SHALL own the policy."),
+            ]),
+        )
+        .unwrap();
+        let reverted = objects(&app).unwrap();
+        let a_reverted = reverted
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        assert_eq!(
+            a_before.local_semantic_fingerprint,
+            a_reverted.local_semantic_fingerprint
+        );
+        assert_eq!(
+            a_before.effective_semantic_fingerprint,
+            a_reverted.effective_semantic_fingerprint
+        );
+
+        fs::write(
+            &spec,
+            specification(&[
+                (
+                    "req.cap.a",
+                    &[("requires", "req.cap.b")],
+                    "A SHALL remain stable.",
+                ),
+                ("req.cap.b", &[], "B SHALL own the policy."),
+            ]),
+        )
+        .unwrap();
         let error = readiness(&app).unwrap_err();
         assert_eq!(
             error.details.unwrap()["diagnostics"][0]["gate"],
@@ -2848,6 +2913,93 @@ mod tests {
         );
         assert_eq!(packet["omitted"]["documentation"], 1);
         assert!(packet.get("verdict").is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn relationship_target_kind_and_order_change_only_effective_fingerprints() {
+        let (root, app) = fixture("relationship-shape");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        let write = |relationships: &[(&str, &str)]| {
+            fs::write(
+                &spec,
+                specification(&[
+                    ("req.cap.a", relationships, "A SHALL remain stable."),
+                    ("req.cap.b", &[], "B SHALL own one policy."),
+                    ("req.cap.c", &[], "C SHALL own another policy."),
+                ]),
+            )
+            .unwrap();
+            objects(&app)
+                .unwrap()
+                .into_iter()
+                .find(|object| object.semantic_id == "req.cap.a")
+                .unwrap()
+        };
+
+        let requires_b = write(&[("requires", "req.cap.b")]);
+        let requires_c = write(&[("requires", "req.cap.c")]);
+        let refines_c = write(&[("refines", "req.cap.c")]);
+        for changed in [&requires_c, &refines_c] {
+            assert_eq!(
+                requires_b.local_semantic_fingerprint,
+                changed.local_semantic_fingerprint
+            );
+            assert_ne!(
+                requires_b.effective_semantic_fingerprint,
+                changed.effective_semantic_fingerprint
+            );
+        }
+
+        let first_order = write(&[("requires", "req.cap.b"), ("refines", "req.cap.c")]);
+        let second_order = write(&[("refines", "req.cap.c"), ("requires", "req.cap.b")]);
+        assert_eq!(
+            first_order.local_semantic_fingerprint,
+            second_order.local_semantic_fingerprint
+        );
+        assert_eq!(
+            first_order.effective_semantic_fingerprint,
+            second_order.effective_semantic_fingerprint
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn formatting_and_review_metadata_leave_semantic_fingerprints_stable() {
+        let (root, app) = fixture("non-semantic-fingerprint");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        fs::write(
+            &spec,
+            requirement("The system SHALL preserve this\nsemantic contract."),
+        )
+        .unwrap();
+        let before = objects(&app).unwrap();
+        write_reviewed(&root, &before);
+
+        fs::write(
+            &spec,
+            requirement("The system SHALL preserve this semantic contract."),
+        )
+        .unwrap();
+        let mut state: ReviewedState = read_toml(&root, REVIEWED_PATH).unwrap();
+        state
+            .outcomes
+            .insert("req.cap.one".to_owned(), "reviewed".to_owned());
+        state.reasons.insert(
+            "req.cap.one".to_owned(),
+            "review metadata changed".to_owned(),
+        );
+        fs::write(root.join(REVIEWED_PATH), toml::to_string(&state).unwrap()).unwrap();
+
+        let after = objects(&app).unwrap();
+        assert_eq!(
+            before[0].local_semantic_fingerprint,
+            after[0].local_semantic_fingerprint
+        );
+        assert_eq!(
+            before[0].effective_semantic_fingerprint,
+            after[0].effective_semantic_fingerprint
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
