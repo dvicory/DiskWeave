@@ -11,6 +11,7 @@ cargo xtask docs doctor
 cargo xtask docs knowledge readiness
 cargo xtask docs knowledge inspect <semantic-id>
 cargo xtask docs knowledge context <semantic-id>
+cargo xtask docs knowledge ownership <semantic-id>
 cargo xtask docs knowledge affected --path <repo-relative-path>
 cargo xtask docs knowledge doctor --path <repo-relative-path>
 cargo xtask docs check
@@ -36,4 +37,4 @@ cargo xtask docs serve
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 
-Normal discovery excludes handoffs, archived changes, rendered output, and historical goal-v5 machinery. Historical material is consulted only for an explicit archaeology task.
+Normal discovery excludes handoffs, archived changes, rendered output, and historical milestone 5 machinery. Historical material is consulted only for an explicit archaeology task.

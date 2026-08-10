@@ -19,7 +19,26 @@ needs_id_required = True
 needs_id_regex = r"(?:R|ST)_[0-9A-F]{20}"
 needs_fields = {
     field: {"description": f"DiskWeave {field}", "schema": {"type": "string"}}
-    for field in ["semantic_id", "capability", "source_path", "heading_path", "fingerprint"]
+    for field in [
+        "semantic_id",
+        "capability",
+        "source_path",
+        "heading_path",
+        "local_fingerprint",
+        "effective_fingerprint",
+    ]
+}
+needs_links = {
+    "requires": {
+        "incoming": "required by",
+        "outgoing": "requires",
+        "copy": False,
+    },
+    "refines": {
+        "incoming": "refined by",
+        "outgoing": "refines",
+        "copy": False,
+    },
 }
 
 src_trace_config_from_toml = "codelinks.toml"

@@ -33,7 +33,7 @@ A requirement marker has the form:
 
 The ID is independent of work-item numbers, line numbers, archive paths, heading wording, and generated state. Extraction rejects missing, malformed, duplicate, or wrong-capability IDs.
 
-The requirement fingerprint is computed from a normalized Markdown event stream. Line wrapping and irrelevant formatting do not change it; normative text, state transitions, failure behavior, scenarios, evidence requirements, and non-claims do. Reordering unrelated requirements does not affect the selected requirement.
+Each requirement has two fingerprints. The formatting-stable local fingerprint covers its normalized normative prose and scenarios while excluding intrinsic/relationship markers and non-semantic Markdown formatting. The effective fingerprint additionally imports every sorted `requires`/`refines` target and that target's effective fingerprint after cycle validation, so owner changes invalidate the full dependent closure without changing unrelated requirements.
 
 Sphinx receives a deterministic collision-checked ID (`R_` plus a bounded BLAKE3 prefix). Ignored interchange records both identities, making the mapping reversible through the exported table without putting opaque IDs into OpenSpecs or Rust.
 
@@ -41,10 +41,12 @@ Sphinx receives a deterministic collision-checked ID (`R_` plus a bounded BLAKE3
 
 Relationships are sparse and typed:
 
-- OpenSpec requirement **defines** intended behavior;
+- a current requirement **requires** an independently owned semantic prerequisite;
+- a current requirement **refines** an owner's policy through a narrower specialization or adapter realization;
+- OpenSpec requirements **define** intended behavior;
 - Rust module/type/operation/test **implements** or **exercises** it;
-- scenario fixture **exercises** a bounded transition or fault model;
-- evidence artifact **verifies** only its declared claim and tier;
+- scenario fixtures **exercise** bounded transitions or fault models;
+- evidence artifacts **verify** only their declared claims and tiers;
 - human prose **explains** it;
 - non-claims **bound** what evidence and prose do not establish.
 
@@ -52,13 +54,13 @@ Sphinx-Needs renders generated engineering objects, tables, filters, and backlin
 
 ## Reviewed and suspect lifecycle
 
-`docs/reviewed-requirements.toml` stores the last reviewed fingerprint for each current requirement. A changed fingerprint makes that requirement and its dependent explanations suspect. A new requirement is uncovered. A removed requirement is orphaned until explicitly superseded.
+`docs/reviewed-requirements.toml` stores the last reviewed local and effective fingerprints for each current requirement. A local semantic edit makes that requirement suspect; a changed prerequisite or relationship makes every affected dependent report `semantic-prerequisite-changed`. A new requirement is uncovered. A retired requirement and all of its reviewed state must be removed from current inputs.
 
-Allowed resolutions are `reviewed`, `reference-only`, `deferred`, and `superseded`. Resolution is atomic, records a reason, updates only the named semantic unit, and leaves repeated no-op resolution byte-stable. Formatting-only changes do not trigger review.
+Allowed resolutions are `reviewed`, `reference-only`, `deferred`, and `superseded`. Resolution is atomic, records an individual reason, updates only the named current semantic unit, and leaves repeated no-op resolution byte-stable. Formatting-only changes do not trigger review.
 
 The single readiness gate fails closed on:
 
-- uncovered or fingerprint-suspect requirements;
+- uncovered, local-fingerprint-suspect, or semantic-prerequisite-changed requirements;
 - orphaned reviewed state;
 - unknown or historical references;
 - semantic/Sphinx identity collisions;
@@ -68,7 +70,7 @@ The single readiness gate fails closed on:
 
 A renderer success alone is not readiness.
 
-At the change boundary, the same command also reports canonical semantic impact and removed or reassigned requirement relationships from an available repository revision baseline. Pure relationship additions and implementation edits with unchanged relationships remain context only. Baseline absence is explicit; no persistent relationship-diff registry is maintained.
+At the change boundary, the same command reports canonical local, relationship, and dependency-closure impact plus removed or reassigned implementation/evidence links from an available repository revision baseline. Implementation-link additions and edits with unchanged semantic relationships remain context only. Baseline absence is explicit; no persistent relationship-diff registry is maintained.
 
 ## Human and agent projections
 

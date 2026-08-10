@@ -19,8 +19,11 @@ The Linux frontend SHALL provide a bounded probe that reports architecture, kern
 
 ### Requirement: Kernel requests preserve normalized semantics
 <!-- dwv:req req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics -->
+<!-- dwv:refines req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics -->
+<!-- dwv:refines req.normalized-block-semantics.ordering-and-durability-intent-cannot-be-silently-weakened -->
+<!-- dwv:requires req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
 
-The adapter SHALL validate every kernel-provided operation, flag, range, count, and identifier before allocation or semantic admission, then translate supported exact-range reads, exact-range writes, and flushes into the current normalized request and portable service contracts. It SHALL preserve stable request and frontend identities, explicit stable target slot, captured topology epoch, operation, checked byte range, optional generational buffer token, submission sequence, ordering intent, and durability intent through the semantic boundary, and SHALL map semantic terminal outcomes deterministically. Unsupported discard, write-zeroes, zoned operations, FUA, preflush, or unknown flags SHALL fail explicitly unless the complete path advertises and establishes equivalent semantics. Every retained frontend trace record SHALL separately encode the kernel submission, normalized request fields, semantic terminal result, and kernel completion so deterministic replay can reject any unrepresentable or divergent mapping.
+The Linux adapter SHALL validate every kernel-provided operation, flag, range, count, and identifier before semantic admission, then map supported exact-range reads, writes, and flushes directly into the canonical normalized request and portable service contracts. It SHALL preserve every normalized request field, pass write payloads as borrowed frontend-owned buffers without allocating a second request-boundary payload, and map terminal outcomes deterministically. Unsupported discard, write-zeroes, zoned operations, FUA, preflush, or unknown flags SHALL fail explicitly unless the complete path advertises and establishes the requested semantics.
 
 #### Scenario: An ext4 read, write, or flush arrives
 
@@ -30,12 +33,12 @@ The adapter SHALL validate every kernel-provided operation, flag, range, count, 
 #### Scenario: A range overflows virtual geometry
 
 - **WHEN** sector conversion, byte-count conversion, or checked end arithmetic overflows or exceeds the published capacity
-- **THEN** the adapter rejects the request before buffer allocation or protected mutation
+- **THEN** the adapter rejects the request before semantic admission or protected mutation
 
 #### Scenario: Unsupported intent arrives
 
-- **WHEN** a request carries discard, write-zeroes, zoned, FUA, preflush, or an unknown operation or flag not supported by the complete path
-- **THEN** the adapter returns an explicit unsupported result and never translates it into success, ordinary write, zero-fill, or flush
+- **WHEN** a request carries an operation or intent unsupported by the complete path
+- **THEN** the adapter returns an explicit unsupported result and never translates it into a weaker operation or success
 
 #### Scenario: A semantic result has no kernel completion mapping
 
@@ -46,6 +49,11 @@ The adapter SHALL validate every kernel-provided operation, flag, range, count, 
 
 - **WHEN** a bounded versioned frontend trace is imported
 - **THEN** replay revalidates every normalized request and terminal mapping in sequence without executing backing I/O and reports the first divergence
+
+#### Scenario: A write payload crosses the request boundary
+
+- **WHEN** ublk supplies a validated write buffer
+- **THEN** translation and service dispatch retain the same borrowed payload storage until synchronous semantic completion rather than cloning it into a service request wrapper
 
 ### Requirement: Kernel tags and operation resources remain bounded and generation-safe
 <!-- dwv:req req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe -->
@@ -144,36 +152,27 @@ The Linux workflow SHALL create or open only a bounded identifiable disposable f
 
 ### Requirement: Live ext4 acceptance evidence is bounded and scope-accurate
 <!-- dwv:req req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate -->
+<!-- dwv:requires req.evidence-boundaries.evidence-scope-is-explicit -->
+<!-- dwv:requires req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow -->
 
-A reproducible ARM64 Linux workflow SHALL create the fixture, publish a real DiskWeave-owned `/dev/ublkbN`, format and mount ext4, perform bounded create/overwrite/rename/fsync/read/delete operations, verify exact content hashes, unmount and cleanly stop, restart against the same fixture, remount and verify retained content, inspect parity/recovery/integrity disposition, and mount the ordinary data member read-only after final shutdown. Evidence SHALL retain a bounded versioned trace that separately correlates kernel submission, normalized request, semantic result, and kernel completion without payload bytes, raw pointers, or private host paths, and SHALL replay that trace successfully before claiming acceptance.
+A Linux acceptance profile already declared supported by current canonical Linux requirements SHALL run a reproducible bounded workflow that creates the disposable fixture, publishes a real DiskWeave-owned ublk endpoint, formats and mounts ext4, performs bounded create/overwrite/rename/fsync/read/delete operations, verifies exact content, unmounts and cleanly stops, restarts against the same fixture, remounts and verifies retained content, inspects parity/recovery/integrity disposition, and mounts the ordinary data member read-only after final shutdown. Evidence SHALL record the exact environment, configured bounds, source digest, and correlated kernel submission, normalized request, semantic result, and completion without payload bytes, raw pointers, or private host paths. A successful run in any environment SHALL NOT create or broaden a canonically supported profile.
 
-#### Scenario: The complete VM workflow passes
+#### Scenario: A canonically supported profile passes
 
-- **WHEN** every required operation and lifecycle transition succeeds on the selected guest/kernel profile and its retained trace replays without divergence
-- **THEN** evidence may claim functional file-backed Linux ublk/ext4 behavior only for that exact environment and records all configured bounds
+- **WHEN** every required operation and lifecycle transition succeeds for a profile already supported by current canonical Linux requirements
+- **THEN** evidence may claim functional file-backed Linux ublk/ext4 behavior only for that canonical profile in the recorded environment and does not establish another supported profile
 
 #### Scenario: Live execution is unavailable
 
-- **WHEN** the required ARM64 VM, kernel capability, permission, or tool is unavailable
+- **WHEN** the required architecture, VM, kernel capability, permission, or tool is unavailable
 - **THEN** deterministic adapter tests may pass but Linux frontend and ext4 acceptance remain explicitly unmet rather than skipped as success
+
+#### Scenario: The canonical profile passes in another environment
+
+- **WHEN** the same canonically supported profile completes successfully in an additional environment
+- **THEN** evidence records that environment but the successful run does not create or broaden canonical Linux support
 
 #### Scenario: A stronger claim is requested
 
 - **WHEN** evidence is used to infer production concurrency, daemon recovery, raw-device durability, FUA, broader filesystems, deployment correctness, online topology mutation, or hardware safety
 - **THEN** the report identifies those claims as unsupported
-
-### Requirement: Correction evidence covers the composed correctness boundaries
-<!-- dwv:req req.linux-ublk-frontend.correction-evidence-covers-the-composed-correctness-boundaries -->
-
-The Linux frontend's correction evidence SHALL retain deterministic regressions proving that the canonical dirty-region mapping covers all intersected regions, store watermarks are monotonic and fence composition rejects future, stale, partial, omitted-region, and cross-store evidence, recovery access failures cannot become generation zero, and store/recovery ownership is released by process death without marker cleanup. It SHALL include a TLA+ model checking mutation crash points around intent, home writes, fences, and checkpoints; a bounded Kani harness for checked region mapping; an independent fence-coverage model; and a member-process crash integration case. Evidence SHALL record each bounded proof's exact symbolic domain and assumptions. Counterexamples SHALL be retained as deterministic regressions.
-
-#### Scenario: One proof layer is unavailable
-
-- **WHEN** any required model, bounded proof, process-crash integration, or executable regression cannot run in the recorded environment
-- **THEN** its covered claim remains explicitly unmet and passing neighboring checks do not substitute for it
-
-#### Scenario: Evidence records the acceptance boundary
-
-- **WHEN** all correction checks and the live ublk/ext4 workflow pass
-- **THEN** the evidence maps each check to its canonical requirement and architecture-v0.8 property, records exact proof bounds, and still denies production SQLite selection, physical power-loss durability, FUA, broader concurrency, multi-device publication, and online topology mutation
-

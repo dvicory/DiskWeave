@@ -11,9 +11,10 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 
 1. Name the canonical semantic requirement IDs involved. If unknown, search current `openspec/specs/*/spec.md`; do not infer authority from handoffs or archived changes.
 2. Run `cargo xtask docs knowledge readiness`.
-3. Run `cargo xtask docs knowledge inspect <requirement-id>` for exact ownership and fingerprint data.
-4. Run `cargo xtask docs knowledge context <requirement-id>` for the bounded current relationship packet.
-5. Treat `docs/handoffs/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests history.
+3. Run `cargo xtask docs knowledge inspect <requirement-id>` for the exact local unit and fingerprints.
+4. Run `cargo xtask docs knowledge ownership <requirement-id>` for bounded owner/refiner/dependent facts, current implementation/evidence/documentation links, and owner-before-dependent reading order.
+5. Run `cargo xtask docs knowledge context <requirement-id>` only when the task also needs the bounded context packet.
+6. Treat `docs/handoffs/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests history.
 
 ## Editing rules
 
@@ -22,9 +23,9 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 - Keep user-facing prose causal and audience-specific. Preserve requirement modality and explicit non-claims.
 - For a Human Guide chapter, read its `docs/curriculum.toml` entry first. Draft or review the `[[entries.sections]]` briefs in order: use the proposed heading, satisfy every `must_answer` from the linked current sources, and preserve every section `non_claims`. The briefs guide Markdown; they do not override canonical requirements.
 - Do not place payload bytes, credentials, private paths, runtime handles, or unbounded source text in markers, evidence, context, or generated objects.
-- A changed requirement fingerprint makes linked explanations suspect. Re-review the affected fragment; never bulk-accept unrelated prose.
+- A changed local fingerprint makes that requirement suspect. A changed effective fingerprint with stable local prose means an owner/refiner prerequisite changed; re-review every reported dependent individually and record a concrete reason. Never bulk-accept a dependency closure.
 - `docs check` performs deterministic change-boundary impact discovery when a repository revision baseline is available. Follow only its `review_required` actions; unchanged implementation relationships are context, not an automatic documentation task.
-- Use `knowledge affected` to inspect a reported requirement or path and `knowledge doctor --path` only to recover a relationship lost from the current file. Neither command infers whether prose is semantically correct.
+- Use `knowledge ownership` to inspect the canonical relationship graph, `knowledge affected` to inspect a reported requirement or path, and `knowledge doctor --path` only to recover an implementation/evidence relationship lost from the current file. None of these commands issues a semantic-consistency verdict.
 - Use `diskweave-semantic-reconciliation` when inspection reveals overlapping canonical policy ownership, contradictory scenarios, an unclear semantic owner, changed owner semantics with dependents, historical-authority leakage affecting interpretation, or consequential shadow architecture.
 
 ## Before completion

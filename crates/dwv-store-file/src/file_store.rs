@@ -592,12 +592,15 @@ impl FileStore {
             FileSyncMode::CallerFlush | FileSyncMode::SyncAll => self.file.sync_all(),
         }
     }
-    fn store_id(&self) -> StoreId {
+    pub fn store_id(&self) -> StoreId {
         if self.config.store_id == StoreId(0) {
             StoreId(evidence_id(&self.config.path, &self.config).0)
         } else {
             self.config.store_id
         }
+    }
+    pub const fn topology_epoch(&self) -> TopologyEpoch {
+        self.config.topology_epoch
     }
     fn accept_write(&mut self) -> Result<StoreWriteWatermark, StoreError> {
         let watermark = StoreWriteWatermark(self.next_write_watermark);

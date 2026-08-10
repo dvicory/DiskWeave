@@ -126,6 +126,7 @@ impl fmt::Display for AdapterError {
 
 impl std::error::Error for AdapterError {}
 
+/// dwv:req req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics
 pub fn translate_request(
     raw: KernelRequest,
     capacity: u64,
@@ -201,6 +202,24 @@ pub fn translate_request(
     })
 }
 
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn borrowed_write_payload(
+    operation: KernelOperation,
+    data_length: usize,
+    buffer: &[u8],
+) -> Result<Option<&[u8]>, AdapterError> {
+    if operation != KernelOperation::Write {
+        return Ok(None);
+    }
+    buffer
+        .get(..data_length)
+        .map(Some)
+        .ok_or(AdapterError::Invalid(
+            "write buffer is shorter than request",
+        ))
+}
+
+/// dwv:req req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct TagToken {
     pub tag: u16,
@@ -508,16 +527,38 @@ mod tests {
             ),
             Err(AdapterError::Invalid(_))
         ));
-        assert!(matches!(
-            translate_request(
-                raw(KernelOperation::Discard),
-                8192,
-                TopologyEpoch(3),
-                SubmissionSequence(11),
-                1
-            ),
-            Err(AdapterError::Unsupported(_))
-        ));
+        for operation in [
+            KernelOperation::WriteZeroes,
+            KernelOperation::Discard,
+            KernelOperation::Zoned,
+            KernelOperation::Unknown,
+        ] {
+            assert!(matches!(
+                translate_request(
+                    raw(operation),
+                    8192,
+                    TopologyEpoch(3),
+                    SubmissionSequence(11),
+                    1
+                ),
+                Err(AdapterError::Unsupported(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn write_payload_translation_borrows_exact_frontend_storage() {
+        let buffer = [0x5a; 4096];
+        let payload = borrowed_write_payload(KernelOperation::Write, 2048, &buffer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(payload.as_ptr(), buffer.as_ptr());
+        assert_eq!(payload.len(), 2048);
+        assert!(borrowed_write_payload(KernelOperation::Write, 4097, &buffer).is_err());
+        assert_eq!(
+            borrowed_write_payload(KernelOperation::Read, 2048, &buffer).unwrap(),
+            None
+        );
     }
 
     #[test]

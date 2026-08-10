@@ -5,11 +5,13 @@ use crate::{
     lifecycle::ServiceState,
     range::split_range,
     read::read_member,
-    request::{PortableRequest, RequestOperation},
     write::{update_parity, write_member},
 };
 use dwv_codec::Geometry as CodecGeometry;
-use dwv_core::{ByteRange, DurabilityIntent, MemberRole, TopologyEpoch, TopologySnapshot};
+use dwv_core::{
+    AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, ByteRange, CodingPosition,
+    DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
+};
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumExtent, ChecksumRecord, ChecksumSetGeneration,
     ChecksumTarget, DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, InvalidationTarget,
@@ -17,8 +19,8 @@ use dwv_recovery::{
     RegionId, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletionDisposition, FenceDomain, OperationId, OperationSlotToken, PersistenceEvidence,
-    StoreId, StoreWriteWatermark, WriteIntent,
+    CompletionDisposition, FenceDomain, OperationSlotToken, PersistenceEvidence, StoreId,
+    StoreWriteWatermark, WriteIntent,
 };
 use dwv_store_file::{FileStore, IdentityComparison};
 use dwv_transaction_ref::{
@@ -26,15 +28,35 @@ use dwv_transaction_ref::{
     ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
     SemanticIoResult, StoreWatermark, TransactionLimits, TransactionMachine, TransactionPlan,
 };
-
-pub struct MemberStore {
-    pub id: StoreId,
-    pub store: FileStore,
+/// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
+pub struct MemberBinding {
+    slot_id: SlotId,
+    role: MemberRole,
+    coding_position: CodingPosition,
+    assignment_instance: AssignmentInstanceId,
+    assignment_generation: AssignmentGeneration,
+    topology_epoch: TopologyEpoch,
+    store_id: StoreId,
+    store: FileStore,
 }
 
-impl MemberStore {
-    pub fn new(id: StoreId, store: FileStore) -> Self {
-        Self { id, store }
+impl MemberBinding {
+    pub fn new(
+        assignment: &TopologyAssignment,
+        topology_epoch: TopologyEpoch,
+        store_id: StoreId,
+        store: FileStore,
+    ) -> Self {
+        Self {
+            slot_id: assignment.slot_id(),
+            role: assignment.role(),
+            coding_position: assignment.coding_position(),
+            assignment_instance: assignment.assignment_instance(),
+            assignment_generation: assignment.assignment_generation(),
+            topology_epoch,
+            store_id,
+            store,
+        }
     }
 }
 
@@ -57,8 +79,7 @@ impl Default for ServiceConfig {
 
 pub struct HealthyPortableService<R: RecoveryStateStore> {
     topology: TopologySnapshot,
-    data: Vec<MemberStore>,
-    parity: MemberStore,
+    members: Vec<MemberBinding>,
     recovery: R,
     checksums: ChecksumAuthority,
     admission: OperationAdmission,
@@ -67,14 +88,14 @@ pub struct HealthyPortableService<R: RecoveryStateStore> {
 }
 
 impl<R: RecoveryStateStore> HealthyPortableService<R> {
+    /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
     pub fn open(
         topology: TopologySnapshot,
-        data: Vec<MemberStore>,
-        parity: MemberStore,
+        members: Vec<MemberBinding>,
         recovery: R,
         config: ServiceConfig,
     ) -> Result<Self, ServiceError> {
-        validate_assembly(&topology, &data, &parity)?;
+        validate_assembly(&topology, &members)?;
         if config.maximum_transfer == Some(0) {
             return Err(ServiceError::invalid(
                 FailureClass::Capability,
@@ -106,8 +127,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         let checksums = checksum_authority(&topology, generation)?;
         Ok(Self {
             topology,
-            data,
-            parity,
+            members,
             recovery,
             checksums,
             admission: OperationAdmission::new(config.admission),
@@ -138,14 +158,19 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
     pub fn read(
         &mut self,
-        request: PortableRequest,
+        request: BlockRequest,
     ) -> Result<(Vec<u8>, OperationEvidence), ServiceError> {
         self.state.require_reads()?;
-        let data_slot = validate_request(&self.topology, &request)?;
-        if !matches!(request.operation, RequestOperation::Read { .. }) {
+        let (member_index, role, _) = validate_request(
+            &self.topology,
+            &self.members,
+            request,
+            self.maximum_transfer(),
+        )?;
+        if request.op != BlockOp::Read || role != MemberRole::Data {
             return Err(ServiceError::invalid(
                 FailureClass::InvalidRequest,
-                "read endpoint requires a read request",
+                "read endpoint requires a data-member read request",
             ));
         }
         self.ensure_identities()?;
@@ -154,151 +179,154 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             self.topology.geometry(),
             self.maximum_transfer(),
         )?;
-        let token = self.reserve_with_buffers(&request, 1)?;
+        let token = self.reserve(request)?;
         let result = read_member(
-            &mut self.data[data_slot].store,
+            &mut self.members[member_index].store,
             &mut self.admission,
+            request,
             token,
             &plan,
         );
         match result {
             Ok((bytes, completion)) => {
-                self.finish(token, false)?;
+                self.finish(token, false)
+                    .map_err(|error| error.with_request(request))?;
+                let generation = self
+                    .recovery_generation()
+                    .map_err(|error| error.with_request(request))?;
+                let trace = empty_trace(self.topology.topology_epoch(), generation)
+                    .map_err(|error| error.with_request(request))?;
                 Ok((
                     bytes,
                     OperationEvidence {
+                        request,
                         completion,
-                        trace: empty_trace(
-                            self.topology.topology_epoch(),
-                            self.recovery_generation()?,
-                        )?,
+                        trace,
                     },
                 ))
             }
             Err(error) => {
                 let _ = self.finish(token, true);
-                Err(error)
+                Err(error.with_request(request))
             }
         }
     }
 
     /// dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity
-    pub fn write(&mut self, request: PortableRequest) -> Result<OperationEvidence, ServiceError> {
+    pub fn write(
+        &mut self,
+        request: BlockRequest,
+        bytes: &[u8],
+    ) -> Result<OperationEvidence, ServiceError> {
         self.state.require_writes()?;
-        let data_slot = validate_request(&self.topology, &request)?;
-        let RequestOperation::Write { bytes, .. } = &request.operation else {
+        let (member_index, role, coding_position) = validate_request(
+            &self.topology,
+            &self.members,
+            request,
+            self.maximum_transfer(),
+        )?;
+        if request.op != BlockOp::Write || role != MemberRole::Data {
             return Err(ServiceError::invalid(
                 FailureClass::InvalidRequest,
-                "write endpoint requires a write request",
+                "write endpoint requires a data-member write request",
             ));
-        };
+        }
         if bytes.len() as u64 != request.range.length {
             return Err(ServiceError::invalid(
                 FailureClass::InvalidRequest,
                 "write buffer does not exactly cover the request",
             ));
         }
-        if matches!(
-            request.durability,
-            DurabilityIntent::Fua | DurabilityIntent::ExplicitFlush
-        ) {
-            return Err(ServiceError::invalid(
-                FailureClass::Capability,
-                "portable file stores do not expose FUA or write-embedded flush",
-            ));
-        }
         self.ensure_identities()?;
         let plan = split_range(
             request.range,
             self.topology.geometry(),
             self.maximum_transfer(),
         )?;
-        let token = self.reserve_with_buffers(&request, 2)?;
-        let result = self.execute_write(data_slot, &request, bytes, &plan, token);
+        let token = self.reserve(request)?;
+        let result =
+            self.execute_write(member_index, coding_position, request, bytes, &plan, token);
         match result {
             Ok(evidence) => {
-                self.finish(token, false)?;
+                self.finish(token, false)
+                    .map_err(|error| error.with_request(request))?;
                 Ok(evidence)
             }
             Err(error) => {
                 self.state = ServiceState::Recovering;
                 let _ = self.finish(token, true);
-                Err(error)
+                Err(error.with_request(request))
             }
         }
     }
 
-    pub fn flush(&mut self, request: PortableRequest) -> Result<OperationEvidence, ServiceError> {
+    pub fn flush(&mut self, request: BlockRequest) -> Result<OperationEvidence, ServiceError> {
         self.state.require_reads()?;
-        if !matches!(request.operation, RequestOperation::Flush) || !request.range.is_empty() {
+        let (_, role, _) = validate_request(
+            &self.topology,
+            &self.members,
+            request,
+            self.maximum_transfer(),
+        )?;
+        if request.op != BlockOp::Flush || role != MemberRole::Data {
             return Err(ServiceError::invalid(
                 FailureClass::InvalidRequest,
-                "flush request must have an empty range",
-            ));
-        }
-        if request.topology_epoch != self.topology.topology_epoch() {
-            return Err(ServiceError::invalid(
-                FailureClass::StaleTopology,
-                "flush captured a stale topology epoch",
+                "flush endpoint requires a data-member flush request",
             ));
         }
         self.ensure_identities()?;
-        let token = self.reserve(&request)?;
-        let flush_ranges = vec![ByteRange::empty(); self.data.len() + 1];
-        let flush_children = self
-            .admission
-            .children(token, &flush_ranges)
-            .map_err(slot_error)?;
-        self.admission
-            .submit_all(token, flush_children.len())
-            .map_err(slot_error)?;
-        let mut all_durable = true;
-        for (member, child) in self.data.iter_mut().zip(&flush_children) {
-            let through = member
-                .store
-                .highest_accepted_watermark()
-                .unwrap_or(StoreWriteWatermark(0));
-            let completion = member.store.flush_file(*child, through);
-            all_durable &= matches!(completion.disposition, CompletionDisposition::Success)
-                && completion.persistence.is_durable();
-            self.admission
-                .complete(token, completion)
+        let token = self.reserve(request)?;
+        let result = (|| {
+            let flush_ranges = vec![ByteRange::empty(); self.members.len()];
+            let flush_children = self
+                .admission
+                .children(token, &flush_ranges)
                 .map_err(slot_error)?;
+            self.admission
+                .submit_all(token, flush_children.len())
+                .map_err(slot_error)?;
+            let mut all_durable = true;
+            for (member, child) in self.members.iter_mut().zip(&flush_children) {
+                let through = member
+                    .store
+                    .highest_accepted_watermark()
+                    .unwrap_or(StoreWriteWatermark(0));
+                let completion = member.store.flush_file(*child, through);
+                all_durable &= matches!(completion.disposition, CompletionDisposition::Success)
+                    && completion.persistence.is_durable();
+                self.admission
+                    .complete(token, completion)
+                    .map_err(slot_error)?;
+            }
+            if !all_durable {
+                self.state = ServiceState::Recovering;
+                return Err(ServiceError::io(
+                    FailureClass::Fence,
+                    "flush lacks covering host fence evidence",
+                ));
+            }
+            Ok(OperationEvidence {
+                request,
+                completion: CompletionEvidence {
+                    requested: ByteRange::empty(),
+                    completed: 0,
+                    disposition: CompletionDisposition::Success,
+                    persistence: PersistenceClaim::HostFenceOnly,
+                },
+                trace: empty_trace(self.topology.topology_epoch(), self.recovery_generation()?)?,
+            })
+        })();
+        match result {
+            Ok(evidence) => {
+                self.finish(token, false)
+                    .map_err(|error| error.with_request(request))?;
+                Ok(evidence)
+            }
+            Err(error) => {
+                let _ = self.finish(token, true);
+                Err(error.with_request(request))
+            }
         }
-        let parity_through = self
-            .parity
-            .store
-            .highest_accepted_watermark()
-            .unwrap_or(StoreWriteWatermark(0));
-        let parity_completion = self.parity.store.flush_file(
-            *flush_children.last().expect("parity child exists"),
-            parity_through,
-        );
-        all_durable &= matches!(
-            parity_completion.disposition,
-            CompletionDisposition::Success
-        ) && parity_completion.persistence.is_durable();
-        self.admission
-            .complete(token, parity_completion)
-            .map_err(slot_error)?;
-        if !all_durable {
-            self.state = ServiceState::Recovering;
-            let _ = self.finish(token, true);
-            return Err(ServiceError::io(
-                FailureClass::Fence,
-                "flush lacks covering host fence evidence",
-            ));
-        }
-        self.finish(token, false)?;
-        Ok(OperationEvidence {
-            completion: CompletionEvidence {
-                requested: ByteRange::empty(),
-                completed: 0,
-                disposition: CompletionDisposition::Success,
-                persistence: PersistenceClaim::HostFenceOnly,
-            },
-            trace: empty_trace(self.topology.topology_epoch(), self.recovery_generation()?)?,
-        })
     }
 
     pub fn abandon(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
@@ -307,8 +335,9 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
 
     fn execute_write(
         &mut self,
-        data_slot: usize,
-        request: &PortableRequest,
+        member_index: usize,
+        coding_position: CodingPosition,
+        request: BlockRequest,
         bytes: &[u8],
         plan: &crate::range::RangePlan,
         token: OperationSlotToken,
@@ -320,26 +349,34 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 "checksum authority generation is stale",
             ));
         }
-        let member_index = u32::try_from(data_slot).map_err(|_| {
-            ServiceError::io(
-                FailureClass::Range,
-                "data slot does not fit region identity",
-            )
-        })?;
-        let regions = dirty_regions_for_range(member_index, request.range, DIRTY_REGION_BYTES)
-            .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?;
-        let checksum_extents = self.checksum_extents_for(data_slot, request.range)?;
-        let stores = vec![self.data[data_slot].id, self.parity.id];
+        let parity_assignment = self
+            .topology
+            .assignments()
+            .iter()
+            .find(|assignment| assignment.role() == MemberRole::Parity)
+            .ok_or_else(|| {
+                ServiceError::invalid(FailureClass::Identity, "parity assignment is missing")
+            })?;
+        let parity_index = member_index_for_assignment(&self.members, parity_assignment)?;
+        let region_member_index = u32::from(coding_position.0);
+        let regions =
+            dirty_regions_for_range(region_member_index, request.range, DIRTY_REGION_BYTES)
+                .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?;
+        let checksum_extents = self.checksum_extents_for(coding_position, request.range)?;
+        let stores = vec![
+            self.members[member_index].store_id,
+            self.members[parity_index].store_id,
+        ];
         let mut parity_ranges = Vec::with_capacity(plan.ranges.len() * 2);
         for range in &plan.ranges {
-            let region = dirty_regions_for_range(member_index, *range, DIRTY_REGION_BYTES)
+            let region = dirty_regions_for_range(region_member_index, *range, DIRTY_REGION_BYTES)
                 .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?
                 .into_iter()
                 .next()
                 .ok_or_else(|| ServiceError::io(FailureClass::Range, "missing dirty region"))?;
             parity_ranges.extend([
-                ParityRange::new(region, self.data[data_slot].id, *range),
-                ParityRange::new(region, self.parity.id, *range),
+                ParityRange::new(region, self.members[member_index].store_id, *range),
+                ParityRange::new(region, self.members[parity_index].store_id, *range),
             ]);
         }
         let mut tx_plan = TransactionPlan::new(
@@ -356,8 +393,8 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 .iter()
                 .flat_map(|range| {
                     [
-                        PlannedRead::new(self.data[data_slot].id, *range),
-                        PlannedRead::new(self.parity.id, *range),
+                        PlannedRead::new(self.members[member_index].store_id, *range),
+                        PlannedRead::new(self.members[parity_index].store_id, *range),
                     ]
                 })
                 .collect(),
@@ -372,8 +409,8 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 .iter()
                 .flat_map(|range| {
                     [
-                        PlannedWrite::new(self.data[data_slot].id, *range),
-                        PlannedWrite::new(self.parity.id, *range),
+                        PlannedWrite::new(self.members[member_index].store_id, *range),
+                        PlannedWrite::new(self.members[parity_index].store_id, *range),
                     ]
                 })
                 .collect(),
@@ -396,7 +433,10 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
 
         let mut computed = Vec::with_capacity(plan.ranges.len());
         let codec_geometry = CodecGeometry::new(
-            vec![self.topology.geometry().protected_length(); self.data.len()],
+            vec![
+                self.topology.geometry().protected_length();
+                usize::from(self.topology.profile().data_slots())
+            ],
             self.topology.geometry().parity_length(),
         )
         .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?;
@@ -424,7 +464,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         let mut byte_cursor = 0_usize;
         for (index, range) in plan.ranges.iter().enumerate() {
             let old_data = read_child(
-                &mut self.data[data_slot].store,
+                &mut self.members[member_index].store,
                 &mut self.admission,
                 token,
                 read_children[index].0,
@@ -432,7 +472,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 FailureClass::StoreRead,
             )?;
             let old_parity = read_child(
-                &mut self.parity.store,
+                &mut self.members[parity_index].store,
                 &mut self.admission,
                 token,
                 read_children[index].1,
@@ -445,7 +485,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             let new_parity = update_parity(
                 &codec_geometry,
                 *range,
-                data_slot,
+                usize::from(coding_position.0),
                 &old_data,
                 new_data,
                 &old_parity,
@@ -469,7 +509,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         let mut parity_watermark = None;
         for (index, (range, new_data, new_parity)) in computed.iter().enumerate() {
             data_watermark = Some(write_member(
-                &mut self.data[data_slot].store,
+                &mut self.members[member_index].store,
                 &mut self.admission,
                 token,
                 data_write_children[index],
@@ -478,7 +518,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                 write_intent,
             )?);
             parity_watermark = Some(write_member(
-                &mut self.parity.store,
+                &mut self.members[parity_index].store,
                 &mut self.admission,
                 token,
                 parity_write_children[index],
@@ -494,13 +534,13 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         machine
             .set_write_watermarks(vec![
                 StoreWatermark::for_incarnation(
-                    self.data[data_slot].id,
-                    self.data[data_slot].store.incarnation(),
+                    self.members[member_index].store_id,
+                    self.members[member_index].store.incarnation(),
                     data_watermark,
                 ),
                 StoreWatermark::for_incarnation(
-                    self.parity.id,
-                    self.parity.store.incarnation(),
+                    self.members[parity_index].store_id,
+                    self.members[parity_index].store.incarnation(),
                     parity_watermark,
                 ),
             ])
@@ -510,14 +550,14 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
 
         let data_fence = flush_member(
-            &mut self.data[data_slot].store,
+            &mut self.members[member_index].store,
             &mut self.admission,
             token,
             flush_children[0],
             data_watermark,
         )?;
         let parity_fence = flush_member(
-            &mut self.parity.store,
+            &mut self.members[parity_index].store,
             &mut self.admission,
             token,
             flush_children[1],
@@ -585,6 +625,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
             .apply(ActionResult::RangeReleased)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         Ok(OperationEvidence {
+            request,
             completion: CompletionEvidence {
                 requested: request.range,
                 completed: request.range.length,
@@ -595,37 +636,8 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         })
     }
 
-    fn reserve(&mut self, request: &PortableRequest) -> Result<OperationSlotToken, ServiceError> {
-        self.admission
-            .reserve(OperationId(request.request_id.0), request.topology_epoch)
-            .map_err(slot_error)
-    }
-
-    fn reserve_with_buffers(
-        &mut self,
-        request: &PortableRequest,
-        count: usize,
-    ) -> Result<OperationSlotToken, ServiceError> {
-        let token = self.reserve(request)?;
-        for index in 0..count {
-            let buffer_index = match u32::try_from(index) {
-                Ok(index) => index,
-                Err(error) => {
-                    let service_error = ServiceError::io(
-                        FailureClass::Admission,
-                        format!("buffer index does not fit: {error}"),
-                    );
-                    let _ = self.finish(token, true);
-                    return Err(service_error);
-                }
-            };
-            if let Err(error) = self.admission.attach_buffer(token, buffer_index) {
-                let service_error = slot_error(error);
-                let _ = self.finish(token, true);
-                return Err(service_error);
-            }
-        }
-        Ok(token)
+    fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, ServiceError> {
+        self.admission.reserve(request).map_err(slot_error)
     }
 
     fn finish(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), ServiceError> {
@@ -660,16 +672,24 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
 
     fn checksum_extents_for(
         &self,
-        data_slot: usize,
+        data_position: CodingPosition,
         range: ByteRange,
     ) -> Result<Vec<IntegrityExtentId>, ServiceError> {
+        let parity_position = self
+            .topology
+            .assignments()
+            .iter()
+            .find(|assignment| assignment.role() == MemberRole::Parity)
+            .map(TopologyAssignment::coding_position)
+            .ok_or_else(|| {
+                ServiceError::invalid(FailureClass::Identity, "parity assignment is missing")
+            })?;
         let per_member = checksum_extent_count(self.topology.geometry().protected_length())?;
         let first_extent = range.offset / BLAKE3_256_PROFILE.extent_size;
         let last_extent = (range.end() - 1) / BLAKE3_256_PROFILE.extent_size;
-        let member_indices = [data_slot, self.data.len()];
         let mut extents = Vec::new();
-        for member_index in member_indices {
-            let member_base = (member_index as u64)
+        for position in [data_position, parity_position] {
+            let member_base = u64::from(position.0)
                 .checked_mul(per_member)
                 .ok_or_else(|| {
                     ServiceError::io(FailureClass::Range, "checksum extent ID overflowed")
@@ -686,7 +706,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
     }
 
     fn ensure_identities(&self) -> Result<(), ServiceError> {
-        for member in self.data.iter().chain(std::iter::once(&self.parity)) {
+        for member in &self.members {
             match member
                 .store
                 .identity_is_current()
@@ -724,13 +744,13 @@ fn checksum_authority(
     let mut authority =
         ChecksumAuthority::new(topology.topology_epoch(), ChecksumSetGeneration::INITIAL);
     authority.recovery_generation = generation;
-    for (member_index, assignment) in topology.assignments().iter().enumerate() {
+    for assignment in topology.assignments() {
         let target = match assignment.role() {
             MemberRole::Data => ChecksumTarget::data(assignment.slot_id()),
             MemberRole::Parity => ChecksumTarget::parity(assignment.coding_position()),
         };
         let first_id = IntegrityExtentId(
-            (member_index as u64)
+            u64::from(assignment.coding_position().0)
                 .checked_mul(per_member)
                 .ok_or_else(|| {
                     ServiceError::io(FailureClass::Range, "checksum extent ID overflowed")
@@ -801,25 +821,59 @@ fn flush_member(
     Ok(persistence)
 }
 
+/// dwv:req req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments
 fn validate_assembly(
     topology: &TopologySnapshot,
-    data: &[MemberStore],
-    parity: &MemberStore,
+    members: &[MemberBinding],
 ) -> Result<(), ServiceError> {
     topology
         .validate()
         .map_err(|error| ServiceError::invalid(FailureClass::InvalidRequest, error.to_string()))?;
-    if topology.profile().parity_slots() != 1
-        || data.len() != usize::from(topology.profile().data_slots())
-    {
+    if topology.profile().parity_slots() != 1 || members.len() != topology.assignments().len() {
         return Err(ServiceError::invalid(
             FailureClass::Capability,
-            "healthy portable service requires exactly one parity member and the recorded data count",
+            "healthy portable service requires one binding for every single-parity assignment",
         ));
     }
     let geometry = topology.geometry();
-    let mut identities = Vec::new();
-    for member in data.iter().chain(std::iter::once(parity)) {
+    let mut identities = Vec::with_capacity(members.len());
+    for (index, member) in members.iter().enumerate() {
+        let assignment = topology
+            .assignment_for_slot(member.slot_id)
+            .ok_or_else(|| {
+                ServiceError::invalid(
+                    FailureClass::Identity,
+                    "member binding has no topology assignment",
+                )
+            })?;
+        if member.role != assignment.role()
+            || member.coding_position != assignment.coding_position()
+            || member.assignment_instance != assignment.assignment_instance()
+            || member.assignment_generation != assignment.assignment_generation()
+            || member.topology_epoch != topology.topology_epoch()
+        {
+            return Err(ServiceError::invalid(
+                FailureClass::Identity,
+                "member binding does not match its captured topology assignment",
+            ));
+        }
+        if member.store.store_id() != member.store_id
+            || member.store.topology_epoch() != member.topology_epoch
+        {
+            return Err(ServiceError::invalid(
+                FailureClass::Identity,
+                "member binding store identity does not match the opened store",
+            ));
+        }
+        if members[..index]
+            .iter()
+            .any(|prior| prior.slot_id == member.slot_id || prior.store_id == member.store_id)
+        {
+            return Err(ServiceError::invalid(
+                FailureClass::Identity,
+                "member binding duplicates a slot or store identity",
+            ));
+        }
         let report = member.store.capabilities_report();
         if report.capabilities.logical_length
             != dwv_store::Evidence::Known(geometry.protected_length())
@@ -836,27 +890,27 @@ fn validate_assembly(
         }
         identities.push(report.identity);
     }
+    for assignment in topology.assignments() {
+        if members
+            .iter()
+            .filter(|member| member.slot_id == assignment.slot_id())
+            .count()
+            != 1
+        {
+            return Err(ServiceError::invalid(
+                FailureClass::Identity,
+                "topology assignment does not have exactly one member binding",
+            ));
+        }
+    }
     for (index, identity) in identities.iter().enumerate() {
         for other in identities.iter().skip(index + 1) {
             if identity.compare(other) != dwv_store::IdentityComparison::Changed {
                 return Err(ServiceError::invalid(
                     FailureClass::Alias,
-                    "data and parity members alias or have ambiguous identity",
+                    "member bindings alias or have ambiguous identity",
                 ));
             }
-        }
-    }
-    for (index, assignment) in topology.assignments().iter().enumerate() {
-        let expected_role = if index < data.len() {
-            MemberRole::Data
-        } else {
-            MemberRole::Parity
-        };
-        if assignment.role() != expected_role {
-            return Err(ServiceError::invalid(
-                FailureClass::InvalidRequest,
-                "topology assignment order does not match portable member order",
-            ));
         }
     }
     Ok(())
@@ -864,26 +918,67 @@ fn validate_assembly(
 
 fn validate_request(
     topology: &TopologySnapshot,
-    request: &PortableRequest,
-) -> Result<usize, ServiceError> {
+    members: &[MemberBinding],
+    request: BlockRequest,
+    maximum_transfer: u64,
+) -> Result<(usize, MemberRole, CodingPosition), ServiceError> {
+    let capabilities = dwv_core::FrontendCapabilities {
+        max_transfer: Some(maximum_transfer),
+        supports_preflush: false,
+        supports_fua: false,
+        supports_write_zeroes: false,
+        supports_discard: false,
+    };
+    request.validate(&capabilities).map_err(|error| {
+        let class = match error {
+            dwv_core::RequestError::UnsupportedOperation(_)
+            | dwv_core::RequestError::UnsupportedPreflush
+            | dwv_core::RequestError::UnsupportedFua => FailureClass::Capability,
+            _ => FailureClass::InvalidRequest,
+        };
+        ServiceError::invalid(class, error.to_string())
+    })?;
     if request.topology_epoch != topology.topology_epoch() {
         return Err(ServiceError::invalid(
             FailureClass::StaleTopology,
             "request topology epoch is stale",
         ));
     }
-    match request.operation {
-        RequestOperation::Read { data_slot } | RequestOperation::Write { data_slot, .. }
-            if data_slot < usize::from(topology.profile().data_slots()) =>
-        {
-            Ok(data_slot)
-        }
-        RequestOperation::Flush if request.range.is_empty() => Ok(0),
-        _ => Err(ServiceError::invalid(
-            FailureClass::InvalidRequest,
-            "request addresses an unavailable data slot or has an invalid range",
-        )),
-    }
+    let assignment = topology
+        .assignment_for_slot(request.slot_id)
+        .ok_or_else(|| {
+            ServiceError::invalid(
+                FailureClass::InvalidRequest,
+                "request target slot is absent from the captured topology",
+            )
+        })?;
+    let member_index = member_index_for_assignment(members, assignment)?;
+    Ok((
+        member_index,
+        assignment.role(),
+        assignment.coding_position(),
+    ))
+}
+
+fn member_index_for_assignment(
+    members: &[MemberBinding],
+    assignment: &TopologyAssignment,
+) -> Result<usize, ServiceError> {
+    members
+        .iter()
+        .position(|member| {
+            member.slot_id == assignment.slot_id()
+                && member.role == assignment.role()
+                && member.coding_position == assignment.coding_position()
+                && member.assignment_instance == assignment.assignment_instance()
+                && member.assignment_generation == assignment.assignment_generation()
+        })
+        .ok_or_else(|| {
+            ServiceError::invalid(
+                FailureClass::Identity,
+                "captured topology assignment has no exact member binding",
+            )
+        })
 }
 
 fn empty_trace(
@@ -918,8 +1013,9 @@ fn empty_trace(
 mod tests {
     use super::*;
     use dwv_core::{
-        ArrayId, AssignmentGeneration, AssignmentInstanceId, CodingPosition, CodingProfile,
-        ProtectedGeometry, RequestId, SlotId, TopologyAssignment,
+        ArrayId, AssignmentGeneration, AssignmentInstanceId, BufferToken, CodingPosition,
+        CodingProfile, FrontendId, OrderingIntent, ProtectedGeometry, RequestId, SlotId,
+        SubmissionSequence, TopologyAssignment,
     };
     use dwv_recovery::IntentCommit;
     use dwv_recovery::MemoryRecoveryStore;
@@ -930,7 +1026,7 @@ mod tests {
         VerificationStoreError, apply_repair, plan_repairs, verify_exhaustive,
     };
     use std::fs;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     const LENGTH: u64 = 4096;
@@ -1012,6 +1108,67 @@ mod tests {
         .unwrap()
     }
 
+    fn request(
+        request_id: RequestId,
+        epoch: TopologyEpoch,
+        data_slot: usize,
+        op: BlockOp,
+        range: ByteRange,
+        durability: DurabilityIntent,
+    ) -> BlockRequest {
+        BlockRequest::new(
+            request_id,
+            FrontendId(7),
+            SlotId::from_bytes([u8::try_from(data_slot).unwrap() + 1; 16]),
+            epoch,
+            op,
+            range,
+            matches!(op, BlockOp::Read | BlockOp::Write)
+                .then_some(BufferToken::new(u32::try_from(data_slot).unwrap(), 1)),
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(request_id.0),
+                preflush: false,
+                fence_domain: FenceDomain(1),
+            },
+            durability,
+        )
+    }
+
+    fn bindings(
+        topology: &TopologySnapshot,
+        mut open: impl FnMut(u64) -> FileStore,
+    ) -> Vec<MemberBinding> {
+        topology
+            .assignments()
+            .iter()
+            .enumerate()
+            .map(|(index, assignment)| {
+                let store_id = StoreId(index as u64 + 1);
+                MemberBinding::new(
+                    assignment,
+                    topology.topology_epoch(),
+                    store_id,
+                    open(store_id.0),
+                )
+            })
+            .collect()
+    }
+
+    fn reopened_bindings(root: &Path, topology: &TopologySnapshot) -> Vec<MemberBinding> {
+        let epoch = topology.topology_epoch();
+        bindings(topology, |index| {
+            FileStore::open(
+                FileStoreConfig::new(root.join(format!("member-{index}.raw")), LENGTH, BLOCK)
+                    .maximum_transfer(LENGTH)
+                    .create(true)
+                    .store_id(StoreId(index))
+                    .topology_epoch(epoch)
+                    .sync_mode(FileSyncMode::CallerFlush),
+            )
+            .unwrap()
+        })
+    }
+
     fn fixture() -> (PathBuf, HealthyPortableService<MemoryRecoveryStore>) {
         fixture_with_config(ServiceConfig::default())
     }
@@ -1038,13 +1195,11 @@ mod tests {
             )
             .unwrap()
         };
+        let topology = topology(epoch);
+        let members = bindings(&topology, open);
         let service = HealthyPortableService::open(
-            topology(epoch),
-            vec![
-                MemberStore::new(StoreId(1), open(1)),
-                MemberStore::new(StoreId(2), open(2)),
-            ],
-            MemberStore::new(StoreId(3), open(3)),
+            topology,
+            members,
             MemoryRecoveryStore::new(epoch),
             config,
         )
@@ -1059,31 +1214,34 @@ mod tests {
         let (root, mut service) = fixture();
         let bytes = vec![0x5a; BLOCK as usize];
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
-        let evidence = service
-            .write(PortableRequest::write(
-                RequestId(1),
-                TopologyEpoch(4),
-                0,
-                range,
-                bytes.clone(),
-            ))
-            .unwrap();
+        let write_request = request(
+            RequestId(1),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let evidence = service.write(write_request, &bytes).unwrap();
         assert_eq!(evidence.completion.completed, BLOCK as u64);
+        assert_eq!(evidence.request, write_request);
         assert_eq!(
             evidence.completion.persistence,
             PersistenceClaim::HostFenceOnly
         );
         assert_eq!(service.state(), ServiceState::Serving);
-        let (read, read_evidence) = service
-            .read(PortableRequest::read(
-                RequestId(2),
-                TopologyEpoch(4),
-                0,
-                range,
-            ))
-            .unwrap();
+        let read_request = request(
+            RequestId(2),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let (read, read_evidence) = service.read(read_request).unwrap();
         assert_eq!(read, bytes);
         assert_eq!(read_evidence.completion.completed, BLOCK as u64);
+        assert_eq!(read_evidence.request, read_request);
         let parity = fs::read(root.join("member-3.raw")).unwrap();
         assert_eq!(&parity[..BLOCK as usize], &[0x5a; BLOCK as usize]);
         drop(service);
@@ -1095,13 +1253,17 @@ mod tests {
         let (root, mut service) = fixture();
         let range = ByteRange::new(BLOCK as u64, BLOCK as u64).unwrap();
         service
-            .write(PortableRequest::write(
-                RequestId(4),
-                TopologyEpoch(4),
-                1,
-                range,
-                vec![0xa5; BLOCK as usize],
-            ))
+            .write(
+                request(
+                    RequestId(4),
+                    TopologyEpoch(4),
+                    1,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &vec![0xa5; BLOCK as usize],
+            )
             .unwrap();
         let parity = fs::read(root.join("member-3.raw")).unwrap();
         assert_eq!(&parity[..BLOCK as usize], &[0; BLOCK as usize]);
@@ -1110,11 +1272,13 @@ mod tests {
             &[0xa5; BLOCK as usize]
         );
         let (read, _) = service
-            .read(PortableRequest::read(
+            .read(request(
                 RequestId(5),
                 TopologyEpoch(4),
                 1,
+                BlockOp::Read,
                 range,
+                DurabilityIntent::Ordinary,
             ))
             .unwrap();
         assert_eq!(read, vec![0xa5; BLOCK as usize]);
@@ -1134,22 +1298,30 @@ mod tests {
         let (root, mut service) = fixture();
         let range = ByteRange::new(0, LENGTH).unwrap();
         service
-            .write(PortableRequest::write(
-                RequestId(10),
-                TopologyEpoch(4),
-                0,
-                range,
-                vec![0x33; LENGTH as usize],
-            ))
+            .write(
+                request(
+                    RequestId(10),
+                    TopologyEpoch(4),
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &vec![0x33; LENGTH as usize],
+            )
             .unwrap();
         service
-            .write(PortableRequest::write(
-                RequestId(11),
-                TopologyEpoch(4),
-                1,
-                range,
-                vec![0x77; LENGTH as usize],
-            ))
+            .write(
+                request(
+                    RequestId(11),
+                    TopologyEpoch(4),
+                    1,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &vec![0x77; LENGTH as usize],
+            )
             .unwrap();
         let parity = fs::read(root.join("member-3.raw")).unwrap();
         assert_eq!(parity, vec![0x44; LENGTH as usize]);
@@ -1175,20 +1347,26 @@ mod tests {
             let start = range.offset as usize;
             reference[slot][start..start + bytes.len()].copy_from_slice(&bytes);
             service
-                .write(PortableRequest::write(
-                    RequestId(100 + iteration),
-                    TopologyEpoch(4),
-                    slot,
-                    range,
-                    bytes.clone(),
-                ))
+                .write(
+                    request(
+                        RequestId(100 + iteration),
+                        TopologyEpoch(4),
+                        slot,
+                        BlockOp::Write,
+                        range,
+                        DurabilityIntent::Ordinary,
+                    ),
+                    &bytes.clone(),
+                )
                 .unwrap();
             let (read, _) = service
-                .read(PortableRequest::read(
+                .read(request(
                     RequestId(200 + iteration),
                     TopologyEpoch(4),
                     slot,
+                    BlockOp::Read,
                     range,
+                    DurabilityIntent::Ordinary,
                 ))
                 .unwrap();
             assert_eq!(read, bytes);
@@ -1215,13 +1393,17 @@ mod tests {
         let epoch = TopologyEpoch(4);
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
         service
-            .write(PortableRequest::write(
-                RequestId(300),
-                epoch,
-                0,
-                range,
-                vec![0x66; BLOCK as usize],
-            ))
+            .write(
+                request(
+                    RequestId(300),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &vec![0x66; BLOCK as usize],
+            )
             .unwrap();
         let data_before = fs::read(root.join("member-1.raw")).unwrap();
         let control = ControlProjection::new(root.join("control.sqlite3"));
@@ -1245,19 +1427,24 @@ mod tests {
             )
             .unwrap()
         };
+        let topology = topology(epoch);
+        let members = bindings(&topology, open);
         let mut reopened = HealthyPortableService::open(
-            topology(epoch),
-            vec![
-                MemberStore::new(StoreId(1), open(1)),
-                MemberStore::new(StoreId(2), open(2)),
-            ],
-            MemberStore::new(StoreId(3), open(3)),
+            topology,
+            members,
             MemoryRecoveryStore::new(epoch),
             ServiceConfig::default(),
         )
         .unwrap();
         let (read, _) = reopened
-            .read(PortableRequest::read(RequestId(301), epoch, 0, range))
+            .read(request(
+                RequestId(301),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
             .unwrap();
         assert_eq!(read, vec![0x66; BLOCK as usize]);
         drop(reopened);
@@ -1286,7 +1473,14 @@ mod tests {
     fn flush_reports_only_host_fence_evidence() {
         let (root, mut service) = fixture();
         let evidence = service
-            .flush(PortableRequest::flush(RequestId(12), TopologyEpoch(4)))
+            .flush(request(
+                RequestId(12),
+                TopologyEpoch(4),
+                0,
+                BlockOp::Flush,
+                ByteRange::empty(),
+                DurabilityIntent::ExplicitFlush,
+            ))
             .unwrap();
         assert_eq!(
             evidence.completion.persistence,
@@ -1298,23 +1492,79 @@ mod tests {
     }
 
     #[test]
+    fn flush_rejects_parity_target() {
+        let (root, mut service) = fixture();
+        let result = service.flush(request(
+            RequestId(13),
+            TopologyEpoch(4),
+            2,
+            BlockOp::Flush,
+            ByteRange::empty(),
+            DurabilityIntent::ExplicitFlush,
+        ));
+        assert!(matches!(
+            result,
+            Err(ServiceError::Invalid {
+                class: FailureClass::InvalidRequest,
+                ..
+            })
+        ));
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn flush_admission_failure_releases_partial_children_and_slot() {
+        let config = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: dwv_store::ResourceLimits::new(1, 0, 1, 1, 1, 1),
+            },
+            ..ServiceConfig::default()
+        };
+        let (root, mut service) = fixture_with_config(config);
+        let admitted = request(
+            RequestId(14),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Flush,
+            ByteRange::empty(),
+            DurabilityIntent::ExplicitFlush,
+        );
+        let result = service.flush(admitted);
+        assert_eq!(result.as_ref().unwrap_err().request(), Some(admitted));
+        assert!(matches!(
+            result,
+            Err(ServiceError::Io {
+                class: FailureClass::Admission,
+                ..
+            })
+        ));
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+        assert_eq!(service.state(), ServiceState::Serving);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn explicit_flush_intent_is_rejected_on_write_endpoint() {
         let (root, mut service) = fixture();
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
         let result = service.write(
-            PortableRequest::write(
+            request(
                 RequestId(13),
                 TopologyEpoch(4),
                 0,
+                BlockOp::Write,
                 range,
-                vec![0x11; BLOCK as usize],
-            )
-            .with_durability(DurabilityIntent::ExplicitFlush),
+                DurabilityIntent::ExplicitFlush,
+            ),
+            &[0x11; BLOCK as usize],
         );
         assert!(matches!(
             result,
             Err(ServiceError::Invalid {
-                class: FailureClass::Capability,
+                class: FailureClass::InvalidRequest,
                 ..
             })
         ));
@@ -1336,14 +1586,22 @@ mod tests {
         drop(file);
 
         let range = ByteRange::new(0, LENGTH).unwrap();
-        let result = service.read(PortableRequest::read(
+        let admitted = request(
             RequestId(14),
             TopologyEpoch(4),
             0,
+            BlockOp::Read,
             range,
-        ));
+            DurabilityIntent::Ordinary,
+        );
+        let result = service.read(admitted);
         match result {
-            Err(ServiceError::IncompleteRead { bytes, evidence }) => {
+            Err(ServiceError::IncompleteRead {
+                request,
+                bytes,
+                evidence,
+            }) => {
+                assert_eq!(*request, admitted);
                 assert_eq!(bytes.len(), (LENGTH - BLOCK as u64) as usize);
                 assert_eq!(evidence.requested, range);
                 assert_eq!(evidence.completed, LENGTH - BLOCK as u64);
@@ -1367,13 +1625,16 @@ mod tests {
         };
         let (root, mut service) = fixture_with_config(config);
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
-        let result = service.write(PortableRequest::write(
+        let admitted = request(
             RequestId(15),
             TopologyEpoch(4),
             0,
+            BlockOp::Write,
             range,
-            vec![0x22; BLOCK as usize],
-        ));
+            DurabilityIntent::Ordinary,
+        );
+        let result = service.write(admitted, &vec![0x22; BLOCK as usize]);
+        assert_eq!(result.as_ref().unwrap_err().request(), Some(admitted));
         assert!(matches!(
             result,
             Err(ServiceError::Io {
@@ -1392,19 +1653,23 @@ mod tests {
     fn buffer_admission_failure_releases_the_slot_and_buffers() {
         let config = ServiceConfig {
             admission: AdmissionConfig {
-                limits: dwv_store::ResourceLimits::new(1, 1, 8, 1, 1, 1),
+                limits: dwv_store::ResourceLimits::new(1, 0, 8, 1, 1, 1),
             },
             ..ServiceConfig::default()
         };
         let (root, mut service) = fixture_with_config(config);
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
-        let result = service.write(PortableRequest::write(
-            RequestId(16),
-            TopologyEpoch(4),
-            0,
-            range,
-            vec![0x33; BLOCK as usize],
-        ));
+        let result = service.write(
+            request(
+                RequestId(16),
+                TopologyEpoch(4),
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x33; BLOCK as usize],
+        );
         assert!(matches!(
             result,
             Err(ServiceError::Io {
@@ -1468,13 +1733,17 @@ mod tests {
     fn stale_epoch_is_rejected_before_payload_mutation() {
         let (root, mut service) = fixture();
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
-        let result = service.write(PortableRequest::write(
-            RequestId(3),
-            TopologyEpoch(5),
-            0,
-            range,
-            vec![1; BLOCK as usize],
-        ));
+        let result = service.write(
+            request(
+                RequestId(3),
+                TopologyEpoch(5),
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ),
+            &vec![1; BLOCK as usize],
+        );
         assert!(matches!(
             result,
             Err(ServiceError::Invalid {
@@ -1486,6 +1755,288 @@ mod tests {
             fs::read(root.join("member-1.raw")).unwrap(),
             vec![0; LENGTH as usize]
         );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn stable_slots_select_the_same_members_when_binding_order_changes() {
+        let (root, service) = fixture();
+        drop(service);
+        let epoch = TopologyEpoch(4);
+        let topology = topology(epoch);
+        let mut members = reopened_bindings(&root, &topology);
+        members.reverse();
+        let mut service = HealthyPortableService::open(
+            topology,
+            members,
+            MemoryRecoveryStore::new(epoch),
+            ServiceConfig::default(),
+        )
+        .unwrap();
+        let range = ByteRange::new(0, BLOCK as u64).unwrap();
+        let bytes = vec![0x8d; BLOCK as usize];
+        service
+            .write(
+                request(
+                    RequestId(400),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &bytes,
+            )
+            .unwrap();
+        assert_eq!(
+            &fs::read(root.join("member-1.raw")).unwrap()[..BLOCK as usize],
+            bytes
+        );
+        assert_eq!(
+            &fs::read(root.join("member-2.raw")).unwrap()[..BLOCK as usize],
+            vec![0; BLOCK as usize]
+        );
+        assert_eq!(
+            &fs::read(root.join("member-3.raw")).unwrap()[..BLOCK as usize],
+            bytes
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn stable_slots_ignore_topology_coding_and_member_collection_order() {
+        let (root, service) = fixture();
+        drop(service);
+        let epoch = TopologyEpoch(4);
+        let base = topology(epoch);
+        let mut assignments = base.assignments().to_vec();
+        assignments.rotate_left(1);
+        let reordered = TopologySnapshot::new(
+            base.array_id(),
+            epoch,
+            base.profile(),
+            base.geometry(),
+            assignments,
+        )
+        .unwrap();
+        let binding = |slot_id: SlotId, store_id: StoreId| {
+            MemberBinding::new(
+                reordered.assignment_for_slot(slot_id).unwrap(),
+                epoch,
+                store_id,
+                FileStore::open(
+                    FileStoreConfig::new(
+                        root.join(format!("member-{}.raw", store_id.0)),
+                        LENGTH,
+                        BLOCK,
+                    )
+                    .maximum_transfer(LENGTH)
+                    .store_id(store_id)
+                    .topology_epoch(epoch)
+                    .sync_mode(FileSyncMode::CallerFlush),
+                )
+                .unwrap(),
+            )
+        };
+        let members = vec![
+            binding(SlotId::from_bytes([3; 16]), StoreId(3)),
+            binding(SlotId::from_bytes([1; 16]), StoreId(1)),
+            binding(SlotId::from_bytes([2; 16]), StoreId(2)),
+        ];
+        let mut service = HealthyPortableService::open(
+            reordered,
+            members,
+            MemoryRecoveryStore::new(epoch),
+            ServiceConfig::default(),
+        )
+        .unwrap();
+        let range = ByteRange::new(0, BLOCK as u64).unwrap();
+        service
+            .write(
+                request(
+                    RequestId(402),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x6c; BLOCK as usize],
+            )
+            .unwrap();
+        assert_eq!(
+            &fs::read(root.join("member-1.raw")).unwrap()[..BLOCK as usize],
+            &[0x6c; BLOCK as usize]
+        );
+        assert_eq!(
+            &fs::read(root.join("member-2.raw")).unwrap()[..BLOCK as usize],
+            &[0; BLOCK as usize]
+        );
+        assert_eq!(
+            &fs::read(root.join("member-3.raw")).unwrap()[..BLOCK as usize],
+            &[0x6c; BLOCK as usize]
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn assembly_rejects_stale_assignment_and_store_identity_bindings() {
+        let (root, service) = fixture();
+        drop(service);
+        let epoch = TopologyEpoch(4);
+
+        let stale_topology = topology(epoch);
+        let mut members = reopened_bindings(&root, &stale_topology);
+        members[0].assignment_generation = AssignmentGeneration(99);
+        assert!(matches!(
+            HealthyPortableService::open(
+                stale_topology,
+                members,
+                MemoryRecoveryStore::new(epoch),
+                ServiceConfig::default(),
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::Identity,
+                ..
+            })
+        ));
+
+        let stale_instance_topology = topology(epoch);
+        let mut members = reopened_bindings(&root, &stale_instance_topology);
+        members[0].assignment_instance = AssignmentInstanceId([99; 16]);
+        assert!(matches!(
+            HealthyPortableService::open(
+                stale_instance_topology,
+                members,
+                MemoryRecoveryStore::new(epoch),
+                ServiceConfig::default(),
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::Identity,
+                ..
+            })
+        ));
+
+        let mismatched_topology = topology(epoch);
+        let mut members = reopened_bindings(&root, &mismatched_topology);
+        members[0].store_id = StoreId(99);
+        assert!(matches!(
+            HealthyPortableService::open(
+                mismatched_topology,
+                members,
+                MemoryRecoveryStore::new(epoch),
+                ServiceConfig::default(),
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::Identity,
+                ..
+            })
+        ));
+
+        let stale_store_topology = topology(epoch);
+        let members = bindings(&stale_store_topology, |index| {
+            FileStore::open(
+                FileStoreConfig::new(root.join(format!("member-{index}.raw")), LENGTH, BLOCK)
+                    .maximum_transfer(LENGTH)
+                    .store_id(StoreId(index))
+                    .topology_epoch(if index == 1 { TopologyEpoch(99) } else { epoch })
+                    .sync_mode(FileSyncMode::CallerFlush),
+            )
+            .unwrap()
+        });
+        assert!(matches!(
+            HealthyPortableService::open(
+                stale_store_topology,
+                members,
+                MemoryRecoveryStore::new(epoch),
+                ServiceConfig::default(),
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::Identity,
+                ..
+            })
+        ));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parity_slot_cannot_redirect_a_frontend_write() {
+        let (root, mut service) = fixture();
+        let before = (1..=3)
+            .map(|index| fs::read(root.join(format!("member-{index}.raw"))).unwrap())
+            .collect::<Vec<_>>();
+        let range = ByteRange::new(0, BLOCK as u64).unwrap();
+        assert!(matches!(
+            service.write(
+                request(
+                    RequestId(401),
+                    TopologyEpoch(4),
+                    2,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &vec![0xee; BLOCK as usize],
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::InvalidRequest,
+                ..
+            })
+        ));
+        let after = (1..=3)
+            .map(|index| fs::read(root.join(format!("member-{index}.raw"))).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(after, before);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn missing_slot_and_payload_mismatch_refuse_before_mutation() {
+        let (root, mut service) = fixture();
+        let before = (1..=3)
+            .map(|index| fs::read(root.join(format!("member-{index}.raw"))).unwrap())
+            .collect::<Vec<_>>();
+        let range = ByteRange::new(0, BLOCK as u64).unwrap();
+        let mut missing = request(
+            RequestId(403),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        missing.slot_id = SlotId::from_bytes([99; 16]);
+        assert!(matches!(
+            service.write(missing, &[0x4a; BLOCK as usize]),
+            Err(ServiceError::Invalid {
+                class: FailureClass::InvalidRequest,
+                ..
+            })
+        ));
+        assert!(matches!(
+            service.write(
+                request(
+                    RequestId(404),
+                    TopologyEpoch(4),
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x4a; BLOCK as usize - 1],
+            ),
+            Err(ServiceError::Invalid {
+                class: FailureClass::InvalidRequest,
+                ..
+            })
+        ));
+        let after = (1..=3)
+            .map(|index| fs::read(root.join(format!("member-{index}.raw"))).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(after, before);
         drop(service);
         fs::remove_dir_all(root).unwrap();
     }
@@ -1514,17 +2065,11 @@ mod tests {
             )
             .unwrap()
         };
-        let service = HealthyPortableService::open(
-            topology(TopologyEpoch(4)),
-            vec![
-                MemberStore::new(StoreId(1), open(1)),
-                MemberStore::new(StoreId(2), open(2)),
-            ],
-            MemberStore::new(StoreId(3), open(3)),
-            recovery,
-            ServiceConfig::default(),
-        )
-        .unwrap();
+        let topology = topology(TopologyEpoch(4));
+        let members = bindings(&topology, open);
+        let service =
+            HealthyPortableService::open(topology, members, recovery, ServiceConfig::default())
+                .unwrap();
         assert_eq!(service.state(), ServiceState::Recovering);
         drop(service);
         fs::remove_dir_all(root).unwrap();
@@ -1547,17 +2092,10 @@ mod tests {
         };
         let mut recovery = MemoryRecoveryStore::new(epoch);
         recovery.set_health(dwv_recovery::RecoveryStoreHealth::Corrupt);
+        let topology = topology(epoch);
+        let members = bindings(&topology, open);
         assert!(matches!(
-            HealthyPortableService::open(
-                topology(epoch),
-                vec![
-                    MemberStore::new(StoreId(1), open(1)),
-                    MemberStore::new(StoreId(2), open(2)),
-                ],
-                MemberStore::new(StoreId(3), open(3)),
-                recovery,
-                ServiceConfig::default(),
-            ),
+            HealthyPortableService::open(topology, members, recovery, ServiceConfig::default(),),
             Err(ServiceError::Io {
                 class: FailureClass::Recovery,
                 ..

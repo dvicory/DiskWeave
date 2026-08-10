@@ -20,48 +20,55 @@ The reference machine SHALL expose actions for range acquisition, durable dirty/
 
 ### Requirement: Durable intent precedes every protected home mutation
 <!-- dwv:req req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation -->
+<!-- dwv:refines req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
 
-The machine SHALL not emit a home read/compute/write action that can mutate protected media until the recovery store reports a durable dirty and integrity-invalidation generation. A rejected, lost, or corrupt intent commit SHALL transition to a blocked or reconciliation-required state.
+The reference machine SHALL emit no protected home-mutation action until it receives a durable invalidation result satisfying the owning dirty/integrity policy for the captured generations. This requirement owns only transaction action emission: a rejected, lost, corrupt, indeterminate, or stale intent result transitions the transaction to blocked or reconciliation-required without emitting a protected mutation.
 
-#### Scenario: Recovery intent commits durably
+#### Scenario: Durable invalidation result is accepted
 
-- **WHEN** dirty and stale mutations commit at the expected recovery generation
-- **THEN** the machine may proceed to read, compute, and write actions under the captured topology
+- **WHEN** the owner reports durable dirty and stale intent at the captured recovery generation
+- **THEN** the machine may emit its local read, compute, and write actions under the captured topology
 
-#### Scenario: Recovery intent commit fails
+#### Scenario: Durable invalidation result is unavailable
 
-- **WHEN** the recovery adapter returns rejected, lost, or corrupt observation before home mutation
-- **THEN** no protected write action is emitted and the transaction records the conservative failure
+- **WHEN** the result is rejected, lost, corrupt, indeterminate, or stale
+- **THEN** no protected home-mutation action is emitted and the transaction records the conservative outcome
 
 ### Requirement: Clean and checkpoint claims require fence evidence
 <!-- dwv:req req.explicit-transaction-machine.clean-and-checkpoint-claims-require-fence-evidence -->
+<!-- dwv:requires req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence -->
+<!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
+<!-- dwv:refines req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence -->
 
-The machine SHALL emit flush/fence actions after writes and SHALL not emit checkpoint/clear or release actions until required child operations are terminal and fence evidence covers the affected stores, watermarks, topology epoch, dirty regions, and integrity generations.
+The reference machine SHALL emit flush and fence actions after writes and SHALL emit checkpoint, clear, and range-release actions only after all child operations are terminal and the owning recovery and dirty protocols accept the supplied current evidence. This requirement owns action order and release points, not the complete watermark, typed-authority, or exact-region predicates.
 
-#### Scenario: A fence covers the write set
+#### Scenario: Recovery authority accepts the completed write set
 
-- **WHEN** all writes complete and the required durable fence evidence matches the captured topology
-- **THEN** the machine emits checkpoint/clear and only then releases its range guard
+- **WHEN** all writes are terminal and the recovery and dirty protocols accept the current covering evidence
+- **THEN** the machine emits checkpoint and clear, then releases its range guard
 
-#### Scenario: Fence evidence is volatile or incomplete
+#### Scenario: Recovery authority rejects the evidence
 
-- **WHEN** a completion lacks durable evidence or misses a store/range/watermark
-- **THEN** the transaction remains dirty/reconciliation-required and cannot report clean
+- **WHEN** the evidence is volatile, incomplete, stale, or otherwise rejected by an owner
+- **THEN** checkpoint, clear, and release are not emitted and the transaction remains reconciliation-required
 
 ### Requirement: Failure, abandonment, and crash states are conservative
 <!-- dwv:req req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative -->
+<!-- dwv:requires req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics -->
+<!-- dwv:requires req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
+<!-- dwv:requires req.dirty-integrity-invalidation.failures-and-restart-are-conservative -->
 
-The machine SHALL distinguish failed, uncertain, abandoned, daemon-crashed, and reconciliation-required outcomes. Abandonment SHALL suppress frontend delivery interest only; it SHALL not cancel an irreversible home mutation or reclaim range/buffer ownership before backend and semantic reconciliation.
+The reference machine SHALL distinguish failed, uncertain, abandoned-delivery-interest, process-lost, and reconciliation-required transaction outcomes. It SHALL preserve action order and transaction state until backend lifetime and durable recovery consequences are reconciled by their owners. It SHALL not reinterpret frontend abandonment as cancellation, infer clean state after process loss, or emit release before the operation-lifetime owner permits reclamation.
 
-#### Scenario: A frontend abandons after intent
+#### Scenario: Delivery interest is abandoned after intent
 
-- **WHEN** the frontend abandons a transaction after durable intent but before checkpoint
-- **THEN** the machine continues drain/reconciliation and never converts abandonment into cancellation or clean state
+- **WHEN** the frontend owner reports abandoned delivery interest before transaction checkpoint
+- **THEN** the machine suppresses no semantic work, continues drain or reconciliation, and records its local terminal transaction state
 
-#### Scenario: A daemon crashes after a home write
+#### Scenario: Process loss follows a home write
 
-- **WHEN** process state is lost after a write but before fence/checkpoint
-- **THEN** restart recovery sees dirty/indeterminate state and does not infer a clean checkpoint from the missing action result
+- **WHEN** process state is lost after a home write but before fence and checkpoint
+- **THEN** restart enters the transaction's reconciliation-required path and relies on durable recovery state rather than the missing action result
 
 ### Requirement: Reference traces are deterministic and implementation-independent
 <!-- dwv:req req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent -->
@@ -77,4 +84,3 @@ The machine SHALL emit versioned normalized action traces with stable error clas
 
 - **WHEN** a caller supplies a result out of order or twice
 - **THEN** the machine returns a stable transition error and leaves its prior state unchanged
-

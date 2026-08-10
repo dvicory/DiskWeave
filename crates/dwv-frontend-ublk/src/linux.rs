@@ -2,8 +2,8 @@ use crate::{
     AdapterError, Fixture, KernelCompletion, KernelOperation, KernelRequest, Lifecycle,
     LifecycleState, MAX_TRACE_RECORDS, MAX_TRANSFER, NormalizedTraceRequest, PHYSICAL_BLOCK_SIZE,
     ProbeDisposition, ProbeReport, QUEUE_DEPTH, TagTable, TerminalResult, TraceLog, TraceRecord,
-    classify_control_access, completion_was_delivered, map_kernel_completion, translate_request,
-    validate_shutdown_evidence,
+    borrowed_write_payload, classify_control_access, completion_was_delivered,
+    map_kernel_completion, translate_request, validate_shutdown_evidence,
 };
 use dwv_core::{SubmissionSequence, TopologyEpoch};
 use libublk::helpers::IoBuf;
@@ -346,12 +346,15 @@ async fn io_task(
                     Ok(translated) => {
                         let normalized = NormalizedTraceRequest::from_translated(translated)
                             .map_err(|_| UblkError::OtherError(-libc::EIO))?;
-                        let write = (operation == KernelOperation::Write)
-                            .then(|| &buffer.as_slice()[..translated.data_length]);
-                        let execution = match opened.lock() {
+                        let execution = borrowed_write_payload(
+                            operation,
+                            translated.data_length,
+                            buffer.as_slice(),
+                        )
+                        .and_then(|write| match opened.lock() {
                             Ok(mut service) => service.execute(translated.normalized, write),
                             Err(_) => Err(AdapterError::Io("service lock poisoned".into())),
-                        };
+                        });
                         match execution {
                             Ok(bytes) => {
                                 if operation == KernelOperation::Read {

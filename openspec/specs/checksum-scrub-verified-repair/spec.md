@@ -25,8 +25,10 @@ A scrub SHALL read every selected data and parity extent and report a bounded di
 
 ### Requirement: Automatic repair requires one unique verified solution
 <!-- dwv:req req.checksum-scrub-verified-repair.automatic-repair-requires-one-unique-verified-solution -->
+<!-- dwv:requires req.checksum-plane.validity-is-generation-bound -->
+<!-- dwv:requires req.parity-verification-repair.mismatch-classification-requires-independent-evidence -->
 
-A repair plan SHALL be created only when current independent evidence uniquely identifies one damaged data or parity target and the surviving inputs are sufficient to reconstruct the selected range. Parity disagreement without independent target evidence SHALL remain ambiguous.
+A repair plan SHALL be created only when current generation-bound integrity evidence and the read-only verifier's mismatch classification uniquely identify one damaged data or parity target and the surviving inputs are sufficient to reconstruct the selected range. Parity disagreement without independent target evidence SHALL remain ambiguous.
 
 #### Scenario: Parity is uniquely identified
 
@@ -60,8 +62,10 @@ A repair plan SHALL name the source identities, replacement target identity, pro
 
 ### Requirement: Repairs use a separate target and verified readback
 <!-- dwv:req req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback -->
+<!-- dwv:requires req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
+<!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
 
-An authorized repair SHALL write only to a separate replacement target through the ordinary integrity invalidation and durability protocol. Acceptance SHALL require complete target readback, current checksum verification for the repaired generation, and a recomputed parity equation. The original mismatch report SHALL remain available.
+An authorized repair SHALL write only to a separate replacement target through the owning integrity-invalidation and durability protocols. Acceptance SHALL require complete target readback, current checksum verification for the repaired generation, and a recomputed parity equation. The original mismatch report SHALL remain available.
 
 #### Scenario: Separate-target repair succeeds
 
@@ -82,4 +86,3 @@ A checksum-set migration SHALL build and validate a parallel set before switchin
 
 - **WHEN** execution stops before the new set is complete and durably selected
 - **THEN** the prior active set remains interpretable and the incomplete set is unavailable for repair authority
-

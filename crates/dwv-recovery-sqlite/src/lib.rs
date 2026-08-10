@@ -1129,7 +1129,7 @@ mod tests {
                 .payload
                 .contains("metadata_loss_case=all-data-p-uncertified")
         );
-        assert!(header.payload.contains("metadata_loss_matrix=1"));
+        assert!(header.payload.contains("metadata_loss_matrix=2"));
         assert!(
             header
                 .payload

@@ -146,6 +146,7 @@ impl Default for FrontendCapabilities {
     }
 }
 
+/// dwv:req req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct BlockRequest {
     pub request_id: RequestId,
@@ -319,6 +320,7 @@ impl std::error::Error for RequestError {}
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum FrontendEvent {
     Abandon {
+        frontend_id: FrontendId,
         request_id: RequestId,
     },
     Quiesced {
@@ -340,16 +342,19 @@ pub enum CompletionInterest {
     Suppressed,
 }
 
+/// dwv:req req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RequestLifecycle {
+    pub frontend_id: FrontendId,
     pub request_id: RequestId,
     pub completion_interest: CompletionInterest,
     pub irreversible: bool,
 }
 
 impl RequestLifecycle {
-    pub const fn new(request_id: RequestId) -> Self {
+    pub const fn new(frontend_id: FrontendId, request_id: RequestId) -> Self {
         Self {
+            frontend_id,
             request_id,
             completion_interest: CompletionInterest::Required,
             irreversible: false,
@@ -363,7 +368,10 @@ impl RequestLifecycle {
 
     pub fn apply(&mut self, event: FrontendEvent) -> LifecycleEffect {
         match event {
-            FrontendEvent::Abandon { request_id } if request_id == self.request_id => {
+            FrontendEvent::Abandon {
+                frontend_id,
+                request_id,
+            } if (frontend_id, request_id) == (self.frontend_id, self.request_id) => {
                 self.completion_interest = CompletionInterest::Suppressed;
                 LifecycleEffect::CompletionSuppressed
             }
@@ -572,9 +580,17 @@ mod tests {
 
     #[test]
     fn abandonment_suppresses_completion_without_cancellation() {
-        let mut lifecycle = RequestLifecycle::new(RequestId(1)).mark_irreversible();
+        let mut lifecycle = RequestLifecycle::new(FrontendId(2), RequestId(1)).mark_irreversible();
         assert_eq!(
             lifecycle.apply(FrontendEvent::Abandon {
+                frontend_id: FrontendId(3),
+                request_id: RequestId(1),
+            }),
+            LifecycleEffect::Ignored
+        );
+        assert_eq!(
+            lifecycle.apply(FrontendEvent::Abandon {
+                frontend_id: FrontendId(2),
                 request_id: RequestId(1),
             }),
             LifecycleEffect::CompletionSuppressed
@@ -585,7 +601,7 @@ mod tests {
 
     #[test]
     fn lifecycle_events_preserve_quiescence_and_loss_evidence() {
-        let mut lifecycle = RequestLifecycle::new(RequestId(1));
+        let mut lifecycle = RequestLifecycle::new(FrontendId(2), RequestId(1));
         assert_eq!(
             lifecycle.apply(FrontendEvent::Quiesced {
                 frontend_id: FrontendId(2),

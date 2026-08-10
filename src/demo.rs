@@ -1,8 +1,10 @@
 use blake3::Hash;
 use dwv_codec::{Geometry, compute_parity};
 use dwv_core::{
-    ArrayId, AssignmentGeneration, AssignmentInstanceId, ByteRange, CodingPosition, CodingProfile,
-    MemberRole, ProtectedGeometry, RequestId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
+    ArrayId, AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, BufferToken,
+    ByteRange, CodingPosition, CodingProfile, DurabilityIntent, FenceDomain, FrontendId,
+    MemberRole, OrderingIntent, ProtectedGeometry, RequestId, SlotId, SubmissionSequence,
+    TopologyAssignment, TopologyEpoch, TopologySnapshot,
 };
 use dwv_format::{
     ByteRange as EnvelopeRange, COPY_BYTES, DIRTY_REGION_BYTES, EnvelopeRecord, MigrationState,
@@ -15,7 +17,7 @@ use dwv_recovery::{
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{
-    FileRebuildStore, HealthyPortableService, MemberStore, PortableRequest, ServiceConfig,
+    FileRebuildStore, HealthyPortableService, MemberBinding, ServiceConfig,
     commit_verified_rebuild_chunk, commit_verified_rebuild_completion,
 };
 use dwv_sim::{Schedule, ScheduleStep, Simulator, SimulatorConfig};
@@ -531,49 +533,98 @@ pub fn execute(
     }))
 }
 
+fn healthy_request(
+    request_id: u64,
+    slot_id: SlotId,
+    op: BlockOp,
+    range: ByteRange,
+    durability: DurabilityIntent,
+) -> BlockRequest {
+    BlockRequest::new(
+        RequestId(request_id),
+        FrontendId(1),
+        slot_id,
+        TopologyEpoch(EPOCH),
+        op,
+        range,
+        matches!(op, BlockOp::Read | BlockOp::Write).then_some(BufferToken::new(1, 1)),
+        OrderingIntent {
+            submission_sequence: SubmissionSequence(request_id),
+            preflush: false,
+            fence_domain: FenceDomain(1),
+        },
+        durability,
+    )
+}
+
 fn healthy_cycle(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
     let topology = core_topology(manifest)?;
+    let epoch = topology.topology_epoch();
     let recovery = open_recovery(root, manifest)?;
-    let data0 = MemberStore::new(
-        StoreId(10),
-        open_store(root, &manifest.data_files[0], manifest, StoreId(10), true)?,
-    );
-    let data1 = MemberStore::new(
-        StoreId(11),
-        open_store(root, &manifest.data_files[1], manifest, StoreId(11), true)?,
-    );
-    let parity = MemberStore::new(
-        StoreId(12),
-        open_store(root, &manifest.parity_file, manifest, StoreId(12), true)?,
-    );
+    let member = |slot_id, store_id, store| {
+        MemberBinding::new(
+            topology
+                .assignment_for_slot(slot_id)
+                .expect("demo topology contains the requested assignment"),
+            epoch,
+            store_id,
+            store,
+        )
+    };
+    let members = vec![
+        member(
+            SlotId::from_bytes([1; 16]),
+            StoreId(10),
+            open_store(root, &manifest.data_files[0], manifest, StoreId(10), true)?,
+        ),
+        member(
+            SlotId::from_bytes([2; 16]),
+            StoreId(11),
+            open_store(root, &manifest.data_files[1], manifest, StoreId(11), true)?,
+        ),
+        member(
+            SlotId::from_bytes([3; 16]),
+            StoreId(12),
+            open_store(root, &manifest.parity_file, manifest, StoreId(12), true)?,
+        ),
+    ];
     let config = ServiceConfig {
         maximum_transfer: Some(manifest.protected_length),
         ..ServiceConfig::default()
     };
-    let mut service =
-        HealthyPortableService::open(topology, vec![data0, data1], parity, recovery, config)
-            .map_err(|error| DemoError::failed(error.to_string()))?;
+    let mut service = HealthyPortableService::open(topology, members, recovery, config)
+        .map_err(|error| DemoError::failed(error.to_string()))?;
     let range = ByteRange::new(0, u64::from(BLOCK))
         .map_err(|error| DemoError::failed(error.to_string()))?;
     let bytes = vec![0xa5; usize::try_from(range.length).unwrap()];
     service
-        .write(PortableRequest::write(
-            RequestId(101),
-            TopologyEpoch(EPOCH),
-            1,
-            range,
-            bytes.clone(),
-        ))
+        .write(
+            healthy_request(
+                101,
+                SlotId::from_bytes([2; 16]),
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ),
+            &bytes,
+        )
         .map_err(|error| DemoError::failed(error.to_string()))?;
     service
-        .flush(PortableRequest::flush(RequestId(102), TopologyEpoch(EPOCH)))
+        .flush(healthy_request(
+            102,
+            SlotId::from_bytes([1; 16]),
+            BlockOp::Flush,
+            ByteRange::empty(),
+            DurabilityIntent::ExplicitFlush,
+        ))
         .map_err(|error| DemoError::failed(error.to_string()))?;
     let (read_back, _) = service
-        .read(PortableRequest::read(
-            RequestId(103),
-            TopologyEpoch(EPOCH),
-            1,
+        .read(healthy_request(
+            103,
+            SlotId::from_bytes([2; 16]),
+            BlockOp::Read,
             range,
+            DurabilityIntent::Ordinary,
         ))
         .map_err(|error| DemoError::failed(error.to_string()))?;
     if read_back != bytes {

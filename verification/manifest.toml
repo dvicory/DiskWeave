@@ -131,7 +131,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.os-015-metadata-loss-recovery"
 path = "docs/verification/os-015-metadata-loss-recovery.md"
-claim = "The metadata-loss record enumerates conservative recovery dispositions and requires explicit evidence before a new baseline."
+claim = "The current metadata-loss implementation enumerates the conservative matrix, rejects every certificate-receipt-gated case while no receipt capability exists, and creates audited fresh state only from authorized current evidence."
 tier = "portable-recovery-plus-evaluation-sqlite"
 fault_model = ["metadata loss", "ambiguous recovery baseline"]
 scope = ["conservative recovery matrix", "fresh semantic-state audit"]
@@ -140,9 +140,10 @@ requirements = [
   "req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed",
   "req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit",
   "req.metadata-loss-recovery.the-metadata-loss-matrix-is-total-and-conservative",
+  "req.metadata-loss-recovery.dry-run-reporting-is-bounded-and-portable",
 ]
 non_claims = [
-  "It does not claim certified envelope execution, degraded reads, live bridge behavior, or hardware durability.",
+  "It does not claim a certificate receipt capability, P/Q recovery execution, degraded reads, live frontend behavior, or hardware durability.",
   "The SQLite target is evaluation-only and not a production durability claim.",
 ]
 
@@ -344,6 +345,29 @@ non_claims = [
 ]
 
 [[evidence]]
+id = "evidence.m8"
+path = "docs/verification/m8.md"
+claim = "The milestone-8 verification record integrates canonical ownership, non-forgeable metadata authorization, canonical request admission, planning isolation, bounded proofs, and a fresh Linux ublk/ext4 acceptance run."
+tier = "integrated-milestone-acceptance"
+fault_model = ["duplicate semantic ownership", "caller-forgeable recovery authority", "request identity weakening", "historical planning leakage", "frontend and recovery evidence drift"]
+scope = ["canonical semantic ownership", "metadata-loss authorization", "stable-slot request admission", "milestone planning isolation", "bounded model and proof", "ARM64 Linux ublk acceptance"]
+requirements = [
+  "req.documentation-knowledge-architecture.canonical-semantic-relationships-are-colocated-and-derived",
+  "req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative",
+  "req.metadata-loss-recovery.evidence-gates-control-recovery-authorization",
+  "req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics",
+  "req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch",
+  "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
+]
+non_claims = [
+  "This record does not select a production SQLite recovery adapter or establish daemon, controller, FUA, raw-device, or physical power-loss durability.",
+  "The ARM64 file-backed ublk run does not establish broader filesystems, production concurrency, multi-device publication, or online topology mutation.",
+  "Milestone planning and implementation evidence remain non-authoritative; current product semantics are owned only by current canonical OpenSpecs.",
+]
+
+[[evidence]]
 id = "evidence.linux-ublk-ext4-acceptance"
 path = "docs/verification/linux-ublk-ext4-acceptance.md"
 claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
@@ -358,7 +382,6 @@ requirements = [
   "req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority",
   "req.linux-ublk-frontend.the-disposable-linux-fixture-remains-independently-inspectable",
   "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
-  "req.linux-ublk-frontend.correction-evidence-covers-the-composed-correctness-boundaries",
   "req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics",
   "req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics",
   "req.normalized-block-semantics.adapters-expose-bounded-deterministic-conformance-behavior",

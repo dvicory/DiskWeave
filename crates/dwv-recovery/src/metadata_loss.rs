@@ -1,7 +1,6 @@
 //! Conservative metadata-loss planning and fresh-state authorization.
 //!
-//! The matrix mirrors the survivor/evidence rows in handoff Section 12.5.
-//! These types carry no paths, payload bytes, SQLite layout, or frontend state.
+//! Plans are portable: they carry no paths, payload bytes, storage-engine layout, or frontend state.
 
 use crate::{
     MemoryRecoveryStore, RecoveryError, RecoveryGeneration, RecoveryManifest, RecoveryStateStore,
@@ -10,7 +9,7 @@ use crate::{
 use dwv_core::{ArrayId, TopologyEpoch};
 use std::fmt;
 
-pub const METADATA_LOSS_MATRIX_VERSION: u16 = 1;
+pub const METADATA_LOSS_MATRIX_VERSION: u16 = 2;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -159,7 +158,7 @@ impl MetadataLossDisposition {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum EvidenceRequirement {
-    CertifiedCleanGate,
+    ValidatedCertificateReceipt,
     ExhaustiveEquationScan,
     ExplicitDataAuthority,
     UnambiguousIdentity,
@@ -172,7 +171,7 @@ pub enum EvidenceRequirement {
 impl EvidenceRequirement {
     pub const fn id(self) -> &'static str {
         match self {
-            Self::CertifiedCleanGate => "certified-clean-session-gate",
+            Self::ValidatedCertificateReceipt => "validated-certificate-receipt",
             Self::ExhaustiveEquationScan => "complete-exhaustive-equation-scan",
             Self::ExplicitDataAuthority => "explicit-data-authoritative-rebaseline",
             Self::UnambiguousIdentity => "unambiguous-identity-and-topology",
@@ -226,7 +225,6 @@ impl BaselineDisposition {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum MetadataLossVerification {
-    CertifiedCleanEnvelope,
     ExhaustiveMatches,
     IdentifiedRepairPending,
     ExhaustiveIdentifiedRepairs,
@@ -241,7 +239,6 @@ pub enum MetadataLossVerification {
 impl MetadataLossVerification {
     pub const fn id(self) -> &'static str {
         match self {
-            Self::CertifiedCleanEnvelope => "certified-clean-envelope",
             Self::ExhaustiveMatches => "exhaustive-matches",
             Self::IdentifiedRepairPending => "identified-repair-pending",
             Self::ExhaustiveIdentifiedRepairs => "exhaustive-identified-repairs",
@@ -264,7 +261,7 @@ pub struct MetadataLossPlan {
     payload_write_policy: PayloadWritePolicy,
     baseline: BaselineDisposition,
     requires_exhaustive_verification: bool,
-    requires_session_certificate_gate: bool,
+    requires_certificate_receipt: bool,
     requires_operator_confirmation: bool,
     creates_fresh_state: bool,
 }
@@ -282,7 +279,7 @@ impl MetadataLossPlan {
                 case,
                 Action::RecreateFromCertifiedEnvelope,
                 Disposition::CertifiedFastPath,
-                Evidence::CertifiedCleanGate,
+                Evidence::ValidatedCertificateReceipt,
                 Writes::None,
                 Baseline::NewChecksumBaselineRequired,
                 false,
@@ -294,7 +291,7 @@ impl MetadataLossPlan {
                 case,
                 Action::RecreateFromCertifiedEnvelope,
                 Disposition::CertifiedFastPath,
-                Evidence::CertifiedCleanGate,
+                Evidence::ValidatedCertificateReceipt,
                 Writes::None,
                 Baseline::NewChecksumBaselineRequired,
                 false,
@@ -344,7 +341,7 @@ impl MetadataLossPlan {
                 case,
                 Action::ReadOnlyDecodeToReplacement,
                 Disposition::ReadOnlyRecovery,
-                Evidence::CertifiedCleanGate,
+                Evidence::ValidatedCertificateReceipt,
                 Writes::SeparateReplacementTargetOnly,
                 Baseline::NewChecksumBaselineRequired,
                 false,
@@ -357,11 +354,11 @@ impl MetadataLossPlan {
                 case,
                 Action::RefuseAutomaticDecode,
                 Disposition::Refused,
-                Evidence::CertifiedCleanGate,
+                Evidence::ValidatedCertificateReceipt,
                 Writes::NoAutomaticWrite,
                 Baseline::NotEstablished,
                 false,
-                false,
+                true,
                 true,
                 false,
             ),
@@ -473,7 +470,7 @@ impl MetadataLossPlan {
         payload_write_policy: PayloadWritePolicy,
         baseline: BaselineDisposition,
         requires_exhaustive_verification: bool,
-        requires_session_certificate_gate: bool,
+        requires_certificate_receipt: bool,
         requires_operator_confirmation: bool,
         creates_fresh_state: bool,
     ) -> Self {
@@ -485,7 +482,7 @@ impl MetadataLossPlan {
             payload_write_policy,
             baseline,
             requires_exhaustive_verification,
-            requires_session_certificate_gate,
+            requires_certificate_receipt,
             requires_operator_confirmation,
             creates_fresh_state,
         }
@@ -526,8 +523,8 @@ impl MetadataLossPlan {
         self.requires_exhaustive_verification
     }
 
-    pub const fn requires_session_certificate_gate(self) -> bool {
-        self.requires_session_certificate_gate
+    pub const fn requires_certificate_receipt(self) -> bool {
+        self.requires_certificate_receipt
     }
 
     pub const fn requires_operator_confirmation(self) -> bool {
@@ -557,6 +554,9 @@ impl MetadataLossPlan {
         verification: MetadataLossVerification,
         operator_confirmed: bool,
     ) -> Result<MetadataLossAuthorization, MetadataLossError> {
+        if self.required_evidence == EvidenceRequirement::ValidatedCertificateReceipt {
+            return Err(MetadataLossError::CertificateReceiptUnavailable(self.case));
+        }
         if self.action.refuses_automatic_authorization() {
             return Err(MetadataLossError::RefusedCase(self.case));
         }
@@ -584,13 +584,13 @@ impl fmt::Display for MetadataLossPlan {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "{} action={} disposition={} evidence={} exhaustive={} session_gate={} confirmation={} payload_writes={} baseline={} fresh_state={}",
+            "{} action={} disposition={} evidence={} exhaustive={} certificate_receipt_required={} certificate_receipt_available=false confirmation={} payload_writes={} baseline={} fresh_state={}",
             self.case.id(),
             self.action.id(),
             self.disposition.id(),
             self.required_evidence.id(),
             self.requires_exhaustive_verification,
-            self.requires_session_certificate_gate,
+            self.requires_certificate_receipt,
             self.requires_operator_confirmation,
             self.payload_write_policy.id(),
             self.baseline.id(),
@@ -616,9 +616,7 @@ pub fn render_metadata_loss_matrix() -> String {
 
 fn evidence_satisfies(required: EvidenceRequirement, actual: MetadataLossVerification) -> bool {
     match required {
-        EvidenceRequirement::CertifiedCleanGate => {
-            actual == MetadataLossVerification::CertifiedCleanEnvelope
-        }
+        EvidenceRequirement::ValidatedCertificateReceipt => false,
         EvidenceRequirement::ExhaustiveEquationScan => matches!(
             actual,
             MetadataLossVerification::ExhaustiveMatches
@@ -680,6 +678,7 @@ pub struct MetadataLossAudit {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MetadataLossError {
+    CertificateReceiptUnavailable(MetadataLossCase),
     RefusedCase(MetadataLossCase),
     InsufficientEvidence {
         case: MetadataLossCase,
@@ -696,6 +695,11 @@ pub enum MetadataLossError {
 impl fmt::Display for MetadataLossError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::CertificateReceiptUnavailable(case) => write!(
+                formatter,
+                "metadata-loss case {} requires a validator-issued certificate receipt, but no receipt capability is available",
+                case.id(),
+            ),
             Self::RefusedCase(case) => {
                 write!(
                     formatter,
@@ -784,7 +788,7 @@ fn validate_fresh_topology(topology: &TopologySnapshot) -> Result<(), MetadataLo
     }
     if topology.profile().parity_slots() != 1 {
         return Err(MetadataLossError::InvalidFreshTopology(
-            "OS-015 fresh-state execution supports exactly one parity slot",
+            "fresh-state execution supports exactly one parity slot",
         ));
     }
     if topology
@@ -838,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn every_handoff_case_has_one_stable_conservative_plan() {
+    fn every_matrix_case_has_one_stable_conservative_plan() {
         let plans = MetadataLossPlan::all();
         let identifiers = plans
             .iter()
@@ -851,7 +855,7 @@ mod tests {
             (
                 MetadataLossCase::AllDataSingleParityCertified,
                 MetadataLossAction::RecreateFromCertifiedEnvelope,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::None,
                 BaselineDisposition::NewChecksumBaselineRequired,
                 false,
@@ -867,7 +871,7 @@ mod tests {
             (
                 MetadataLossCase::AllDataDualParityCertified,
                 MetadataLossAction::RecreateFromCertifiedEnvelope,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::None,
                 BaselineDisposition::NewChecksumBaselineRequired,
                 false,
@@ -891,7 +895,7 @@ mod tests {
             (
                 MetadataLossCase::OneDataSingleParityCertified,
                 MetadataLossAction::ReadOnlyDecodeToReplacement,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::SeparateReplacementTargetOnly,
                 BaselineDisposition::NewChecksumBaselineRequired,
                 false,
@@ -899,7 +903,7 @@ mod tests {
             (
                 MetadataLossCase::OneDataSingleParityUncertified,
                 MetadataLossAction::RefuseAutomaticDecode,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::NoAutomaticWrite,
                 BaselineDisposition::NotEstablished,
                 false,
@@ -907,7 +911,7 @@ mod tests {
             (
                 MetadataLossCase::OneDataDualParityCertified,
                 MetadataLossAction::ReadOnlyDecodeToReplacement,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::SeparateReplacementTargetOnly,
                 BaselineDisposition::NewChecksumBaselineRequired,
                 false,
@@ -915,7 +919,7 @@ mod tests {
             (
                 MetadataLossCase::OneDataDualParityUncertified,
                 MetadataLossAction::RefuseAutomaticDecode,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::NoAutomaticWrite,
                 BaselineDisposition::NotEstablished,
                 false,
@@ -923,7 +927,7 @@ mod tests {
             (
                 MetadataLossCase::TwoDataDualParityCertified,
                 MetadataLossAction::ReadOnlyDecodeToReplacement,
-                EvidenceRequirement::CertifiedCleanGate,
+                EvidenceRequirement::ValidatedCertificateReceipt,
                 PayloadWritePolicy::SeparateReplacementTargetOnly,
                 BaselineDisposition::NewChecksumBaselineRequired,
                 false,
@@ -1000,6 +1004,12 @@ mod tests {
             assert_eq!(plan.payload_write_policy(), writes, "{} writes", case.id());
             assert_eq!(plan.baseline(), baseline, "{} baseline", case.id());
             assert_eq!(plan.creates_fresh_state(), fresh, "{} fresh", case.id());
+            assert_eq!(
+                plan.requires_certificate_receipt(),
+                plan.required_evidence() == EvidenceRequirement::ValidatedCertificateReceipt,
+                "{} receipt requirement",
+                case.id()
+            );
         }
         assert!(plans.iter().all(|plan| !plan.to_string().is_empty()));
         assert!(plans.iter().all(|plan| {
@@ -1017,29 +1027,44 @@ mod tests {
         assert_eq!(first.lines().count(), MetadataLossCase::ALL.len() + 1);
         assert!(first.contains("all-data-p-certified-clean"));
         assert!(first.contains("checksum-evidence-unavailable"));
+        assert!(
+            first.contains("certificate_receipt_required=true certificate_receipt_available=false")
+        );
     }
 
     #[test]
-    fn certified_and_exhaustive_paths_require_their_declared_evidence() {
-        let certified = MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityCertified);
-        assert!(
-            certified
-                .authorize(MetadataLossVerification::CertifiedCleanEnvelope)
-                .is_ok()
-        );
-        let certified_authorization = certified
-            .authorize(MetadataLossVerification::CertifiedCleanEnvelope)
-            .unwrap();
-        assert!(matches!(
-            certified_authorization
-                .fresh_manifest(topology(ArrayId([3; 16])), RecoveryStoreHealth::Missing),
-            Err(MetadataLossError::ActionDoesNotCreateFreshState(_))
-        ));
-        assert!(matches!(
-            certified.authorize(MetadataLossVerification::ExhaustiveMatches),
-            Err(MetadataLossError::InsufficientEvidence { .. })
-        ));
+    fn certificate_gated_cases_fail_closed_without_a_receipt_capability() {
+        let public_verifications = [
+            MetadataLossVerification::ExhaustiveMatches,
+            MetadataLossVerification::IdentifiedRepairPending,
+            MetadataLossVerification::ExhaustiveIdentifiedRepairs,
+            MetadataLossVerification::ExplicitDataAuthoritativeRebaseline,
+            MetadataLossVerification::AmbiguousMismatch,
+            MetadataLossVerification::IncompleteScan,
+            MetadataLossVerification::ValidatedBackup,
+            MetadataLossVerification::ReconciledReplicas,
+            MetadataLossVerification::ConflictingReplicas,
+        ];
+        for plan in MetadataLossPlan::all().into_iter().filter(|plan| {
+            plan.required_evidence() == EvidenceRequirement::ValidatedCertificateReceipt
+        }) {
+            for verification in public_verifications {
+                assert!(matches!(
+                    plan.authorize(verification),
+                    Err(MetadataLossError::CertificateReceiptUnavailable(case))
+                        if case == plan.case()
+                ));
+                assert!(matches!(
+                    plan.authorize_with_operator_confirmation(verification),
+                    Err(MetadataLossError::CertificateReceiptUnavailable(case))
+                        if case == plan.case()
+                ));
+            }
+        }
+    }
 
+    #[test]
+    fn exhaustive_paths_require_their_declared_evidence() {
         let exhaustive =
             MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified);
         assert!(
@@ -1151,6 +1176,19 @@ mod tests {
             .unwrap();
         assert!(matches!(
             backup.fresh_manifest(topology(ArrayId([1; 16])), RecoveryStoreHealth::Missing,),
+            Err(MetadataLossError::ActionDoesNotCreateFreshState(_))
+        ));
+        let replica_plan = MetadataLossPlan::for_case(MetadataLossCase::RecoveryReplicasDisagree);
+        assert!(matches!(
+            replica_plan.authorize(MetadataLossVerification::ReconciledReplicas),
+            Err(MetadataLossError::OperatorConfirmationRequired(_))
+        ));
+        let replica_authorization = replica_plan
+            .authorize_with_operator_confirmation(MetadataLossVerification::ReconciledReplicas)
+            .unwrap();
+        assert!(matches!(
+            replica_authorization
+                .fresh_manifest(topology(ArrayId([2; 16])), RecoveryStoreHealth::Stale),
             Err(MetadataLossError::ActionDoesNotCreateFreshState(_))
         ));
 

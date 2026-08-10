@@ -3,7 +3,7 @@
 ## Purpose
 The volatile-media simulator is a deterministic oracle for separating acknowledged volatile effects, durable bytes, pending backend work, and completion delivery. It makes every selected fault schedule reproducible without depending on an operating system, storage device, database, or async runtime.
 
-The simulator is the handoff's bounded Phase 0 fault model. Recovery-state and parity-envelope objects are semantic fixtures, not SQLite pages or a selected persistent format.
+The simulator is the bounded deterministic media fault model below the block-parity product protocols. Recovery-state and parity-envelope objects are semantic fixtures, not SQLite pages or a selected persistent format.
 ## Requirements
 ### Requirement: Media state separates durable and process-visible effects
 <!-- dwv:req req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects -->
@@ -27,18 +27,19 @@ The simulator SHALL maintain durable media, acknowledged volatile writes, pendin
 
 ### Requirement: Operations use exact normalized ranges and structured evidence
 <!-- dwv:req req.volatile-media-simulator.operations-use-exact-normalized-ranges-and-structured-evidence -->
+<!-- dwv:refines req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence -->
 
-Simulator submissions SHALL use exact byte ranges, generation-bearing child operation identities, and the OS-002 completion dispositions and persistence evidence. Short completion SHALL expose only the completed subset. Failed and uncertain outcomes SHALL preserve the evidence needed to decide whether retry is legal; the simulator SHALL not silently turn them into success.
+Simulator submissions SHALL use exact byte ranges, generation-bearing child operation identities, and the canonical store completion dispositions and persistence evidence. Short completion SHALL expose only the completed subset. Failed and uncertain outcomes SHALL preserve the evidence needed to decide whether retry is legal; the simulator SHALL not silently turn them into success.
 
 #### Scenario: A short write is delivered
 
-- **WHEN** the fault model completes only a prefix of a write
-- **THEN** the completion reports that exact prefix with `Short` disposition and the media effect is limited to the same modeled prefix
+- **WHEN** a submitted write completes only a strict subset of its requested range
+- **THEN** the simulator exposes that exact subset and no caller may treat the omitted bytes as completed
 
-#### Scenario: A completion is uncertain
+#### Scenario: Completion effect is uncertain
 
-- **WHEN** the configured fault model leaves the media effect unknown
-- **THEN** the completion reports `Uncertain` and volatile or durable evidence is not promoted to a stronger claim merely because the call returned
+- **WHEN** completion delivery is lost after a write may have reached volatile or durable media
+- **THEN** the simulator preserves the unknown effect and does not classify retry as safe automatically
 
 ### Requirement: Schedules are deterministic, serializable, and minimizable
 <!-- dwv:req req.volatile-media-simulator.schedules-are-deterministic-serializable-and-minimizable -->
@@ -73,12 +74,12 @@ The simulator SHALL model read, write, flush, FUA-like write, short, backend fai
 ### Requirement: Core safety invariants are executable
 <!-- dwv:req req.volatile-media-simulator.core-safety-invariants-are-executable -->
 
-The simulator SHALL provide checks for no durable mutation from discarded volatile writes, exact range bounds, no successful incomplete completion, and stable serialized replay. A later transaction OpenSpec MAY add dirty-region, integrity, and parity-envelope invariants; OS-004 SHALL keep those concerns outside this media primitive.
+The simulator SHALL provide checks for no durable mutation from discarded volatile writes, exact range bounds, no successful incomplete completion, and stable serialized replay. Transaction, dirty-region, integrity, and parity-envelope invariants SHALL remain the responsibility of their owning capabilities rather than being inferred from this media primitive.
 
 #### Scenario: A power-loss schedule is replayed
 
-- **WHEN** the same schedule is run twice from the same initial image and configuration
-- **THEN** durable bytes, volatile bytes, pending-state count, and delivery trace are identical
+- **WHEN** the same initial media, operation sequence, and fault schedule are applied twice
+- **THEN** durable bytes, visible bytes, completions, and serialized trace are identical
 
 ### Requirement: Destructive range operations and torn media effects are explicit
 <!-- dwv:req req.volatile-media-simulator.destructive-range-operations-and-torn-media-effects-are-explicit -->
@@ -139,4 +140,3 @@ The simulator SHALL expose a finite one-range schedule enumerator covering the n
 
 - **WHEN** all schedules under a small configured bound are replayed from the same image and configuration
 - **THEN** each schedule has identical traces across two runs and no accepted schedule violates the core invariants
-

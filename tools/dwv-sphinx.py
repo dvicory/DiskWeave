@@ -20,7 +20,7 @@ RUST_SOURCE = STATE / "rust-source"
 HTML = STATE / "html"
 OBJECTS = ROOT / "target" / "dwv-docs" / "knowledge" / "objects.json"
 MANIFEST = ROOT / "verification" / "manifest.toml"
-SCHEMA = "dwv.knowledge.objects.v1"
+SCHEMA = "dwv.knowledge.objects.v2"
 VERIFICATION_SCHEMA = "dwv.verification.manifest.v1"
 MAX_FIXTURE_BYTES = 1_000_000
 RUST_MARKER_RE = re.compile(r"(?m)^(?P<prefix>\s*///\s*)dwv:req\s+(?P<id>req\.[a-z0-9.-]+)\s*$")
@@ -30,7 +30,9 @@ def fail(message: str) -> None:
     raise SystemExit(f"dwv-sphinx: {message}")
 
 
-def load_objects() -> list[dict[str, object]]:
+def load_knowledge() -> tuple[
+    list[dict[str, object]], dict[str, dict[str, list[str]]], list[str]
+]:
     if not OBJECTS.is_file():
         fail(f"missing {OBJECTS}; run cargo xtask docs knowledge export first")
     try:
@@ -41,8 +43,16 @@ def load_objects() -> list[dict[str, object]]:
         actual = payload.get("schema") if isinstance(payload, dict) else type(payload).__name__
         fail(f"expected schema {SCHEMA}, got {actual!r}")
     objects = payload.get("objects")
+    capabilities = payload.get("capabilities")
+    reading_order = payload.get("reading_order")
     if not isinstance(objects, list):
         fail("knowledge export has no objects array")
+    if not isinstance(capabilities, dict):
+        fail("knowledge export has no capability aggregation")
+    if not isinstance(reading_order, list) or not all(
+        isinstance(item, str) for item in reading_order
+    ):
+        fail("knowledge export has no owner-before-dependent reading order")
     required = {
         "semantic_id",
         "sphinx_id",
@@ -50,7 +60,12 @@ def load_objects() -> list[dict[str, object]]:
         "capability",
         "source_path",
         "heading_path",
-        "normalized_fingerprint",
+        "local_semantic_fingerprint",
+        "effective_semantic_fingerprint",
+        "requires",
+        "refines",
+        "required_by",
+        "refined_by",
         "body",
     }
     result = []
@@ -64,9 +79,21 @@ def load_objects() -> list[dict[str, object]]:
             fail(f"duplicate or invalid semantic_id: {semantic_id!r}")
         if not isinstance(sphinx_id, str):
             fail(f"invalid sphinx_id for {semantic_id}")
+        if not all(
+            isinstance(item.get(field), list)
+            and all(isinstance(target, str) for target in item[field])
+            for field in ("requires", "refines", "required_by", "refined_by")
+        ):
+            fail(f"invalid relationships for {semantic_id}")
         seen.add(semantic_id)
         result.append(item)
-    return sorted(result, key=lambda item: str(item["semantic_id"]))
+    if set(reading_order) != seen or len(reading_order) != len(seen):
+        fail("reading order must contain every current requirement exactly once")
+    return (
+        sorted(result, key=lambda item: str(item["semantic_id"])),
+        capabilities,
+        reading_order,
+    )
 
 
 def canonical_body(item: dict[str, object]) -> str:
@@ -90,6 +117,7 @@ def canonical_body(item: dict[str, object]) -> str:
 
 
 def write_requirements(objects: list[dict[str, object]]) -> None:
+    mapping = {str(item["semantic_id"]): str(item["sphinx_id"]) for item in objects}
     lines = [
         "# Current requirements",
         "",
@@ -105,16 +133,57 @@ def write_requirements(objects: list[dict[str, object]]) -> None:
                 f":capability: {item['capability']}",
                 f":source_path: {item['source_path']}",
                 f":heading_path: {item['heading_path']}",
-                f":fingerprint: {item['normalized_fingerprint']}",
-                "",
+                f":local_fingerprint: {item['local_semantic_fingerprint']}",
+                f":effective_fingerprint: {item['effective_semantic_fingerprint']}",
             ]
         )
+        for kind in ("requires", "refines"):
+            targets = [mapping[str(target)] for target in item[kind]]
+            if targets:
+                lines.append(f":{kind}: {', '.join(targets)}")
+        lines.append("")
         body = canonical_body(item)
         if body:
             for line in body.splitlines():
                 lines.append(f"**{line[5:]}**" if line.startswith("#### ") else line)
         lines.extend(["```", "", ""])
     (SOURCE / "requirements.md").write_text("\n".join(lines), encoding="utf-8")
+
+
+def write_ownership(
+    objects: list[dict[str, object]],
+    capabilities: dict[str, dict[str, list[str]]],
+    reading_order: list[str],
+) -> None:
+    lines = [
+        "# Semantic ownership",
+        "",
+        "This view is derived from current canonical forward markers. It reports graph facts, not a semantic-coherence verdict.",
+        "",
+        "## Owner-before-dependent reading order",
+        "",
+    ]
+    lines.extend(f"{index}. `{semantic_id}`" for index, semantic_id in enumerate(reading_order, 1))
+    lines.extend(["", "## Capability aggregation", ""])
+    for capability, relationships in sorted(capabilities.items()):
+        lines.extend([f"### `{capability}`", ""])
+        for field in ("requirements", "requires", "refines", "required_by", "refined_by"):
+            write_values(lines, field.replace("_", " "), relationships.get(field, []))
+        lines.append("")
+    lines.extend(["## Requirement relationships", ""])
+    for item in objects:
+        lines.extend(
+            [
+                f"### `{item['semantic_id']}`",
+                "",
+                f"- local fingerprint: `{item['local_semantic_fingerprint']}`",
+                f"- effective fingerprint: `{item['effective_semantic_fingerprint']}`",
+            ]
+        )
+        for field in ("requires", "refines", "required_by", "refined_by"):
+            write_values(lines, field.replace("_", " "), item[field])
+        lines.append("")
+    (SOURCE / "ownership-generated.md").write_text("\n".join(lines), encoding="utf-8")
 
 
 def load_manifest() -> dict[str, list[dict[str, object]]]:
@@ -298,7 +367,8 @@ def write_assurance(objects: list[dict[str, object]], manifest: dict[str, list[d
                 f"- capability: `{requirement['capability']}`",
                 f"- source_path: `{requirement['source_path']}`",
                 f"- heading_path: `{' / '.join(str(part) for part in requirement['heading_path'])}`",
-                f"- fingerprint: `{requirement['normalized_fingerprint']}`",
+                f"- local fingerprint: `{requirement['local_semantic_fingerprint']}`",
+                f"- effective fingerprint: `{requirement['effective_semantic_fingerprint']}`",
                 f"- evidence IDs: {labels}",
                 f"- evidence tiers: {tiers}",
             ]
@@ -455,7 +525,7 @@ def write_rust_link() -> None:
 
 
 def generate(metadata_file: Path | None = None) -> list[dict[str, object]]:
-    objects = load_objects()
+    objects, capabilities, reading_order = load_knowledge()
     manifest = load_manifest()
     if SOURCE.exists():
         shutil.rmtree(SOURCE)
@@ -467,6 +537,7 @@ def generate(metadata_file: Path | None = None) -> list[dict[str, object]]:
             shutil.copy2(path, destination)
     write_codelinks_source(objects)
     write_requirements(objects)
+    write_ownership(objects, capabilities, reading_order)
     write_scenarios(manifest)
     write_assurance(objects, manifest)
     write_contributors(metadata_file)

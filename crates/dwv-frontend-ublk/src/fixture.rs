@@ -1,15 +1,16 @@
-use crate::{AdapterError, DATA_SLOT, LOGICAL_BLOCK_SIZE, MAX_TRANSFER};
+use crate::{AdapterError, DATA_SLOT, FRONTEND_ID, LOGICAL_BLOCK_SIZE, MAX_TRANSFER};
 use dwv_core::{
-    ArrayId, AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, CodingPosition,
-    CodingProfile, MemberRole, ProtectedGeometry, RequestId, SlotId, TopologyAssignment,
-    TopologyEpoch, TopologySnapshot,
+    ArrayId, AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, ByteRange,
+    CodingPosition, CodingProfile, DurabilityIntent, FenceDomain, MemberRole, OrderingIntent,
+    ProtectedGeometry, RequestId, SlotId, SubmissionSequence, TopologyAssignment, TopologyEpoch,
+    TopologySnapshot,
 };
 use dwv_recovery::{
     MemoryRecoveryStore, RecoveryGeneration, RecoveryMutation, RecoveryStateStore,
     TopologySnapshot as RecoveryTopologySnapshot,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
-use dwv_service::{HealthyPortableService, MemberStore, PortableRequest, ServiceConfig};
+use dwv_service::{HealthyPortableService, MemberBinding, ServiceConfig};
 use dwv_store::StoreId;
 use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode};
 use serde::{Deserialize, Serialize};
@@ -233,10 +234,29 @@ impl Fixture {
         }
         let recovery = SqliteRecoveryStore::open(self.root.join(&self.manifest.recovery_file))
             .map_err(|error| AdapterError::Conflict(error.to_string()))?;
+        let topology = topology(&self.manifest)?;
+        let epoch = topology.topology_epoch();
+        let members = vec![
+            MemberBinding::new(
+                topology
+                    .assignment_for_slot(DATA_SLOT)
+                    .expect("fixture topology has a data assignment"),
+                epoch,
+                DATA_STORE,
+                data,
+            ),
+            MemberBinding::new(
+                topology
+                    .assignment_for_slot(PARITY_SLOT)
+                    .expect("fixture topology has a parity assignment"),
+                epoch,
+                PARITY_STORE,
+                parity,
+            ),
+        ];
         let service = HealthyPortableService::open(
-            topology(&self.manifest)?,
-            vec![MemberStore::new(DATA_STORE, data)],
-            MemberStore::new(PARITY_STORE, parity),
+            topology,
+            members,
             recovery,
             ServiceConfig {
                 maximum_transfer: Some(MAX_TRANSFER),
@@ -317,10 +337,7 @@ impl OpenFixture {
         match request.op {
             BlockOp::Read => self
                 .service
-                .read(
-                    PortableRequest::from_block_request(request, 0, None)
-                        .expect("read is a supported normalized operation"),
-                )
+                .read(request)
                 .map(|(bytes, _)| bytes)
                 .map_err(|error| AdapterError::Io(error.to_string())),
             BlockOp::Write => {
@@ -331,19 +348,13 @@ impl OpenFixture {
                     ));
                 }
                 self.service
-                    .write(
-                        PortableRequest::from_block_request(request, 0, Some(bytes.to_vec()))
-                            .expect("write is a supported normalized operation"),
-                    )
+                    .write(request, bytes)
                     .map(|_| Vec::new())
                     .map_err(|error| AdapterError::Io(error.to_string()))
             }
             BlockOp::Flush => self
                 .service
-                .flush(
-                    PortableRequest::from_block_request(request, 0, None)
-                        .expect("flush is a supported normalized operation"),
-                )
+                .flush(request)
                 .map(|_| Vec::new())
                 .map_err(|error| AdapterError::Io(error.to_string())),
             _ => Err(AdapterError::Unsupported("normalized operation")),
@@ -351,11 +362,23 @@ impl OpenFixture {
     }
 
     pub fn flush(&mut self, request_id: u64) -> Result<(), AdapterError> {
+        let request = BlockRequest::new(
+            RequestId(request_id),
+            FRONTEND_ID,
+            DATA_SLOT,
+            TopologyEpoch(self.manifest.topology_epoch),
+            BlockOp::Flush,
+            ByteRange::empty(),
+            None,
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(request_id),
+                preflush: false,
+                fence_domain: FenceDomain(1),
+            },
+            DurabilityIntent::ExplicitFlush,
+        );
         self.service
-            .flush(PortableRequest::flush(
-                RequestId(request_id),
-                TopologyEpoch(self.manifest.topology_epoch),
-            ))
+            .flush(request)
             .map(|_| ())
             .map_err(|error| AdapterError::ReconciliationRequired(error.to_string()))
     }

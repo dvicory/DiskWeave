@@ -1,6 +1,6 @@
 ## Why
 
-DiskWeave's portable file-backed service is executable, but no real Linux block device carries filesystem traffic through it. Goal-v7 needs one bounded ARM64 Linux ublk/ext4 acceptance path without promoting the experimental file backend into a production durability claim.
+DiskWeave's portable file-backed service is executable, but no real Linux block device carries filesystem traffic through it. Milestone 7 needs one bounded ARM64 Linux ublk/ext4 acceptance path without promoting the experimental file backend into a production durability claim.
 
 ## What Changes
 

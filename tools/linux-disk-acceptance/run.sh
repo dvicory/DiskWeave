@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo=$(cd "$(dirname "$0")/../.." && pwd)
 output=${1:-$repo/verification/linux-ublk-ext4-acceptance.json}
-vm=dwv-goal-v7-$(date +%s)
+vm=dwv-linux-acceptance-$(date +%s)
 tmp=$(mktemp -d)
 
 cleanup() {
@@ -33,7 +33,7 @@ limactl copy "$tmp/source.tar.gz" "$vm:/tmp/source.tar.gz"
 limactl shell "$vm" -- bash -lc 'rm -rf /tmp/diskweave-src && mkdir /tmp/diskweave-src && tar -xzf /tmp/source.tar.gz -C /tmp/diskweave-src'
 limactl shell "$vm" -- sudo /tmp/diskweave-src/tools/linux-disk-acceptance/guest.sh "$source_hash"
 mkdir -p "$(dirname "$output")"
-limactl copy "$vm:/tmp/dwv-goal-v7-evidence.json" "$output"
+limactl copy "$vm:/tmp/dwv-linux-acceptance-evidence.json" "$output"
 limactl copy "$vm:/tmp/dwv-trace-first.json" "$(dirname "$output")/linux-ublk-trace-first.json"
 limactl copy "$vm:/tmp/dwv-trace-second.json" "$(dirname "$output")/linux-ublk-trace-second.json"
 cat "$output"

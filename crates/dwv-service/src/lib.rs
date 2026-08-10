@@ -14,7 +14,6 @@ mod metadata_loss;
 mod range;
 mod read;
 mod rebuild;
-mod request;
 mod service;
 mod write;
 
@@ -29,5 +28,4 @@ pub use rebuild::{
     FileRebuildStore, OfflineRebuildCommitError, commit_verified_rebuild_chunk,
     commit_verified_rebuild_completion, validate_rebuild_resume,
 };
-pub use request::{PortableRequest, RequestOperation};
-pub use service::{HealthyPortableService, MemberStore, ServiceConfig};
+pub use service::{HealthyPortableService, MemberBinding, ServiceConfig};
