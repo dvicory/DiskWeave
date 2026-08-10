@@ -5,8 +5,9 @@ author: "Architecture review and refinement"
 date: "2026-08-08"
 lang: en-US
 ---
+<!-- dwv:active-architecture-roadmap -->
 
-**Document status:** Architecture baseline, revision 0.8  
+**Status:** Active architecture roadmap and design rationale.  
 **Version relationship:** Cumulative successor to revision 0.7; revision 0.8 supersedes revision 0.7 for architecture decisions while revision 0.7 remains useful as historical rationale and implementation-reconciliation context.  
 **Audience:** OpenSpec authors, implementation agents, maintainers, recovery-tool authors, and reviewers  
 **Project:** DiskWeave  
@@ -14,6 +15,8 @@ lang: en-US
 **Daemon:** `dwvd`  
 **Product boundary:** conventional independently readable member filesystems protected by a portable block-parity engine  
 **Decision posture:** **ACCEPTED** decisions are buildable commitments; **PROVISIONAL** choices are preferred but replaceable; **VALIDATE** items require executable evidence; **TUNABLE** choices are delegated to implementation agents; **USER-DECISION** items are the deliberately small set that require product-owner input; **FORMAT-EXPERIMENTAL** bytes may protect only disposable data.
+
+Current required product behavior is canonical only under `openspec/specs/*/spec.md`. Every statement, status label, table, diagram, `MUST`, and `SHALL` in this document is non-canonical roadmap intent or rationale until represented by a current canonical requirement. This roadmap guides future architecture, coherence, dependency ordering, validation strategy, milestone planning, and the reserved `OS-NNN` work-item namespace; it does not silently override a conflicting canonical requirement. Divergence among this roadmap, current specifications, and implementation may be a deliberate refinement, accidental architectural loss, unresolved change, or obsolete roadmap intent and must be surfaced and reconciled explicitly.
 
 > **Executive verdict**
 >
@@ -25,7 +28,7 @@ lang: en-US
 >
 > The architecture preserves a narrow reusable media substrate: role-neutral stores and capabilities, topology-independent coding primitives, operation-slot ownership, backend adapters, deterministic low-level media faults, and evidence plumbing. The block request model, logical slots, positional parity mapping, dirty-region protocol, `array.sqlite3` recovery semantics, and whole-file namespace placement are deliberately product-specific. This boundary improves replaceability, deterministic testing, and dependency direction without introducing allocator, object, per-item protection-policy, or universal-transaction machinery that the specified product does not need.
 >
-> This document is also an implementation control artifact. It defines semantic contracts, state transitions, failure policy, verification properties, OpenSpec structure, release gates, autonomous decision authority, and recovery stories so a capable implementation agent can progress without repeatedly inventing or re-litigating ordinary storage semantics.
+> This document is also a future-work control artifact. It records intended semantic contracts, state transitions, failure policy, verification properties, OpenSpec structure, release gates, autonomous decision guidance, and recovery stories so a capable implementation agent can progress without repeatedly inventing or re-litigating ordinary storage semantics. Current canonical specifications remain authoritative for behavior already required.
 
 ## Decision at a glance
 
@@ -51,7 +54,7 @@ lang: en-US
 
 # 1. Purpose and scope
 
-This document specifies the complete DiskWeave conventional-member block-parity architecture. It is a self-contained implementation source of truth rather than a change memo, migration note, implementation-status report, or companion to another document. A downstream agent should be able to derive executable OpenSpecs, implementation decisions, failure behavior, and evidence requirements from this document alone.
+This document specifies the intended complete DiskWeave conventional-member block-parity architecture as the active roadmap and design rationale. It is not a change memo, migration note, implementation-status report, or replacement for current canonical requirements. A downstream agent should use it to derive and reconcile executable OpenSpecs, implementation decisions, failure behavior, and evidence requirements against current repository state.
 
 DiskWeave targets these user-visible properties:
 
@@ -143,9 +146,9 @@ DiskWeave does not own a filesystem namespace, extent allocator, inode/object gr
 - **DEFERRED:** outside the applicable release gate.
 - **REJECTED:** conflicts with an accepted invariant unless the architecture itself is reopened.
 
-The words **SHALL**, **SHOULD**, and **MAY** are normative. Rust-like examples specify semantic shape, not stable ABI, private fields, crate names, or runtime structure.
+The words **SHALL**, **SHOULD**, and **MAY** express the strength of intended roadmap commitments. They become current required product behavior only through canonical specifications under `openspec/specs/`. Rust-like examples specify semantic shape, not stable ABI, private fields, crate names, or runtime structure.
 
-## 2.2 Normative product invariants
+## 2.2 Architectural product invariants
 
 1. **Independent data-member readability.** A data payload SHALL remain a byte-for-byte conventional block image. DiskWeave SHALL NOT require a header, trailer, sidecar, GPT metadata partition, hidden tail reservation, or in-filesystem marker on it.
 2. **No file striping.** A regular file SHALL live wholly on one member filesystem. A namespace layer may merge directories but SHALL NOT split file extents among members.
@@ -397,7 +400,7 @@ Failure releases all partial claims and exposes no writable block devices.
 
 # 5. Component, process, and dependency boundaries
 
-Names below are illustrative. Responsibilities and prohibited dependencies are normative. Existing crates MAY combine rows when dependency direction remains clear; this specification does not require churn merely to match proposed names.
+Names below are illustrative. Responsibilities and prohibited dependencies are architectural roadmap commitments. Existing crates MAY combine rows when dependency direction remains clear; this roadmap does not require churn merely to match proposed names.
 
 ## 5.1 Reusable media substrate
 
@@ -1105,7 +1108,7 @@ Format v1 is prohibited until exact-capacity behavior, corrupted/torn copies, do
 
 # 9. Portable semantic contracts
 
-The interfaces in this section are normative **semantic shapes**, not frozen Rust APIs. Implementations may use traits, callbacks, polling, async functions, generators, channels, or synchronous adapters when observable behavior and ownership remain equivalent.
+The interfaces in this section are intended **semantic shapes**, not frozen Rust APIs or substitutes for current canonical specifications. Implementations may use traits, callbacks, polling, async functions, generators, channels, or synchronous adapters when observable behavior and ownership remain equivalent.
 
 ## 9.1 Normalized block requests
 
@@ -1278,9 +1281,9 @@ struct StoreCompletion {
 }
 ```
 
-These fields are semantic requirements, not a frozen Rust layout. The store ordering domain is the executor/backend domain whose submissions a fence actually covers; request planning maps frontend ordering requirements into corresponding store watermarks. A backend may return equivalent evidence in another representation, and a recovery checkpoint may persist a bounded reference to the evidence rather than copying an in-memory object. `persistence = None` is the default for an ordinary successful write unless a certified stable-write mechanism proves more.
+These fields are intended semantic requirements for future architecture, not a frozen Rust layout or an override of current canonical specifications. The store ordering domain is the executor/backend domain whose submissions a fence actually covers; request planning maps frontend ordering requirements into corresponding store watermarks. A backend may return equivalent evidence in another representation, and a recovery checkpoint may persist a bounded reference to the evidence rather than copying an in-memory object. `persistence = None` is the default for an ordinary successful write unless a certified stable-write mechanism proves more.
 
-Normative rules:
+Roadmap rules:
 
 1. An ordinary read/write completion proves only its declared completion result. It is not durable evidence unless the operation used a certified stable-write mechanism or is covered by a later proven fence.
 2. Persistence evidence is scoped to one physical-store incarnation and one submitted-through ordering boundary. It cannot prove persistence for another store, a later write, or a replacement object at the same path.
@@ -3047,6 +3050,8 @@ These are architecture guards, not a separate formal-verification program.
 
 Attack silent corruption, durability, uncertainty, recovery, and permanent-format risk before throughput optimization. Dependency order is semantic; implementation agents inspect actual completed/active work and do not restart conformant milestones.
 
+Numeric `OS-###` identifiers assigned in this active architecture roadmap are reserved identities for the corresponding roadmap work. They are not a general sequential namespace for unrelated OpenSpec changes. Work that does not implement the corresponding roadmap item uses a descriptive unnumbered OpenSpec change ID.
+
 ```mermaid
 flowchart TD
     O000[OS-000 decisions + agent contract] --> O001[OS-001 block/frontend semantics]
@@ -3354,22 +3359,24 @@ Data payload bytes and `control.sqlite3` are deliberately absent from DiskWeave'
 
 # 25. Autonomous implementation-agent and OpenSpec operating contract
 
-This section is normative. It defines how a capable implementation agent turns the architecture into OpenSpecs, code, tests, evidence, and subsequent work without repeatedly asking the product owner to resolve routine engineering choices.
+This section guides how a capable implementation agent turns the roadmap into OpenSpecs, code, tests, evidence, and subsequent work without repeatedly asking the product owner to resolve routine engineering choices. It does not own current product semantics; `openspec/config.yaml` owns current OpenSpec-authoring rules.
 
-The architecture is a control document, not background reading. A library convenience, existing code shape, or passing unit test does not override a higher-level invariant.
+The inspection order below assigns source roles; it is not a precedence stack that lets roadmap prose override current canonical requirements.
 
-## 25.1 Source-of-truth order
+The roadmap is an active control document for future direction, not background reading. A library convenience, existing code shape, or passing unit test does not silently resolve a disagreement with either a current canonical requirement or an intended architectural invariant.
 
-When sources disagree, use this precedence:
+## 25.1 Authority and inspection order
 
-1. accepted invariants and decisions in Sections 1–24;
-2. an accepted later ADR that explicitly amends this architecture;
-3. the active OpenSpec's concrete semantic contract within that authority;
-4. recorded executable evidence, independent reference models, golden vectors, and simulator oracles;
-5. implementation code and comments;
-6. library examples, convenience APIs, prototypes, and historical plans.
+Use these roles when sources disagree:
 
-Implementation evidence may falsify an architectural assumption. When that occurs, preserve the failing evidence, identify the exact assumption, draft an ADR/architecture amendment, and use the escalation rules below. Do not silently weaken a test or reinterpret an invariant to fit existing code.
+1. current files under `openspec/specs/*/spec.md` own current required product behavior;
+2. active OpenSpec changes contain proposed or in-flight semantics and must identify any change to current requirements explicitly;
+3. this active architecture roadmap guides future architecture, dependency order, validation strategy, and roadmap work;
+4. executable evidence, independent reference models, golden vectors, and simulator oracles may confirm or falsify assumptions but do not silently rewrite requirements;
+5. implementation code and comments show actual behavior but do not silently override current specifications;
+6. archived changes, ADRs, verification records, prior architecture revisions, handoffs, and planning artifacts are historical evidence or rationale.
+
+When this roadmap disagrees with a current canonical requirement, preserve the disagreement, inspect the implementation and evidence, and deliberately reconcile it through an explicit specification or roadmap change. Do not silently weaken a test, reinterpret an invariant, or treat implementation divergence as authoritative.
 
 ## 25.2 Dependency-driven execution loop
 
@@ -3397,7 +3404,9 @@ Prefer the smallest end-to-end slice that exercises a semantic contract and fail
 
 ## 25.3 OpenSpecs are executable contracts
 
-Every OpenSpec SHALL contain these sections in this order; “not applicable” requires a reason.
+`openspec/config.yaml` defines current authoring and identifier rules. An active numbered change is valid only when it implements the matching `OS-NNN` row in this current active roadmap and declares exactly one matching `<!-- dwv:roadmap-node OS-NNN -->` marker. Archived numbered changes need not remain in future active roadmaps, but their numeric identities remain globally reserved and unique. Descriptive unnumbered changes do not imply roadmap implementation. For roadmap-numbered work, this roadmap recommends the following sections; deviations remain subject to the supported OpenSpec schema and must preserve an executable acceptance contract.
+
+Authoring ownership is explicit: authors search current canonical specs before proposing or writing requirements or scenarios. One canonical owning requirement covers each invariant, state transition, authority decision, durability predicate, lifecycle rule, failure rule, and recovery decision. Duplicate independent normative ownership is drift to reconcile. Non-owners state only local refinement, composition, or adapter mapping, and scenarios test only that local behavior. Proposals classify affected ownership as preserved, semantics-preserving relocation, semantic change, or new; stable `req.*` IDs remain when materially owned semantics remain unchanged.
 
 ```markdown
 # OS-XYZ: Title

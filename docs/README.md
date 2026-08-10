@@ -24,13 +24,15 @@ cargo xtask docs serve
 ## Durable entry points
 
 - Architecture: `docs/architecture/derived-documentation-system.md`
-- Accepted decisions: `docs/adr/os-030-open-traceable-knowledge.md`
+- Active non-canonical architecture roadmap: `docs/handoffs/diskweave-refined-architecture-v0.8.md`
+- Accepted decisions: `docs/adr/open-traceable-knowledge.md`
 - Canonical requirements: `openspec/specs/*/spec.md`
 - Human and engineering pages: `docs/sphinx/`
 - Reader intent: `docs/curriculum.toml`
 - Reviewed semantic state: `docs/reviewed-requirements.toml`
 - Evidence and executable fixtures: `verification/manifest.toml`, `verification/corpus/`
 - Agent workflow: `.agents/skills/diskweave-knowledge/SKILL.md`
+- Executable milestone plans: `docs/milestones/`
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 

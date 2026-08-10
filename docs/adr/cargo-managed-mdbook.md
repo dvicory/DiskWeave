@@ -1,9 +1,9 @@
-# ADR OS-028: Cargo-managed mdBook rendering
+# ADR: Cargo-managed mdBook rendering
 
-**Status:** Superseded by ADR OS-030
+**Status:** Superseded by [Open traceable knowledge tooling](open-traceable-knowledge.md)
 **Date:** 2026-08-08
 **Scope:** Development-only documentation tooling
-**Supersession:** ADR OS-030 replaces Cargo-managed mdBook with repository-pinned MyST/Sphinx, Sphinx-Needs, Sphinx-CodeLinks, rustdoc, and sphinx-autobuild. The renderer remains development-only and non-authoritative.
+**Supersession:** The open-traceable-knowledge ADR replaces Cargo-managed mdBook with repository-pinned MyST/Sphinx, Sphinx-Needs, Sphinx-CodeLinks, rustdoc, and sphinx-autobuild. The renderer remains development-only and non-authoritative.
 
 
 ## Context
@@ -23,7 +23,7 @@ The documentation pipeline previously treated an mdBook executable on `PATH` as 
 - Cargo.lock records the renderer dependency and its transitive versions.
 - Replacing the renderer remains a development-tool change at the `xtask` boundary; storage semantics and the documentation source graph are unaffected.
 
-This decision supersedes the optional-executable environment gate in ADR OS-026 consequence 31.
+This decision supersedes the optional-executable environment gate in the deterministic-documentation-pipeline ADR consequence 31.
 
 ## Evidence
 

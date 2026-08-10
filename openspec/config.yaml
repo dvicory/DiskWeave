@@ -1,32 +1,45 @@
 schema: spec-driven
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  Current required product behavior is canonical under openspec/specs/*/spec.md.
+  The retained document containing <!-- dwv:active-architecture-roadmap --> is
+  the active architecture roadmap and design rationale. It guides future
+  architecture, dependency ordering, validation, and roadmap work but does not
+  silently override current canonical requirements. Active changes contain
+  proposed or in-flight semantics. Archived changes, ADRs, verification records,
+  prior architecture versions, handoffs, and plans are historical evidence or
+  rationale. Surface and deliberately reconcile disagreements among these roles.
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
+  Numeric `OS-###` identifiers are repository-wide, globally unique, and
+  permanently reserved across active and archived changes. An active numbered
+  change must map to the matching `OS-###` row in the current active architecture
+  roadmap and declare exactly one matching proposal marker. Archived numbered
+  changes need not remain in future active roadmaps. One roadmap node may have at
+  most one retained numbered change.
+  Stable req.* identities are independent of change, architecture, milestone,
+  ADR, and evidence identifiers.
 
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+rules:
+  proposal:
+    - Use a descriptive unnumbered change ID unless the change implements the matching OS-### item in the current active architecture roadmap.
+    - An active numbered proposal must contain exactly one marker of the form "<!-- dwv:roadmap-node OS-NNN -->" matching its change ID.
+    - Before proposing or writing requirements or scenarios, search the current canonical specs; for numbered work, also inspect the matching roadmap node, implementation, tests, evidence, and completed changes.
+    - Maintain one canonical owning requirement for each detailed operational semantic policy, including state transitions, authority decisions, durability predicates, lifecycle rules, failure rules, and recovery decisions.
+    - Cross-cutting constitutional, security, and evidence requirements may constrain multiple detailed owners, but they must remain high-level and must not independently define a competing operational predicate, authority decision, or state transition.
+    - Treat duplicate independent ownership of a detailed operational semantic policy as drift to reconcile. Non-owners state only local refinement, composition, adapter mapping, or a high-level cross-cutting constraint, and their scenarios test only that local responsibility.
+    - Classify affected ownership as preserved, semantics-preserving relocation, semantic change, or new; retain stable req.* IDs when materially owned semantics remain unchanged.
+    - A numbered proposal must state which roadmap outcomes are already satisfied and which real outcomes remain; never create ceremonial work to consume a number.
+    - Preserve current canonical semantics when later accepted work has refined roadmap intent, and keep stable req.* IDs unchanged when their semantics are unchanged.
+    - Include explicit non-goals and surface any conflict with current canonical requirements.
+  tasks:
+    - Derive tasks from the proposal and current repository state, not from the numeric identifier alone.
+    - Milestone identifiers describe execution plans under docs/milestones/ and never allocate or imply OpenSpec numeric identities.
+
+operations:
+  apply:
+    guidance:
+      - Treat current canonical specs as the owner of current required behavior and surface contradictions before implementation.
+  archive:
+    guidance:
+      - Preserve stable req.* identities and summarize any canonical requirement changes before archiving.
+      - Never reuse a retained numeric identity for another change; later corrections use descriptive unnumbered IDs.

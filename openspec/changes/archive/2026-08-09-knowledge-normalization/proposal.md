@@ -14,7 +14,7 @@ DiskWeave's current documentation tooling is deterministic and bounded, but it s
 - Implement real preservation-first semantics: `KEEP` is byte-stable, `PATCH` changes only declared stable fragments with preimage checks, `REPLACE` is explicit, and model/provider/prompt metadata changes do not stale accepted prose.
 - Select agent context by canonical requirement graph closure, implementation ownership, scenarios, evidence, and forbidden outcomes rather than concatenating whole source documents; record a reproducible baseline comparison.
 - Add deterministic integrity, no-op, new-coverage, reconstruction, historical-isolation, and projection checks plus a small qualitative usefulness corpus. Keep `cargo xtask docs`, model/network-free checks, bounded source/privacy rules, atomic writes, and production `dwv` separation.
-- Supersede the documentation-system decisions in OS-025/OS-027 and their derived ADRs where they encode permanent duplicate registries or handoff/current-source coupling; preserve their useful safety contracts and history.
+- Supersede the documentation-system decisions in the derived-documentation-foundation and bootstrap-retirement changes and their derived ADRs where they encode permanent duplicate registries or handoff/current-source coupling; preserve their useful safety contracts and history.
 
 ## Capabilities
 

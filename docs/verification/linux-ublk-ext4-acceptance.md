@@ -1,4 +1,4 @@
-# OS-031 Linux ublk/ext4 acceptance record
+# Linux ublk/ext4 acceptance record
 
 ## Claim boundary
 
@@ -10,8 +10,8 @@ Run on 2026-08-09 with `tools/linux-disk-acceptance/run.sh`:
 
 - Source archive SHA-256: `522259d739f8caf723581e0b0791b0ef7de3df667fc514c8345ab8d90c0cb547`.
 - Guest: Ubuntu arm64, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
-- Machine-readable evidence: `verification/os-031-linux-ublk-ext4.json`.
-- Retained live traces: `verification/os-031-linux-ublk-trace-first.json` (450,485 bytes, 458 records, SHA-256 `040a6515fa324d73af00a4771c41fd06c22d46a29d7c7f70ce278918d0d6eb57`) and `verification/os-031-linux-ublk-trace-second.json` (79,533 bytes, 81 records, SHA-256 `73eaf4ca520bf9840499a74354eafe777bed7233702edca311fb495928d5a8b7`).
+- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json`.
+- Retained live traces: `verification/linux-ublk-trace-first.json` (450,485 bytes, 458 records, SHA-256 `040a6515fa324d73af00a4771c41fd06c22d46a29d7c7f70ce278918d0d6eb57`) and `verification/linux-ublk-trace-second.json` (79,533 bytes, 81 records, SHA-256 `73eaf4ca520bf9840499a74354eafe777bed7233702edca311fb495928d5a8b7`).
 - Both traces use `dwv.ublk.trace.v2`, record queue depth 8, maximum transfer 131,072 bytes, maximum 4,096 records, no exhaustion, and clean deterministic replay through `dwv demo disk trace-replay`.
 - Workload: mkfs.ext4, mount, create, fsync, overwrite, rename, directory sync, read, delete, unmount, clean shutdown, restart, read-only remount.
 - Durable file content SHA-256 before and after restart: `d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7`.

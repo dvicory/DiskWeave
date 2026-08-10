@@ -47,7 +47,7 @@ Inspect the post-goal-v6 repository before allocating a change name, crate, depe
 
 ### Goal-v7 correction baseline
 
-Before live acceptance can count, OS-031 SHALL close and verify the composed correctness seams exposed by the frontend:
+Before live acceptance can count, the linux-ublk-ext4-acceptance change SHALL close and verify the composed correctness seams exposed by the frontend:
 
 - `req.dirty-integrity-invalidation.dirty-region-coverage-is-complete-and-checked`: one checked recovery-owned mapping covers every region intersected by a write and rejects unrepresentable identities;
 - `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` plus `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence`: write completions carry real store watermarks and checkpoint/clear accepts only exact matching multi-store, multi-region fence coverage;

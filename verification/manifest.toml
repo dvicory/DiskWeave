@@ -220,8 +220,8 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-025-derived-documentation-foundation"
-path = "docs/verification/os-025-derived-documentation-foundation.md"
+id = "evidence.derived-documentation-foundation"
+path = "docs/verification/derived-documentation-foundation.md"
 claim = "The documentation foundation record demonstrates offline derivation from canonical sources and bounded projection state."
 tier = "documentation-projection"
 fault_model = ["stale generated state", "historical source leakage"]
@@ -324,9 +324,9 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-030-open-traceable-knowledge"
-path = "docs/verification/os-030-open-traceable-knowledge.md"
-claim = "OS-030 completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, provider-neutral change impact, and deterministic offline reconstruction."
+id = "evidence.open-traceable-knowledge"
+path = "docs/verification/open-traceable-knowledge.md"
+claim = "The open-traceable-knowledge completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, provider-neutral change impact, and deterministic offline reconstruction."
 tier = "documentation-acceptance"
 fault_model = ["reader incomprehension", "agent source hunting", "missing revision baseline", "stale generated state"]
 scope = ["Human Guide sampled usefulness", "fresh-agent bounded context", "change-boundary impact", "offline documentation reconstruction"]
@@ -344,9 +344,9 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-031-linux-ublk-ext4-acceptance"
-path = "docs/verification/os-031-linux-ublk-ext4-acceptance.md"
-claim = "OS-031 records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
+id = "evidence.linux-ublk-ext4-acceptance"
+path = "docs/verification/linux-ublk-ext4-acceptance.md"
+claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
 tier = "linux-arm64-file-backed-ublk"
 fault_model = ["unsupported kernel intent", "ownership conflict or process death", "stale publication state", "backing identity drift", "bounded resource exhaustion", "stale or duplicate completion", "trace divergence or abandonment", "incomplete shutdown", "missing recovery authority", "partial or cross-store fence evidence", "mutation crash point"]
 scope = ["ARM64 Linux ublk publication", "ext4 create and persistence workflow", "bounded normalized frontend trace replay", "clean shutdown and restart", "independent data-member readability", "deterministic recovery and fence models"]

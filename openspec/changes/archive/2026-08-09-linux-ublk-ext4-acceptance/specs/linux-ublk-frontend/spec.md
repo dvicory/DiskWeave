@@ -143,7 +143,7 @@ A reproducible ARM64 Linux workflow SHALL create the fixture, publish a real Dis
 ### Requirement: Correction evidence covers the composed correctness boundaries
 <!-- dwv:req req.linux-ublk-frontend.correction-evidence-covers-the-composed-correctness-boundaries -->
 
-OS-031 completion SHALL retain deterministic regression evidence that the canonical dirty-region mapping covers all intersected regions, store watermarks are monotonic and fence composition rejects future, stale, partial, omitted-region, and cross-store evidence, recovery access failures cannot become generation zero, and store/recovery ownership is released by process death without marker cleanup. It SHALL preserve a TLA+ model checking mutation crash points around intent, home writes, fences, and checkpoints; a bounded Kani harness for checked region mapping; an independent fence-coverage model; and a member-process crash integration case. Counterexamples SHALL be retained as deterministic regressions.
+The Linux frontend's correction evidence SHALL retain deterministic regressions proving that the canonical dirty-region mapping covers all intersected regions, store watermarks are monotonic and fence composition rejects future, stale, partial, omitted-region, and cross-store evidence, recovery access failures cannot become generation zero, and store/recovery ownership is released by process death without marker cleanup. It SHALL include a TLA+ model checking mutation crash points around intent, home writes, fences, and checkpoints; a bounded Kani harness for checked region mapping; an independent fence-coverage model; and a member-process crash integration case. Counterexamples SHALL be retained as deterministic regressions.
 
 #### Scenario: One proof layer is unavailable
 

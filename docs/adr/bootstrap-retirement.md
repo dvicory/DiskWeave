@@ -1,4 +1,4 @@
-# ADR OS-027: Bootstrap inputs are retired, not promoted
+# ADR: Bootstrap inputs are retired, not promoted
 
 **Status:** Accepted
 **Date:** 2026-08-08

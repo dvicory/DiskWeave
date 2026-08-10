@@ -25,6 +25,7 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 - A changed requirement fingerprint makes linked explanations suspect. Re-review the affected fragment; never bulk-accept unrelated prose.
 - `docs check` performs deterministic change-boundary impact discovery when a repository revision baseline is available. Follow only its `review_required` actions; unchanged implementation relationships are context, not an automatic documentation task.
 - Use `knowledge affected` to inspect a reported requirement or path and `knowledge doctor --path` only to recover a relationship lost from the current file. Neither command infers whether prose is semantically correct.
+- Use `diskweave-semantic-reconciliation` when inspection reveals overlapping canonical policy ownership, contradictory scenarios, an unclear semantic owner, changed owner semantics with dependents, historical-authority leakage affecting interpretation, or consequential shadow architecture.
 
 ## Before completion
 

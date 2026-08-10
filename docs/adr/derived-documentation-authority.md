@@ -1,9 +1,9 @@
-# ADR OS-025: Derived documentation is a controlled projection
+# ADR: Derived documentation is a controlled projection
 
-**Status:** Superseded by ADR OS-030
+**Status:** Superseded by [Open traceable knowledge tooling](open-traceable-knowledge.md)
 **Date:** 2026-08-08
 **Scope:** Documentation and semantic-context tooling only
-**Supersession:** ADR OS-030 preserves the authority boundary and formatting-stable semantic review, but replaces the custom curriculum/block/provenance CMS and model-response lifecycle with sparse OpenSpec identities, reviewed fingerprints, ordinary MyST, and maintained Sphinx integrations.
+**Supersession:** The open-traceable-knowledge ADR preserves the authority boundary and formatting-stable semantic review, but replaces the custom curriculum/block/provenance CMS and model-response lifecycle with sparse OpenSpec identities, reviewed fingerprints, ordinary MyST, and maintained Sphinx integrations.
 
 
 ## Context

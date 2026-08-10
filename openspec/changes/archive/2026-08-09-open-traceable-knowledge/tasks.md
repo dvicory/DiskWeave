@@ -38,7 +38,7 @@
 ## 6. Agent context and usefulness evidence
 
 - [x] 6.1 Run one real implementation task with graph-selected context and compare correctness coverage, relevance, size, omissions, source hunting, and outcome against the monolithic baseline.
-- [x] 6.2 Run one observed human Guide exercise and one fresh-agent implementation exercise; have a human reviewer record concrete observations, omissions, source hunting, and acceptance conclusions in OS-030 completion evidence without adding a permanent corpus, scoring schema, result registry, or evaluator command.
+- [x] 6.2 Run one observed human Guide exercise and one fresh-agent implementation exercise; have a human reviewer record concrete observations, omissions, source hunting, and acceptance conclusions in the open-traceable-knowledge completion evidence without adding a permanent corpus, scoring schema, result registry, or evaluator command.
 
 ## 7. Migration, retirement, and completion
 

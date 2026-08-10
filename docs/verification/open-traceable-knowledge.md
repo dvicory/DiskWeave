@@ -1,4 +1,4 @@
-# OS-030 completion evidence
+# Open traceable knowledge completion evidence
 
 ## Claim boundary
 
@@ -6,7 +6,7 @@ This record covers the development-only documentation and knowledge workflow: ca
 
 ## Human Guide exercise
 
-A reader exercised the rendered Guide during OS-030. The first version failed acceptance: it was described as barely comprehensible, simultaneously too complex and insufficiently detailed. After the Guide was rewritten around concrete member files, byte examples, operational commands, and evidence boundaries, the reader found it much more broadly useful but reported that the parity chapter still jumped from “the equation is not enough” to four operation names without carrying the reader through the decisions.
+A reader exercised the rendered Guide during the open-traceable-knowledge change. The first version failed acceptance: it was described as barely comprehensible, simultaneously too complex and insufficiently detailed. After the Guide was rewritten around concrete member files, byte examples, operational commands, and evidence boundaries, the reader found it much more broadly useful but reported that the parity chapter still jumped from “the equation is not enough” to four operation names without carrying the reader through the decisions.
 
 The accepted revision adds validated ordered section briefs to `docs/curriculum.toml`. Each brief names a proposed heading, focus, must-answer questions, exact requirement/scenario sources, and non-claims. Chapter 3 now carries the same bytes through a known-erasure read, interrupted separate-target rebuild, ambiguous parity mismatch, independently authorized repair, and loss of authority requiring rebaseline before presenting the comparison table.
 
@@ -39,4 +39,4 @@ Observed on 2026-08-09:
 - TOML section briefs are accepted but not preferred enthusiastically by the human reader. No prose generator, model evaluator, reusable usefulness corpus, scoring schema, or result registry is justified by this single reservation.
 - Change-boundary relationship comparison depends on an available supported local revision provider. Absence is explicit and does not masquerade as an unchanged graph; deterministic semantic readiness still runs.
 - Usefulness evidence is one-time sampled acceptance, not a general claim about every reader, task, or model.
-- Product work remains outside OS-030: checksum scrub and verified repair integration (OS-017), accepted macOS bridge/attach behavior (OS-021/OS-022), Linux frontend work, and physical durability certification.
+- Product work remains outside the open-traceable-knowledge change: checksum scrub and verified repair integration (OS-017), accepted macOS bridge/attach behavior (OS-021/OS-022), Linux frontend work, and physical durability certification.

@@ -1,9 +1,9 @@
-# ADR OS-026: Deterministic documentation pipeline and external-agent boundary
+# ADR: Deterministic documentation pipeline and external-agent boundary
 
-**Status:** Superseded by ADR OS-030
+**Status:** Superseded by [Open traceable knowledge tooling](open-traceable-knowledge.md)
 **Date:** 2026-08-08
 **Scope:** Documentation and semantic-context tooling only
-**Supersession:** ADR OS-030 retains the development-only `xtask` boundary and bounded offline checks, but removes the custom graph, generated `SUMMARY.md`, mdBook shell, task/response protocol, model policy, and bespoke projection state.
+**Supersession:** The open-traceable-knowledge ADR retains the development-only `xtask` boundary and bounded offline checks, but removes the custom graph, generated `SUMMARY.md`, mdBook shell, task/response protocol, model policy, and bespoke projection state.
 
 
 ## Context

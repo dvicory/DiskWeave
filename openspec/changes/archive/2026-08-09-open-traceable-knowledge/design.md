@@ -78,7 +78,7 @@ Checked-in MyST Markdown is the prose baseline. `docs check` performs impact dis
 
 No revision-diff or relationship-hash registry is retained. `affected` remains a bounded current-context/page diagnostic, while `knowledge doctor --path` recovers a relationship removed from the current file using the selected revision baseline. Baseline absence is explicit. Whether prose still explains arbitrary implementation behavior remains an agent review decision informed by task intent, not a model or deterministic-tool verdict.
 
-Usefulness is sampled at OS-030 acceptance, not automated. One reader exercises the Guide and one fresh agent performs a real implementation task from graph-selected context. A human reviewer records concrete observations and residual gaps in the change completion evidence. No durable corpus, scoring schema, result registry, evaluator command, or model-issued verdict is added. Revisit recurring evaluation only after a concrete regression shows that its value exceeds its maintenance cost.
+Usefulness is sampled at acceptance of the open-traceable-knowledge change, not automated. One reader exercises the Guide and one fresh agent performs a real implementation task from graph-selected context. A human reviewer records concrete observations and residual gaps in the change completion evidence. No durable corpus, scoring schema, result registry, evaluator command, or model-issued verdict is added. Revisit recurring evaluation only after a concrete regression shows that its value exceeds its maintenance cost.
 
 ### 7. Agent command and skill contract
 

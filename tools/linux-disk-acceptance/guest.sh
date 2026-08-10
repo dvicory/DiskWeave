@@ -225,7 +225,7 @@ jq -n \
     live_traces: [
       {
         phase: "first-shutdown",
-        retained_file: "os-031-linux-ublk-trace-first.json",
+        retained_file: "linux-ublk-trace-first.json",
         sha256: $first_trace_sha256,
         schema: $first_trace[0].schema,
         fixture_digest: $first_trace[0].fixture_digest,
@@ -236,7 +236,7 @@ jq -n \
       },
       {
         phase: "second-shutdown",
-        retained_file: "os-031-linux-ublk-trace-second.json",
+        retained_file: "linux-ublk-trace-second.json",
         sha256: $second_trace_sha256,
         schema: $second_trace[0].schema,
         fixture_digest: $second_trace[0].fixture_digest,

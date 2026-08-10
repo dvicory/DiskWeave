@@ -1,4 +1,4 @@
-# OS-025 derived documentation foundation
+# Derived documentation foundation
 
 **Date:** 2026-08-08
 **Scope:** Offline repository-owned documentation tooling only

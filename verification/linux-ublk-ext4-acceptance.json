@@ -143,7 +143,7 @@
   "live_traces": [
     {
       "phase": "first-shutdown",
-      "retained_file": "os-031-linux-ublk-trace-first.json",
+      "retained_file": "linux-ublk-trace-first.json",
       "sha256": "040a6515fa324d73af00a4771c41fd06c22d46a29d7c7f70ce278918d0d6eb57",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
@@ -167,7 +167,7 @@
     },
     {
       "phase": "second-shutdown",
-      "retained_file": "os-031-linux-ublk-trace-second.json",
+      "retained_file": "linux-ublk-trace-second.json",
       "sha256": "73eaf4ca520bf9840499a74354eafe777bed7233702edca311fb495928d5a8b7",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",

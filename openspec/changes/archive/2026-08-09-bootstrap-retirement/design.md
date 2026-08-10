@@ -1,6 +1,6 @@
 ## Context
 
-OS-025 implemented the deterministic source/context/provenance shell but intentionally selected only two small pages. The bootstrap handoff's completion standard requires a useful human book and a handoffless recovery proof. The current repository already has accepted product architecture, canonical OpenSpecs, evidence records, a Rust `xtask`, and a bounded Markdown parser dependency.
+The derived-documentation-foundation change implemented the deterministic source/context/provenance shell but intentionally selected only two small pages. The bootstrap handoff's completion standard requires a useful human book and a handoffless recovery proof. The current repository already has accepted product architecture, canonical OpenSpecs, evidence records, a Rust `xtask`, and a bounded Markdown parser dependency.
 
 ## Decisions
 

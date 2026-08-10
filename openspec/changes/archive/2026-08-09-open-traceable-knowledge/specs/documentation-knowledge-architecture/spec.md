@@ -102,15 +102,15 @@ A discoverable repository-local skill SHALL teach the maintenance procedure. Det
 
 ### Requirement: Usefulness is sampled without permanent evaluator machinery
 
-OS-030 acceptance SHALL include one observed human reading exercise and one real fresh-agent implementation exercise using the maintained documentation and graph-selected context. A human reviewer SHALL record the concrete observations, omissions, and acceptance conclusion in the change's completion evidence. The repository SHALL NOT retain a reusable usefulness corpus, scoring schema, result registry, or evaluator command unless a later documented regression demonstrates that recurring machinery is worth its maintenance cost. Participant or model self-reports SHALL NOT count as acceptance evidence.
+Acceptance of the open-traceable-knowledge change SHALL include one observed human reading exercise and one real fresh-agent implementation exercise using the maintained documentation and graph-selected context. A human reviewer SHALL record the concrete observations, omissions, and acceptance conclusion in the change's completion evidence. The repository SHALL NOT retain a reusable usefulness corpus, scoring schema, result registry, or evaluator command unless a later documented regression demonstrates that recurring machinery is worth its maintenance cost. Participant or model self-reports SHALL NOT count as acceptance evidence.
 
 #### Scenario: Structural checks pass
 - **WHEN** deterministic documentation and traceability checks pass without observed human and agent exercises
-- **THEN** structural correctness is established but OS-030 usefulness acceptance remains incomplete.
+- **THEN** structural correctness is established but the open-traceable-knowledge usefulness acceptance remains incomplete.
 
 #### Scenario: Acceptance exercises complete
 - **WHEN** a reader uses the Guide and a fresh agent completes a real task from graph-selected context under human observation
-- **THEN** the reviewer records specific successes, failures, source hunting, and residual gaps in OS-030 completion evidence without creating a reusable evaluation subsystem.
+- **THEN** the reviewer records specific successes, failures, source hunting, and residual gaps in the open-traceable-knowledge completion evidence without creating a reusable evaluation subsystem.
 
 ### Requirement: Generated state is reconstructible and historical inputs are isolated
 

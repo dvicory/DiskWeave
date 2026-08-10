@@ -300,7 +300,7 @@ fn clean_room(app: &App) -> Result<Value, AppError> {
             "schema": "dwv.docs.clean-room.v1",
             "equivalent": true,
             "objects_digest": digest_bytes(&actual),
-            "excluded": ["handoffs", "archived changes", "generated output", "global Python packages"]
+            "excluded": ["handoffs", "archived changes", "milestones", "generated output", "global Python packages"]
         }))
     })();
     let cleanup = fs::remove_dir_all(&root);

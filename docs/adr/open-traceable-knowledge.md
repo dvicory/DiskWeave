@@ -1,4 +1,4 @@
-# ADR OS-030: Open traceable knowledge tooling
+# ADR: Open traceable knowledge tooling
 
 **Status:** Accepted
 
@@ -62,4 +62,4 @@ Each adapter writes open or simple ignored interchange and can be removed when a
 
 The checked-in documentation becomes ordinary MyST Markdown, while requirements, Rust owners, evidence, scenarios, and claims remain independently inspectable through sparse links. The previous mdBook and custom projection CMS are removed only after the Sphinx vertical slice, content migration, no-op behavior, and clean-room reconstruction pass. There is no permanent dual-renderer architecture.
 
-OS-030 usefulness acceptance is deliberately sampled rather than automated: one reader exercises the Guide and one fresh agent performs a real implementation task from graph-selected context. A human reviewer records concrete observations and residual gaps in completion evidence. The repository retains no usefulness corpus, scoring schema, result registry, evaluator command, or model-issued verdict.
+Usefulness acceptance for the open-traceable-knowledge change is deliberately sampled rather than automated: one reader exercises the Guide and one fresh agent performs a real implementation task from graph-selected context. A human reviewer records concrete observations and residual gaps in completion evidence. The repository retains no usefulness corpus, scoring schema, result registry, evaluator command, or model-issued verdict.

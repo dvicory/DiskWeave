@@ -1,6 +1,6 @@
 DiskWeave is correctness-first storage software. Prefer simple, explicit designs over clever abstractions.
 
-The architecture and OpenSpec artifacts define intended behavior. If implementation exposes a contradiction, missing invariant, or consequential ambiguity, surface it rather than silently inventing new architecture.
+Current files under `openspec/specs/*/spec.md` own current required product behavior. The retained document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing without silently overriding current specs; implementation and historical artifacts do not silently override them either. Surface contradictions, missing invariants, and consequential ambiguity. OpenSpec naming and authoring rules live in `openspec/config.yaml`.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
 
