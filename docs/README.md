@@ -37,4 +37,4 @@ cargo xtask docs serve
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 
-Normal discovery excludes handoffs, archived changes, rendered output, and historical goal-v5 machinery. Historical material is consulted only for an explicit archaeology task.
+Normal discovery excludes handoffs, archived changes, rendered output, and historical milestone 5 machinery. Historical material is consulted only for an explicit archaeology task.

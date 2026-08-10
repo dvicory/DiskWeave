@@ -3,8 +3,8 @@ set -euo pipefail
 
 source_hash=${1:?source snapshot hash required}
 source_root=/tmp/diskweave-src
-fixture=/var/tmp/dwv-goal-v7
-mountpoint=/mnt/dwv-goal-v7
+fixture=/var/tmp/dwv-linux-acceptance
+mountpoint=/mnt/dwv-linux-acceptance
 server_pid=
 
 cleanup() {
@@ -272,5 +272,5 @@ jq -n \
       partial_fence_coverage_rejected_by: "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"
     },
     non_claims: ["production durability", "power-loss safety", "multi-device publication", "daemon recovery", "FUA", "discard", "write-zeroes", "online topology mutation", "hardware safety"]
-  }' > /tmp/dwv-goal-v7-evidence.json
-cat /tmp/dwv-goal-v7-evidence.json
+  }' > /tmp/dwv-linux-acceptance-evidence.json
+cat /tmp/dwv-linux-acceptance-evidence.json

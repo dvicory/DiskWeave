@@ -50,5 +50,5 @@
 - [x] 7.2 Record exact guest/kernel/library/tool facts, configured bounds, normalized trace digest/count, hashes, region/fence/watermark evidence, parity/recovery/integrity dispositions, ownership/reacquisition evidence, cleanup state, failures, and explicit non-claims.
 - [x] 7.3 Map every correction check to its canonical requirement and architecture-v0.8 property; explicitly deny production SQLite, physical durability/FUA, broader concurrency, multi-device publication, online topology mutation, and hardware claims.
 - [x] 7.4 Run documentation readiness and clean-room reconstruction checks, review every affected requirement relationship, and resolve all required actions.
-- [x] 7.5 Verify the implementation against the proposal, design, capability requirements, Goal-v7 handoff, and architecture v0.8 before archiving.
+- [x] 7.5 Verify the implementation against the proposal, design, capability requirements, Milestone 7 handoff, and architecture v0.8 before archiving.
 - [x] 7.6 Record coherent conventional revisions and archive only after no critical issue or unmet acceptance requirement remains.

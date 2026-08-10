@@ -1,6 +1,6 @@
 ## Why
 
-The v0.8 normalization audit maps topology transactions at section granularity, but canonical requirements do not retain every plan binding and operation-specific safety condition from §§6.6 and 7.8. In particular, no requirement prevents existing parity bytes from being reinterpreted under a changed profile, parity-role count, coding position, or protected geometry. DiskWeave needs an exact timeless owner for this transition contract before Goal-v7 relies on the normalization record.
+The v0.8 normalization audit maps topology transactions at section granularity, but canonical requirements do not retain every plan binding and operation-specific safety condition from §§6.6 and 7.8. In particular, no requirement prevents existing parity bytes from being reinterpreted under a changed profile, parity-role count, coding position, or protected geometry. DiskWeave needs an exact timeless owner for this transition contract before Milestone 7 relies on the normalization record.
 
 ## What Changes
 

@@ -8,14 +8,14 @@ This record proves a disposable one-data/one-parity file-backed fixture can be e
 
 Run on 2026-08-10 with `tools/linux-disk-acceptance/run.sh`:
 
-- Source archive SHA-256: `161b38983951cbbddf31d2ab6d616aaed41222e5a7a8d4969806ce858bb92426`.
-- Guest: Ubuntu arm64, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
-- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json`.
-- Retained live traces: `verification/linux-ublk-trace-first.json` (445,541 bytes, 453 records, SHA-256 `1ecf091313fdcdd1907298a20a0d5549a492e52b5ee2c1358133323945f05171`) and `verification/linux-ublk-trace-second.json` (79,530 bytes, 81 records, SHA-256 `9793698021ba48cace5f2c3d4f115282918452964e6ef1919bb2642f7986b726`).
+- Source archive SHA-256: `56751be073f989b77f1d4589ec0d2c810be347facd33e5bab927bd0c1f9a2a4e`.
+- Guest: Ubuntu 26.04 arm64 image, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
+- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json` (9,975 bytes, SHA-256 `60e8a02910415ec859e32626072d0f4c2e2dbc3ef0c824a9f131748d6213b95c`).
+- Retained live traces: `verification/linux-ublk-trace-first.json` (445,544 bytes, 453 records, SHA-256 `517726606b6a5ef2bb4e2701f79d0adfaf23b909c4890ee106206a420a565b13`) and `verification/linux-ublk-trace-second.json` (79,515 bytes, 81 records, SHA-256 `1fdf9e699dd6a9950f45e92c478fa4b4821e99f2e6bd949ea0b490c2aa649a62`).
 - Both traces use `dwv.ublk.trace.v2`, record queue depth 8, maximum transfer 131,072 bytes, maximum 4,096 records, no exhaustion, and clean deterministic replay through `dwv demo disk trace-replay`.
 - Workload: mkfs.ext4, mount, create, fsync, overwrite, rename, directory sync, read, delete, unmount, clean shutdown, restart, read-only remount.
 - Durable file content SHA-256 before and after restart: `d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7`.
-- Data and parity payload SHA-256 after shutdown: `7a088635b8c3680d0cb79f527a9f74ca326ffbe88c9e152c3979f84fd511718c`; byte equality passed.
+- Data and parity payload SHA-256 after shutdown: `2129f2a2577a3a919b721c78a435c24191ef4bf454bffcf5e5f8794f98eb8f3a`; byte equality passed.
 - The ordinary data backing file mounted directly as read-only ext4 after service shutdown and exposed the same content.
 - Both ublk runs ended in lifecycle state `stopped` only after drain, checkpoint, endpoint-removal, and trace-replay checks passed.
 
@@ -23,7 +23,7 @@ Negative cases failed closed for undersized geometry, unsupported topology, seco
 
 ## Portable and proof evidence
 
-- `cargo test --workspace --all-targets`: 298 passed across 22 suites; 1 explicitly ignored hardware-dependent test.
+- `cargo test --workspace --all-targets`: 303 passed across 22 suites; 1 explicitly ignored hardware-dependent test.
 - `cargo test -p dwv-frontend-ublk` in the Linux guest: 12 passed, including bounded trace replay/divergence, pre-admission reservation, stale/duplicate completion, lifecycle refusal, probe/shutdown classification, borrowed write-payload identity, and fixture validation.
 - `cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected` in the Linux guest: passed.
 - `cargo test --test cli_demo`: covers portable trace replay, malformed trace refusal, oversized trace refusal, lifecycle confirmation, and source-preserving replay.

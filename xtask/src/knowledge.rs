@@ -64,7 +64,7 @@ struct ReviewedState {
     reasons: BTreeMap<String, String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct ScanRef {
     id: String,
     kind: String,
@@ -1091,6 +1091,29 @@ impl RevisionControl {
         }
         Ok(paths)
     }
+
+    fn tracked_paths(self, root: &Path) -> Result<Vec<String>, AppError> {
+        let output = match self {
+            Self::Jujutsu => Command::new("jj")
+                .args(["file", "list"])
+                .current_dir(root)
+                .output(),
+            Self::Git => Command::new("git")
+                .args(["ls-files", "--cached", "--others", "--exclude-standard"])
+                .current_dir(root)
+                .output(),
+        }
+        .map_err(|error| AppError::new("planning_scan_unavailable", error.to_string()))?;
+        if !output.status.success() {
+            return Err(AppError::new(
+                "planning_scan_failed",
+                String::from_utf8_lossy(&output.stderr).trim(),
+            ));
+        }
+        let text = String::from_utf8(output.stdout)
+            .map_err(|error| AppError::new("planning_scan_paths_not_utf8", error.to_string()))?;
+        Ok(text.lines().map(str::to_owned).collect())
+    }
 }
 
 fn expand_rename(path: &str) -> Vec<String> {
@@ -1529,6 +1552,9 @@ fn collect_markdown_files(
     path: &Path,
     files: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), AppError> {
+    if rel(root, path) == "docs/milestones" {
+        return Ok(());
+    }
     let mut children = entries(path, "roadmap_scan_failed")?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
@@ -1631,6 +1657,7 @@ fn proposal_roadmap_nodes(text: &str) -> Vec<String> {
         .collect()
 }
 
+/// dwv:req req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative
 fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
     let docs = app.root.join("docs");
     let mut markdown = Vec::new();
@@ -1734,6 +1761,209 @@ fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
     Ok(())
 }
 
+const PLANNING_SCAN_SCHEMA: &str = "dwv.docs.planning-nomenclature.v1";
+
+fn planning_scan_paths(app: &App) -> Result<Vec<String>, AppError> {
+    let mut paths = if let Some(provider) = RevisionControl::detect(&app.root) {
+        provider.tracked_paths(&app.root)?
+    } else {
+        let mut paths = Vec::new();
+        collect_planning_scan_paths(&app.root, &app.root, &mut paths)?;
+        paths
+    };
+    paths.sort();
+    paths.dedup();
+    if paths.len() > app.bounds.max_units {
+        return Err(AppError::new(
+            "planning_scan_unit_bound_exceeded",
+            paths.len().to_string(),
+        ));
+    }
+    Ok(paths)
+}
+
+fn collect_planning_scan_paths(
+    root: &Path,
+    path: &Path,
+    paths: &mut Vec<String>,
+) -> Result<(), AppError> {
+    let mut children = entries(path, "planning_scan_failed")?;
+    children.sort_by_key(|entry| entry.file_name());
+    for child in children {
+        let kind = child
+            .file_type()
+            .map_err(|error| AppError::new("planning_scan_failed", error.to_string()))?;
+        let name = child.file_name();
+        let name = name.to_string_lossy();
+        if kind.is_symlink() {
+            return Err(AppError::new(
+                "planning_scan_symlink",
+                rel(root, &child.path()),
+            ));
+        }
+        if kind.is_dir() {
+            if name.starts_with('.') || matches!(name.as_ref(), "target" | "node_modules") {
+                continue;
+            }
+            collect_planning_scan_paths(root, &child.path(), paths)?;
+        } else if kind.is_file() {
+            paths.push(rel(root, &child.path()));
+        }
+    }
+    Ok(())
+}
+
+fn find_ascii_case_insensitive(text: &[u8], needle: &[u8]) -> Option<usize> {
+    text.windows(needle.len())
+        .position(|candidate| candidate.eq_ignore_ascii_case(needle))
+}
+
+fn retired_planning_match(text: &str) -> Option<(&'static str, usize, usize)> {
+    let bytes = text.as_bytes();
+    for (needle, kind) in [
+        (
+            concat!("close-", "go", "al-v7-acceptance-gaps").as_bytes(),
+            "retired-acceptance-archive",
+        ),
+        (
+            concat!("dwv-", "go", "al-v7").as_bytes(),
+            "retired-linux-runtime-name",
+        ),
+        (
+            concat!("docs/handoffs/", "go", "al-v").as_bytes(),
+            "retired-planning-path",
+        ),
+        (
+            concat!("docs/handoffs/", "go", "al.md").as_bytes(),
+            "retired-planning-path",
+        ),
+    ] {
+        if let Some(start) = find_ascii_case_insensitive(bytes, needle) {
+            return Some((kind, start, start + needle.len()));
+        }
+    }
+
+    for start in 0..bytes.len().saturating_sub(3) {
+        if !bytes[start..start + 4].eq_ignore_ascii_case(b"goal")
+            || start > 0 && bytes[start - 1].is_ascii_alphanumeric()
+        {
+            continue;
+        }
+        let mut cursor = start + 4;
+        let separator_start = cursor;
+        while bytes
+            .get(cursor)
+            .is_some_and(|byte| matches!(byte, b'-' | b'_' | b' '))
+        {
+            cursor += 1;
+        }
+        if cursor == separator_start {
+            continue;
+        }
+        if bytes
+            .get(cursor)
+            .is_some_and(|byte| byte.eq_ignore_ascii_case(&b'v'))
+        {
+            cursor += 1;
+            while bytes
+                .get(cursor)
+                .is_some_and(|byte| matches!(byte, b'-' | b'_' | b' '))
+            {
+                cursor += 1;
+            }
+        }
+        if !bytes
+            .get(cursor)
+            .is_some_and(|byte| matches!(byte, b'1'..=b'8'))
+        {
+            continue;
+        }
+        let end = cursor + 1;
+        if bytes
+            .get(end)
+            .is_some_and(|byte| byte.is_ascii_alphanumeric())
+        {
+            continue;
+        }
+        return Some(("retired-numbered-planning-identifier", start, end));
+    }
+    None
+}
+
+fn retired_planning_diagnostics(app: &App) -> Result<Vec<Value>, AppError> {
+    let mut diagnostics = Vec::new();
+    for relative in planning_scan_paths(app)? {
+        if let Some((kind, start, end)) = retired_planning_match(&relative) {
+            diagnostics.push(json!({
+                "gate": "retired-planning-identifier",
+                "kind": kind,
+                "path": relative,
+                "source": "path",
+                "line": 0,
+                "column": start + 1,
+                "fragment": &relative[start..end],
+                "next_action": "replace the retired project-planning identity with milestone or functional terminology",
+            }));
+        }
+        let path = safe_join(&app.root, &relative)?;
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| AppError::new("planning_scan_failed", error.to_string()))?;
+        if metadata.file_type().is_symlink() {
+            return Err(AppError::new("planning_scan_symlink", relative));
+        }
+        if !metadata.is_file() {
+            continue;
+        }
+        if metadata.len() > MAX_AUTHORITY_FILE_BYTES as u64 {
+            return Err(AppError::new("planning_scan_file_bound_exceeded", relative));
+        }
+        let bytes = fs::read(&path)
+            .map_err(|error| AppError::new("planning_scan_failed", error.to_string()))?;
+        let Ok(text) = String::from_utf8(bytes) else {
+            continue;
+        };
+        for (line, content) in text.lines().enumerate() {
+            if let Some((kind, start, end)) = retired_planning_match(content) {
+                diagnostics.push(json!({
+                    "gate": "retired-planning-identifier",
+                    "kind": kind,
+                    "path": relative,
+                    "source": "content",
+                    "line": line + 1,
+                    "column": start + 1,
+                    "fragment": &content[start..end],
+                    "next_action": "replace the retired project-planning identity with milestone or functional terminology",
+                }));
+            }
+        }
+    }
+    if diagnostics.len() > app.bounds.max_units {
+        return Err(AppError::new(
+            "planning_scan_diagnostic_bound_exceeded",
+            diagnostics.len().to_string(),
+        ));
+    }
+    Ok(diagnostics)
+}
+
+pub(super) fn planning_nomenclature(app: &App) -> Result<Value, AppError> {
+    let diagnostics = retired_planning_diagnostics(app)?;
+    let result = json!({
+        "schema": PLANNING_SCAN_SCHEMA,
+        "forbidden_project_planning_uses": diagnostics.len(),
+        "ordinary_goal_language_allowed": true,
+        "diagnostics": diagnostics,
+    });
+    if result["forbidden_project_planning_uses"] != 0 {
+        return Err(AppError::new(
+            "retired_planning_identifier",
+            "retired project-planning identifiers remain",
+        )
+        .details(result));
+    }
+    Ok(result)
+}
+
 /// dwv:req req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority
 pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
     validate_roadmap_identifiers(app)?;
@@ -1751,6 +1981,7 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         .map(|record| (record.semantic_id.as_str(), record))
         .collect::<BTreeMap<_, _>>();
     let refs = scan_references(app)?;
+    let planning_diagnostics = retired_planning_diagnostics(app)?;
     let current_ids = current.keys().copied().collect::<BTreeSet<_>>();
     let mut uncovered = current_ids
         .iter()
@@ -1815,6 +2046,7 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         "semantic-prerequisite-changed": prerequisite_suspect.len(),
         "orphaned-state": orphaned.len(),
         "unknown-reference": unknown.len(),
+        "retired-planning-identifier": planning_diagnostics.len(),
         "historical-reference": 0,
         "mapping-collision": 0,
     });
@@ -1834,6 +2066,7 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
     for reference in unknown {
         diagnostics.push(json!({"gate": "unknown-reference", "semantic_id": reference["semantic_id"], "path": reference["path"], "next_action": "remove the unknown req.* reference or add its canonical requirement"}));
     }
+    diagnostics.extend(planning_diagnostics);
     let next_actions = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic["next_action"].as_str())
@@ -2231,6 +2464,57 @@ mod tests {
         let ids = extract_ids("req.a.one req.unknown.two");
         assert!(ids.difference(&current).any(|id| id == "req.unknown.two"));
     }
+
+    #[test]
+    fn planning_scanner_rejects_retired_project_identifiers() {
+        for number in 1..=8 {
+            assert!(retired_planning_match(&format!("{}-v{number}", "goal")).is_some());
+            assert!(retired_planning_match(&format!("{} v{number}", "Goal")).is_some());
+        }
+        for sample in [
+            format!("docs/handoffs/{}.md", "goal"),
+            format!("docs/handoffs/{}-v2.md", "goal"),
+            format!("close-{}-v7-acceptance-gaps", "goal"),
+            format!("dwv-{}-v7", "goal"),
+        ] {
+            assert!(retired_planning_match(&sample).is_some());
+        }
+    }
+
+    #[test]
+    fn planning_scanner_allows_ordinary_goal_language() {
+        for sample in [
+            "## Goals",
+            "## Non-Goals",
+            "The product goal is safe storage.",
+            "This check preserves goal-oriented ordinary prose.",
+        ] {
+            assert_eq!(retired_planning_match(sample), None);
+        }
+    }
+
+    #[test]
+    fn planning_scanner_reports_exact_content_location() {
+        let (root, app) = fixture("planning-scan-location");
+        fs::write(
+            root.join("notes.txt"),
+            format!("ordinary goal\n{}-v7\n", "goal"),
+        )
+        .unwrap();
+
+        let error = planning_nomenclature(&app).unwrap_err();
+        assert_eq!(error.code, "retired_planning_identifier");
+        let diagnostics = error.details.unwrap()["diagnostics"]
+            .as_array()
+            .unwrap()
+            .clone();
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["path"], "notes.txt");
+        assert_eq!(diagnostics[0]["source"], "content");
+        assert_eq!(diagnostics[0]["line"], 2);
+        assert_eq!(diagnostics[0]["column"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
     fn commit_git_fixture(root: &Path) {
         for args in [
             vec!["init", "-q"],
@@ -2299,6 +2583,45 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn milestone_edits_do_not_change_current_semantic_outputs() {
+        let (root, app) = fixture("milestone-semantic-isolation");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_roadmap(&root);
+        write_reviewed(&root, &objects(&app).unwrap());
+        fs::create_dir_all(root.join("docs/milestones")).unwrap();
+        let path = root.join("docs/milestones/m9.md");
+        fs::write(&path, "# Milestone 9\n\nreq.cap.one\n").unwrap();
+
+        let before_objects = objects(&app).unwrap();
+        let before_references = scan_references(&app).unwrap();
+        let before_context = context(&app, "req.cap.one".to_owned()).unwrap();
+        let before_ownership = ownership(&app, "req.cap.one".to_owned()).unwrap();
+        let before_readiness = readiness(&app).unwrap();
+
+        fs::write(
+            &path,
+            "# Milestone 9\n\nChanged historical prose for req.cap.one.\n",
+        )
+        .unwrap();
+
+        assert_eq!(objects(&app).unwrap(), before_objects);
+        assert_eq!(scan_references(&app).unwrap(), before_references);
+        assert_eq!(
+            context(&app, "req.cap.one".to_owned()).unwrap(),
+            before_context
+        );
+        assert_eq!(
+            ownership(&app, "req.cap.one".to_owned()).unwrap(),
+            before_ownership
+        );
+        assert_eq!(readiness(&app).unwrap(), before_readiness);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -3040,6 +3363,20 @@ mod tests {
         fs::write(
             root.join("openspec/changes/request-fix/proposal.md"),
             "Descriptive changes need no roadmap node.\n",
+        )
+        .unwrap();
+
+        validate_roadmap_identifiers(&app).unwrap();
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn roadmap_validator_ignores_milestone_markers() {
+        let (root, app) = roadmap_fixture("roadmap-milestone-isolation");
+        fs::create_dir_all(root.join("docs/milestones")).unwrap();
+        fs::write(
+            root.join("docs/milestones/m9.md"),
+            "<!-- dwv:active-architecture-roadmap -->\nreq.cap.fake\n",
         )
         .unwrap();
 

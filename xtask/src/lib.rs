@@ -125,6 +125,7 @@ fn dispatch(args: &[String]) -> Result<Value, AppError> {
     let app = App::new(workspace_root());
     match operation {
         "knowledge" => dispatch_knowledge(&app, &args[2..]),
+        "planning-nomenclature" => knowledge::planning_nomenclature(&app),
         "inspect" | "context" | "trace" | "why" | "ownership" | "affected" | "readiness" => {
             dispatch_knowledge(&app, args.get(1..).unwrap_or_default())
         }
@@ -393,7 +394,7 @@ fn run_sphinx(root: &Path, command: &str) -> Result<Value, AppError> {
 fn help_value() -> Value {
     json!({"schema": CLI_SCHEMA, "usage": "cargo xtask docs <operation>", "operations": [
         "help", "schema", "doctor", "check [--base <revision>]", "build", "serve", "clean-room",
-        "knowledge export|extract|export-sphinx", "inspect <id>",
+        "planning-nomenclature", "knowledge export|extract|export-sphinx", "inspect <id>",
         "context|trace|why <id>", "ownership <id>",
         "affected <id>|--id <id>|--path <repo-relative-path>",
         "knowledge doctor --path <repo-relative-path>", "readiness|check",
@@ -405,6 +406,7 @@ fn schema_value() -> Value {
     json!({"schema": CLI_SCHEMA, "commands": {
         "knowledge_objects": "dwv.knowledge.objects.v2", "knowledge_context": "dwv.knowledge.context.v2",
         "knowledge_ownership": "dwv.knowledge.ownership.v1", "knowledge_readiness": "dwv.knowledge.readiness.v2",
+        "planning_nomenclature": "dwv.docs.planning-nomenclature.v1",
         "reviewed_state": "dwv.knowledge.reviewed-links.v2",
         "source_inventory": INVENTORY_SCHEMA
     }})

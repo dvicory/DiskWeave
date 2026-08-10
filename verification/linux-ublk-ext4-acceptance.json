@@ -1,6 +1,6 @@
 {
   "schema": "dwv.verification.linux-ublk-ext4.v1",
-  "source_snapshot_sha256": "161b38983951cbbddf31d2ab6d616aaed41222e5a7a8d4969806ce858bb92426",
+  "source_snapshot_sha256": "56751be073f989b77f1d4589ec0d2c810be347facd33e5bab927bd0c1f9a2a4e",
   "kernel_release": "7.0.0-28-generic",
   "architecture": "aarch64",
   "probe": {
@@ -124,7 +124,7 @@
     "state": "stopped",
     "trace_bound": 4096,
     "trace_count": 453,
-    "trace_digest": "30b773868e67969810208a8d6dde6e5ded2938b77c422dd899643753d3134a52"
+    "trace_digest": "4b5450b2ef2e56fe5419aa9e31da8859453de3e5cb9cdec41af011fe6903d1fb"
   },
   "second_shutdown": {
     "command": "demo.disk.serve",
@@ -138,13 +138,13 @@
     "state": "stopped",
     "trace_bound": 4096,
     "trace_count": 81,
-    "trace_digest": "f58d7f081d8ec21e72f785fe9661e8265e6b0aa3031d8c58a95411b3d65d1823"
+    "trace_digest": "c7e428916397ffb5ae578fb4edeea5d846c3daf8f8c9b690336deac324f365d0"
   },
   "live_traces": [
     {
       "phase": "first-shutdown",
       "retained_file": "linux-ublk-trace-first.json",
-      "sha256": "1ecf091313fdcdd1907298a20a0d5549a492e52b5ee2c1358133323945f05171",
+      "sha256": "517726606b6a5ef2bb4e2701f79d0adfaf23b909c4890ee106206a420a565b13",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
       "bounds": {
@@ -168,7 +168,7 @@
     {
       "phase": "second-shutdown",
       "retained_file": "linux-ublk-trace-second.json",
-      "sha256": "9793698021ba48cace5f2c3d4f115282918452964e6ef1919bb2642f7986b726",
+      "sha256": "1fdf9e699dd6a9950f45e92c478fa4b4821e99f2e6bd949ea0b490c2aa649a62",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
       "bounds": {
@@ -193,19 +193,19 @@
   "backing_file": {
     "independently_mounted_read_only": true,
     "content_sha256": "d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7",
-    "data_sha256": "7a088635b8c3680d0cb79f527a9f74ca326ffbe88c9e152c3979f84fd511718c",
-    "parity_sha256": "7a088635b8c3680d0cb79f527a9f74ca326ffbe88c9e152c3979f84fd511718c",
+    "data_sha256": "2129f2a2577a3a919b721c78a435c24191ef4bf454bffcf5e5f8794f98eb8f3a",
+    "parity_sha256": "2129f2a2577a3a919b721c78a435c24191ef4bf454bffcf5e5f8794f98eb8f3a",
     "data_equals_parity": true
   },
   "inspect": {
     "command": "demo.disk.inspect",
     "contract": "dwv.cli.v0",
-    "data_hash": "4aa9abe5117723cec83faeadfa11a76b8ad9c8545fa5e98c3cf19a33627ac660",
+    "data_hash": "ee0a5712f18ed2ae7fda4dd0f24224e9698cdf551ad8c064d97941f1df60abd9",
     "diagnostics": [],
     "fixture_digest": "585a48c2650f2a0b05580bf0386ff971b35381e2604f3cec26f6f9764711b71e",
     "ok": true,
     "outcome": "success",
-    "parity_hash": "4aa9abe5117723cec83faeadfa11a76b8ad9c8545fa5e98c3cf19a33627ac660",
+    "parity_hash": "ee0a5712f18ed2ae7fda4dd0f24224e9698cdf551ad8c064d97941f1df60abd9",
     "parity_matches_data": true,
     "protected_length": 67108864,
     "recovery_generation": 237,
@@ -217,7 +217,7 @@
   "negative_cases": {
     "resource_bound": "{\n  \"command\": \"demo.disk.init\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"usage\",\n    \"code\": 2,\n    \"message\": \"invalid request: fixture size must be 512-byte aligned between 16 MiB and 1 GiB\"\n  },\n  \"ok\": false,\n  \"outcome\": \"usage\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "unsupported_topology": "{\n  \"command\": \"demo.disk.inspect\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"unsupported\",\n    \"code\": 3,\n    \"message\": \"unsupported: initial publication profile requires exactly one data slot\"\n  },\n  \"ok\": false,\n  \"outcome\": \"unsupported\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
-    "ownership_conflict": "{\n  \"command\": \"demo.disk.serve\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"code\": 5,\n    \"message\": \"conflict: SQLite recovery store is already locked: /var/tmp/dwv-goal-v7/recovery.sqlite3.dwv-lock\"\n  },\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
+    "ownership_conflict": "{\n  \"command\": \"demo.disk.serve\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"code\": 5,\n    \"message\": \"conflict: SQLite recovery store is already locked: /var/tmp/dwv-linux-acceptance/recovery.sqlite3.dwv-lock\"\n  },\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "conflicting_cleanup": "{\n  \"command\": \"demo.disk.cleanup\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"code\": 5,\n    \"message\": \"conflict: device target metadata does not match the fixture\"\n  },\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "stale_readiness": "{\n  \"command\": \"demo.disk.serve\",\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"reconciliation-required\",\n    \"code\": 5,\n    \"message\": \"reconciliation required: readiness record already exists; inspect and clean the owned endpoint\"\n  },\n  \"ok\": false,\n  \"outcome\": \"reconciliation-required\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "unsupported_discard": "blkdiscard: BLKDISCARD: /dev/ublkb0 ioctl failed: Operation not supported\n",
@@ -247,8 +247,8 @@
         "shutdown": "clean",
         "state": "stopped",
         "trace_bound": 4096,
-        "trace_count": 10,
-        "trace_digest": "78f822948794f2cb0db1b7236e8311df060cf35735dd2d5425a25819dc33baa8"
+        "trace_count": 15,
+        "trace_digest": "f5710fde0cb8bb2182076e0ac1c66d027f6d6f7dce82aa1c46c13215c417cc1c"
       }
     },
     "partial_fence_coverage_rejected_by": "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"

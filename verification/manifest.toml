@@ -345,6 +345,29 @@ non_claims = [
 ]
 
 [[evidence]]
+id = "evidence.m8"
+path = "docs/verification/m8.md"
+claim = "The milestone-8 verification record integrates canonical ownership, non-forgeable metadata authorization, canonical request admission, planning isolation, bounded proofs, and a fresh Linux ublk/ext4 acceptance run."
+tier = "integrated-milestone-acceptance"
+fault_model = ["duplicate semantic ownership", "caller-forgeable recovery authority", "request identity weakening", "historical planning leakage", "frontend and recovery evidence drift"]
+scope = ["canonical semantic ownership", "metadata-loss authorization", "stable-slot request admission", "milestone planning isolation", "bounded model and proof", "ARM64 Linux ublk acceptance"]
+requirements = [
+  "req.documentation-knowledge-architecture.canonical-semantic-relationships-are-colocated-and-derived",
+  "req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative",
+  "req.metadata-loss-recovery.evidence-gates-control-recovery-authorization",
+  "req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics",
+  "req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch",
+  "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.linux-ublk-frontend.live-ext4-acceptance-evidence-is-bounded-and-scope-accurate",
+]
+non_claims = [
+  "This record does not select a production SQLite recovery adapter or establish daemon, controller, FUA, raw-device, or physical power-loss durability.",
+  "The ARM64 file-backed ublk run does not establish broader filesystems, production concurrency, multi-device publication, or online topology mutation.",
+  "Milestone planning and implementation evidence remain non-authoritative; current product semantics are owned only by current canonical OpenSpecs.",
+]
+
+[[evidence]]
 id = "evidence.linux-ublk-ext4-acceptance"
 path = "docs/verification/linux-ublk-ext4-acceptance.md"
 claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
