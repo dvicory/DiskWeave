@@ -35,4 +35,4 @@
 - [x] 5.3 Run documentation readiness, consistency, build, and clean-room reconstruction
 - [x] 5.4 Run complete workspace tests, formatting check, and strict workspace Clippy
 - [x] 5.5 Record exact cutover evidence and residual non-claims in `docs/verification/m8.md`
-- [ ] 5.6 Archive the approved change, confirm no active OpenSpec change remains, and rerun strict OpenSpec and documentation gates
+- [x] 5.6 Archive the approved change, confirm no active OpenSpec change remains, and rerun strict OpenSpec and documentation gates
