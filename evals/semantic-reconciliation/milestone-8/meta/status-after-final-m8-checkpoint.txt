@@ -1,0 +1,15 @@
+Working copy changes:
+A evals/semantic-reconciliation/milestone-8/meta/jj-commit-map.txt
+A evals/semantic-reconciliation/milestone-8/meta/status-after-final-m8-checkpoint.txt
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-canonical-request-boundary-implementation-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-canonical-semantic-ownership-external-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-canonical-semantic-ownership-implementation-review-followup-1.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-canonical-semantic-ownership-implementation-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-canonical-semantic-ownership-review-followup-1.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-checkpoint-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-final-completion-review-followup-1.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-final-completion-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-metadata-certificate-authority-implementation-review.md
+A evals/semantic-reconciliation/milestone-8/reports/milestone8-plan.md
+Working copy  (@) : xxksswqq cf2dce85 (no description set)
+Parent commit (@-): wkunqmkl 36356de6 chore: milestone 8 final completion checkpoint

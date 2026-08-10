@@ -1,0 +1,63 @@
+36356de6991c  wkunqmklopsy  chore: milestone 8 final completion checkpoint
+41af7711916d  qxsmtwqvkwrs  chore: milestone 8 pre-final-archive integrated review checkpoint
+132253e3e7bb  nkntwxmqzson  chore: milestone 8 normalized-service-request-boundary review checkpoint
+8820fa1293df  lzyrykppxywv  chore: milestone 8 pre-request-boundary checkpoint
+99cdfbeb254c  ymxkqywknwuk  chore: milestone 8 metadata-certificate-authority-gate implementation
+a54d8df7349c  qxsmmvvlttps  chore: milestone 8 canonical-semantic-ownership implementation
+acb83424bb7f  xmvwrzssszwo  chore: milestone 8 implementation checkpoint 1
+7e010c8bcc30  xnvkkyxmzxvx  chore: milestone 8 external-review checkpoint 2
+622196523837  pkxqzkzyltrm  chore: milestone 8 external-review checkpoint 1
+4101aa1689aa  mxusvpsovntq  fix: clarify specification authority boundaries
+b6c7d8294b8b  vyuytqrlsqzw  feat(linux): deliver verified ublk ext4 path
+b2472ecb4ad1  vowlxtsyyrwz  docs(spec): normalize topology transition contracts
+ecce28213692  qrnqzsvptkqz  docs(goal): define Linux ublk ext4 acceptance
+067a4d11f885  psutoqvrrpmt  feat(docs): add traceable offline knowledge system
+da8eb579b939  uttnpuppupxn  docs: close goal v4 status
+c7f3d73471e4  xkoronvnrsmy  sim: separate role-neutral media model
+a43f17ff7d72  qusqssyuyryq  docs(goal): reconcile architecture v0.8 and define goal v4
+4a3c3899ec69  kkrwtvrzxpvw  chore(openspec): archive macos demo change
+cf22b3644512  urypptrmwwym  test: add bounded portable evidence corpora
+74c5915579d0  swvkvwuqomxv  test: add seeded simulator schedule evidence
+cc64e44ece2d  sslvvmrrsywx  test: add bounded trace corpus evidence
+12584607677d  xqlquzowoypn  verify bounded arithmetic with Kani
+f0956ef5b2e7  yqupxvtqpypu  docs: clarify VE-001 toolchain tradeoff
+3f2d5231ef8a  lntynntppnvl  test: add bounded arithmetic verification
+14c652a8b46f  ksnwtvystqso  feat: add independent recovery protocol evidence
+8584fcce0db8  nlvxkvrvvnok  feat: complete portable acceptance workflows
+c941db4d0075  urrzswppxqun  feat(cli): add disposable macOS demo workflow
+22934e55d2a9  kpxuqovtkonn  feat(rebuild): add evidence-gated offline rebuild foundation
+933cf5d2e69d  pwwxlqmypzxx  docs(goal): define autonomous macOS demo workflow
+2778a3cf7f6b  sqtvxxmvvspr  chore(rust): satisfy strict clippy on current toolchain
+3a63903f55cc  rplmrsmkrtpy  chore(openspec): archive metadata-loss recovery
+38fd059463b8  utxkmmxvpkqu  feat(recovery): implement metadata-loss recovery matrix
+7726d9879a7a  xozvqntuknyv  chore(openspec): archive exhaustive parity verification
+d87d7f0cb11a  xxlwxtoxtllr  feat(verify): add exhaustive parity verification and repair planning
+b924de47df4c  txltnnmlmwly  chore(openspec): archive healthy portable IO
+ecce1dde916f  mzkumqsqxrto  test(service): cover portable IO restart cut points
+33ac70c2e38b  vxvromlkkmqz  chore(openspec): archive macOS bridge feasibility
+18ddff81f1db  ozmrzqzltpnx  feat(macos): strengthen bridge feasibility probe
+94318e5e30f5  pnwskkrmuwyv  feat(service): implement healthy portable IO baseline
+350274cd2487  zwopkmkklnty  chore(openspec): finalize checksum plane archive
+76e9b2f608f3  zwwrupsuktxw  feat(macos): expand bridge baseline evidence
+cf90b9500749  nlnopkpwqlmm  chore(openspec): archive checksum plane
+b95b7ea0c77a  kmnqxmmymvlp  feat(integrity): add generational checksum plane
+a84d85209c77  qzqwplwunktl  docs(macos): record DiskImages host boundary
+d7c3e37ccd6b  kwuypunlukvy  docs(macos): record bridge feasibility decision
+071db293b99f  zqrvotxrwqmp  chore(openspec): archive dirty integrity protocol
+c9ab9370663b  yzusvousprox  feat(recovery): enforce dirty and integrity invalidation
+ec12a013085d  pxxkzvomwyxr  feat(macos): record sparse image identity evidence
+d5c815934c04  qszrpotstwou  feat(macos): emit normalized baseline bridge traces
+c7bb3b616460  nvyyswmxoyyz  docs(macos): document bridge probe execution boundary
+41a93be26aa0  nvtylxmnluox  docs(openspec): record BLAKE3 provider research
+43680a690143  ywwsyyknsvux  chore(openspec): archive completed core changes
+f738d80e66bb  xyoquptsvzkl  style(topology): format identity evidence fixtures
+45d098f77bfe  llzpozzszkol  feat(transaction): add explicit reference transaction machine
+710eab94b1f6  nuovlzylzmmo  feat(store): add portable file-backed stores
+b798805026ec  nqopvmnwvoov  feat(topology): add anchorless identity evidence
+bb12c82fb060  rsxqkyqlrynz  chore(repo): ignore nested Rust build artifacts
+a0fd1c86189b  rplqprytytsu  feat(macos): add bridge feasibility probe baseline
+4f495852db75  poksysprvryu  docs(openspec): define macOS bridge feasibility
+b8538faec8ec  qotqsotownsk  docs(openspec): define dirty integrity and portable IO changes
+72d6e5b3d6e1  mklskvvmnqrq  feat(core): establish DiskWeave architecture and OpenSpec baseline
+05f62c8c2125  lvmpmxrokrkk  Init OpenSpec
+000000000000  zzzzzzzzzzzz  

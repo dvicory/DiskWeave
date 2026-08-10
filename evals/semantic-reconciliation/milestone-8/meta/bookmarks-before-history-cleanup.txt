@@ -1,0 +1,3 @@
+main: mxusvpso 4101aa16 fix: clarify specification authority boundaries
+  @git: mxusvpso 4101aa16 fix: clarify specification authority boundaries
+  @origin: mxusvpso 4101aa16 fix: clarify specification authority boundaries
