@@ -1,8 +1,5 @@
-# metadata-loss-recovery Specification
+## MODIFIED Requirements
 
-## Purpose
-This capability makes loss, corruption, staleness, or disagreement of DiskWeave recovery metadata a conservative, executable recovery plan using current canonical identity, verification, repair, envelope, recovery-state, and evidence contracts.
-## Requirements
 ### Requirement: The metadata-loss matrix is total and conservative
 <!-- dwv:req req.metadata-loss-recovery.the-metadata-loss-matrix-is-total-and-conservative -->
 <!-- dwv:requires req.metadata-loss-recovery.evidence-gates-control-recovery-authorization -->

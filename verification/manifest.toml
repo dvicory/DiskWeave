@@ -131,7 +131,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.os-015-metadata-loss-recovery"
 path = "docs/verification/os-015-metadata-loss-recovery.md"
-claim = "The metadata-loss record enumerates conservative recovery dispositions and requires explicit evidence before a new baseline."
+claim = "The current metadata-loss implementation enumerates the conservative matrix, rejects every certificate-receipt-gated case while no receipt capability exists, and creates audited fresh state only from authorized current evidence."
 tier = "portable-recovery-plus-evaluation-sqlite"
 fault_model = ["metadata loss", "ambiguous recovery baseline"]
 scope = ["conservative recovery matrix", "fresh semantic-state audit"]
@@ -140,9 +140,10 @@ requirements = [
   "req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed",
   "req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit",
   "req.metadata-loss-recovery.the-metadata-loss-matrix-is-total-and-conservative",
+  "req.metadata-loss-recovery.dry-run-reporting-is-bounded-and-portable",
 ]
 non_claims = [
-  "It does not claim certified envelope execution, degraded reads, live bridge behavior, or hardware durability.",
+  "It does not claim a certificate receipt capability, P/Q recovery execution, degraded reads, live frontend behavior, or hardware durability.",
   "The SQLite target is evaluation-only and not a production durability claim.",
 ]
 

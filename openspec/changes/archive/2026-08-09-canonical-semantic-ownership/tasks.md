@@ -36,4 +36,4 @@
 
 - [x] 5.1 Run the semantic-ownership challenge, focused knowledge and roadmap tests, current-reference and historical-authority scans, strict OpenSpec validation, and documentation readiness/check/build gates.
 - [x] 5.2 Run workspace tests, formatting, and Clippy; inspect the required ownership command outputs and residual mappings.
-- [ ] 5.3 Archive the change only after every task and individual review outcome is complete, then reconstruct and validate current documentation state.
+- [x] 5.3 Archive the change only after every task and individual review outcome is complete, then reconstruct and validate current documentation state.
