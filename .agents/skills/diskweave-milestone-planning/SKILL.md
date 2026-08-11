@@ -62,6 +62,12 @@ A milestone should establish enough of the following to let an implementation ag
 
 Prefer work packages that cross enough layers to produce meaningful capability. Avoid infrastructure-only phases when the infrastructure can instead be built inside the first package that needs it.
 
+### Cohesion and external gates
+
+Every work package must be necessary to one integrated milestone completion claim. Test this by asking whether the package could be deferred while the milestone's central claim remained honestly complete. Execution dependencies and end-to-end interactions are strong evidence of cohesion, but a shared audit theme, defect class, or discovery source is not sufficient by itself.
+
+An external-review gate does not justify including independent blocked work. If an unresolved product, semantic, or architecture choice can be deferred without invalidating the integrated milestone claim, record it separately rather than making the autonomous milestone depend on that decision.
+
 ## Work-package format
 
 Each substantial work package should normally contain:
