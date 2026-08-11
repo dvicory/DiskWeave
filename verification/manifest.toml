@@ -411,10 +411,10 @@ non_claims = [
 [[evidence]]
 id = "evidence.m9"
 path = "docs/verification/m9.md"
-claim = "The Milestone 9 record integrates bounded production operator observation, recovery preview/apply, persisted checksum-baseline admission, exact outcome composition, and actual narrow Linux publication."
+claim = "The Milestone 9 record integrates bounded production operator observation, recovery preview and fail-closed apply, persisted checksum-baseline admission, exact outcome composition, and actual narrow Linux publication."
 tier = "integrated-milestone-acceptance"
-fault_model = ["stale operator policy", "missing or unreadable recovery state", "uncertain recovery commit", "incomplete checksum baseline", "ambiguous damage", "admission without publication"]
-scope = ["production operator CLI", "metadata-loss recovery and baseline", "ordinary-file reopen behavior", "ARM64 Linux narrow ublk publication"]
+fault_model = ["stale operator policy", "missing or unreadable recovery state", "unresolved or uncertain recovery commit", "unavailable lost-custody authority", "incomplete checksum baseline", "ambiguous damage", "admission without publication"]
+scope = ["production operator CLI", "fail-closed metadata-loss assessment and baseline admission", "ordinary-file reopen behavior", "ARM64 Linux narrow ublk publication"]
 requirements = [
   "req.checksum-plane.current-baseline-completion-is-persisted-and-exact",
   "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
@@ -425,6 +425,7 @@ requirements = [
   "req.operator-recovery.start-composes-admission-and-actual-publication",
   "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
   "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+  "req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed",
   "req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit",
 ]
 non_claims = [

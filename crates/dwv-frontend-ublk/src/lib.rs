@@ -438,6 +438,52 @@ pub fn validate_shutdown_evidence(
         ))
     }
 }
+
+#[cfg(any(target_os = "linux", test))]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PublicationMetadataMatch {
+    Exact,
+    Conflict,
+    Unrelated,
+}
+
+/// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn classify_publication_metadata(
+    target: &serde_json::Value,
+    array_identity: Option<&str>,
+    publication_identity: &str,
+) -> PublicationMetadataMatch {
+    if target.get("contract").and_then(serde_json::Value::as_str) != Some("dwv.ublk.target.v2") {
+        return PublicationMetadataMatch::Unrelated;
+    }
+    if let Some(array_identity) = array_identity {
+        if target
+            .get("array_identity")
+            .and_then(serde_json::Value::as_str)
+            != Some(array_identity)
+        {
+            return PublicationMetadataMatch::Unrelated;
+        }
+        if target
+            .get("publication_identity")
+            .and_then(serde_json::Value::as_str)
+            == Some(publication_identity)
+        {
+            PublicationMetadataMatch::Exact
+        } else {
+            PublicationMetadataMatch::Conflict
+        }
+    } else if target
+        .get("publication_identity")
+        .and_then(serde_json::Value::as_str)
+        == Some(publication_identity)
+    {
+        PublicationMetadataMatch::Exact
+    } else {
+        PublicationMetadataMatch::Unrelated
+    }
+}
 #[cfg(any(target_os = "linux", test))]
 pub(crate) const fn completion_was_delivered(
     submit_succeeded: bool,
@@ -536,15 +582,18 @@ pub fn live_publication(_root: &Path) -> Result<Option<serde_json::Value>, Adapt
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
 }
 
+/// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow
 #[cfg(target_os = "linux")]
 pub fn live_admitted_publication(
+    array_identity: dwv_core::ArrayId,
     identity: dwv_service::PublicationIdentity,
 ) -> Result<Option<serde_json::Value>, AdapterError> {
-    linux::live_admitted_publication(identity)
+    linux::live_admitted_publication(array_identity, identity)
 }
 
 #[cfg(not(target_os = "linux"))]
 pub fn live_admitted_publication(
+    _array_identity: dwv_core::ArrayId,
     _identity: dwv_service::PublicationIdentity,
 ) -> Result<Option<serde_json::Value>, AdapterError> {
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
@@ -794,6 +843,38 @@ mod tests {
                 .replay()
                 .unwrap()
                 .clean
+        );
+    }
+
+    /// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow
+    #[test]
+    fn publication_metadata_is_scoped_to_one_array() {
+        let target = |array: Option<&str>, publication: &str| {
+            serde_json::json!({
+                "contract": "dwv.ublk.target.v2",
+                "array_identity": array,
+                "publication_identity": publication,
+            })
+        };
+        assert_eq!(
+            classify_publication_metadata(&target(Some("array-a"), "p1"), Some("array-a"), "p1"),
+            PublicationMetadataMatch::Exact
+        );
+        assert_eq!(
+            classify_publication_metadata(&target(Some("array-a"), "p2"), Some("array-a"), "p1"),
+            PublicationMetadataMatch::Conflict
+        );
+        assert_eq!(
+            classify_publication_metadata(&target(Some("array-b"), "p1"), Some("array-a"), "p1"),
+            PublicationMetadataMatch::Unrelated
+        );
+        assert_eq!(
+            classify_publication_metadata(&target(None, "p1"), Some("array-a"), "p1"),
+            PublicationMetadataMatch::Unrelated
+        );
+        assert_eq!(
+            classify_publication_metadata(&target(None, "fixture:p1"), None, "fixture:p1"),
+            PublicationMetadataMatch::Exact
         );
     }
 

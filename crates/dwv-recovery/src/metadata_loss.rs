@@ -10,7 +10,7 @@ use crate::{
 use dwv_core::{ArrayId, TopologyEpoch};
 use std::fmt;
 
-pub const METADATA_LOSS_MATRIX_VERSION: u16 = 2;
+pub const METADATA_LOSS_MATRIX_VERSION: u16 = 3;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -89,7 +89,7 @@ pub enum MetadataLossAction {
     RebuildParityToSeparateTarget,
     ReadOnlyDecodeToReplacement,
     RefuseAutomaticDecode,
-    CreateNewLineageAndBaseline,
+    RefuseAuthorityUnavailable,
     RefuseAmbiguousTopology,
     RefuseAmbiguousParity,
     RestoreValidatedBackup,
@@ -106,7 +106,7 @@ impl MetadataLossAction {
             Self::RebuildParityToSeparateTarget => "rebuild-parity-to-separate-target",
             Self::ReadOnlyDecodeToReplacement => "read-only-decode-to-replacement",
             Self::RefuseAutomaticDecode => "refuse-automatic-decode",
-            Self::CreateNewLineageAndBaseline => "create-new-lineage-and-baseline",
+            Self::RefuseAuthorityUnavailable => "refuse-authority-unavailable",
             Self::RefuseAmbiguousTopology => "refuse-ambiguous-topology",
             Self::RefuseAmbiguousParity => "refuse-ambiguous-parity",
             Self::RestoreValidatedBackup => "restore-validated-backup",
@@ -120,6 +120,7 @@ impl MetadataLossAction {
         matches!(
             self,
             Self::RefuseAutomaticDecode
+                | Self::RefuseAuthorityUnavailable
                 | Self::RefuseAmbiguousTopology
                 | Self::RefuseAmbiguousParity
         )
@@ -132,7 +133,6 @@ pub enum MetadataLossDisposition {
     ExhaustiveVerification,
     RebuildParity,
     ReadOnlyRecovery,
-    NewLineage,
     Refused,
     RestoreBackup,
     ReconcileReplicas,
@@ -147,7 +147,6 @@ impl MetadataLossDisposition {
             Self::ExhaustiveVerification => "exhaustive-verification",
             Self::RebuildParity => "rebuild-parity",
             Self::ReadOnlyRecovery => "read-only-recovery",
-            Self::NewLineage => "new-lineage",
             Self::Refused => "refused",
             Self::RestoreBackup => "restore-backup",
             Self::ReconcileReplicas => "reconcile-replicas",
@@ -162,6 +161,7 @@ pub enum EvidenceRequirement {
     ValidatedCertificateReceipt,
     ExhaustiveEquationScan,
     ExplicitDataAuthority,
+    CustodyLossAuthorityModel,
     UnambiguousIdentity,
     HistoricalCodingPositions,
     ValidatedRecoveryBackup,
@@ -175,6 +175,7 @@ impl EvidenceRequirement {
             Self::ValidatedCertificateReceipt => "validated-certificate-receipt",
             Self::ExhaustiveEquationScan => "complete-exhaustive-equation-scan",
             Self::ExplicitDataAuthority => "explicit-data-authoritative-rebaseline",
+            Self::CustodyLossAuthorityModel => "canonical-custody-loss-authority-model",
             Self::UnambiguousIdentity => "unambiguous-identity-and-topology",
             Self::HistoricalCodingPositions => "exact-historical-coding-positions",
             Self::ValidatedRecoveryBackup => "validated-recovery-backup",
@@ -267,6 +268,7 @@ pub struct MetadataLossPlan {
     creates_fresh_state: bool,
 }
 
+/// dwv:req req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed
 impl MetadataLossPlan {
     pub fn for_case(case: MetadataLossCase) -> Self {
         use BaselineDisposition as Baseline;
@@ -300,26 +302,15 @@ impl MetadataLossPlan {
                 false,
                 false,
             ),
-            MetadataLossCase::AllDataSingleParityUncertified => Self::new(
+            MetadataLossCase::AllDataSingleParityUncertified
+            | MetadataLossCase::AllDataDualParityUncertified => Self::new(
                 case,
-                Action::ExhaustiveVerifyThenRecreate,
-                Disposition::ExhaustiveVerification,
-                Evidence::ExhaustiveEquationScan,
-                Writes::None,
-                Baseline::NewChecksumBaselineRequired,
-                true,
+                Action::RefuseAuthorityUnavailable,
+                Disposition::Refused,
+                Evidence::CustodyLossAuthorityModel,
+                Writes::NoAutomaticWrite,
+                Baseline::NotEstablished,
                 false,
-                false,
-                true,
-            ),
-            MetadataLossCase::AllDataDualParityUncertified => Self::new(
-                case,
-                Action::ExhaustiveVerifyThenRecreate,
-                Disposition::ExhaustiveVerification,
-                Evidence::ExhaustiveEquationScan,
-                Writes::None,
-                Baseline::NewChecksumBaselineRequired,
-                true,
                 false,
                 false,
                 false,
@@ -377,14 +368,14 @@ impl MetadataLossPlan {
             ),
             MetadataLossCase::AllMetadataAllDataPresent => Self::new(
                 case,
-                Action::CreateNewLineageAndBaseline,
-                Disposition::NewLineage,
-                Evidence::ExplicitDataAuthority,
-                Writes::SeparateParityTargetOnly,
-                Baseline::NewParityAndChecksumBaselineRequired,
-                true,
+                Action::RefuseAuthorityUnavailable,
+                Disposition::Refused,
+                Evidence::CustodyLossAuthorityModel,
+                Writes::NoAutomaticWrite,
+                Baseline::NotEstablished,
                 false,
-                true,
+                false,
+                false,
                 false,
             ),
             MetadataLossCase::TopologyAmbiguous => Self::new(
@@ -618,6 +609,7 @@ pub fn render_metadata_loss_matrix() -> String {
 fn evidence_satisfies(required: EvidenceRequirement, actual: MetadataLossVerification) -> bool {
     match required {
         EvidenceRequirement::ValidatedCertificateReceipt => false,
+        EvidenceRequirement::CustodyLossAuthorityModel => false,
         EvidenceRequirement::ExhaustiveEquationScan => matches!(
             actual,
             MetadataLossVerification::ExhaustiveMatches
@@ -881,11 +873,11 @@ mod tests {
             ),
             (
                 MetadataLossCase::AllDataSingleParityUncertified,
-                MetadataLossAction::ExhaustiveVerifyThenRecreate,
-                EvidenceRequirement::ExhaustiveEquationScan,
-                PayloadWritePolicy::None,
-                BaselineDisposition::NewChecksumBaselineRequired,
-                true,
+                MetadataLossAction::RefuseAuthorityUnavailable,
+                EvidenceRequirement::CustodyLossAuthorityModel,
+                PayloadWritePolicy::NoAutomaticWrite,
+                BaselineDisposition::NotEstablished,
+                false,
             ),
             (
                 MetadataLossCase::AllDataDualParityCertified,
@@ -897,10 +889,10 @@ mod tests {
             ),
             (
                 MetadataLossCase::AllDataDualParityUncertified,
-                MetadataLossAction::ExhaustiveVerifyThenRecreate,
-                EvidenceRequirement::ExhaustiveEquationScan,
-                PayloadWritePolicy::None,
-                BaselineDisposition::NewChecksumBaselineRequired,
+                MetadataLossAction::RefuseAuthorityUnavailable,
+                EvidenceRequirement::CustodyLossAuthorityModel,
+                PayloadWritePolicy::NoAutomaticWrite,
+                BaselineDisposition::NotEstablished,
                 false,
             ),
             (
@@ -961,10 +953,10 @@ mod tests {
             ),
             (
                 MetadataLossCase::AllMetadataAllDataPresent,
-                MetadataLossAction::CreateNewLineageAndBaseline,
-                EvidenceRequirement::ExplicitDataAuthority,
-                PayloadWritePolicy::SeparateParityTargetOnly,
-                BaselineDisposition::NewParityAndChecksumBaselineRequired,
+                MetadataLossAction::RefuseAuthorityUnavailable,
+                EvidenceRequirement::CustodyLossAuthorityModel,
+                PayloadWritePolicy::NoAutomaticWrite,
+                BaselineDisposition::NotEstablished,
                 false,
             ),
             (
@@ -1082,90 +1074,52 @@ mod tests {
         }
     }
 
+    /// dwv:req req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed
     #[test]
-    fn exhaustive_paths_require_their_declared_evidence() {
-        let exhaustive =
-            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified);
-        assert!(
-            exhaustive
-                .authorize(MetadataLossVerification::ExhaustiveMatches)
-                .is_ok()
-        );
-        assert!(
-            exhaustive
-                .authorize(MetadataLossVerification::ExhaustiveIdentifiedRepairs)
-                .is_ok()
-        );
-        assert!(matches!(
-            exhaustive.authorize(MetadataLossVerification::ExplicitDataAuthoritativeRebaseline),
-            Err(MetadataLossError::OperatorConfirmationRequired(_))
-        ));
-        assert!(
-            exhaustive
-                .authorize_with_operator_confirmation(
-                    MetadataLossVerification::ExplicitDataAuthoritativeRebaseline,
-                )
-                .is_ok()
-        );
-        for insufficient in [
+    fn uncertified_lost_custody_cases_refuse_every_public_evidence() {
+        let public_verifications = [
+            MetadataLossVerification::ExhaustiveMatches,
+            MetadataLossVerification::IdentifiedRepairPending,
+            MetadataLossVerification::ExhaustiveIdentifiedRepairs,
+            MetadataLossVerification::ExplicitDataAuthoritativeRebaseline,
             MetadataLossVerification::AmbiguousMismatch,
             MetadataLossVerification::IncompleteScan,
+            MetadataLossVerification::ValidatedBackup,
+            MetadataLossVerification::ReconciledReplicas,
             MetadataLossVerification::ConflictingReplicas,
+        ];
+        for case in [
+            MetadataLossCase::AllDataSingleParityUncertified,
+            MetadataLossCase::AllDataDualParityUncertified,
+            MetadataLossCase::AllMetadataAllDataPresent,
         ] {
-            assert!(matches!(
-                exhaustive.authorize(insufficient),
-                Err(MetadataLossError::InsufficientEvidence { .. })
-            ));
+            let plan = MetadataLossPlan::for_case(case);
+            assert_eq!(
+                plan.action(),
+                MetadataLossAction::RefuseAuthorityUnavailable
+            );
+            assert_eq!(plan.disposition(), MetadataLossDisposition::Refused);
+            assert_eq!(
+                plan.required_evidence(),
+                EvidenceRequirement::CustodyLossAuthorityModel
+            );
+            assert_eq!(
+                plan.payload_write_policy(),
+                PayloadWritePolicy::NoAutomaticWrite
+            );
+            assert_eq!(plan.baseline(), BaselineDisposition::NotEstablished);
+            assert!(!plan.creates_fresh_state());
+            for verification in public_verifications {
+                assert_eq!(
+                    plan.authorize(verification),
+                    Err(MetadataLossError::RefusedCase(case))
+                );
+                assert_eq!(
+                    plan.authorize_with_operator_confirmation(verification),
+                    Err(MetadataLossError::RefusedCase(case))
+                );
+            }
         }
-    }
-
-    #[test]
-    fn authorized_all_data_recovery_builds_audited_fresh_state() {
-        let plan = MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified);
-        let authorization = plan
-            .authorize(MetadataLossVerification::ExhaustiveMatches)
-            .unwrap();
-        let lineage_id = ArrayId([9; 16]);
-        let manifest = authorization
-            .fresh_manifest(topology(lineage_id), RecoveryStoreHealth::Missing)
-            .unwrap();
-        assert_eq!(manifest.snapshot.generation, RecoveryGeneration::ZERO);
-        assert!(manifest.snapshot.active_topology.is_some());
-        assert!(manifest.snapshot.integrity_records.is_empty());
-        let audit = manifest.snapshot.metadata_loss_audit.unwrap();
-        assert_eq!(audit.lineage_id, lineage_id);
-        assert_eq!(audit.source_health, RecoveryStoreHealth::Missing);
-        assert_eq!(
-            audit.baseline,
-            BaselineDisposition::NewChecksumBaselineRequired
-        );
-        assert_eq!(audit.topology_epoch, TopologyEpoch(1));
-    }
-
-    #[test]
-    fn explicit_new_lineage_requires_data_authoritative_rebaseline() {
-        let plan = MetadataLossPlan::for_case(MetadataLossCase::AllMetadataAllDataPresent);
-        assert!(matches!(
-            plan.authorize(MetadataLossVerification::ExhaustiveMatches),
-            Err(MetadataLossError::InsufficientEvidence { .. })
-        ));
-        assert!(matches!(
-            plan.authorize(MetadataLossVerification::ExplicitDataAuthoritativeRebaseline),
-            Err(MetadataLossError::OperatorConfirmationRequired(_))
-        ));
-        let authorization = plan
-            .authorize_with_operator_confirmation(
-                MetadataLossVerification::ExplicitDataAuthoritativeRebaseline,
-            )
-            .unwrap();
-        assert_eq!(
-            authorization.plan().baseline(),
-            BaselineDisposition::NewParityAndChecksumBaselineRequired
-        );
-        assert!(matches!(
-            authorization.fresh_manifest(topology(ArrayId([7; 16])), RecoveryStoreHealth::Missing),
-            Err(MetadataLossError::ActionDoesNotCreateFreshState(_))
-        ));
     }
 
     #[test]
@@ -1211,10 +1165,6 @@ mod tests {
             Err(MetadataLossError::ActionDoesNotCreateFreshState(_))
         ));
 
-        let authorization =
-            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified)
-                .authorize(MetadataLossVerification::ExhaustiveMatches)
-                .unwrap();
         assert!(matches!(
             TopologySnapshot::from_core(
                 CoreTopologySnapshot::new(
@@ -1243,12 +1193,6 @@ mod tests {
                 vec![StoreId(1), StoreId(1)],
             ),
             Err(crate::RecoveryTopologyError::DuplicateStore(StoreId(1)))
-        ));
-        assert!(matches!(
-            authorization.fresh_manifest(topology(ArrayId([1; 16])), RecoveryStoreHealth::Healthy,),
-            Err(MetadataLossError::InvalidSourceHealth(
-                RecoveryStoreHealth::Healthy
-            ))
         ));
     }
 }

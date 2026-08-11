@@ -479,6 +479,7 @@ pub struct TopologySnapshot {
 }
 
 impl TopologySnapshot {
+    /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
     pub fn from_core(
         topology: dwv_core::TopologySnapshot,
         store_ids: Vec<StoreId>,
@@ -497,7 +498,7 @@ impl TopologySnapshot {
                 return Err(RecoveryTopologyError::DuplicateStore(*store_id));
             }
         }
-        let assignments = topology
+        let mut assignments = topology
             .assignments()
             .iter()
             .cloned()
@@ -506,7 +507,10 @@ impl TopologySnapshot {
                 assignment,
                 store_id,
             })
-            .collect();
+            .collect::<Vec<_>>();
+        assignments.sort_unstable_by(|left, right| {
+            left.slot_id().as_bytes().cmp(&right.slot_id().as_bytes())
+        });
         Ok(Self {
             array_id: topology.array_id(),
             topology_epoch: topology.topology_epoch(),

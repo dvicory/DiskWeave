@@ -20,8 +20,9 @@ use dwv_recovery::{
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletionDisposition, FenceDomain, IdentityObservationSet, IdentitySourceKind,
-    OperationSlotToken, PersistenceEvidence, StoreId, StoreWriteWatermark, WriteIntent,
+    CompletionDisposition, FenceDomain, IdentityAssessment, IdentityObservationSet,
+    IdentitySourceKind, OperationSlotToken, PersistenceEvidence, StoreId, StoreWriteWatermark,
+    WriteIntent,
 };
 use dwv_store_file::{FileStore, IdentityComparison};
 use dwv_transaction_ref::{
@@ -92,7 +93,7 @@ impl std::fmt::Display for PublicationIdentityError {
 }
 
 impl std::error::Error for PublicationIdentityError {}
-
+/// dwv:req req.healthy-portable-io.publication-identity-is-derived-from-admitted-semantics
 pub fn publication_identity(
     topology: &dwv_recovery::TopologySnapshot,
     identities: &[(StoreId, IdentityObservationSet)],
@@ -130,6 +131,7 @@ pub fn publication_identity(
             .ok_or(PublicationIdentityError::MissingMember(
                 assignment.store_id(),
             ))?;
+        hash.update(&[identity_assessment_id(identity.assessment)]);
         hash.update(&(identity.observations.len() as u64).to_le_bytes());
         for observation in &identity.observations {
             hash.update(&[identity_source_id(observation.source)]);
@@ -146,6 +148,20 @@ const fn confidence_id(confidence: dwv_core::EvidenceConfidence) -> u8 {
         dwv_core::EvidenceConfidence::Medium => 2,
         dwv_core::EvidenceConfidence::High => 3,
         dwv_core::EvidenceConfidence::Attested => 4,
+    }
+}
+
+const fn identity_assessment_id(assessment: IdentityAssessment) -> u8 {
+    match assessment {
+        IdentityAssessment::Confirmed => 0,
+        IdentityAssessment::Match => 1,
+        IdentityAssessment::Changed => 2,
+        IdentityAssessment::Clone => 3,
+        IdentityAssessment::Ambiguous => 4,
+        IdentityAssessment::Conflicting => 5,
+        IdentityAssessment::InsufficientEvidence => 6,
+        IdentityAssessment::NewDevice => 7,
+        IdentityAssessment::Unknown => 8,
     }
 }
 
@@ -308,12 +324,28 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
     pub fn topology(&self) -> &TopologySnapshot {
         &self.topology
     }
+    /// dwv:req req.healthy-portable-io.publication-identity-is-derived-from-admitted-semantics
     pub fn publication_identity(&self) -> Result<PublicationIdentity, PublicationIdentityError> {
-        let topology = dwv_recovery::TopologySnapshot::from_core(
-            self.topology.clone(),
-            self.members.iter().map(|member| member.store_id).collect(),
-        )
-        .map_err(|_| PublicationIdentityError::InvalidTopology)?;
+        let store_ids = self
+            .topology
+            .assignments()
+            .iter()
+            .map(|assignment| {
+                self.members
+                    .iter()
+                    .find(|member| {
+                        member.slot_id == assignment.slot_id()
+                            && member.role == assignment.role()
+                            && member.coding_position == assignment.coding_position()
+                            && member.assignment_instance == assignment.assignment_instance()
+                            && member.assignment_generation == assignment.assignment_generation()
+                    })
+                    .map(|member| member.store_id)
+                    .ok_or(PublicationIdentityError::InvalidTopology)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let topology = dwv_recovery::TopologySnapshot::from_core(self.topology.clone(), store_ids)
+            .map_err(|_| PublicationIdentityError::InvalidTopology)?;
         let identities = self
             .members
             .iter()
@@ -1457,14 +1489,41 @@ mod tests {
             vec![StoreId(1), StoreId(2), StoreId(3)],
         )
         .unwrap();
-        let authorization = dwv_recovery::MetadataLossPlan::for_case(
-            dwv_recovery::MetadataLossCase::AllDataSingleParityUncertified,
+        let baseline = dwv_recovery::new_checksum_baseline(
+            &recovery_topology,
+            RecoveryGeneration::ZERO,
+            BLAKE3_256_PROFILE,
+            ChecksumSetGeneration::INITIAL,
         )
-        .authorize(dwv_recovery::MetadataLossVerification::ExhaustiveMatches)
         .unwrap();
-        let mut manifest = authorization
-            .fresh_manifest(recovery_topology, RecoveryStoreHealth::Missing)
-            .unwrap();
+        let mut manifest = dwv_recovery::RecoveryManifest {
+            schema: dwv_recovery::CURRENT_RECOVERY_SCHEMA,
+            snapshot: RecoverySnapshot {
+                generation: RecoveryGeneration::ZERO,
+                topology_epoch: epoch,
+                active_topology: Some(recovery_topology),
+                pending_topology: None,
+                writable_session: None,
+                dirty_regions: Vec::new(),
+                integrity_records: Vec::new(),
+                checksum_baseline: Some(baseline),
+                fences: Vec::new(),
+                maintenance_checkpoints: Vec::new(),
+                metadata_loss_audit: Some(dwv_recovery::MetadataLossAudit {
+                    matrix_version: dwv_recovery::METADATA_LOSS_MATRIX_VERSION,
+                    lineage_id: topology.array_id(),
+                    case: dwv_recovery::MetadataLossCase::ChecksumEvidenceUnavailable,
+                    action: dwv_recovery::MetadataLossAction::RequireDataAuthoritativeRebaseline,
+                    verification:
+                        dwv_recovery::MetadataLossVerification::ExplicitDataAuthoritativeRebaseline,
+                    baseline:
+                        dwv_recovery::BaselineDisposition::NewParityAndChecksumBaselineRequired,
+                    source_health: RecoveryStoreHealth::Missing,
+                    topology_epoch: epoch,
+                }),
+                rebuilds: Vec::new(),
+            },
+        };
         assert!(matches!(
             assess_checksum_baseline(&manifest.snapshot),
             ChecksumBaselineStatus::Required { total: 3 }
@@ -2128,6 +2187,7 @@ mod tests {
         drop(service);
         fs::remove_dir_all(root).unwrap();
     }
+    /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
     #[test]
     fn stable_slots_select_the_same_members_when_binding_order_changes() {
         let (root, service) = fixture();
@@ -2174,9 +2234,11 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
+    /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
     #[test]
     fn stable_slots_ignore_topology_coding_and_member_collection_order() {
         let (root, service) = fixture();
+        let original_publication = service.publication_identity().unwrap();
         drop(service);
         let epoch = TopologyEpoch(4);
         let base = topology(epoch);
@@ -2221,6 +2283,10 @@ mod tests {
             ServiceConfig::default(),
         )
         .unwrap();
+        assert_eq!(
+            service.publication_identity().unwrap(),
+            original_publication
+        );
         let range = ByteRange::new(0, BLOCK as u64).unwrap();
         service
             .write(
@@ -2571,39 +2637,128 @@ mod tests {
         drop(data);
         fs::remove_dir_all(root).unwrap();
     }
+    /// dwv:req req.healthy-portable-io.publication-identity-is-derived-from-admitted-semantics
     #[test]
     fn publication_identity_binds_the_admitted_member_observations() {
+        let core = topology(TopologyEpoch(1));
         let topology = dwv_recovery::TopologySnapshot::from_core(
-            topology(TopologyEpoch(1)),
+            core.clone(),
             vec![StoreId(1), StoreId(2), StoreId(3)],
         )
         .unwrap();
-        let identities = |last| {
+        let identities = |last, source, reverse_observations| {
             [1_u64, 2, 3]
                 .into_iter()
                 .map(|store_id| {
+                    let mut observations = vec![
+                        dwv_store::IdentityObservation {
+                            source: IdentitySourceKind::FileId,
+                            fingerprint: [if store_id == 3 { last } else { store_id as u8 }; 16],
+                        },
+                        dwv_store::IdentityObservation {
+                            source,
+                            fingerprint: [store_id as u8 + 10; 16],
+                        },
+                    ];
+                    if reverse_observations {
+                        observations.reverse();
+                    }
                     (
                         StoreId(store_id),
                         IdentityObservationSet::new(
-                            vec![dwv_store::IdentityObservation {
-                                source: IdentitySourceKind::FileId,
-                                fingerprint: [if store_id == 3 { last } else { store_id as u8 };
-                                    16],
-                            }],
+                            observations,
                             dwv_store::IdentityAssessment::Confirmed,
                         ),
                     )
                 })
                 .collect::<Vec<_>>()
         };
-        let admitted_a = publication_identity(&topology, &identities(3)).unwrap();
+        let admitted_a =
+            publication_identity(&topology, &identities(3, IdentitySourceKind::Path, false))
+                .unwrap();
         assert_eq!(
             admitted_a,
-            publication_identity(&topology, &identities(3)).unwrap()
+            publication_identity(&topology, &identities(3, IdentitySourceKind::Path, true))
+                .unwrap()
         );
         assert_ne!(
             admitted_a,
-            publication_identity(&topology, &identities(4)).unwrap()
+            publication_identity(&topology, &identities(4, IdentitySourceKind::Path, false))
+                .unwrap()
+        );
+        assert_ne!(
+            admitted_a,
+            publication_identity(
+                &topology,
+                &identities(3, IdentitySourceKind::Geometry, false),
+            )
+            .unwrap()
+        );
+        let mut duplicated = identities(3, IdentitySourceKind::Path, false);
+        let identity = &mut duplicated[0].1;
+        let mut observations = identity.observations.clone();
+        observations.push(observations[0]);
+        *identity = IdentityObservationSet::new(observations, identity.assessment);
+        assert_ne!(
+            admitted_a,
+            publication_identity(&topology, &duplicated).unwrap()
+        );
+        let mut reversed = identities(3, IdentitySourceKind::Path, false);
+        reversed.reverse();
+        assert_eq!(
+            admitted_a,
+            publication_identity(&topology, &reversed).unwrap()
+        );
+        let mut assignments = core.assignments().to_vec();
+        assignments.rotate_left(1);
+        let reordered_core = TopologySnapshot::new(
+            core.array_id(),
+            core.topology_epoch(),
+            core.profile(),
+            core.geometry(),
+            assignments,
+        )
+        .unwrap();
+        let reordered_store_ids = reordered_core
+            .assignments()
+            .iter()
+            .map(|assignment| {
+                topology
+                    .assignments()
+                    .iter()
+                    .find(|recorded| recorded.slot_id() == assignment.slot_id())
+                    .unwrap()
+                    .store_id()
+            })
+            .collect();
+        let reordered =
+            dwv_recovery::TopologySnapshot::from_core(reordered_core, reordered_store_ids).unwrap();
+        assert_eq!(
+            admitted_a,
+            publication_identity(&reordered, &identities(3, IdentitySourceKind::Path, false),)
+                .unwrap()
+        );
+        let changed_assessment = topology
+            .assignments()
+            .iter()
+            .map(|assignment| {
+                (
+                    assignment.store_id(),
+                    IdentityObservationSet::new(
+                        identities(3, IdentitySourceKind::Path, false)
+                            .into_iter()
+                            .find(|(store_id, _)| *store_id == assignment.store_id())
+                            .unwrap()
+                            .1
+                            .observations,
+                        IdentityAssessment::Conflicting,
+                    ),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(
+            admitted_a,
+            publication_identity(&topology, &changed_assessment).unwrap()
         );
     }
 }

@@ -265,11 +265,11 @@ fn policy_and_parity_cannot_manufacture_recovery_topology_authority() {
         );
         assert_eq!(
             preview["recovery_plan"]["action"],
-            "create-new-lineage-and-baseline"
+            "refuse-authority-unavailable"
         );
         assert_eq!(
             preview["recovery_plan"]["payload_write_policy"],
-            "separate-parity-target-only"
+            "no-automatic-write"
         );
         let plan_id = preview["recovery_plan"]["plan_id"].as_str().unwrap();
         let refused = failure(run(&root, "recover", &["--apply", plan_id]), 4);
@@ -299,4 +299,63 @@ fn policy_and_parity_cannot_manufacture_recovery_topology_authority() {
 
         fs::remove_dir_all(root).unwrap();
     }
+}
+
+#[test]
+fn declarative_member_order_is_not_topology_semantics() {
+    let root = fixture();
+    let policy_path = root.join("array.json");
+    let mut policy: Value = serde_json::from_slice(&fs::read(&policy_path).unwrap()).unwrap();
+    policy["members"].as_array_mut().unwrap().reverse();
+    fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
+
+    let status = success(run(&root, "status", &[]));
+    assert_eq!(status["recovery"]["classification"], "supported");
+    assert_eq!(status["start"], "read-write-available");
+    assert!(
+        status["members"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|member| member["status"] == "recognized")
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn uncertain_recovery_commit_remains_reconciliation_required() {
+    let root = fixture();
+    let recovery = root.join("recovery.sqlite3");
+    let mut marker = recovery.as_os_str().to_owned();
+    marker.push(".commit-intent");
+    let marker = PathBuf::from(marker);
+    fs::write(&marker, b"uninterpreted uncertain commit").unwrap();
+    let recovery_before = fs::read(&recovery).unwrap();
+
+    let status = failure(run(&root, "status", &[]), 6);
+    assert_eq!(status["outcome"], "reconciliation-required");
+    assert_eq!(status["reason_code"], "reconciliation-required");
+    assert_eq!(
+        status["recovery"]["classification"],
+        "reconciliation-required"
+    );
+    assert!(status["topology"].is_null());
+    assert_eq!(fs::read(&recovery).unwrap(), recovery_before);
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"uninterpreted uncertain commit"
+    );
+
+    let recover = failure(run(&root, "recover", &[]), 6);
+    assert_eq!(recover["outcome"], "reconciliation-required");
+    assert_eq!(recover["reason_code"], "reconciliation-required");
+    assert!(recover["recovery_plan"].is_null());
+    assert_eq!(fs::read(&recovery).unwrap(), recovery_before);
+    assert_eq!(
+        fs::read(&marker).unwrap(),
+        b"uninterpreted uncertain commit"
+    );
+
+    fs::remove_dir_all(root).unwrap();
 }

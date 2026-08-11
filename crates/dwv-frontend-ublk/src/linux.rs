@@ -1,13 +1,14 @@
 use crate::{
     AdapterError, Fixture, KernelCompletion, KernelOperation, KernelRequest, Lifecycle,
     LifecycleState, MAX_TRACE_RECORDS, MAX_TRANSFER, NormalizedTraceRequest, PHYSICAL_BLOCK_SIZE,
-    ProbeDisposition, ProbeReport, QUEUE_DEPTH, TagTable, TerminalResult, TraceLog, TraceRecord,
-    borrowed_write_payload, classify_control_access, completion_was_delivered,
-    map_kernel_completion, translate_request_for_slot, validate_shutdown_evidence,
+    ProbeDisposition, ProbeReport, PublicationMetadataMatch, QUEUE_DEPTH, TagTable, TerminalResult,
+    TraceLog, TraceRecord, borrowed_write_payload, classify_control_access,
+    classify_publication_metadata, completion_was_delivered, map_kernel_completion,
+    translate_request_for_slot, validate_shutdown_evidence,
 };
 use dwv_core::{
-    BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId, OrderingIntent,
-    RequestId, SlotId, SubmissionSequence, TopologyEpoch,
+    ArrayId, BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId,
+    OrderingIntent, RequestId, SlotId, SubmissionSequence, TopologyEpoch,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{HealthyPortableService, PublicationIdentity};
@@ -122,6 +123,7 @@ struct ServeConfig {
     capacity: u64,
     epoch: TopologyEpoch,
     data_slot: SlotId,
+    array_identity: Option<String>,
     publication_identity: String,
     fixture_digest: Option<String>,
     root: Option<PathBuf>,
@@ -142,9 +144,10 @@ where
         capacity: fixture.manifest().protected_length,
         epoch: TopologyEpoch(fixture.manifest().topology_epoch),
         data_slot: crate::DATA_SLOT,
+        array_identity: None,
         publication_identity: format!("fixture:{digest}"),
         fixture_digest: Some(digest),
-        root: Some(fs::canonicalize(root).map_err(|error| AdapterError::Io(error.to_string()))?),
+        root: Some(root.to_path_buf()),
         name: "diskweave-demo",
     };
     serve_backend(
@@ -182,6 +185,7 @@ where
         capacity: topology.geometry().protected_length(),
         epoch: topology.topology_epoch(),
         data_slot,
+        array_identity: Some(array_identity_hex(topology.array_id())),
         publication_identity: service
             .publication_identity()
             .map_err(|error| AdapterError::Conflict(error.to_string()))?
@@ -216,10 +220,14 @@ where
             "readiness record already exists; inspect and clean the owned endpoint".into(),
         ));
     }
-    let conflicts = owned_devices(&config.publication_identity);
-    if !conflicts.is_empty() {
+    let owned = owned_devices(
+        config.array_identity.as_deref(),
+        &config.publication_identity,
+    )?;
+    if !owned.exact.is_empty() || !owned.conflicting.is_empty() {
         return Err(AdapterError::ReconciliationRequired(format!(
-            "owned ublk endpoint already exists: {conflicts:?}"
+            "array publication ownership is not clean: exact={:?}, conflicting={:?}",
+            owned.exact, owned.conflicting
         )));
     }
     let opened = Arc::new(Mutex::new(backend));
@@ -242,6 +250,7 @@ where
 
     let target_identity = config.publication_identity.clone();
     let target_fixture_digest = config.fixture_digest.clone();
+    let target_array_identity = config.array_identity.clone();
     let target_init = move |dev: &mut UblkDev| {
         dev.tgt.dev_size = capacity;
         dev.tgt.params = libublk::sys::ublk_params {
@@ -260,6 +269,7 @@ where
         };
         dev.set_target_json(json!({
             "contract": "dwv.ublk.target.v2",
+            "array_identity": target_array_identity,
             "publication_identity": target_identity,
             "fixture_digest": target_fixture_digest,
         }));
@@ -387,28 +397,16 @@ where
 
 pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
     let fixture = Fixture::load(root)?;
-    live_publication_identity(&format!("fixture:{}", fixture.manifest().digest()?))
+    live_publication_identity(None, &format!("fixture:{}", fixture.manifest().digest()?))
 }
 
+/// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow
 pub fn live_admitted_publication(
+    array_identity: ArrayId,
     identity: PublicationIdentity,
 ) -> Result<Option<serde_json::Value>, AdapterError> {
-    live_publication_identity(&identity.hex())
-}
-
-fn live_publication_identity(identity: &str) -> Result<Option<serde_json::Value>, AdapterError> {
-    let devices = owned_devices(identity);
-    match devices.as_slice() {
-        [] => Ok(None),
-        [device_id] => Ok(Some(json!({
-            "device_id": device_id,
-            "device_path": format!("/dev/ublkb{device_id}"),
-            "publication_identity": identity,
-        }))),
-        _ => Err(AdapterError::ReconciliationRequired(format!(
-            "multiple owned ublk endpoints exist: {devices:?}"
-        ))),
-    }
+    let array_identity = array_identity_hex(array_identity);
+    live_publication_identity(Some(&array_identity), &identity.hex())
 }
 
 pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, AdapterError> {
@@ -684,30 +682,81 @@ fn terminal_errno(terminal: TerminalResult) -> i32 {
         TerminalResult::Success => 0,
     }
 }
-fn owned_devices(identity: &str) -> Vec<u32> {
-    let matches = Arc::new(Mutex::new(Vec::new()));
-    let found = Arc::clone(&matches);
-    let expected = identity.to_owned();
+#[derive(Default)]
+struct OwnedDevices {
+    exact: Vec<u32>,
+    conflicting: Vec<u32>,
+}
+
+fn owned_devices(
+    array_identity: Option<&str>,
+    publication_identity: &str,
+) -> Result<OwnedDevices, AdapterError> {
+    let array_identity = array_identity.map(str::to_owned);
+    let publication_identity = publication_identity.to_owned();
+    let owned = Arc::new(Mutex::new(OwnedDevices::default()));
+    let observed = Arc::clone(&owned);
     libublk::ctrl::UblkCtrl::for_each_dev_id(move |id| {
         let Ok(ctrl) = libublk::ctrl::UblkCtrl::new_simple(id as i32) else {
             return;
         };
-        if ctrl
+        let Some(target) = ctrl
             .get_target_data_from_json()
-            .and_then(|value| value.get("publication_identity").cloned())
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .as_deref()
-            == Some(expected.as_str())
-        {
-            if let Ok(mut ids) = found.lock() {
-                ids.push(id);
-            }
+            .and_then(|value| value.get("target").cloned())
+        else {
+            return;
+        };
+        let Ok(mut observed) = observed.lock() else {
+            return;
+        };
+        match classify_publication_metadata(
+            &target,
+            array_identity.as_deref(),
+            &publication_identity,
+        ) {
+            PublicationMetadataMatch::Exact => observed.exact.push(id),
+            PublicationMetadataMatch::Conflict => observed.conflicting.push(id),
+            PublicationMetadataMatch::Unrelated => {}
         }
     });
-    Arc::try_unwrap(matches)
-        .ok()
-        .and_then(|mutex| mutex.into_inner().ok())
-        .unwrap_or_default()
+    Arc::try_unwrap(owned)
+        .map_err(|_| AdapterError::Io("publication discovery ownership did not close".into()))?
+        .into_inner()
+        .map_err(|_| AdapterError::Io("publication discovery lock poisoned".into()))
+}
+
+fn live_publication_identity(
+    array_identity: Option<&str>,
+    publication_identity: &str,
+) -> Result<Option<serde_json::Value>, AdapterError> {
+    let owned = owned_devices(array_identity, publication_identity)?;
+    if !owned.conflicting.is_empty() {
+        return Err(AdapterError::ReconciliationRequired(format!(
+            "array has conflicting live publication metadata on devices {:?}",
+            owned.conflicting
+        )));
+    }
+    match owned.exact.as_slice() {
+        [] => Ok(None),
+        [device_id] => Ok(Some(json!({
+            "device_id": device_id,
+            "device_path": format!("/dev/ublkb{device_id}"),
+            "publication_identity": publication_identity,
+            "array_identity": array_identity,
+        }))),
+        _ => Err(AdapterError::ReconciliationRequired(format!(
+            "publication identity is live on multiple devices {:?}",
+            owned.exact
+        ))),
+    }
+}
+
+fn array_identity_hex(identity: ArrayId) -> String {
+    identity
+        .as_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 extern "C" fn request_stop(_signal: libc::c_int) {

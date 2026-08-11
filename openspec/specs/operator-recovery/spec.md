@@ -77,7 +77,7 @@ The production status, members, scrub, and damage commands SHALL use current rea
 <!-- dwv:requires req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit -->
 <!-- dwv:requires req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations -->
 
-Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action payload-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish every canonical authorization prerequisite. It SHALL invoke a canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, unsupported, or non-executable facts SHALL refuse before fresh authority or payload mutation. Total loss of recovery metadata SHALL NOT be treated as executable recovery merely because policy-selected members satisfy parity equations; the current product SHALL preview the required new-lineage operation and refuse apply until that separately specified operation exists.
+Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action payload-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish every canonical authorization prerequisite. It SHALL invoke a canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, unsupported, or non-executable facts SHALL refuse before fresh authority or payload mutation. Total loss of recovery metadata SHALL NOT be treated as executable recovery merely because policy and parity agree.
 
 #### Scenario: Recovery is previewed
 
@@ -101,8 +101,8 @@ Production recovery preview SHALL report the current metadata-loss disposition, 
 
 #### Scenario: Recovery commit observation is uncertain
 
-- **WHEN** a future authorized replacement of recovery state cannot prove whether the proposed durable state became current
-- **THEN** apply returns reconciliation-required, does not retry automatically, and preserves enough prior and proposed evidence for explicit reconciliation
+- **WHEN** recovery state has unresolved commit intent or a future authorized replacement cannot prove whether proposed durable state became current
+- **THEN** preview or apply returns reconciliation-required, does not retry automatically, and preserves enough prior and proposed evidence for explicit reconciliation
 
 ### Requirement: Production commands share one semantic result boundary
 <!-- dwv:req req.operator-recovery.production-commands-share-one-semantic-result-boundary -->

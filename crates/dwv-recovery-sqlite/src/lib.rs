@@ -8,11 +8,11 @@
 //! power-loss behavior.
 
 use dwv_recovery::{
-    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, MetadataLossAuthorization,
-    RecoveryCommitObservation, RecoveryError, RecoveryFormatLayer, RecoveryGeneration,
-    RecoveryInspection, RecoveryManifest, RecoveryMigrationPlan, RecoverySchemaVersion,
-    RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase,
-    SqliteJournalMode, SqliteSynchronousMode, TopologySnapshot,
+    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, RecoveryCommitObservation, RecoveryError,
+    RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
+    RecoveryMigrationPlan, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
+    RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase, SqliteJournalMode,
+    SqliteSynchronousMode, TopologySnapshot,
 };
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -299,37 +299,6 @@ impl SqlitePrototype {
             .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))
     }
 
-    pub fn recreate_from_metadata_loss(
-        &self,
-        authorization: MetadataLossAuthorization,
-        topology: TopologySnapshot,
-        source_health: RecoveryStoreHealth,
-    ) -> Result<SemanticHeader, SqlitePrototypeError> {
-        let manifest = authorization
-            .fresh_manifest(topology, source_health)
-            .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?;
-        match std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&self.database_path)
-        {
-            Ok(file) => drop(file),
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                return Err(SqlitePrototypeError::ExistingTarget);
-            }
-            Err(error) => return Err(SqlitePrototypeError::Io(error.to_string())),
-        }
-        let result = (|| {
-            self.initialize()?;
-            self.write_manifest(&manifest)?;
-            self.export_header()
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&self.database_path);
-        }
-        result
-    }
-
     /// Returns the adapter's physical SQLite schema version. This is distinct
     /// from the semantic recovery manifest schema stored in each row.
     pub fn storage_schema_version(&self) -> Result<u64, SqlitePrototypeError> {
@@ -575,10 +544,10 @@ impl SqliteRecoveryStore {
                 return Err(SqliteRecoveryStoreError::MissingTarget);
             }
             let prototype = SqlitePrototype::new(&database_path);
+            reconcile_commit_intent_before_mutation(&prototype)?;
             prototype
                 .initialize()
                 .map_err(SqliteRecoveryStoreError::Prototype)?;
-            reconcile_commit_intent(&prototype)?;
             let manifest = prototype
                 .load_manifest()
                 .map_err(SqliteRecoveryStoreError::Prototype)?;
@@ -599,7 +568,8 @@ impl SqliteRecoveryStore {
     }
 
     /// Observes recovery state without taking a writer lease or running DDL,
-    /// initialization, migration, or commit reconciliation.
+    /// initialization, migration, or commit-intent cleanup.
+    /// dwv:req req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations
     /// dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout
     pub fn inspect(database_path: impl Into<PathBuf>) -> RecoveryInspection {
         let database_path = database_path.into();
@@ -610,7 +580,7 @@ impl SqliteRecoveryStore {
             return RecoveryInspection::CorruptOrUnreadable;
         }
         if commit_intent_path(&database_path).exists() {
-            return RecoveryInspection::CorruptOrUnreadable;
+            return RecoveryInspection::ReconciliationRequired;
         }
         let prototype = SqlitePrototype::new(database_path);
         let storage_schema = match prototype.storage_schema_version_with(true) {
@@ -793,7 +763,10 @@ fn remove_commit_intent(database_path: &Path) -> Result<(), SqliteRecoveryStoreE
     sync_parent(&path)
 }
 
-fn reconcile_commit_intent(prototype: &SqlitePrototype) -> Result<(), SqliteRecoveryStoreError> {
+fn validate_commit_intent(
+    prototype: &SqlitePrototype,
+    read_only: bool,
+) -> Result<(), SqliteRecoveryStoreError> {
     let path = commit_intent_path(prototype.database_path());
     if !path.exists() {
         return Ok(());
@@ -802,14 +775,44 @@ fn reconcile_commit_intent(prototype: &SqlitePrototype) -> Result<(), SqliteReco
         &std::fs::read(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?,
     )?;
     let manifest = prototype
-        .load_manifest()
+        .load_manifest_with(read_only)
         .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
     let observed = (manifest.snapshot.generation, manifest_digest(&manifest)?);
-    if observed != (intent.prior_generation, intent.prior_digest.clone())
-        && observed != (intent.proposed_generation, intent.proposed_digest.clone())
+    if observed != (intent.prior_generation, intent.prior_digest)
+        && observed != (intent.proposed_generation, intent.proposed_digest)
     {
         return Err(SqliteRecoveryStoreError::ReconciliationRequired);
     }
+    Ok(())
+}
+
+/// Reconciliation must interpret current durable state before initialization can run DDL.
+/// dwv:req req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations
+fn reconcile_commit_intent_before_mutation(
+    prototype: &SqlitePrototype,
+) -> Result<(), SqliteRecoveryStoreError> {
+    if !commit_intent_path(prototype.database_path()).exists() {
+        return Ok(());
+    }
+    let storage_schema = prototype
+        .storage_schema_version_with(true)
+        .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+    let semantic_schema = prototype
+        .semantic_schema_version_with(true)
+        .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+    if storage_schema != CURRENT_RECOVERY_SQLITE_SCHEMA
+        || semantic_schema != u64::from(CURRENT_RECOVERY_SCHEMA.0)
+    {
+        return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+    }
+    reconcile_commit_intent(prototype)
+}
+
+fn reconcile_commit_intent(prototype: &SqlitePrototype) -> Result<(), SqliteRecoveryStoreError> {
+    if !commit_intent_path(prototype.database_path()).exists() {
+        return Ok(());
+    }
+    validate_commit_intent(prototype, true)?;
     remove_commit_intent(prototype.database_path())
 }
 
@@ -1101,9 +1104,9 @@ mod tests {
         TopologySnapshot as CoreTopologySnapshot,
     };
     use dwv_recovery::{
-        MemoryRecoveryStore, MetadataLossCase, MetadataLossPlan, MetadataLossVerification,
-        RebuildId, RebuildState, RebuildTargetIdentity, RecoveryMutation, RecoveryStateStore,
-        SqliteCheckpointPolicy, SqliteEvaluationMatrix, SqliteJournalMode, SqliteSynchronousMode,
+        MemoryRecoveryStore, RebuildId, RebuildState, RebuildTargetIdentity, RecoveryMutation,
+        RecoveryStateStore, SqliteCheckpointPolicy, SqliteEvaluationMatrix, SqliteJournalMode,
+        SqliteSynchronousMode,
     };
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
 
@@ -1388,6 +1391,11 @@ mod tests {
             );
             assert_eq!(store.verify_integrity(), RecoveryStoreHealth::Corrupt);
             drop(store);
+            assert_eq!(
+                SqliteRecoveryStore::inspect(&path),
+                RecoveryInspection::ReconciliationRequired
+            );
+            assert!(commit_intent_path(&path).exists());
 
             let reopened = SqliteRecoveryStore::open(&path).unwrap();
             let snapshot = reopened.snapshot().unwrap();
@@ -1434,6 +1442,10 @@ mod tests {
             .write_manifest(&conflicting.export_manifest(RecoveryGeneration(1)).unwrap())
             .unwrap();
         drop(store);
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::ReconciliationRequired
+        );
 
         assert!(matches!(
             SqliteRecoveryStore::open(&path),
@@ -1489,6 +1501,19 @@ mod tests {
                 to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
             }
         );
+        std::fs::write(commit_intent_path(&path), b"uninterpreted intent").unwrap();
+        let before_open = std::fs::read(&path).unwrap();
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::ReconciliationRequired
+        );
+        assert!(matches!(
+            SqliteRecoveryStore::open(&path),
+            Err(SqliteRecoveryStoreError::ReconciliationRequired)
+        ));
+        assert_eq!(std::fs::read(&path).unwrap(), before_open);
+        assert!(commit_intent_path(&path).exists());
+        let _ = std::fs::remove_file(commit_intent_path(&path));
 
         let _ = std::fs::remove_file(path);
     }
@@ -1549,106 +1574,6 @@ mod tests {
 
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(direct_data_path);
-    }
-
-    #[test]
-    fn metadata_loss_recreates_separate_state_and_preserves_regular_file_payloads() {
-        let path = temp_database();
-        let data_path = path.with_extension("data.raw");
-        let parity_path = path.with_extension("parity.raw");
-        let data_bytes = vec![0x5a; 4096];
-        let parity_bytes = vec![0xa5; 4096];
-        std::fs::write(&data_path, &data_bytes).unwrap();
-        std::fs::write(&parity_path, &parity_bytes).unwrap();
-
-        let original = SqlitePrototype::new(&path);
-        assert!(original.available());
-        original.initialize().unwrap();
-        let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
-        original
-            .write_manifest(&recovery.export_manifest(RecoveryGeneration::ZERO).unwrap())
-            .unwrap();
-        drop(original);
-        std::fs::remove_file(&path).unwrap();
-
-        let authorization =
-            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified)
-                .authorize(MetadataLossVerification::ExhaustiveMatches)
-                .unwrap();
-        let recreated = SqlitePrototype::new(&path);
-        let header = recreated
-            .recreate_from_metadata_loss(
-                authorization,
-                topology(ArrayId([4; 16])),
-                RecoveryStoreHealth::Missing,
-            )
-            .unwrap();
-        assert_eq!(header.schema, dwv_recovery::CURRENT_RECOVERY_SCHEMA);
-        assert_eq!(
-            recreated.storage_schema_version().unwrap(),
-            CURRENT_RECOVERY_SQLITE_SCHEMA
-        );
-        assert_eq!(header.generation, RecoveryGeneration::ZERO);
-        assert_eq!(header.topology_epoch, 1);
-        assert!(
-            header
-                .payload
-                .contains("metadata_loss_case=all-data-p-uncertified")
-        );
-        assert!(header.payload.contains("metadata_loss_matrix=2"));
-        assert!(
-            header
-                .payload
-                .contains("metadata_loss_lineage=04040404040404040404040404040404")
-        );
-        assert!(
-            header
-                .payload
-                .contains("metadata_loss_action=exhaustive-verify-then-recreate")
-        );
-        assert!(
-            header
-                .payload
-                .contains("metadata_loss_verification=exhaustive-matches")
-        );
-        assert!(
-            header
-                .payload
-                .contains("metadata_loss_baseline=new-checksum-baseline-required")
-        );
-        assert_eq!(std::fs::read(&data_path).unwrap(), data_bytes);
-        assert_eq!(std::fs::read(&parity_path).unwrap(), parity_bytes);
-        assert_eq!(
-            recreated.recreate_from_metadata_loss(
-                authorization,
-                topology(ArrayId([4; 16])),
-                RecoveryStoreHealth::Missing,
-            ),
-            Err(SqlitePrototypeError::ExistingTarget)
-        );
-
-        let _ = std::fs::remove_file(path);
-        let _ = std::fs::remove_file(data_path);
-        let _ = std::fs::remove_file(parity_path);
-    }
-
-    #[test]
-    fn failed_recreation_releases_its_atomic_target_reservation() {
-        let path = temp_database();
-        let adapter = SqlitePrototype::with_program(&path, "definitely-not-a-sqlite-program");
-        let authorization =
-            MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified)
-                .authorize(MetadataLossVerification::ExhaustiveMatches)
-                .unwrap();
-        assert_eq!(
-            adapter.recreate_from_metadata_loss(
-                authorization,
-                topology(ArrayId([6; 16])),
-                RecoveryStoreHealth::Missing,
-            ),
-            Err(SqlitePrototypeError::SqliteUnavailable)
-        );
-        assert!(!path.exists());
     }
 
     #[test]

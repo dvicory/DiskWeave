@@ -7,9 +7,9 @@ use dwv_core::{
 };
 use dwv_recovery::{
     ChecksumBaselineStatus, ChecksumEvidenceBinding, ChecksumTarget, FenceCertificate,
-    IntegrityRecord, IntegrityState, MetadataLossCase, MetadataLossPlan, RecoveryInspection,
-    RecoveryManifest, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
-    TopologySnapshot as RecoveryTopologySnapshot, assess_checksum_baseline,
+    IntegrityRecord, IntegrityState, MetadataLossCase, MetadataLossPlan, RecoveryCommitObservation,
+    RecoveryError, RecoveryInspection, RecoveryManifest, RecoveryMutation, RecoverySnapshot,
+    RecoveryStateStore, TopologySnapshot as RecoveryTopologySnapshot, assess_checksum_baseline,
     pending_checksum_baseline_extents,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
@@ -376,6 +376,12 @@ pub fn observe(policy: &ArrayPolicy, command: &'static str) -> OperatorResult {
         result.access = "read-write";
         result.start = "already-online";
         result.next_action = "none";
+    } else if matches!(recovery, RecoveryInspection::ReconciliationRequired) {
+        result.outcome = Outcome::ReconciliationRequired;
+        result.reason_code = "reconciliation-required";
+        result.reason = "recovery commit state requires reconciliation".into();
+        result.start = "reconciliation-required";
+        result.next_action = "reconcile";
     } else if !matches!(recovery, RecoveryInspection::Supported(_)) {
         result.reason_code = "recovery-authority-not-current";
         result.reason = "observation completed; recovery authority is not current".into();
@@ -515,10 +521,11 @@ pub fn recover_preview(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorE
             MetadataLossCase::AllMetadataAllDataPresent,
             vec!["explicit writable recovery migration or new-lineage workflow".into()],
         ),
-        RecoveryInspection::ReconciliationRequired => (
-            MetadataLossCase::AllMetadataAllDataPresent,
-            vec!["exact prior or proposed recovery authority".into()],
-        ),
+        RecoveryInspection::ReconciliationRequired => {
+            return Err(OperatorError::Reconciliation(
+                "recovery commit state requires reconciliation before preview or apply".into(),
+            ));
+        }
     };
     let plan = MetadataLossPlan::for_case(case);
     let mut result = observe(policy, "recover");
@@ -712,7 +719,7 @@ pub fn baseline(
         });
         generation = recovery
             .commit_durable(transaction)
-            .map_err(|error| OperatorError::Failed(error.to_string()))?;
+            .map_err(map_recovery_commit_error)?;
         let committed = recovery
             .snapshot()
             .map_err(|error| OperatorError::Failed(error.to_string()))?;
@@ -1315,14 +1322,14 @@ fn publication(policy: &ArrayPolicy) -> PublicationAssessment {
     match policy.frontend {
         FrontendPolicy::None => PublicationAssessment::NotPublished,
         FrontendPolicy::LinuxUblk => {
-            let identity = match current_publication_identity(policy) {
+            let (array_identity, identity) = match current_publication_identity(policy) {
                 Ok(Some(identity)) => identity,
                 Ok(None) => return PublicationAssessment::NotPublished,
                 Err(reason) => {
                     return PublicationAssessment::ReconciliationRequired { reason };
                 }
             };
-            match dwv_frontend_ublk::live_admitted_publication(identity) {
+            match dwv_frontend_ublk::live_admitted_publication(array_identity, identity) {
                 Ok(Some(value)) => PublicationAssessment::Published {
                     device_path: value
                         .get("device_path")
@@ -1349,7 +1356,7 @@ fn publication(policy: &ArrayPolicy) -> PublicationAssessment {
 
 fn current_publication_identity(
     policy: &ArrayPolicy,
-) -> Result<Option<dwv_service::PublicationIdentity>, String> {
+) -> Result<Option<(ArrayId, dwv_service::PublicationIdentity)>, String> {
     let RecoveryInspection::Supported(manifest) =
         SqliteRecoveryStore::inspect(&policy.recovery_path)
     else {
@@ -1375,8 +1382,17 @@ fn current_publication_identity(
         identities.push((assignment.store_id(), identity));
     }
     dwv_service::publication_identity(topology, &identities)
-        .map(Some)
+        .map(|identity| Some((topology.array_id(), identity)))
         .map_err(|error| error.to_string())
+}
+
+fn map_recovery_commit_error(error: RecoveryError) -> OperatorError {
+    match error {
+        RecoveryError::CommitNotDurable(
+            RecoveryCommitObservation::Lost | RecoveryCommitObservation::Corrupt,
+        ) => OperatorError::Reconciliation(error.to_string()),
+        _ => OperatorError::Failed(error.to_string()),
+    }
 }
 
 fn verification_assessment(report: &dwv_verify::VerificationReport) -> VerificationAssessment {
@@ -1550,5 +1566,30 @@ fn service_error(error: ServiceError) -> OperatorError {
             }
         }
         ServiceError::IncompleteRead { .. } => OperatorError::Invalid(error.to_string()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
+    #[test]
+    fn uncertain_recovery_commit_is_not_reported_as_definite_failure() {
+        for observation in [
+            RecoveryCommitObservation::Lost,
+            RecoveryCommitObservation::Corrupt,
+        ] {
+            assert!(matches!(
+                map_recovery_commit_error(RecoveryError::CommitNotDurable(observation)),
+                OperatorError::Reconciliation(_)
+            ));
+        }
+        assert!(matches!(
+            map_recovery_commit_error(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Rejected
+            )),
+            OperatorError::Failed(_)
+        ));
     }
 }
