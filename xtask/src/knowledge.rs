@@ -2523,7 +2523,9 @@ fn rel(root: &Path, path: &Path) -> String {
         .replace('\\', "/")
 }
 fn excluded(path: &str) -> bool {
-    (path == "docs/milestones" || path.starts_with("docs/milestones/"))
+    (path.starts_with("docs/architecture/diskweave-architecture-roadmap-v")
+        && path.ends_with(".md"))
+        || (path == "docs/milestones" || path.starts_with("docs/milestones/"))
         || path.split('/').any(|part| {
             part.is_empty()
                 || part.starts_with('.')
@@ -2711,9 +2713,9 @@ mod tests {
     }
 
     fn write_roadmap(root: &Path) {
-        fs::create_dir_all(root.join("docs/handoffs")).unwrap();
+        fs::create_dir_all(root.join("docs/architecture")).unwrap();
         fs::write(
-            root.join("docs/handoffs/architecture.md"),
+            root.join("docs/architecture/diskweave-architecture-roadmap-v0.8.md"),
             "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n",
         )
         .unwrap();
@@ -2827,6 +2829,15 @@ mod tests {
     #[test]
     fn references_exclude_history_hidden_and_milestones() {
         assert!(excluded("docs/handoffs/old.md"));
+        assert!(excluded(
+            "docs/architecture/diskweave-architecture-roadmap-v0.8.md"
+        ));
+        assert!(excluded(
+            "docs/architecture/archive/diskweave-architecture-roadmap-v0.7.md"
+        ));
+        assert!(!excluded(
+            "docs/architecture/derived-documentation-system.md"
+        ));
         assert!(excluded("target/generated.md"));
         assert!(excluded("docs/milestones/OS-001.md"));
         assert!(!excluded("docs/verification/current.md"));
@@ -3105,13 +3116,7 @@ mod tests {
         fs::write(&spec, requirement("The system SHALL remain stable.")).unwrap();
         let object = objects(&app).unwrap().remove(0);
         let state = reviewed_state(std::slice::from_ref(&object));
-        fs::create_dir_all(root.join("docs")).unwrap();
-        fs::create_dir_all(root.join("docs/handoffs")).unwrap();
-        fs::write(
-            root.join("docs/handoffs/architecture.md"),
-            "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n",
-        )
-        .unwrap();
+        write_roadmap(&root);
         let affected = root.join("docs/affected.md");
         let unaffected = root.join("docs/unaffected.md");
         fs::write(&affected, "Explanation for req.cap.one.\n").unwrap();
@@ -3849,10 +3854,10 @@ mod tests {
     }
     fn roadmap_fixture(name: &str) -> (PathBuf, App) {
         let (root, app) = fixture(name);
-        fs::create_dir_all(root.join("docs/handoffs")).unwrap();
+        fs::create_dir_all(root.join("docs/architecture")).unwrap();
         fs::create_dir_all(root.join("openspec/changes/archive")).unwrap();
         fs::write(
-            root.join("docs/handoffs/architecture.md"),
+            root.join("docs/architecture/diskweave-architecture-roadmap-v0.8.md"),
             "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n\nNarrative mentions OS-029 only.\n\n| OpenSpec | Result |\n|---|---|\n| **OS-030** | ublk conformance |\n| **OS-031** | Linux executor |\n",
         )
         .unwrap();
@@ -3918,7 +3923,7 @@ mod tests {
 
         fs::remove_file(root.join("docs/other.md")).unwrap();
         fs::write(
-            root.join("docs/handoffs/architecture.md"),
+            root.join("docs/architecture/diskweave-architecture-roadmap-v0.8.md"),
             "<!-- dwv:active-architecture-roadmap -->\n<!-- dwv:active-architecture-roadmap -->\n",
         )
         .unwrap();

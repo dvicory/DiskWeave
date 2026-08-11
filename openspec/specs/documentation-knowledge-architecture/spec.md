@@ -26,10 +26,10 @@ The documentation tool SHALL discover every current `openspec/specs/*/spec.md` a
 ### Requirement: Historical architecture is opt-in only
 <!-- dwv:req req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only -->
 
-The normal source graph, freshness checks, projections, and agent context SHALL exclude `docs/handoffs/**`, `docs/milestones/**`, archived changes, and prior architecture revisions. The marked active roadmap SHALL remain excluded from those ordinary current-semantic surfaces and SHALL be selected only through the deliberate non-authoritative planning contract. A history request SHALL include an explicit opt-in and SHALL label the selected material historical; historical or milestone text SHALL never resolve a current requirement conflict.
+The normal source graph, freshness checks, projections, and agent context SHALL exclude `docs/architecture/archive/**`, `docs/milestones/**`, archived changes, and prior architecture revisions. The marked active roadmap SHALL remain excluded from those ordinary current-semantic surfaces and SHALL be selected only through the deliberate non-authoritative planning contract. A history request SHALL include an explicit opt-in and SHALL label the selected material historical; historical or milestone text SHALL never resolve a current requirement conflict.
 
 #### Scenario: A historical or planning record changes
-- **WHEN** a prior architecture, handoff, archived change, or milestone is edited while current canonical sources are unchanged
+- **WHEN** a prior architecture, archived change, or milestone is edited while current canonical sources are unchanged
 - **THEN** normal extraction, `docs check`, projections, relationship review, and current requirement context remain unchanged.
 
 #### Scenario: An agent requests archaeology
@@ -264,10 +264,10 @@ Deterministic checks SHALL validate identity, coverage, stale state, provenance,
 ### Requirement: Reconstruction and historical isolation are inspectable
 <!-- dwv:req req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable -->
 
-The tool SHALL provide a clean-room check that removes regenerable state, generated indexes, historical handoffs, milestones, archived changes, and roadmap inputs from a temporary copy, reconstructs current projections from permanent current artifacts, and verifies equivalent semantic output. Completion evidence SHALL show that current generation and requirement context do not depend on any prior documentation implementation, handoff, milestone, roadmap, archived change, or chat history.
+The tool SHALL provide a clean-room check that removes regenerable state, generated indexes, active and archived architecture roadmaps, milestones, and archived changes from a temporary copy, reconstructs current projections from permanent current artifacts, and verifies equivalent semantic output. Completion evidence SHALL show that current generation and requirement context do not depend on any prior documentation implementation, historical planning artifact, milestone, roadmap, archived change, or chat history.
 
 #### Scenario: Regenerable and historical state is deleted
-- **WHEN** `target/dwv-docs`, generated projection caches, handoffs, milestones, archived changes, and roadmap inputs are absent in a temporary copy
+- **WHEN** `target/dwv-docs`, generated projection caches, active and archived architecture roadmaps, milestones, and archived changes are absent in a temporary copy
 - **THEN** the documented extraction, planning, build, check, and reconstruction commands recreate current generated state and produce equivalent current facts and accepted pages.
 
 ### Requirement: Canonical semantic relationships are colocated and derived

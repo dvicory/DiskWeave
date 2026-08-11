@@ -1,16 +1,13 @@
 ---
-title: "DiskWeave: Refined Technical Architecture Specification"
-subtitle: "Portable Real-Time Parity Block Engine with Executable Recovery Semantics"
-author: "Architecture review and refinement"
-date: "2026-08-07"
-lang: en-US
+title: DiskWeave Architecture Roadmap
+id: arch.diskweave.v0.6
+series: arch.diskweave
+kind: architecture-roadmap
+revision: v0.6
+status: superseded
+scope: whole-system
 ---
 
-**Document status:** Proposed architecture baseline, revision 0.6  
-**Audience:** OpenSpec authors, implementation agents, maintainers, recovery-tool authors, and reviewers  
-**Project:** DiskWeave  
-**CLI:** `dwv`  
-**Daemon:** `dwvd`  
 **Decision posture:** **ACCEPTED** decisions are buildable commitments; **PROVISIONAL** choices are preferred but replaceable; **VALIDATE** items require executable evidence; **TUNABLE** choices are delegated to implementation agents; **USER-DECISION** items are the deliberately small set that require product-owner input; **FORMAT-EXPERIMENTAL** bytes may protect only disposable data.
 
 > **Executive verdict**  

@@ -10,7 +10,7 @@ An agent starting with only the repository and handoff can run the OpenSpec CLI,
 
 ## 3. Prerequisites
 
-- Read-only handoff: `docs/handoffs/diskweave-refined-architecture-v0.6.md`, especially Sections 4.5, 5, 22, 25.2, and 25.3.
+- Read-only architecture roadmap: `docs/architecture/archive/diskweave-architecture-roadmap-v0.6.md`, especially Sections 4.5, 5, 22, 25.2, and 25.3.
 - OpenSpec `spec-driven` workflow and CLI commands `status`, `instructions`, and `validate`.
 - No Rust, runtime, database, frontend, or hardware prerequisite is required for this planning change.
 - OS-001, OS-002, and OS-003 are correctness-critical successors and must not be treated as complete until their own artifacts and evidence are available.

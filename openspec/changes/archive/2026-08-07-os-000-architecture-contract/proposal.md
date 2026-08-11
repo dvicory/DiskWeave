@@ -25,4 +25,4 @@ None. No existing OpenSpec capabilities are present.
 - Updates only the OS-000 proposal, capability spec, design, and task artifacts.
 - Establishes the contract for later work such as OS-001 normalized block semantics, OS-002 store contracts, and OS-003 parity math.
 - Uses the OpenSpec CLI for status, instructions, validation, and task readiness.
-- Does not modify `docs/handoffs/diskweave-refined-architecture-v0.6.md`, Rust source, user data, data-member bytes, or any stable storage format.
+- Does not modify `docs/architecture/archive/diskweave-architecture-roadmap-v0.6.md`, Rust source, user data, data-member bytes, or any stable storage format.

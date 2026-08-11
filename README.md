@@ -343,5 +343,5 @@ production replacement for ZFS, SnapRAID, or Unraid.
 
 ## Read next
 
-Read the [DiskWeave refined architecture](docs/handoffs/diskweave-refined-architecture-v0.8.md)
+Read the [DiskWeave architecture roadmap](docs/architecture/diskweave-architecture-roadmap-v0.8.md)
 for the intended design, trade-offs, and roadmap.

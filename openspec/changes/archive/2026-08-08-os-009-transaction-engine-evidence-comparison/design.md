@@ -1,7 +1,7 @@
 ## Context
 
 See `proposal.md` and the transaction orchestration sections of
-`docs/handoffs/diskweave-refined-architecture-v0.6.md`. `dwv-transaction-ref`
+`docs/architecture/archive/diskweave-architecture-roadmap-v0.6.md`. `dwv-transaction-ref`
 already contains the explicit semantic action/result vocabulary, reference
 machine, and trace. The comparison must happen before changing service
 selection or extracting a shared production contract.

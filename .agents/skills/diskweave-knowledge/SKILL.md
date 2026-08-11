@@ -17,7 +17,7 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 5. If a bound failure returns `suggested_requests`, run every suggested request; the set is complete only as a whole. No suggestions means a required semantic scope cannot be split without omission.
 6. Use `knowledge inspect <requirement-id>` alone for an exact local-unit lookup, `knowledge ownership <requirement-id>` alone for direct ownership and endpoint troubleshooting, `knowledge affected <requirement-id>` after an owner or relationship changes, and `knowledge audit-context <requirement-id>` only for a deliberate whole-component audit.
 7. Never request overlapping `inspect`, `ownership`, and `context` packets for the same need, and never choose packet fields, graph depth, relationship direction, or closure policy.
-8. Treat `docs/handoffs/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests history.
+8. Treat the marked active architecture roadmap, `docs/architecture/archive/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests roadmap planning or history.
 
 ## Editing rules
 

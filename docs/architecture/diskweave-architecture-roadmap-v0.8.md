@@ -1,19 +1,15 @@
 ---
-title: "DiskWeave: Refined Technical Architecture Specification"
-subtitle: "Portable Real-Time Parity Block Engine with Executable Recovery Semantics"
-author: "Architecture review and refinement"
-date: "2026-08-08"
-lang: en-US
+title: DiskWeave Architecture Roadmap
+id: arch.diskweave.v0.8
+series: arch.diskweave
+kind: architecture-roadmap
+revision: v0.8
+status: active
+scope: whole-system
+supersedes: arch.diskweave.v0.7
 ---
 <!-- dwv:active-architecture-roadmap -->
 
-**Status:** Active architecture roadmap and design rationale.  
-**Version relationship:** Cumulative successor to revision 0.7; revision 0.8 supersedes revision 0.7 for architecture decisions while revision 0.7 remains useful as historical rationale and implementation-reconciliation context.  
-**Audience:** OpenSpec authors, implementation agents, maintainers, recovery-tool authors, and reviewers  
-**Project:** DiskWeave  
-**CLI:** `dwv`  
-**Daemon:** `dwvd`  
-**Product boundary:** conventional independently readable member filesystems protected by a portable block-parity engine  
 **Decision posture:** **ACCEPTED** decisions are buildable commitments; **PROVISIONAL** choices are preferred but replaceable; **VALIDATE** items require executable evidence; **TUNABLE** choices are delegated to implementation agents; **USER-DECISION** items are the deliberately small set that require product-owner input; **FORMAT-EXPERIMENTAL** bytes may protect only disposable data.
 
 Current required product behavior is canonical only under `openspec/specs/*/spec.md`. Every statement, status label, table, diagram, `MUST`, and `SHALL` in this document is non-canonical roadmap intent or rationale until represented by a current canonical requirement. This roadmap guides future architecture, coherence, dependency ordering, validation strategy, milestone planning, and the reserved `OS-NNN` work-item namespace; it does not silently override a conflicting canonical requirement. Divergence among this roadmap, current specifications, and implementation may be a deliberate refinement, accidental architectural loss, unresolved change, or obsolete roadmap intent and must be surfaced and reconciled explicitly.

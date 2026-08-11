@@ -6,7 +6,7 @@
 
 Current canonical OpenSpecs under `openspec/specs/*/spec.md` and the small architecture constitution own intended DiskWeave behavior. Human guides, generated needs, Rust markers, evidence views, contributor maps, API pages, context packets, and AI-maintained prose are projections. They can explain or link authority; they cannot strengthen it.
 
-Normal discovery excludes handoffs, archived changes, generated output, and temporary state. Historical material is available only through an explicit archaeology workflow and never resolves a current conflict.
+Normal discovery excludes active and archived architecture roadmaps, archived changes, generated output, and temporary state. Historical material is available only through an explicit archaeology workflow and never resolves a current conflict.
 
 ## Permanent inputs
 
@@ -84,4 +84,4 @@ Usefulness is sampled separately from deterministic readiness when a major docum
 
 Sphinx, MyST, Sphinx-Needs, Sphinx-CodeLinks, sphinx-autobuild, and uv are pinned in repository-local mise configuration. Python packages remain development-only; production storage crates have no Python or Sphinx dependency. Builds run offline with warnings as errors and link checking enabled.
 
-A clean-room check copies permanent inputs into a temporary repository without `target/`, rendered output, handoffs, archived architecture, model/provider state, or global Python packages. It must recreate equivalent knowledge objects, reviewed status, generated views, rustdoc links, and Sphinx HTML using only the pinned open toolchain. Generated inventories, page plans, block state, response queues, and model transcripts are not durable architecture.
+A clean-room check copies permanent inputs into a temporary repository without `target/`, rendered output, active or archived architecture roadmaps, model/provider state, or global Python packages. It must recreate equivalent knowledge objects, reviewed status, generated views, rustdoc links, and Sphinx HTML using only the pinned open toolchain. Generated inventories, page plans, block state, response queues, and model transcripts are not durable architecture.

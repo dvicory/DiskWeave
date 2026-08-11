@@ -25,7 +25,7 @@ cargo xtask docs serve
 ## Durable entry points
 
 - Architecture: `docs/architecture/derived-documentation-system.md`
-- Active non-canonical architecture roadmap: `docs/handoffs/diskweave-refined-architecture-v0.8.md`
+- Active non-canonical architecture roadmap: `docs/architecture/diskweave-architecture-roadmap-v0.8.md`
 - Accepted decisions: `docs/adr/open-traceable-knowledge.md`
 - Canonical requirements: `openspec/specs/*/spec.md`
 - Human and engineering pages: `docs/sphinx/`
@@ -37,4 +37,4 @@ cargo xtask docs serve
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 
-Normal discovery excludes handoffs, archived changes, rendered output, and historical milestone 5 machinery. Historical material is consulted only for an explicit archaeology task.
+Normal discovery excludes active and archived architecture roadmaps, archived changes, rendered output, and historical milestone 5 machinery. Historical material is consulted only for an explicit archaeology task.
