@@ -1,4 +1,4 @@
-//! Recovery-grounded file-source authorization for known erasures.
+//! Recovery-grounded store-source authorization for known erasures.
 
 use dwv_codec::Geometry;
 use dwv_core::{AssignmentInstanceId, ByteRange, CodingPosition, MemberRole, TopologySnapshot};
@@ -6,8 +6,9 @@ use dwv_recovery::{
     RecoveryError, RecoveryStateStore, RecoveryStoreHealth, RegionState,
     TopologySnapshot as RecoveryTopologySnapshot,
 };
-use dwv_store::{RandomAccessStore, StoreId};
-use dwv_store_file::{FileStore, FileStoreConfig, FileStoreError};
+use dwv_store::{
+    ChildOperationId, CompletionDisposition, OperationSlotToken, RandomAccessStore, StoreId,
+};
 use dwv_verify::{
     DegradedReadError, KnownErasureAuthorization, ReconstructionRangeEvidence,
     ReconstructionSourceState, VerificationIdentity, VerificationStore, VerificationStoreError,
@@ -15,27 +16,24 @@ use dwv_verify::{
 };
 use std::fmt;
 
-/// Read-only rebuild/degraded source that holds `FileStore`'s exclusive lease.
-/// The underlying writable handle is never exposed and payload writes are
-/// rejected at this adapter boundary.
-pub struct FileRebuildSource {
+/// Read-only rebuild/degraded source over one portable store binding.
+/// Payload writes are rejected at this adapter boundary.
+pub struct RebuildSource<S: RandomAccessStore> {
     store_id: StoreId,
     assignment_instance: AssignmentInstanceId,
-    store: FileStore,
+    store: S,
+    operation_index: u32,
 }
 
-impl FileRebuildSource {
-    pub fn open(
-        config: FileStoreConfig,
-        store_id: StoreId,
-        assignment_instance: AssignmentInstanceId,
-    ) -> Result<Self, FileStoreError> {
-        let store = FileStore::open(config.writable(true).create(false).store_id(store_id))?;
-        Ok(Self {
+impl<S: RandomAccessStore> RebuildSource<S> {
+    pub fn new(assignment_instance: AssignmentInstanceId, store: S) -> Self {
+        let store_id = store.store_id();
+        Self {
             store_id,
             assignment_instance,
             store,
-        })
+            operation_index: 0,
+        }
     }
 
     pub const fn store_id(&self) -> StoreId {
@@ -49,14 +47,22 @@ impl FileRebuildSource {
     pub fn protected_length(&self) -> u64 {
         self.store.length()
     }
+
+    fn next_operation(&mut self) -> ChildOperationId {
+        let index = self.operation_index;
+        self.operation_index = self.operation_index.wrapping_add(1);
+        ChildOperationId {
+            slot: OperationSlotToken::new(0, 1),
+            index,
+        }
+    }
 }
 
-impl VerificationStore for FileRebuildSource {
+impl<S: RandomAccessStore> VerificationStore for RebuildSource<S> {
     fn identity(&self) -> VerificationIdentity {
         VerificationIdentity(
             self.store
-                .capabilities_report()
-                .identity
+                .identity_observations()
                 .observations
                 .first()
                 .map(|observation| observation.fingerprint)
@@ -65,9 +71,21 @@ impl VerificationStore for FileRebuildSource {
     }
 
     fn read_exact(&mut self, range: ByteRange) -> Result<Vec<u8>, VerificationStoreError> {
-        self.store
-            .read_bytes(range)
-            .map_err(|error| VerificationStoreError::new(error.to_string()))
+        let length = usize::try_from(range.length)
+            .map_err(|_| VerificationStoreError::new("source range does not fit memory"))?;
+        let mut bytes = vec![0; length];
+        let operation = self.next_operation();
+        let completion = self.store.read_at(operation, range, &mut bytes);
+        if matches!(completion.disposition, CompletionDisposition::Success)
+            && completion.completed.covers(range).unwrap_or(false)
+        {
+            Ok(bytes)
+        } else {
+            Err(VerificationStoreError::new(format!(
+                "source read did not complete exactly: {:?}",
+                completion.disposition
+            )))
+        }
     }
 
     fn write_exact(
@@ -121,13 +139,13 @@ impl From<DegradedReadError> for OfflineAuthorizationError {
 /// clean recovery snapshot and exact source-to-assignment mappings. Until a
 /// range-indexed recovery evidence API exists, any dirty/indeterminate record
 /// conservatively refuses every range.
-pub fn authorize_file_known_erasure<R: RecoveryStateStore>(
+pub fn authorize_known_erasure_from_stores<S: RandomAccessStore, R: RecoveryStateStore>(
     recovery: &R,
     topology: &TopologySnapshot,
     geometry: Geometry,
     range: ByteRange,
-    data: &[Option<&FileRebuildSource>],
-    parity: &FileRebuildSource,
+    data: &[Option<&RebuildSource<S>>],
+    parity: &RebuildSource<S>,
 ) -> Result<KnownErasureAuthorization, OfflineAuthorizationError> {
     let health = recovery.verify_integrity();
     if health != RecoveryStoreHealth::Healthy {

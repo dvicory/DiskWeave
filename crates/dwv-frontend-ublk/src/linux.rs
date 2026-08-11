@@ -10,8 +10,9 @@ use dwv_core::{
     ArrayId, BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId,
     OrderingIntent, RequestId, SlotId, SubmissionSequence, TopologyEpoch,
 };
-use dwv_recovery_sqlite::SqliteRecoveryStore;
+use dwv_recovery::RecoveryStateStore;
 use dwv_service::{HealthyPortableService, PublicationIdentity};
+use dwv_store::RandomAccessStore;
 use libublk::helpers::IoBuf;
 use libublk::io::{UblkDev, UblkQueue};
 use libublk::{BufDesc, UblkError, UblkFlags};
@@ -52,71 +53,60 @@ pub fn probe() -> ProbeReport {
     }
 }
 
-enum Backend {
-    Fixture(crate::OpenFixture),
-    Admitted(HealthyPortableService<SqliteRecoveryStore>),
+fn execute_service<S: RandomAccessStore, R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<S, R>,
+    request: BlockRequest,
+    write_bytes: Option<&[u8]>,
+) -> Result<Vec<u8>, AdapterError> {
+    match request.op {
+        BlockOp::Read => service
+            .read(request)
+            .map(|(bytes, _)| bytes)
+            .map_err(|error| AdapterError::Io(error.to_string())),
+        BlockOp::Write => {
+            let bytes = write_bytes.ok_or(AdapterError::Invalid("write buffer is missing"))?;
+            if bytes.len() as u64 != request.range.length {
+                return Err(AdapterError::Invalid(
+                    "write buffer length differs from request",
+                ));
+            }
+            service
+                .write(request, bytes)
+                .map(|_| Vec::new())
+                .map_err(|error| AdapterError::Io(error.to_string()))
+        }
+        BlockOp::Flush => service
+            .flush(request)
+            .map(|_| Vec::new())
+            .map_err(|error| AdapterError::Io(error.to_string())),
+        _ => Err(AdapterError::Unsupported("normalized operation")),
+    }
 }
 
-impl Backend {
-    fn execute(
-        &mut self,
-        request: BlockRequest,
-        write_bytes: Option<&[u8]>,
-    ) -> Result<Vec<u8>, AdapterError> {
-        match self {
-            Self::Fixture(fixture) => fixture.execute(request, write_bytes),
-            Self::Admitted(service) => match request.op {
-                BlockOp::Read => service
-                    .read(request)
-                    .map(|(bytes, _)| bytes)
-                    .map_err(|error| AdapterError::Io(error.to_string())),
-                BlockOp::Write => {
-                    let bytes =
-                        write_bytes.ok_or(AdapterError::Invalid("write buffer is missing"))?;
-                    if bytes.len() as u64 != request.range.length {
-                        return Err(AdapterError::Invalid(
-                            "write buffer length differs from request",
-                        ));
-                    }
-                    service
-                        .write(request, bytes)
-                        .map(|_| Vec::new())
-                        .map_err(|error| AdapterError::Io(error.to_string()))
-                }
-                BlockOp::Flush => service
-                    .flush(request)
-                    .map(|_| Vec::new())
-                    .map_err(|error| AdapterError::Io(error.to_string())),
-                _ => Err(AdapterError::Unsupported("normalized operation")),
-            },
-        }
-    }
-
-    fn flush(
-        &mut self,
-        request_id: u64,
-        slot: SlotId,
-        epoch: TopologyEpoch,
-    ) -> Result<(), AdapterError> {
-        let request = BlockRequest::new(
-            RequestId(request_id),
-            FrontendId(1),
-            slot,
-            epoch,
-            BlockOp::Flush,
-            ByteRange::empty(),
-            None,
-            OrderingIntent {
-                submission_sequence: SubmissionSequence(request_id),
-                preflush: false,
-                fence_domain: FenceDomain(1),
-            },
-            DurabilityIntent::ExplicitFlush,
-        );
-        self.execute(request, None)
-            .map(|_| ())
-            .map_err(|error| AdapterError::ReconciliationRequired(error.to_string()))
-    }
+fn flush_service<S: RandomAccessStore, R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<S, R>,
+    request_id: u64,
+    slot: SlotId,
+    epoch: TopologyEpoch,
+) -> Result<(), AdapterError> {
+    let request = BlockRequest::new(
+        RequestId(request_id),
+        FrontendId(1),
+        slot,
+        epoch,
+        BlockOp::Flush,
+        ByteRange::empty(),
+        None,
+        OrderingIntent {
+            submission_sequence: SubmissionSequence(request_id),
+            preflush: false,
+            fence_domain: FenceDomain(1),
+        },
+        DurabilityIntent::ExplicitFlush,
+    );
+    execute_service(service, request, None)
+        .map(|_| ())
+        .map_err(|error| AdapterError::ReconciliationRequired(error.to_string()))
 }
 
 struct ServeConfig {
@@ -150,20 +140,18 @@ where
         root: Some(root.to_path_buf()),
         name: "diskweave-demo",
     };
-    serve_backend(
-        Backend::Fixture(fixture.open()?),
-        config,
-        device_id,
-        on_published,
-    )
+    let service = fixture.open()?.into_service();
+    serve_backend(service, config, device_id, on_published)
 }
 
-pub fn serve_admitted_with_publication<F>(
-    service: HealthyPortableService<SqliteRecoveryStore>,
+pub fn serve_admitted_with_publication<S, R, F>(
+    service: HealthyPortableService<S, R>,
     device_id: i32,
     on_published: F,
 ) -> Result<serde_json::Value, AdapterError>
 where
+    S: RandomAccessStore + Send + 'static,
+    R: RecoveryStateStore + Send + 'static,
     F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
 {
     let topology = service.topology();
@@ -194,16 +182,18 @@ where
         root: None,
         name: "diskweave",
     };
-    serve_backend(Backend::Admitted(service), config, device_id, on_published)
+    serve_backend(service, config, device_id, on_published)
 }
 
-fn serve_backend<F>(
-    backend: Backend,
+fn serve_backend<S, R, F>(
+    service: HealthyPortableService<S, R>,
     config: ServeConfig,
     device_id: i32,
     on_published: F,
 ) -> Result<serde_json::Value, AdapterError>
 where
+    S: RandomAccessStore + Send + 'static,
+    R: RecoveryStateStore + Send + 'static,
     F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
 {
     STOP_REQUESTED.store(false, Ordering::SeqCst);
@@ -230,7 +220,7 @@ where
             owned.exact, owned.conflicting
         )));
     }
-    let opened = Arc::new(Mutex::new(backend));
+    let opened = Arc::new(Mutex::new(service));
     let tags = Arc::new(Mutex::new(TagTable::default()));
     let trace = Arc::new(Mutex::new(TraceLog::default()));
     let sequence = Arc::new(AtomicU64::new(0));
@@ -365,14 +355,16 @@ where
             "queue stopped with active tags".into(),
         ));
     }
-    opened
+    let mut service = opened
         .lock()
-        .map_err(|_| AdapterError::ReconciliationRequired("service lock poisoned".into()))?
-        .flush(
-            sequence.fetch_add(1, Ordering::SeqCst) + 1,
-            config.data_slot,
-            config.epoch,
-        )?;
+        .map_err(|_| AdapterError::ReconciliationRequired("service lock poisoned".into()))?;
+    flush_service(
+        &mut service,
+        sequence.fetch_add(1, Ordering::SeqCst) + 1,
+        config.data_slot,
+        config.epoch,
+    )?;
+    drop(service);
     ctrl.del_dev().map_err(ublk_reconcile)?;
     validate_shutdown_evidence(drained, true, true)?;
     if let Some(root) = &config.root {
@@ -442,17 +434,20 @@ pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, Adapter
     }))
 }
 
-fn run_queue(
+fn run_queue<S, R>(
     qid: u16,
     dev: &UblkDev,
-    opened: Arc<Mutex<Backend>>,
+    opened: Arc<Mutex<HealthyPortableService<S, R>>>,
     tags: Arc<Mutex<TagTable>>,
     trace: Arc<Mutex<TraceLog>>,
     sequence: Arc<AtomicU64>,
     capacity: u64,
     epoch: TopologyEpoch,
     data_slot: SlotId,
-) {
+) where
+    S: RandomAccessStore + Send + 'static,
+    R: RecoveryStateStore + Send + 'static,
+{
     let queue = match UblkQueue::new(qid, dev) {
         Ok(queue) => Rc::new(queue),
         Err(_) => return,
@@ -493,17 +488,21 @@ fn run_queue(
     }));
 }
 
-async fn io_task(
+async fn io_task<S, R>(
     queue: &UblkQueue<'_>,
     tag: u16,
-    opened: Arc<Mutex<Backend>>,
+    opened: Arc<Mutex<HealthyPortableService<S, R>>>,
     tags: Arc<Mutex<TagTable>>,
     trace: Arc<Mutex<TraceLog>>,
     sequence: Arc<AtomicU64>,
     capacity: u64,
     epoch: TopologyEpoch,
     data_slot: SlotId,
-) -> Result<(), UblkError> {
+) -> Result<(), UblkError>
+where
+    S: RandomAccessStore + Send + 'static,
+    R: RecoveryStateStore + Send + 'static,
+{
     let mut buffer = IoBuf::<u8>::new(MAX_TRANSFER as usize);
     queue
         .submit_io_prep_cmd(tag, BufDesc::Slice(buffer.as_slice()), 0, Some(&buffer))
@@ -558,7 +557,9 @@ async fn io_task(
                             buffer.as_slice(),
                         )
                         .and_then(|write| match opened.lock() {
-                            Ok(mut service) => service.execute(translated.normalized, write),
+                            Ok(mut service) => {
+                                execute_service(&mut service, translated.normalized, write)
+                            }
                             Err(_) => Err(AdapterError::Io("service lock poisoned".into())),
                         });
                         match execution {

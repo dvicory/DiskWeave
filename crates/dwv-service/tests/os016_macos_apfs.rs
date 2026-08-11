@@ -10,7 +10,7 @@ use dwv_recovery::{
     RecoveryGeneration, RecoveryMutation, RecoveryStateStore,
 };
 use dwv_service::{
-    FileRebuildStore, commit_verified_rebuild_chunk, commit_verified_rebuild_completion,
+    RebuildStore, commit_verified_rebuild_chunk, commit_verified_rebuild_completion,
 };
 use dwv_store::StoreId;
 use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode};
@@ -57,9 +57,8 @@ impl Drop for FixtureDirectory {
     }
 }
 
-fn open_source(path: &Path, store_id: StoreId, length: u64) -> FileRebuildStore {
-    FileRebuildStore::new(
-        store_id,
+fn open_source(path: &Path, store_id: StoreId, length: u64) -> RebuildStore<FileStore> {
+    RebuildStore::new(
         FileStore::open(
             FileStoreConfig::new(path, length, BLOCK)
                 .maximum_transfer(length)
@@ -109,8 +108,8 @@ fn authorize(
     generation: RecoveryGeneration,
     geometry: &Geometry,
     range: ByteRange,
-    data: &[Option<FileRebuildStore>],
-    parity: &FileRebuildStore,
+    data: &[Option<RebuildStore<FileStore>>],
+    parity: &RebuildStore<FileStore>,
 ) -> KnownErasureAuthorization {
     let data_refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
     authorize_known_erasure(
@@ -174,8 +173,7 @@ fn rebuilt_apfs_disk_image_is_ready_for_independent_attachment() {
     });
     let source_generation = recovery.commit_durable(topology_txn).unwrap();
 
-    let mut target = FileRebuildStore::new(
-        REPLACEMENT_STORE,
+    let mut target = RebuildStore::new(
         FileStore::open(
             FileStoreConfig::new(&replacement_path, length, BLOCK)
                 .maximum_transfer(length)

@@ -1,4 +1,4 @@
-//! File-backed adapter for portable degraded-read and offline-rebuild engines.
+//! Portable store adapter for degraded-read and offline-rebuild engines.
 
 use dwv_core::ByteRange;
 use dwv_recovery::{
@@ -7,25 +7,25 @@ use dwv_recovery::{
 };
 use dwv_store::{
     ChildOperationId, CompletionDisposition, OperationSlotToken, PersistenceEvidence,
-    StoreFenceRef, StoreId, StoreWriteWatermark, WriteIntent,
+    RandomAccessStore, StoreFenceRef, StoreId, StoreWriteWatermark, WriteIntent,
 };
-use dwv_store_file::FileStore;
 use dwv_verify::{
     RebuildBinding, RebuildChunkReceipt as VerifiedChunkReceipt, RebuildTarget,
     RebuildVerificationReceipt, VerificationIdentity, VerificationStore, VerificationStoreError,
 };
 use std::fmt;
 
-pub struct FileRebuildStore {
+pub struct RebuildStore<S: RandomAccessStore> {
     store_id: StoreId,
-    store: FileStore,
+    store: S,
     operation_index: u32,
     last_write_watermark: Option<StoreWriteWatermark>,
     last_fence: Option<StoreFenceRef>,
 }
 
-impl FileRebuildStore {
-    pub fn new(store_id: StoreId, store: FileStore) -> Self {
+impl<S: RandomAccessStore> RebuildStore<S> {
+    pub fn new(store: S) -> Self {
+        let store_id = store.store_id();
         Self {
             store_id,
             store,
@@ -41,18 +41,6 @@ impl FileRebuildStore {
 
     pub const fn last_fence(&self) -> Option<StoreFenceRef> {
         self.last_fence
-    }
-
-    pub const fn file_store(&self) -> &FileStore {
-        &self.store
-    }
-
-    pub fn file_store_mut(&mut self) -> &mut FileStore {
-        &mut self.store
-    }
-
-    pub fn into_inner(self) -> FileStore {
-        self.store
     }
 
     fn next_operation(&mut self) -> ChildOperationId {
@@ -79,12 +67,11 @@ impl FileRebuildStore {
     }
 }
 
-impl VerificationStore for FileRebuildStore {
+impl<S: RandomAccessStore> VerificationStore for RebuildStore<S> {
     fn identity(&self) -> VerificationIdentity {
         VerificationIdentity(
             self.store
-                .capabilities_report()
-                .identity
+                .identity_observations()
                 .observations
                 .first()
                 .map(|observation| observation.fingerprint)
@@ -93,9 +80,21 @@ impl VerificationStore for FileRebuildStore {
     }
 
     fn read_exact(&mut self, range: ByteRange) -> Result<Vec<u8>, VerificationStoreError> {
-        self.store
-            .read_bytes(range)
-            .map_err(|error| VerificationStoreError::new(error.to_string()))
+        let length = usize::try_from(range.length)
+            .map_err(|_| VerificationStoreError::new("rebuild range does not fit memory"))?;
+        let mut bytes = vec![0; length];
+        let operation = self.next_operation();
+        let completion = self.store.read_at(operation, range, &mut bytes);
+        if matches!(completion.disposition, CompletionDisposition::Success)
+            && completion.completed.covers(range).unwrap_or(false)
+        {
+            Ok(bytes)
+        } else {
+            Err(VerificationStoreError::new(format!(
+                "replacement read did not complete exactly: {:?}",
+                completion.disposition
+            )))
+        }
     }
 
     fn write_exact(
@@ -106,7 +105,7 @@ impl VerificationStore for FileRebuildStore {
         let operation = self.next_operation();
         let completion = self
             .store
-            .write_bytes(operation, range, bytes, WriteIntent::Ordinary);
+            .write_at(operation, range, bytes, WriteIntent::Ordinary);
         if matches!(completion.disposition, CompletionDisposition::Success)
             && completion.completed.covers(range).unwrap_or(false)
         {
@@ -154,11 +153,11 @@ impl From<RecoveryRebuildError> for OfflineRebuildCommitError {
 
 /// Advances the durable recovery cursor only after validating the opaque
 /// verifier receipt against the live target identity and its latest fence.
-pub fn commit_verified_rebuild_chunk<R: RecoveryStateStore>(
+pub fn commit_verified_rebuild_chunk<S: RandomAccessStore, R: RecoveryStateStore>(
     recovery: &mut R,
     rebuild_id: RebuildId,
     receipt: &VerifiedChunkReceipt,
-    target: &mut FileRebuildStore,
+    target: &mut RebuildStore<S>,
 ) -> Result<RecoveryGeneration, OfflineRebuildCommitError> {
     let snapshot = recovery.load_assembly_snapshot()?;
     let rebuild = snapshot
@@ -206,11 +205,11 @@ pub fn commit_verified_rebuild_chunk<R: RecoveryStateStore>(
 
 /// Marks a rebuild verified only after the full-range verifier receipt is
 /// rebound to the current durable recovery state and replacement identity.
-pub fn commit_verified_rebuild_completion<R: RecoveryStateStore>(
+pub fn commit_verified_rebuild_completion<S: RandomAccessStore, R: RecoveryStateStore>(
     recovery: &mut R,
     rebuild_id: RebuildId,
     receipt: &RebuildVerificationReceipt,
-    target: &mut FileRebuildStore,
+    target: &mut RebuildStore<S>,
 ) -> Result<RecoveryGeneration, OfflineRebuildCommitError> {
     let snapshot = recovery.load_assembly_snapshot()?;
     let rebuild = snapshot
@@ -252,10 +251,10 @@ pub fn commit_verified_rebuild_completion<R: RecoveryStateStore>(
 }
 
 /// Validates the persisted replacement binding before any resumed payload I/O.
-pub fn validate_rebuild_resume<R: RecoveryStateStore>(
+pub fn validate_rebuild_resume<S: RandomAccessStore, R: RecoveryStateStore>(
     recovery: &R,
     rebuild_id: RebuildId,
-    target: &mut FileRebuildStore,
+    target: &mut RebuildStore<S>,
 ) -> Result<RebuildCursor, OfflineRebuildCommitError> {
     let snapshot = recovery.load_assembly_snapshot()?;
     let rebuild = snapshot
@@ -278,7 +277,7 @@ pub fn validate_rebuild_resume<R: RecoveryStateStore>(
 #[cfg(all(test, target_os = "macos"))]
 mod macos_tests {
     use super::*;
-    use crate::{FileRebuildSource, authorize_file_known_erasure};
+    use crate::{RebuildSource, authorize_known_erasure_from_stores};
     use dwv_codec::{Geometry, compute_parity};
     use dwv_core::{
         ArrayId, AssignmentGeneration, AssignmentInstanceId, CodingPosition, CodingProfile,
@@ -288,7 +287,7 @@ mod macos_tests {
         MemoryRecoveryStore, RebuildLifecycle, RebuildState, RebuildTargetIdentity,
         RecoveryMutation, RecoveryStateStore,
     };
-    use dwv_store_file::{FileStoreConfig, FileSyncMode};
+    use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode};
     use dwv_verify::{
         execute_rebuild_chunk, plan_rebuild_ranges, read_known_erasure, verify_complete_rebuild,
     };
@@ -333,20 +332,19 @@ mod macos_tests {
         path: &Path,
         store_id: StoreId,
         assignment_instance: AssignmentInstanceId,
-    ) -> FileRebuildSource {
-        FileRebuildSource::open(
+    ) -> RebuildSource<FileStore> {
+        let store = FileStore::open(
             FileStoreConfig::new(path, LENGTH, BLOCK)
                 .maximum_transfer(LENGTH)
-                .writable(false)
+                .writable(true)
                 .store_id(store_id)
                 .topology_epoch(EPOCH),
-            store_id,
-            assignment_instance,
         )
-        .expect("source file should open")
+        .expect("source file should open");
+        RebuildSource::new(assignment_instance, store)
     }
 
-    fn open_target(path: &Path, create: bool) -> FileRebuildStore {
+    fn open_target(path: &Path, create: bool) -> RebuildStore<FileStore> {
         let store = FileStore::open(
             FileStoreConfig::new(path, LENGTH, BLOCK)
                 .maximum_transfer(LENGTH)
@@ -357,7 +355,7 @@ mod macos_tests {
                 .topology_epoch(EPOCH),
         )
         .expect("replacement file should open");
-        FileRebuildStore::new(REPLACEMENT_STORE, store)
+        RebuildStore::new(store)
     }
 
     fn topology() -> TopologySnapshot {
@@ -397,11 +395,11 @@ mod macos_tests {
         recovery: &MemoryRecoveryStore,
         topology: &TopologySnapshot,
         range: ByteRange,
-        data: &[Option<FileRebuildSource>],
-        parity: &FileRebuildSource,
+        data: &[Option<RebuildSource<FileStore>>],
+        parity: &RebuildSource<FileStore>,
     ) -> dwv_verify::KnownErasureAuthorization {
         let data_refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
-        authorize_file_known_erasure(
+        authorize_known_erasure_from_stores(
             recovery,
             topology,
             Geometry::new(vec![LENGTH, LENGTH], LENGTH).unwrap(),
@@ -611,13 +609,13 @@ mod macos_tests {
     }
 }
 
-impl RebuildTarget for FileRebuildStore {
+impl<S: RandomAccessStore> RebuildTarget for RebuildStore<S> {
     fn flush_rebuild(&mut self) -> Result<StoreFenceRef, VerificationStoreError> {
         let through = self
             .last_write_watermark
             .ok_or_else(|| VerificationStoreError::new("no replacement write to flush"))?;
         let operation = self.next_operation();
-        let completion = self.store.flush_file(operation, through);
+        let completion = self.store.flush(operation, through);
         match (completion.disposition, completion.persistence) {
             (CompletionDisposition::Success, PersistenceEvidence::DurableByFence { fence })
                 if fence.store_id == self.store_id && fence.through >= through =>

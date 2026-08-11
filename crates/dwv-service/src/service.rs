@@ -1,5 +1,5 @@
 use crate::{
-    admission::{AdmissionConfig, OperationAdmission, completion, slot_error},
+    admission::{AdmissionConfig, OperationAdmission, slot_error},
     evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim},
     failure::{FailureClass, ServiceError},
     lifecycle::ServiceState,
@@ -20,18 +20,17 @@ use dwv_recovery::{
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletionDisposition, FenceDomain, IdentityAssessment, IdentityObservationSet,
-    IdentitySourceKind, OperationSlotToken, PersistenceEvidence, StoreId, StoreWriteWatermark,
-    WriteIntent,
+    CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
+    IdentityObservationSet, IdentitySourceKind, OperationSlotToken, PersistenceEvidence,
+    RandomAccessStore, StoreId, StoreWriteWatermark, WriteIntent,
 };
-use dwv_store_file::{FileStore, IdentityComparison};
 use dwv_transaction_ref::{
     ActionResult, CommittedRecoveryGeneration, ComputationResult, FenceEvidence, IntentRequirement,
     ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
     SemanticIoResult, StoreWatermark, TransactionLimits, TransactionMachine, TransactionPlan,
 };
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
-pub struct MemberBinding {
+pub struct MemberBinding<S: RandomAccessStore> {
     slot_id: SlotId,
     role: MemberRole,
     coding_position: CodingPosition,
@@ -39,15 +38,15 @@ pub struct MemberBinding {
     assignment_generation: AssignmentGeneration,
     topology_epoch: TopologyEpoch,
     store_id: StoreId,
-    store: FileStore,
+    store: S,
 }
 
-impl MemberBinding {
+impl<S: RandomAccessStore> MemberBinding<S> {
     pub fn new(
         assignment: &TopologyAssignment,
         topology_epoch: TopologyEpoch,
         store_id: StoreId,
-        store: FileStore,
+        store: S,
     ) -> Self {
         Self {
             slot_id: assignment.slot_id(),
@@ -235,9 +234,9 @@ pub fn assess_writable_start(
     }
 }
 
-pub struct HealthyPortableService<R: RecoveryStateStore> {
+pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     topology: TopologySnapshot,
-    members: Vec<MemberBinding>,
+    members: Vec<MemberBinding<S>>,
     recovery: R,
     checksums: ChecksumAuthority,
     admission: OperationAdmission,
@@ -245,12 +244,12 @@ pub struct HealthyPortableService<R: RecoveryStateStore> {
     state: ServiceState,
 }
 
-impl<R: RecoveryStateStore> HealthyPortableService<R> {
+impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
     /// dwv:req req.checksum-plane.current-baseline-completion-is-persisted-and-exact
     pub fn open(
         topology: TopologySnapshot,
-        members: Vec<MemberBinding>,
+        members: Vec<MemberBinding<S>>,
         recovery: R,
         config: ServiceConfig,
     ) -> Result<Self, ServiceError> {
@@ -349,7 +348,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
         let identities = self
             .members
             .iter()
-            .map(|member| (member.store_id, member.store.capabilities_report().identity))
+            .map(|member| (member.store_id, member.store.identity_observations()))
             .collect::<Vec<_>>();
         publication_identity(&topology, &identities)
     }
@@ -502,7 +501,7 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
                     .store
                     .highest_accepted_watermark()
                     .unwrap_or(StoreWriteWatermark(0));
-                let completion = member.store.flush_file(*child, through);
+                let completion = member.store.flush(*child, through);
                 all_durable &= matches!(completion.disposition, CompletionDisposition::Success)
                     && completion.persistence.is_durable();
                 self.admission
@@ -918,11 +917,11 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
 
     fn ensure_identities(&self) -> Result<(), ServiceError> {
         for member in &self.members {
-            match member
+            let current = member
                 .store
-                .identity_is_current()
-                .map_err(|error| ServiceError::io(FailureClass::Identity, error.to_string()))?
-            {
+                .current_identity_observations()
+                .map_err(|error| ServiceError::io(FailureClass::Identity, error.to_string()))?;
+            match member.store.identity_observations().compare(&current) {
                 IdentityComparison::Unchanged => {}
                 IdentityComparison::Changed | IdentityComparison::Ambiguous => {
                     return Err(ServiceError::invalid(
@@ -1041,57 +1040,47 @@ fn persisted_checksum_authority(
     Ok(authority)
 }
 
-fn read_child(
-    store: &mut FileStore,
+fn read_child<S: RandomAccessStore>(
+    store: &mut S,
     admission: &mut OperationAdmission,
     token: OperationSlotToken,
     child: dwv_store::ChildOperationId,
     range: ByteRange,
     class: FailureClass,
 ) -> Result<Vec<u8>, ServiceError> {
-    match store.read_bytes(range) {
-        Ok(bytes) => {
-            let result = completion(
-                child,
-                range,
-                range.length,
-                CompletionDisposition::Success,
-                PersistenceEvidence::VolatileOrUnknown,
-            );
-            admission.complete(token, result).map_err(slot_error)?;
-            Ok(bytes)
-        }
-        Err(error) => {
-            let result = completion(
-                child,
-                range,
-                0,
-                CompletionDisposition::Failed(dwv_store::StoreError::BackendFailure { code: 5 }),
-                PersistenceEvidence::VolatileOrUnknown,
-            );
-            admission.complete(token, result).map_err(slot_error)?;
-            Err(ServiceError::io(class, error.to_string()))
-        }
+    let length = usize::try_from(range.length)
+        .map_err(|_| ServiceError::io(FailureClass::Range, "range does not fit memory"))?;
+    let mut bytes = vec![0; length];
+    let result = store.read_at(child, range, &mut bytes);
+    let disposition = result.disposition.clone();
+    admission.complete(token, result).map_err(slot_error)?;
+    if matches!(disposition, CompletionDisposition::Success) {
+        Ok(bytes)
+    } else {
+        Err(ServiceError::io(
+            class,
+            format!("store read did not complete: {disposition:?}"),
+        ))
     }
 }
 
-fn flush_member(
-    store: &mut FileStore,
+fn flush_member<S: RandomAccessStore>(
+    store: &mut S,
     admission: &mut OperationAdmission,
     token: OperationSlotToken,
     child: dwv_store::ChildOperationId,
     through: StoreWriteWatermark,
 ) -> Result<PersistenceEvidence, ServiceError> {
-    let result = store.flush_file(child, through);
+    let result = store.flush(child, through);
     let persistence = result.persistence;
     admission.complete(token, result).map_err(slot_error)?;
     Ok(persistence)
 }
 
 /// dwv:req req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments
-fn validate_assembly(
+fn validate_assembly<S: RandomAccessStore>(
     topology: &TopologySnapshot,
-    members: &[MemberBinding],
+    members: &[MemberBinding<S>],
 ) -> Result<(), ServiceError> {
     topology
         .validate()
@@ -1141,21 +1130,20 @@ fn validate_assembly(
                 "member binding duplicates a slot or store identity",
             ));
         }
-        let report = member.store.capabilities_report();
-        if report.capabilities.logical_length
-            != dwv_store::Evidence::Known(geometry.protected_length())
-            || report.capabilities.logical_block_size
+        let capabilities = member.store.capabilities();
+        if capabilities.logical_length != dwv_store::Evidence::Known(geometry.protected_length())
+            || capabilities.logical_block_size
                 != dwv_store::Evidence::Known(geometry.logical_block_size())
-            || !report.capabilities.read.is_supported()
-            || !report.capabilities.write.is_supported()
-            || !report.capabilities.durable_flush.is_supported()
+            || !capabilities.read.is_supported()
+            || !capabilities.write.is_supported()
+            || !capabilities.durable_flush.is_supported()
         {
             return Err(ServiceError::invalid(
                 FailureClass::Capability,
                 "member capabilities are incomplete for portable healthy I/O",
             ));
         }
-        identities.push(report.identity);
+        identities.push(member.store.identity_observations());
     }
     for assignment in topology.assignments() {
         if members
@@ -1183,9 +1171,9 @@ fn validate_assembly(
     Ok(())
 }
 
-fn validate_request(
+fn validate_request<S: RandomAccessStore>(
     topology: &TopologySnapshot,
-    members: &[MemberBinding],
+    members: &[MemberBinding<S>],
     request: BlockRequest,
     maximum_transfer: u64,
 ) -> Result<(usize, MemberRole, CodingPosition), ServiceError> {
@@ -1227,8 +1215,8 @@ fn validate_request(
     ))
 }
 
-fn member_index_for_assignment(
-    members: &[MemberBinding],
+fn member_index_for_assignment<S: RandomAccessStore>(
+    members: &[MemberBinding<S>],
     assignment: &TopologyAssignment,
 ) -> Result<usize, ServiceError> {
     members
@@ -1287,7 +1275,12 @@ mod tests {
     use dwv_recovery::IntentCommit;
     use dwv_recovery::MemoryRecoveryStore;
     use dwv_recovery::{Blake3Provider, DigestProvider};
-    use dwv_store_file::{ControlProjection, FileStoreConfig, FileSyncMode};
+    use dwv_store::{
+        CapabilityEvidenceId, ChildOperationId, CompletedRangeSet, FenceId, IdentityObservation,
+        ResourceLimits, StoreCapabilities, StoreCompletion, StoreError, StoreFenceRef,
+        StoreIncarnationId,
+    };
+    use dwv_store_file::{ControlProjection, FileStore, FileStoreConfig, FileSyncMode};
     use dwv_verify::{
         ChecksumEvidence, DigestEvidence, VerificationIdentity, VerificationStore,
         VerificationStoreError, apply_repair, plan_repairs, verify_exhaustive,
@@ -1346,6 +1339,198 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy)]
+    enum FakeRead {
+        Exact,
+        Short,
+        Failed,
+        Uncertain,
+        StaleToken,
+    }
+
+    struct FakeStore {
+        id: StoreId,
+        epoch: TopologyEpoch,
+        bytes: Vec<u8>,
+        read: FakeRead,
+        watermark: StoreWriteWatermark,
+    }
+
+    impl FakeStore {
+        fn new(id: StoreId, epoch: TopologyEpoch, read: FakeRead) -> Self {
+            Self {
+                id,
+                epoch,
+                bytes: vec![0; LENGTH as usize],
+                read,
+                watermark: StoreWriteWatermark(0),
+            }
+        }
+
+        fn completion(
+            operation_id: ChildOperationId,
+            requested: ByteRange,
+            completed: Option<ByteRange>,
+            disposition: CompletionDisposition,
+            persistence: PersistenceEvidence,
+        ) -> StoreCompletion {
+            StoreCompletion::new(
+                operation_id,
+                requested,
+                CompletedRangeSet::new(completed.into_iter().collect()).unwrap(),
+                disposition,
+                persistence,
+            )
+            .unwrap()
+        }
+    }
+
+    impl RandomAccessStore for FakeStore {
+        fn store_id(&self) -> StoreId {
+            self.id
+        }
+
+        fn topology_epoch(&self) -> TopologyEpoch {
+            self.epoch
+        }
+
+        fn incarnation(&self) -> StoreIncarnationId {
+            StoreIncarnationId(1)
+        }
+
+        fn identity_observations(&self) -> IdentityObservationSet {
+            IdentityObservationSet::new(
+                vec![IdentityObservation {
+                    source: IdentitySourceKind::StableDeviceId,
+                    fingerprint: [self.id.0 as u8; 16],
+                }],
+                IdentityAssessment::Confirmed,
+            )
+        }
+
+        fn current_identity_observations(&self) -> Result<IdentityObservationSet, StoreError> {
+            Ok(self.identity_observations())
+        }
+
+        fn capabilities(&self) -> StoreCapabilities {
+            StoreCapabilities::portable_demo(LENGTH, BLOCK, LENGTH, CapabilityEvidenceId(self.id.0))
+        }
+
+        fn length(&self) -> u64 {
+            LENGTH
+        }
+
+        fn highest_accepted_watermark(&self) -> Option<StoreWriteWatermark> {
+            Some(self.watermark)
+        }
+
+        fn read_at(
+            &mut self,
+            mut operation_id: ChildOperationId,
+            range: ByteRange,
+            destination: &mut [u8],
+        ) -> StoreCompletion {
+            let start = range.offset as usize;
+            let completed = match self.read {
+                FakeRead::Exact | FakeRead::StaleToken => range.length,
+                FakeRead::Short => range.length / 2,
+                FakeRead::Failed | FakeRead::Uncertain => 0,
+            };
+            destination[..completed as usize]
+                .copy_from_slice(&self.bytes[start..start + completed as usize]);
+            if matches!(self.read, FakeRead::StaleToken) {
+                operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
+            }
+            let disposition = match self.read {
+                FakeRead::Exact | FakeRead::StaleToken => CompletionDisposition::Success,
+                FakeRead::Short => CompletionDisposition::Short,
+                FakeRead::Failed => {
+                    CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 })
+                }
+                FakeRead::Uncertain => CompletionDisposition::Uncertain,
+            };
+            Self::completion(
+                operation_id,
+                range,
+                (completed != 0).then(|| ByteRange::new(range.offset, completed).unwrap()),
+                disposition,
+                PersistenceEvidence::VolatileOrUnknown,
+            )
+        }
+
+        fn write_at(
+            &mut self,
+            operation_id: ChildOperationId,
+            range: ByteRange,
+            source: &[u8],
+            _intent: WriteIntent,
+        ) -> StoreCompletion {
+            let start = range.offset as usize;
+            self.bytes[start..start + source.len()].copy_from_slice(source);
+            self.watermark = StoreWriteWatermark(self.watermark.0 + 1);
+            Self::completion(
+                operation_id,
+                range,
+                Some(range),
+                CompletionDisposition::Success,
+                PersistenceEvidence::VolatileOrUnknown,
+            )
+            .with_write_watermark(self.watermark)
+        }
+
+        fn flush(
+            &mut self,
+            operation_id: ChildOperationId,
+            through: StoreWriteWatermark,
+        ) -> StoreCompletion {
+            Self::completion(
+                operation_id,
+                ByteRange::empty(),
+                None,
+                CompletionDisposition::Success,
+                PersistenceEvidence::DurableByFence {
+                    fence: StoreFenceRef {
+                        fence_id: FenceId(through.0),
+                        store_id: self.id,
+                        topology_epoch: self.epoch,
+                        store_incarnation: self.incarnation(),
+                        through,
+                        capability_evidence_id: CapabilityEvidenceId(self.id.0),
+                    },
+                },
+            )
+        }
+
+        fn write_zeroes(
+            &mut self,
+            operation_id: ChildOperationId,
+            range: ByteRange,
+            _intent: WriteIntent,
+        ) -> StoreCompletion {
+            let start = range.offset as usize;
+            self.bytes[start..start + range.length as usize].fill(0);
+            self.watermark = StoreWriteWatermark(self.watermark.0 + 1);
+            Self::completion(
+                operation_id,
+                range,
+                Some(range),
+                CompletionDisposition::Success,
+                PersistenceEvidence::VolatileOrUnknown,
+            )
+            .with_write_watermark(self.watermark)
+        }
+
+        fn discard(&mut self, operation_id: ChildOperationId, range: ByteRange) -> StoreCompletion {
+            Self::completion(
+                operation_id,
+                range,
+                Some(range),
+                CompletionDisposition::Success,
+                PersistenceEvidence::VolatileOrUnknown,
+            )
+        }
+    }
+
     fn topology(epoch: TopologyEpoch) -> TopologySnapshot {
         let profile = CodingProfile::new(2, 1).unwrap();
         let geometry = ProtectedGeometry::new(LENGTH, BLOCK).unwrap();
@@ -1401,10 +1586,140 @@ mod tests {
         )
     }
 
+    fn fake_service(
+        read: FakeRead,
+        config: ServiceConfig,
+    ) -> HealthyPortableService<FakeStore, MemoryRecoveryStore> {
+        let epoch = TopologyEpoch(4);
+        let topology = topology(epoch);
+        let members = topology
+            .assignments()
+            .iter()
+            .enumerate()
+            .map(|(index, assignment)| {
+                let store_id = StoreId(index as u64 + 1);
+                MemberBinding::new(
+                    assignment,
+                    epoch,
+                    store_id,
+                    FakeStore::new(store_id, epoch, read),
+                )
+            })
+            .collect();
+        HealthyPortableService::open(topology, members, MemoryRecoveryStore::new(epoch), config)
+            .unwrap()
+    }
+
+    #[test]
+    fn non_file_store_preserves_exact_and_fail_closed_service_outcomes() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        service
+            .write(
+                request(
+                    RequestId(1),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[7; BLOCK as usize],
+            )
+            .unwrap();
+        let (bytes, evidence) = service
+            .read(request(
+                RequestId(2),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert_eq!(bytes, vec![7; BLOCK as usize]);
+        assert_eq!(evidence.completion.completed, u64::from(BLOCK));
+        service
+            .flush(request(
+                RequestId(3),
+                epoch,
+                0,
+                BlockOp::Flush,
+                ByteRange::empty(),
+                DurabilityIntent::ExplicitFlush,
+            ))
+            .unwrap();
+
+        for (read, expected) in [
+            (FakeRead::Short, CompletionDisposition::Short),
+            (
+                FakeRead::Failed,
+                CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 }),
+            ),
+            (FakeRead::Uncertain, CompletionDisposition::Uncertain),
+        ] {
+            let mut service = fake_service(read, ServiceConfig::default());
+            let error = service
+                .read(request(
+                    RequestId(4),
+                    epoch,
+                    0,
+                    BlockOp::Read,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ))
+                .unwrap_err();
+            assert!(matches!(
+                error,
+                ServiceError::IncompleteRead { evidence, .. }
+                    if evidence.disposition == expected
+            ));
+        }
+
+        let mut stale = fake_service(FakeRead::StaleToken, ServiceConfig::default());
+        assert!(matches!(
+            stale.read(request(
+                RequestId(5),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            )),
+            Err(ServiceError::Io {
+                class: FailureClass::Admission,
+                ..
+            })
+        ));
+
+        let exhausted = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: ResourceLimits::new(0, 128, 256, 32, 32, 8),
+            },
+            ..ServiceConfig::default()
+        };
+        let mut service = fake_service(FakeRead::Exact, exhausted);
+        assert!(matches!(
+            service.read(request(
+                RequestId(6),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            )),
+            Err(ServiceError::Io {
+                class: FailureClass::Admission,
+                ..
+            })
+        ));
+    }
+
     fn bindings(
         topology: &TopologySnapshot,
         mut open: impl FnMut(u64) -> FileStore,
-    ) -> Vec<MemberBinding> {
+    ) -> Vec<MemberBinding<FileStore>> {
         topology
             .assignments()
             .iter()
@@ -1421,7 +1736,10 @@ mod tests {
             .collect()
     }
 
-    fn reopened_bindings(root: &Path, topology: &TopologySnapshot) -> Vec<MemberBinding> {
+    fn reopened_bindings(
+        root: &Path,
+        topology: &TopologySnapshot,
+    ) -> Vec<MemberBinding<FileStore>> {
         let epoch = topology.topology_epoch();
         bindings(topology, |index| {
             FileStore::open(
@@ -1436,13 +1754,19 @@ mod tests {
         })
     }
 
-    fn fixture() -> (PathBuf, HealthyPortableService<MemoryRecoveryStore>) {
+    fn fixture() -> (
+        PathBuf,
+        HealthyPortableService<FileStore, MemoryRecoveryStore>,
+    ) {
         fixture_with_config(ServiceConfig::default())
     }
 
     fn fixture_with_config(
         config: ServiceConfig,
-    ) -> (PathBuf, HealthyPortableService<MemoryRecoveryStore>) {
+    ) -> (
+        PathBuf,
+        HealthyPortableService<FileStore, MemoryRecoveryStore>,
+    ) {
         let root = std::env::temp_dir().join(format!(
             "dwv-service-{}-{}",
             std::process::id(),

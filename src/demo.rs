@@ -17,8 +17,9 @@ use dwv_recovery::{
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{
-    FileRebuildStore, HealthyPortableService, MemberBinding, ServiceConfig,
-    commit_verified_rebuild_chunk, commit_verified_rebuild_completion,
+    HealthyPortableService, MemberBinding, RebuildSource, RebuildStore, ServiceConfig,
+    authorize_known_erasure_from_stores, commit_verified_rebuild_chunk,
+    commit_verified_rebuild_completion,
 };
 use dwv_sim::{Schedule, ScheduleStep, Simulator, SimulatorConfig};
 use dwv_store::StoreId;
@@ -31,16 +32,19 @@ use dwv_trace::{
     TraceFixture, TraceModelState, TraceOutcome, materialize_pattern,
 };
 use dwv_verify::{
-    ChecksumEvidence, DigestEvidence, RebuildBinding, RebuildTarget, ReconstructionRangeEvidence,
-    ReconstructionSourceState, RepairTarget, ScanConfig, ScrubContext, VerificationStore,
-    apply_scrub, authorize_known_erasure, execute_rebuild_chunk, plan_rebuild_ranges, plan_scrub,
-    read_known_erasure, verify_complete_rebuild, verify_exhaustive,
+    ChecksumEvidence, DigestEvidence, RebuildBinding, RebuildTarget, RepairTarget, ScanConfig,
+    ScrubContext, VerificationStore, apply_scrub, execute_rebuild_chunk, plan_rebuild_ranges,
+    plan_scrub, read_known_erasure, verify_complete_rebuild, verify_exhaustive,
 };
+
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::fmt;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+type FileRebuildSource = RebuildSource<FileStore>;
+type FileRebuildStore = RebuildStore<FileStore>;
 
 const CONTRACT: &str = "dwv.cli.v0";
 const MANIFEST_FILE: &str = "fixture.json";
@@ -740,36 +744,25 @@ fn rebuild_fixture_with_plan(
         0
     };
 
-    let survivor = FileRebuildStore::new(
-        StoreId(11),
+    let survivor = RebuildSource::new(
+        AssignmentInstanceId([12; 16]),
         open_store(root, &manifest.data_files[1], manifest, StoreId(11), false)?,
     );
     let mut data = vec![None, Some(survivor)];
-    let mut parity = FileRebuildStore::new(
-        StoreId(12),
+    let mut parity = RebuildSource::new(
+        AssignmentInstanceId([13; 16]),
         open_store(root, &manifest.parity_file, manifest, StoreId(12), false)?,
     );
     let degraded_range = ByteRange::new(0, CHUNK.min(manifest.protected_length))
         .map_err(|error| DemoError::failed(error.to_string()))?;
-    let source_states = [
-        ReconstructionSourceState::Missing,
-        ReconstructionSourceState::Available,
-        ReconstructionSourceState::Available,
-    ];
     let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
-    let authorization = authorize_known_erasure(
+    let authorization = authorize_known_erasure_from_stores(
+        &recovery,
         &topology,
-        recovery
-            .load_assembly_snapshot()
-            .map_err(|error| DemoError::failed(error.to_string()))?
-            .generation,
         geometry.clone(),
         degraded_range,
-        ReconstructionRangeEvidence::ParityClean,
-        true,
         &refs,
         &parity,
-        &source_states,
     )
     .map_err(|error| DemoError::failed(error.to_string()))?;
     let degraded = read_known_erasure(
@@ -808,16 +801,13 @@ fn rebuild_fixture_with_plan(
             .ok_or_else(|| DemoError::failed("rebuild state disappeared"))?;
         let binding = RebuildBinding::from_recovery(rebuild);
         let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
-        let authorization = authorize_known_erasure(
+        let authorization = authorize_known_erasure_from_stores(
+            &recovery,
             &topology,
-            snapshot.generation,
             geometry.clone(),
             range,
-            ReconstructionRangeEvidence::ParityClean,
-            true,
             &refs,
             &parity,
-            &source_states,
         )
         .map_err(|error| DemoError::failed(error.to_string()))?;
         let receipt = execute_rebuild_chunk(
@@ -850,16 +840,8 @@ fn rebuild_fixture_with_plan(
     let refs = data.iter().map(Option::as_ref).collect::<Vec<_>>();
     let full_range = ByteRange::new(0, manifest.protected_length)
         .map_err(|error| DemoError::failed(error.to_string()))?;
-    let authorization = authorize_known_erasure(
-        &topology,
-        snapshot.generation,
-        geometry,
-        full_range,
-        ReconstructionRangeEvidence::ParityClean,
-        true,
-        &refs,
-        &parity,
-        &source_states,
+    let authorization = authorize_known_erasure_from_stores(
+        &recovery, &topology, geometry, full_range, &refs, &parity,
     )
     .map_err(|error| DemoError::failed(error.to_string()))?;
     let receipt = verify_complete_rebuild(
@@ -889,8 +871,8 @@ fn rebuild_fixture_with_plan(
 
 fn checkpoint_report(
     target: FileRebuildStore,
-    parity: FileRebuildStore,
-    data: Vec<Option<FileRebuildStore>>,
+    parity: FileRebuildSource,
+    data: Vec<Option<FileRebuildSource>>,
     recovery: SqliteRecoveryStore,
     completed_chunks: u64,
 ) -> Result<Value, DemoError> {
@@ -1480,8 +1462,8 @@ fn build_scrub_plan(
     (
         ScanConfig,
         dwv_verify::ScrubPlan,
-        Vec<FileRebuildStore>,
-        FileRebuildStore,
+        Vec<FileRebuildSource>,
+        FileRebuildSource,
         FileRebuildStore,
     ),
     DemoError,
@@ -1490,17 +1472,17 @@ fn build_scrub_plan(
     let config = ScanConfig::new(geometry.clone(), manifest.protected_length)
         .map_err(|error| DemoError::failed(error.to_string()))?;
     let mut data = vec![
-        FileRebuildStore::new(
-            StoreId(10),
+        RebuildSource::new(
+            AssignmentInstanceId([11; 16]),
             open_store(root, &manifest.data_files[0], manifest, StoreId(10), false)?,
         ),
-        FileRebuildStore::new(
-            StoreId(11),
+        RebuildSource::new(
+            AssignmentInstanceId([12; 16]),
             open_store(root, &manifest.data_files[1], manifest, StoreId(11), false)?,
         ),
     ];
-    let mut parity = FileRebuildStore::new(
-        StoreId(12),
+    let mut parity = RebuildSource::new(
+        AssignmentInstanceId([13; 16]),
         open_store(root, &manifest.parity_file, manifest, StoreId(12), false)?,
     );
     let replacement = open_rebuild_target(root, manifest, writable_target)?;
@@ -1603,8 +1585,8 @@ fn validate_scrub_plan(
     manifest: &FixtureManifest,
     saved: &ScrubPlanFile,
     plan: &dwv_verify::ScrubPlan,
-    data: &[FileRebuildStore],
-    parity: &FileRebuildStore,
+    data: &[FileRebuildSource],
+    parity: &FileRebuildSource,
     replacement: &FileRebuildStore,
 ) -> Result<(), DemoError> {
     let candidate = plan
@@ -1774,16 +1756,13 @@ fn open_rebuild_target(
     manifest: &FixtureManifest,
     writable: bool,
 ) -> Result<FileRebuildStore, DemoError> {
-    Ok(FileRebuildStore::new(
+    Ok(RebuildStore::new(open_store(
+        root,
+        &manifest.replacement_file,
+        manifest,
         REPLACEMENT_STORE,
-        open_store(
-            root,
-            &manifest.replacement_file,
-            manifest,
-            REPLACEMENT_STORE,
-            writable,
-        )?,
-    ))
+        writable,
+    )?))
 }
 
 fn codec_geometry(length: u64) -> Result<Geometry, DemoError> {

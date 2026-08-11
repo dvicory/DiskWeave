@@ -14,7 +14,7 @@ use dwv_recovery::{
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{
-    FileRebuildStore, ServiceConfig, ServiceError, WritableStartAssessment, assess_writable_start,
+    RebuildSource, ServiceConfig, ServiceError, WritableStartAssessment, assess_writable_start,
 };
 use dwv_store::{
     ChildOperationId, CompletionDisposition, OperationSlotToken, PersistenceEvidence, StoreId,
@@ -30,6 +30,8 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 pub const RESULT_SCHEMA: &str = "dwv.operator.v1";
+
+type FileRebuildSource = RebuildSource<FileStore>;
 const MAX_EXTENTS: usize = 1_048_576;
 
 /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
@@ -218,8 +220,8 @@ struct ObservedMember {
 }
 struct ExhaustiveRun {
     report: VerificationReport,
-    _data: Vec<FileRebuildStore>,
-    _parity: FileRebuildStore,
+    _data: Vec<FileRebuildSource>,
+    _parity: FileRebuildSource,
 }
 
 #[derive(Debug)]
@@ -1058,8 +1060,8 @@ fn run_exhaustive(
     let mut member_files = open_members(policy, topology, store_ids.clone(), writable_claims)?;
     let mut data = Vec::new();
     let mut parity = None;
-    for (index, (assignment, store)) in member_files.drain(..).enumerate() {
-        let verification_store = FileRebuildStore::new(store_ids[index], store);
+    for (assignment, store) in member_files.drain(..) {
+        let verification_store = RebuildSource::new(assignment.assignment_instance(), store);
         if assignment.role() == MemberRole::Data {
             data.push(verification_store);
         } else if parity.replace(verification_store).is_some() {

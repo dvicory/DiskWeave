@@ -4,8 +4,9 @@ use crate::{
 };
 use dwv_codec::{Geometry as CodecGeometry, ParityCodec, XorReference};
 use dwv_core::ByteRange;
-use dwv_store::{CompletionDisposition, OperationSlotToken, StoreWriteWatermark, WriteIntent};
-use dwv_store_file::FileStore;
+use dwv_store::{
+    CompletionDisposition, OperationSlotToken, RandomAccessStore, StoreWriteWatermark, WriteIntent,
+};
 
 pub(crate) fn update_parity(
     geometry: &CodecGeometry,
@@ -43,8 +44,8 @@ pub(crate) fn update_parity(
     Ok(parity)
 }
 
-pub(crate) fn write_member(
-    store: &mut FileStore,
+pub(crate) fn write_member<S: RandomAccessStore>(
+    store: &mut S,
     admission: &mut crate::OperationAdmission,
     token: OperationSlotToken,
     child: dwv_store::ChildOperationId,
@@ -52,7 +53,7 @@ pub(crate) fn write_member(
     bytes: &[u8],
     intent: WriteIntent,
 ) -> Result<StoreWriteWatermark, ServiceError> {
-    let result = store.write_bytes(child, range, bytes, intent);
+    let result = store.write_at(child, range, bytes, intent);
     let disposition = result.disposition.clone();
     let watermark = result.write_watermark;
     admission.complete(token, result).map_err(slot_error)?;

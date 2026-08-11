@@ -857,11 +857,6 @@ pub trait RecoveryStateStore {
     ) -> Result<RecoveryManifest, RecoveryError>;
 }
 
-/// Replaceable persistence adapter seam. Concrete SQLite, file, or replicated
-/// implementations depend on this semantic port rather than defining it.
-pub trait RecoveryStateAdapter: RecoveryStateStore {}
-
-impl<T: RecoveryStateStore> RecoveryStateAdapter for T {}
 #[derive(Clone)]
 pub struct MemoryRecoveryStore {
     snapshot: RecoverySnapshot,
@@ -1482,183 +1477,6 @@ fn validate_fence(
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SqliteJournalMode {
-    Wal,
-    Rollback,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SqliteSynchronousMode {
-    Normal,
-    Full,
-    Extra,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SqliteCheckpointPolicy {
-    Automatic,
-    Explicit,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SqliteEvaluationCase {
-    pub journal_mode: SqliteJournalMode,
-    pub synchronous: SqliteSynchronousMode,
-    pub checkpoint: SqliteCheckpointPolicy,
-    pub connections: u8,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SqliteEvaluationMatrix {
-    pub cases: Vec<SqliteEvaluationCase>,
-}
-
-impl SqliteEvaluationMatrix {
-    pub fn baseline() -> Self {
-        Self {
-            cases: vec![
-                SqliteEvaluationCase {
-                    journal_mode: SqliteJournalMode::Wal,
-                    synchronous: SqliteSynchronousMode::Normal,
-                    checkpoint: SqliteCheckpointPolicy::Automatic,
-                    connections: 1,
-                },
-                SqliteEvaluationCase {
-                    journal_mode: SqliteJournalMode::Wal,
-                    synchronous: SqliteSynchronousMode::Full,
-                    checkpoint: SqliteCheckpointPolicy::Explicit,
-                    connections: 1,
-                },
-                SqliteEvaluationCase {
-                    journal_mode: SqliteJournalMode::Rollback,
-                    synchronous: SqliteSynchronousMode::Full,
-                    checkpoint: SqliteCheckpointPolicy::Explicit,
-                    connections: 2,
-                },
-            ],
-        }
-    }
-
-    pub fn fixtures(&self) -> Vec<SqliteEvaluationFixture> {
-        let scenarios = [
-            (
-                "process-reset-after-durable-dirty-intent",
-                SqliteResetBoundary::Process,
-                SqliteFailurePoint::AfterDurableDirtyIntent,
-                RecoveryCommitObservation::Durable,
-                RecoveryStoreHealth::Healthy,
-                RecoveryDisposition::Proceed,
-            ),
-            (
-                "vm-reset-after-durable-checkpoint",
-                SqliteResetBoundary::VirtualMachine,
-                SqliteFailurePoint::AfterDurableCheckpoint,
-                RecoveryCommitObservation::Durable,
-                RecoveryStoreHealth::Healthy,
-                RecoveryDisposition::Proceed,
-            ),
-            (
-                "power-loss-during-journal-sync",
-                SqliteResetBoundary::PowerLoss,
-                SqliteFailurePoint::DuringJournalSync,
-                RecoveryCommitObservation::Lost,
-                RecoveryStoreHealth::Stale,
-                RecoveryDisposition::ReconcileReadOnly,
-            ),
-            (
-                "commit-rejected-before-home-mutation",
-                SqliteResetBoundary::Process,
-                SqliteFailurePoint::CommitRejected,
-                RecoveryCommitObservation::Rejected,
-                RecoveryStoreHealth::Healthy,
-                RecoveryDisposition::ReconcileReadOnly,
-            ),
-            (
-                "missing-database-after-reset",
-                SqliteResetBoundary::VirtualMachine,
-                SqliteFailurePoint::MissingDatabase,
-                RecoveryCommitObservation::Corrupt,
-                RecoveryStoreHealth::Missing,
-                RecoveryDisposition::RebuildFromData,
-            ),
-            (
-                "corrupt-main-state-after-reset",
-                SqliteResetBoundary::VirtualMachine,
-                SqliteFailurePoint::CorruptMainState,
-                RecoveryCommitObservation::Corrupt,
-                RecoveryStoreHealth::Corrupt,
-                RecoveryDisposition::RebuildFromData,
-            ),
-            (
-                "corrupt-journal-after-power-loss",
-                SqliteResetBoundary::PowerLoss,
-                SqliteFailurePoint::CorruptJournal,
-                RecoveryCommitObservation::Corrupt,
-                RecoveryStoreHealth::Corrupt,
-                RecoveryDisposition::RebuildFromData,
-            ),
-        ];
-
-        self.cases
-            .iter()
-            .enumerate()
-            .flat_map(|(candidate_index, candidate)| {
-                scenarios.iter().map(
-                    move |(
-                        scenario_id,
-                        reset,
-                        failure,
-                        observation,
-                        expected_health,
-                        expected_disposition,
-                    )| SqliteEvaluationFixture {
-                        case_id: format!("candidate-{candidate_index}-{scenario_id}"),
-                        candidate: *candidate,
-                        reset: *reset,
-                        failure: *failure,
-                        observation: *observation,
-                        expected_health: *expected_health,
-                        expected_disposition: *expected_disposition,
-                        permits_home_mutation: *expected_disposition
-                            == RecoveryDisposition::Proceed,
-                    },
-                )
-            })
-            .collect()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SqliteResetBoundary {
-    Process,
-    VirtualMachine,
-    PowerLoss,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SqliteFailurePoint {
-    AfterDurableDirtyIntent,
-    AfterDurableCheckpoint,
-    DuringJournalSync,
-    CommitRejected,
-    MissingDatabase,
-    CorruptMainState,
-    CorruptJournal,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SqliteEvaluationFixture {
-    pub case_id: String,
-    pub candidate: SqliteEvaluationCase,
-    pub reset: SqliteResetBoundary,
-    pub failure: SqliteFailurePoint,
-    pub observation: RecoveryCommitObservation,
-    pub expected_health: RecoveryStoreHealth,
-    pub expected_disposition: RecoveryDisposition,
-    pub permits_home_mutation: bool,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryResetBoundary {
     Process,
     VirtualMachine,
@@ -2066,16 +1884,6 @@ mod tests {
     }
 
     #[test]
-    fn sqlite_evaluation_keeps_multiple_candidates_without_selection() {
-        let matrix = SqliteEvaluationMatrix::baseline();
-        assert_eq!(matrix.cases.len(), 3);
-        assert!(matrix.cases.iter().any(|case| {
-            case.journal_mode == SqliteJournalMode::Rollback
-                && case.synchronous == SqliteSynchronousMode::Full
-        }));
-    }
-
-    #[test]
     fn semantic_schema_migration_and_export_are_versioned_and_bounded() {
         assert_eq!(current_recovery_schema().version, CURRENT_RECOVERY_SCHEMA);
         assert_eq!(
@@ -2204,21 +2012,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluation_fixtures_cover_candidates_and_conservative_failures() {
-        let matrix = SqliteEvaluationMatrix::baseline();
-        let fixtures = matrix.fixtures();
-        assert_eq!(fixtures.len(), matrix.cases.len() * 7);
-        assert!(fixtures.iter().any(|fixture| {
-            fixture.failure == SqliteFailurePoint::MissingDatabase
-                && !fixture.permits_home_mutation
-                && fixture.expected_disposition == RecoveryDisposition::RebuildFromData
-        }));
-        assert!(fixtures.iter().any(|fixture| {
-            fixture.failure == SqliteFailurePoint::CommitRejected
-                && fixture.expected_disposition == RecoveryDisposition::ReconcileReadOnly
-                && !fixture.permits_home_mutation
-        }));
-
+    fn recovery_simulation_fixtures_cover_conservative_failures() {
         let cases = recovery_simulation_cases();
         assert!(cases.iter().any(|case| {
             case.fault == RecoveryFaultPoint::AfterHomeMutationBeforeFence

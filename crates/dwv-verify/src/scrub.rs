@@ -35,11 +35,11 @@ impl ScrubPlan {
         self.context
     }
 
-    pub fn validate<S: VerificationStore>(
+    pub fn validate<S: VerificationStore, T: VerificationStore>(
         &self,
         data: &[S],
         parity: &S,
-        replacement: &S,
+        replacement: &T,
         context: ScrubContext,
     ) -> Result<(), VerificationError> {
         if self.report.mode() != crate::ScanMode::Exhaustive {
@@ -77,11 +77,11 @@ impl ScrubPlan {
     }
 }
 
-pub fn plan_scrub<S: VerificationStore>(
+pub fn plan_scrub<S: VerificationStore, T: VerificationStore>(
     report: VerificationReport,
     data: &[S],
     parity: &S,
-    replacement: &S,
+    replacement: &T,
     context: ScrubContext,
 ) -> ScrubPlan {
     ScrubPlan {
@@ -94,12 +94,12 @@ pub fn plan_scrub<S: VerificationStore>(
     }
 }
 
-pub fn apply_scrub<S: VerificationStore>(
+pub fn apply_scrub<S: VerificationStore, T: VerificationStore>(
     config: &crate::ScanConfig,
     plan: &ScrubPlan,
     data: &mut [S],
     parity: &mut S,
-    replacement: &mut S,
+    replacement: &mut T,
     context: ScrubContext,
 ) -> Result<Vec<RepairOutcome>, VerificationError> {
     plan.validate(data, parity, replacement, context)?;

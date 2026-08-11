@@ -71,7 +71,7 @@ pub struct Fixture {
 pub struct OpenFixture {
     root: PathBuf,
     manifest: FixtureManifest,
-    service: HealthyPortableService<SqliteRecoveryStore>,
+    service: HealthyPortableService<FileStore, SqliteRecoveryStore>,
 }
 
 impl Fixture {
@@ -327,6 +327,10 @@ impl OpenFixture {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+    #[cfg(target_os = "linux")]
+    pub(crate) fn into_service(self) -> HealthyPortableService<FileStore, SqliteRecoveryStore> {
+        self.service
     }
 
     pub fn execute(

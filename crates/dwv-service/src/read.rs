@@ -1,22 +1,29 @@
 use crate::{
-    admission::{completion, slot_error},
+    admission::slot_error,
     evidence::{CompletionEvidence, PersistenceClaim},
-    failure::ServiceError,
+    failure::{FailureClass, ServiceError},
     range::RangePlan,
 };
 use dwv_core::{BlockRequest, ByteRange};
-use dwv_store::{CompletionDisposition, OperationSlotToken, PersistenceEvidence, StoreError};
-use dwv_store_file::FileStore;
+use dwv_store::{CompletionDisposition, OperationSlotToken, RandomAccessStore};
 
-pub(crate) fn read_member(
-    store: &mut FileStore,
+pub(crate) fn read_member<S: RandomAccessStore>(
+    store: &mut S,
     admission: &mut crate::OperationAdmission,
     request: BlockRequest,
     token: OperationSlotToken,
     plan: &RangePlan,
 ) -> Result<(Vec<u8>, CompletionEvidence), ServiceError> {
-    let mut bytes = Vec::new();
+    let requested = ByteRange::new(
+        plan.ranges[0].offset,
+        plan.ranges.iter().map(|range| range.length).sum(),
+    )
+    .expect("range plan is contiguous");
+    let requested_length = usize::try_from(requested.length)
+        .map_err(|_| ServiceError::io(FailureClass::Range, "read range does not fit memory"))?;
+    let mut bytes = vec![0; requested_length];
     let mut completed_total = 0_u64;
+    let mut byte_cursor = 0_usize;
     let children = admission
         .children(token, &plan.ranges)
         .map_err(slot_error)?;
@@ -24,53 +31,21 @@ pub(crate) fn read_member(
         .submit_all(token, children.len())
         .map_err(slot_error)?;
     for (range, child) in plan.ranges.iter().zip(children) {
-        let progress = store.read_progress(*range);
-        let (completion, error) = match progress {
-            Ok(progress) => {
-                let completed = progress.completed;
-                bytes.extend_from_slice(&progress.bytes);
-                completed_total += completed;
-                let disposition = if completed == range.length {
-                    CompletionDisposition::Success
-                } else {
-                    CompletionDisposition::Short
-                };
-                (
-                    completion(
-                        child,
-                        *range,
-                        completed,
-                        disposition,
-                        PersistenceEvidence::VolatileOrUnknown,
-                    ),
-                    None,
-                )
-            }
-            Err(error) => (
-                completion(
-                    child,
-                    *range,
-                    0,
-                    CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 }),
-                    PersistenceEvidence::VolatileOrUnknown,
-                ),
-                Some(error),
-            ),
-        };
-        let failed =
-            error.is_some() || !matches!(completion.disposition, CompletionDisposition::Success);
+        let length = usize::try_from(range.length).map_err(|_| {
+            ServiceError::io(FailureClass::Range, "child range does not fit memory")
+        })?;
+        let completion =
+            store.read_at(child, *range, &mut bytes[byte_cursor..byte_cursor + length]);
+        completed_total += completion
+            .completed
+            .as_slice()
+            .iter()
+            .map(|range| range.length)
+            .sum::<u64>();
+        let disposition = completion.disposition.clone();
         admission.complete(token, completion).map_err(slot_error)?;
-        if failed {
-            let requested = ByteRange::new(
-                plan.ranges[0].offset,
-                plan.ranges.iter().map(|range| range.length).sum(),
-            )
-            .expect("range plan is contiguous");
-            let disposition = if error.is_some() {
-                CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 })
-            } else {
-                CompletionDisposition::Short
-            };
+        if !matches!(disposition, CompletionDisposition::Success) {
+            bytes.truncate(completed_total as usize);
             return Err(ServiceError::incomplete_read(
                 request,
                 bytes,
@@ -82,16 +57,13 @@ pub(crate) fn read_member(
                 },
             ));
         }
+        byte_cursor += length;
     }
     Ok((
         bytes,
         CompletionEvidence {
-            requested: ByteRange::new(
-                plan.ranges[0].offset,
-                plan.ranges.iter().map(|range| range.length).sum(),
-            )
-            .expect("range plan is contiguous"),
-            completed: plan.ranges.iter().map(|range| range.length).sum(),
+            requested,
+            completed: requested.length,
             disposition: CompletionDisposition::Success,
             persistence: PersistenceClaim::VolatileOrUnknown,
         },

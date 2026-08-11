@@ -121,11 +121,11 @@ impl RepairOutcome {
     }
 }
 
-pub fn apply_repair<S: VerificationStore>(
+pub fn apply_repair<S: VerificationStore, T: VerificationStore>(
     config: &ScanConfig,
     data: &mut [S],
     parity: &mut S,
-    target: &mut S,
+    target: &mut T,
     candidate: RepairCandidate,
 ) -> Result<RepairOutcome, VerificationError> {
     validate_candidate(config, data.len(), &candidate)?;

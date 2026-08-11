@@ -549,24 +549,28 @@ where
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
 }
 #[cfg(target_os = "linux")]
-pub fn serve_admitted_with_publication<F>(
-    service: dwv_service::HealthyPortableService<dwv_recovery_sqlite::SqliteRecoveryStore>,
+pub fn serve_admitted_with_publication<S, R, F>(
+    service: dwv_service::HealthyPortableService<S, R>,
     device_id: i32,
     on_published: F,
 ) -> Result<serde_json::Value, AdapterError>
 where
+    S: dwv_store::RandomAccessStore + Send + 'static,
+    R: dwv_recovery::RecoveryStateStore + Send + 'static,
     F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
 {
     linux::serve_admitted_with_publication(service, device_id, on_published)
 }
 
 #[cfg(not(target_os = "linux"))]
-pub fn serve_admitted_with_publication<F>(
-    _service: dwv_service::HealthyPortableService<dwv_recovery_sqlite::SqliteRecoveryStore>,
+pub fn serve_admitted_with_publication<S, R, F>(
+    _service: dwv_service::HealthyPortableService<S, R>,
     _device_id: i32,
     _on_published: F,
 ) -> Result<serde_json::Value, AdapterError>
 where
+    S: dwv_store::RandomAccessStore,
+    R: dwv_recovery::RecoveryStateStore,
     F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
 {
     Err(AdapterError::Unsupported("ublk serving requires Linux"))

@@ -3,7 +3,7 @@ use crate::capabilities::{
 };
 use crate::lease::{
     FileIdentityError, FileLease, FileLeaseError, IdentityComparison, compare_identity,
-    identity_from_metadata,
+    identity_from_metadata, observe_file_identity,
 };
 use dwv_store::{
     BufferToken, ByteRange, CapabilityEvidenceId, ChildOperationId, CompletedRangeSet,
@@ -12,7 +12,6 @@ use dwv_store::{
     StoreOperation, StoreRequest, StoreRequestKind, StoreWriteWatermark, TopologyEpoch,
     WriteIntent,
 };
-use std::collections::BTreeMap;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
@@ -162,7 +161,6 @@ pub struct FileStore {
     capabilities: StoreCapabilities,
     identity: IdentityObservationSet,
     lease: Option<FileLease>,
-    buffers: BTreeMap<BufferToken, Vec<u8>>,
     incarnation: StoreIncarnationId,
     next_write_watermark: u64,
     highest_accepted_watermark: Option<StoreWriteWatermark>,
@@ -266,7 +264,6 @@ impl FileStore {
             capabilities: report.capabilities,
             identity: report.identity,
             lease,
-            buffers: BTreeMap::new(),
             incarnation,
             next_write_watermark: 1,
             highest_accepted_watermark: None,
@@ -300,12 +297,6 @@ impl FileStore {
     }
     pub fn identity_is_current(&self) -> Result<IdentityComparison, FileStoreError> {
         compare_identity(&self.identity, &self.config.path).map_err(FileStoreError::Identity)
-    }
-    pub fn register_buffer(&mut self, token: BufferToken, bytes: Vec<u8>) {
-        self.buffers.insert(token, bytes);
-    }
-    pub fn take_read_buffer(&mut self, token: BufferToken) -> Option<Vec<u8>> {
-        self.buffers.remove(&token)
     }
 
     pub fn read_bytes(&mut self, range: ByteRange) -> Result<Vec<u8>, FileStoreError> {
@@ -528,12 +519,21 @@ impl FileStore {
     }
 
     pub fn read_progress(&mut self, range: ByteRange) -> Result<ReadProgress, StoreError> {
-        self.validate(range, StoreOperation::Read, None, true)?;
         let length = usize::try_from(range.length).map_err(|_| StoreError::TransferTooLarge {
             length: range.length,
             maximum: usize::MAX as u64,
         })?;
         let mut bytes = vec![0_u8; length];
+        let completed = self.read_into(range, &mut bytes)?;
+        bytes.truncate(completed as usize);
+        Ok(ReadProgress { bytes, completed })
+    }
+
+    fn read_into(&mut self, range: ByteRange, bytes: &mut [u8]) -> Result<u64, StoreError> {
+        if bytes.len() as u64 != range.length {
+            return Err(StoreError::BackendFailure { code: 22 });
+        }
+        self.validate(range, StoreOperation::Read, None, true)?;
         let mut completed = 0_u64;
         while completed < range.length {
             match read_at(
@@ -550,8 +550,7 @@ impl FileStore {
                 }
             }
         }
-        bytes.truncate(completed as usize);
-        Ok(ReadProgress { bytes, completed })
+        Ok(completed)
     }
 
     fn validate(
@@ -626,40 +625,61 @@ impl FileStore {
 }
 
 impl RandomAccessStore for FileStore {
+    fn store_id(&self) -> StoreId {
+        self.store_id()
+    }
+
+    fn topology_epoch(&self) -> TopologyEpoch {
+        self.topology_epoch()
+    }
+
+    fn incarnation(&self) -> StoreIncarnationId {
+        self.incarnation()
+    }
+
     fn identity_observations(&self) -> IdentityObservationSet {
         self.identity.clone()
     }
+
+    fn current_identity_observations(&self) -> Result<IdentityObservationSet, StoreError> {
+        observe_file_identity(&self.config.path).map_err(|error| match error {
+            FileIdentityError::Io(error) => StoreError::BackendFailure {
+                code: io_code(&error),
+            },
+            FileIdentityError::NotARegularFile(_) => StoreError::BackendFailure { code: 22 },
+        })
+    }
+
     fn capabilities(&self) -> StoreCapabilities {
         self.capabilities.clone()
     }
+
     fn length(&self) -> u64 {
         self.config.protected_length
+    }
+
+    fn highest_accepted_watermark(&self) -> Option<StoreWriteWatermark> {
+        self.highest_accepted_watermark
     }
 
     fn read_at(
         &mut self,
         operation_id: ChildOperationId,
         range: ByteRange,
-        destination: BufferToken,
+        destination: &mut [u8],
     ) -> StoreCompletion {
-        if let Err(error) = self.validate(range, StoreOperation::Read, None, true) {
-            return failed(operation_id, range, error, 0);
-        }
-        match self.read_progress(range) {
-            Ok(progress) if progress.completed == range.length => {
-                self.buffers.insert(destination, progress.bytes);
-                completion(
-                    operation_id,
-                    range,
-                    range.length,
-                    CompletionDisposition::Success,
-                    PersistenceEvidence::VolatileOrUnknown,
-                )
-            }
-            Ok(progress) => completion(
+        match self.read_into(range, destination) {
+            Ok(completed) if completed == range.length => completion(
                 operation_id,
                 range,
-                progress.completed,
+                completed,
+                CompletionDisposition::Success,
+                PersistenceEvidence::VolatileOrUnknown,
+            ),
+            Ok(completed) => completion(
+                operation_id,
+                range,
+                completed,
                 CompletionDisposition::Short,
                 PersistenceEvidence::VolatileOrUnknown,
             ),
@@ -671,23 +691,10 @@ impl RandomAccessStore for FileStore {
         &mut self,
         operation_id: ChildOperationId,
         range: ByteRange,
-        source: BufferToken,
+        source: &[u8],
         intent: WriteIntent,
     ) -> StoreCompletion {
-        let bytes = match self.buffers.get(&source).cloned() {
-            Some(bytes) => bytes,
-            None => {
-                return failed(
-                    operation_id,
-                    range,
-                    StoreError::MissingBuffer {
-                        operation: StoreOperation::Write,
-                    },
-                    0,
-                );
-            }
-        };
-        self.write_bytes(operation_id, range, &bytes, intent)
+        self.write_bytes(operation_id, range, source, intent)
     }
 
     fn flush(
@@ -1178,31 +1185,31 @@ mod tests {
     }
 
     #[test]
-    fn trait_buffers_and_flush_produce_exact_completion_evidence() {
+    fn trait_borrows_payloads_and_flushes_with_exact_completion_evidence() {
         let path = temp("trait");
         fs::write(&path, vec![0_u8; 4096]).unwrap();
         let mut store = FileStore::open(
             FileStoreConfig::new(&path, 4096, 512).sync_mode(FileSyncMode::SyncAll),
         )
         .unwrap();
-        let token = BufferToken::new(2, 1);
-        store.register_buffer(token, vec![7_u8; 512]);
+        let source = vec![7_u8; 512];
         let write = store.write_at(
             operation(3),
             ByteRange::new(0, 512).unwrap(),
-            token,
+            &source,
             WriteIntent::Ordinary,
         );
         assert!(write.persistence.is_durable());
         let flush = store.flush(operation(4), write.write_watermark.unwrap());
         assert!(flush.persistence.is_durable());
-        let destination = BufferToken::new(3, 1);
-        let read = store.read_at(operation(5), ByteRange::new(0, 512).unwrap(), destination);
-        assert_eq!(read.disposition, CompletionDisposition::Success);
-        assert_eq!(
-            store.take_read_buffer(destination).unwrap(),
-            vec![7_u8; 512]
+        let mut destination = vec![0; 512];
+        let read = store.read_at(
+            operation(5),
+            ByteRange::new(0, 512).unwrap(),
+            &mut destination,
         );
+        assert_eq!(read.disposition, CompletionDisposition::Success);
+        assert_eq!(destination, source);
         let _ = fs::remove_file(path);
     }
 

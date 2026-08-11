@@ -8,11 +8,10 @@
 //! power-loss behavior.
 
 use dwv_recovery::{
-    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, RecoveryCommitObservation, RecoveryError,
-    RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
+    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, RecoveryCommitObservation, RecoveryDisposition,
+    RecoveryError, RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
     RecoveryMigrationPlan, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
-    RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase, SqliteJournalMode,
-    SqliteSynchronousMode, TopologySnapshot,
+    RecoveryStoreHealth, RecoveryTxn, TopologySnapshot,
 };
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -27,6 +26,183 @@ pub const RECOVERY_SQLITE_SCHEMA_V2: &str =
     include_str!("../migrations/0002_complete_manifest.sql");
 pub const CURRENT_RECOVERY_SQLITE_SCHEMA: u64 = 2;
 pub const MAX_MANIFEST_JSON_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqliteJournalMode {
+    Wal,
+    Rollback,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqliteSynchronousMode {
+    Normal,
+    Full,
+    Extra,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqliteCheckpointPolicy {
+    Automatic,
+    Explicit,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SqliteEvaluationCase {
+    pub journal_mode: SqliteJournalMode,
+    pub synchronous: SqliteSynchronousMode,
+    pub checkpoint: SqliteCheckpointPolicy,
+    pub connections: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteEvaluationMatrix {
+    pub cases: Vec<SqliteEvaluationCase>,
+}
+
+impl SqliteEvaluationMatrix {
+    pub fn baseline() -> Self {
+        Self {
+            cases: vec![
+                SqliteEvaluationCase {
+                    journal_mode: SqliteJournalMode::Wal,
+                    synchronous: SqliteSynchronousMode::Normal,
+                    checkpoint: SqliteCheckpointPolicy::Automatic,
+                    connections: 1,
+                },
+                SqliteEvaluationCase {
+                    journal_mode: SqliteJournalMode::Wal,
+                    synchronous: SqliteSynchronousMode::Full,
+                    checkpoint: SqliteCheckpointPolicy::Explicit,
+                    connections: 1,
+                },
+                SqliteEvaluationCase {
+                    journal_mode: SqliteJournalMode::Rollback,
+                    synchronous: SqliteSynchronousMode::Full,
+                    checkpoint: SqliteCheckpointPolicy::Explicit,
+                    connections: 2,
+                },
+            ],
+        }
+    }
+
+    pub fn fixtures(&self) -> Vec<SqliteEvaluationFixture> {
+        let scenarios = [
+            (
+                "process-reset-after-durable-dirty-intent",
+                SqliteResetBoundary::Process,
+                SqliteFailurePoint::AfterDurableDirtyIntent,
+                RecoveryCommitObservation::Durable,
+                RecoveryStoreHealth::Healthy,
+                RecoveryDisposition::Proceed,
+            ),
+            (
+                "vm-reset-after-durable-checkpoint",
+                SqliteResetBoundary::VirtualMachine,
+                SqliteFailurePoint::AfterDurableCheckpoint,
+                RecoveryCommitObservation::Durable,
+                RecoveryStoreHealth::Healthy,
+                RecoveryDisposition::Proceed,
+            ),
+            (
+                "power-loss-during-journal-sync",
+                SqliteResetBoundary::PowerLoss,
+                SqliteFailurePoint::DuringJournalSync,
+                RecoveryCommitObservation::Lost,
+                RecoveryStoreHealth::Stale,
+                RecoveryDisposition::ReconcileReadOnly,
+            ),
+            (
+                "commit-rejected-before-home-mutation",
+                SqliteResetBoundary::Process,
+                SqliteFailurePoint::CommitRejected,
+                RecoveryCommitObservation::Rejected,
+                RecoveryStoreHealth::Healthy,
+                RecoveryDisposition::ReconcileReadOnly,
+            ),
+            (
+                "missing-database-after-reset",
+                SqliteResetBoundary::VirtualMachine,
+                SqliteFailurePoint::MissingDatabase,
+                RecoveryCommitObservation::Corrupt,
+                RecoveryStoreHealth::Missing,
+                RecoveryDisposition::RebuildFromData,
+            ),
+            (
+                "corrupt-main-state-after-reset",
+                SqliteResetBoundary::VirtualMachine,
+                SqliteFailurePoint::CorruptMainState,
+                RecoveryCommitObservation::Corrupt,
+                RecoveryStoreHealth::Corrupt,
+                RecoveryDisposition::RebuildFromData,
+            ),
+            (
+                "corrupt-journal-after-power-loss",
+                SqliteResetBoundary::PowerLoss,
+                SqliteFailurePoint::CorruptJournal,
+                RecoveryCommitObservation::Corrupt,
+                RecoveryStoreHealth::Corrupt,
+                RecoveryDisposition::RebuildFromData,
+            ),
+        ];
+
+        self.cases
+            .iter()
+            .enumerate()
+            .flat_map(|(candidate_index, candidate)| {
+                scenarios.iter().map(
+                    move |(
+                        scenario_id,
+                        reset,
+                        failure,
+                        observation,
+                        expected_health,
+                        expected_disposition,
+                    )| SqliteEvaluationFixture {
+                        case_id: format!("candidate-{candidate_index}-{scenario_id}"),
+                        candidate: *candidate,
+                        reset: *reset,
+                        failure: *failure,
+                        observation: *observation,
+                        expected_health: *expected_health,
+                        expected_disposition: *expected_disposition,
+                        permits_home_mutation: *expected_disposition
+                            == RecoveryDisposition::Proceed,
+                    },
+                )
+            })
+            .collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqliteResetBoundary {
+    Process,
+    VirtualMachine,
+    PowerLoss,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SqliteFailurePoint {
+    AfterDurableDirtyIntent,
+    AfterDurableCheckpoint,
+    DuringJournalSync,
+    CommitRejected,
+    MissingDatabase,
+    CorruptMainState,
+    CorruptJournal,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SqliteEvaluationFixture {
+    pub case_id: String,
+    pub candidate: SqliteEvaluationCase,
+    pub reset: SqliteResetBoundary,
+    pub failure: SqliteFailurePoint,
+    pub observation: RecoveryCommitObservation,
+    pub expected_health: RecoveryStoreHealth,
+    pub expected_disposition: RecoveryDisposition,
+    pub permits_home_mutation: bool,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SqlitePrototypeError {
@@ -157,8 +333,8 @@ impl SqlitePrototype {
         let output = self.run(&format!(
             "PRAGMA journal_mode={journal};\nPRAGMA synchronous={synchronous};\nPRAGMA wal_autocheckpoint={};\n",
             match candidate.checkpoint {
-                dwv_recovery::SqliteCheckpointPolicy::Automatic => 1000,
-                dwv_recovery::SqliteCheckpointPolicy::Explicit => 0,
+                SqliteCheckpointPolicy::Automatic => 1000,
+                SqliteCheckpointPolicy::Explicit => 0,
             }
         ))?;
         Ok(SqliteConfigurationReport {
@@ -479,12 +655,12 @@ pub struct SqliteRecoveryStore {
     memory: MemoryRecoveryStore,
     _lock: File,
     #[cfg(test)]
-    failure_point: Option<SqliteFailurePoint>,
+    failure_point: Option<SqliteCommitFailurePoint>,
 }
 
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SqliteFailurePoint {
+enum SqliteCommitFailurePoint {
     AfterCommitIntent,
     AfterManifestWrite,
 }
@@ -646,7 +822,7 @@ impl SqliteRecoveryStore {
     }
 
     #[cfg(test)]
-    fn fail_at(&mut self, failure_point: SqliteFailurePoint) {
+    fn fail_at(&mut self, failure_point: SqliteCommitFailurePoint) {
         self.failure_point = Some(failure_point);
     }
     pub fn snapshot(&self) -> Result<RecoverySnapshot, RecoveryError> {
@@ -879,7 +1055,7 @@ impl RecoveryStateStore for SqliteRecoveryStore {
         write_commit_intent(self.prototype.database_path(), &intent)
             .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected))?;
         #[cfg(test)]
-        if self.failure_point == Some(SqliteFailurePoint::AfterCommitIntent) {
+        if self.failure_point == Some(SqliteCommitFailurePoint::AfterCommitIntent) {
             self.failure_point = None;
             return Err(RecoveryError::CommitNotDurable(
                 RecoveryCommitObservation::Lost,
@@ -889,7 +1065,7 @@ impl RecoveryStateStore for SqliteRecoveryStore {
             .write_manifest_if_generation(expected, &proposed)
             .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Lost))?;
         #[cfg(test)]
-        if self.failure_point == Some(SqliteFailurePoint::AfterManifestWrite) {
+        if self.failure_point == Some(SqliteCommitFailurePoint::AfterManifestWrite) {
             self.failure_point = None;
             return Err(RecoveryError::CommitNotDurable(
                 RecoveryCommitObservation::Lost,
@@ -1105,8 +1281,7 @@ mod tests {
     };
     use dwv_recovery::{
         MemoryRecoveryStore, RebuildId, RebuildState, RebuildTargetIdentity, RecoveryMutation,
-        RecoveryStateStore, SqliteCheckpointPolicy, SqliteEvaluationMatrix, SqliteJournalMode,
-        SqliteSynchronousMode,
+        RecoveryStateStore,
     };
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
 
@@ -1364,11 +1539,11 @@ mod tests {
     fn uncertain_commit_reopens_to_exactly_prior_or_proposed_state() {
         for (failure_point, expected_generation) in [
             (
-                SqliteFailurePoint::AfterCommitIntent,
+                SqliteCommitFailurePoint::AfterCommitIntent,
                 RecoveryGeneration::ZERO,
             ),
             (
-                SqliteFailurePoint::AfterManifestWrite,
+                SqliteCommitFailurePoint::AfterManifestWrite,
                 RecoveryGeneration(1),
             ),
         ] {
@@ -1421,7 +1596,7 @@ mod tests {
             job: dwv_recovery::JobId(9),
             cursor: dwv_recovery::RecoveryCursor(4),
         });
-        store.fail_at(SqliteFailurePoint::AfterCommitIntent);
+        store.fail_at(SqliteCommitFailurePoint::AfterCommitIntent);
         assert!(matches!(
             store.commit_durable(proposed),
             Err(RecoveryError::CommitNotDurable(
@@ -1621,5 +1796,22 @@ mod tests {
         drop(claim);
         std::fs::remove_file(marker).unwrap();
         std::fs::remove_file(ready_path).unwrap();
+    }
+
+    #[test]
+    fn evaluation_fixtures_cover_candidates_and_conservative_failures() {
+        let matrix = SqliteEvaluationMatrix::baseline();
+        let fixtures = matrix.fixtures();
+        assert_eq!(fixtures.len(), matrix.cases.len() * 7);
+        assert!(fixtures.iter().any(|fixture| {
+            fixture.failure == SqliteFailurePoint::MissingDatabase
+                && !fixture.permits_home_mutation
+                && fixture.expected_disposition == RecoveryDisposition::RebuildFromData
+        }));
+        assert!(fixtures.iter().any(|fixture| {
+            fixture.failure == SqliteFailurePoint::CommitRejected
+                && fixture.expected_disposition == RecoveryDisposition::ReconcileReadOnly
+                && !fixture.permits_home_mutation
+        }));
     }
 }
