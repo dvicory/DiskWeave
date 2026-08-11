@@ -7,6 +7,7 @@ description: Audit and repair semantic drift across DiskWeave canonical OpenSpec
 
 Use this skill to review and repair **semantic drift**.
 
+<!-- dwv:req req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path -->
 This is the reasoning layer above DiskWeave's deterministic knowledge checks.
 
 Deterministic tooling can establish facts such as:
@@ -107,14 +108,15 @@ At minimum:
 cargo xtask docs knowledge readiness
 ```
 
-For each requirement in the initial scope:
+For a bounded initial scope, retrieve one complete packet:
 
 ```bash
-cargo xtask docs knowledge inspect <requirement-id>
-cargo xtask docs knowledge context <requirement-id>
+cargo xtask docs knowledge context <requirement-id>...
 ```
 
-Use repository relationship/ownership views when available.
+A successful packet supplies the complete canonical units for its selected requirements, transitive prerequisites, and direct dependents. Reason from those units without rereading canonical specs merely to reconstruct semantic context already present in the packet or adding `inspect` or `ownership` retrieval for the same need. Open the located canonical source normally when the task requires editing or source-level inspection. If a bound failure returns `suggested_requests`, run every request in that complete set; an empty set means the required semantic scope cannot be split without omission.
+
+Use `knowledge inspect <requirement-id>` alone for exact local-unit lookup, `knowledge ownership <requirement-id>` alone for direct owner/refiner/dependent troubleshooting, and `knowledge affected <requirement-id>` after an owner or relationship changes. For a deliberate full semantic-component audit, use `cargo xtask docs knowledge audit-context <requirement-id>`. Never combine overlapping `inspect`, `ownership`, and `context` calls for one need or choose packet fields, depth, direction, or closure policy.
 
 At a revision boundary, inspect deterministic impact information before deciding what requires semantic review.
 

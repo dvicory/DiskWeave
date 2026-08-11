@@ -11,9 +11,11 @@ use super::{
 };
 
 const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v2";
-const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v2";
-const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v1";
-const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v2";
+const INSPECT_SCHEMA: &str = "dwv.knowledge.inspect.v1";
+const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v3";
+const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v2";
+const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v3";
+const AUDIT_CONTEXT_SCHEMA: &str = "dwv.knowledge.audit-context.v1";
 const OBJECTS_PATH: &str = "target/dwv-docs/knowledge/objects.json";
 const REVIEWED_PATH: &str = "docs/reviewed-requirements.toml";
 const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v2";
@@ -31,6 +33,10 @@ pub(super) struct RequirementObject {
     pub capability: String,
     pub source_path: String,
     pub heading_path: Vec<String>,
+    #[serde(skip)]
+    pub source_start_line: usize,
+    #[serde(skip)]
+    pub source_end_line: usize,
     pub local_semantic_fingerprint: String,
     pub effective_semantic_fingerprint: String,
     pub requires: Vec<String>,
@@ -38,6 +44,15 @@ pub(super) struct RequirementObject {
     pub required_by: Vec<String>,
     pub refined_by: Vec<String>,
     pub body: String,
+}
+
+impl RequirementObject {
+    fn source_locator(&self) -> String {
+        format!(
+            "{}:{}-{}",
+            self.source_path, self.source_start_line, self.source_end_line
+        )
+    }
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
@@ -132,6 +147,8 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
                 .map(|next| next.start)
                 .unwrap_or(text.len());
             let body = normalize_markdown(&text[heading.start..end])?;
+            let source_start_line = text[..heading.start].lines().count() + 1;
+            let source_end_line = text[..end].lines().count().max(source_start_line);
             if body.len() > app.bounds.max_source_bytes {
                 return Err(AppError::new("unit_bound_exceeded", id));
             }
@@ -143,6 +160,8 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
                 capability: capability.clone(),
                 source_path: relative.clone(),
                 heading_path: heading.path.clone(),
+                source_start_line,
+                source_end_line,
                 local_semantic_fingerprint: digest_text(&body),
                 effective_semantic_fingerprint: String::new(),
                 requires: Vec::new(),
@@ -539,29 +558,76 @@ fn capability_aggregation(objects: &[RequirementObject]) -> Value {
     Value::Object(result)
 }
 
+/// dwv:req req.documentation-knowledge-architecture.agent-context-is-graph-selected-and-reproducible
 pub(super) fn inspect(app: &App, id: String) -> Result<Value, AppError> {
-    objects(app)?
-        .into_iter()
-        .find(|object| object.semantic_id == id)
-        .map(|object| serde_json::to_value(object).expect("object serializes"))
-        .ok_or_else(|| AppError::new("unknown_requirement", id))
+    let model = knowledge_model(app)?;
+    let requirement = requirement_by_id(&model, &id)?;
+    let mut unit = requirement_identity(requirement);
+    unit["relationships"] = direct_relationships(requirement);
+    unit["body"] = json!(&requirement.body);
+    Ok(json!({
+        "schema": INSPECT_SCHEMA,
+        "requirement": unit,
+    }))
 }
-pub(super) fn context(app: &App, id: String) -> Result<Value, AppError> {
-    ownership_packet(app, id, CONTEXT_SCHEMA)
+
+pub(super) fn context(app: &App, ids: Vec<String>) -> Result<Value, AppError> {
+    context_packet(app, ids, false)
+}
+
+pub(super) fn audit_context(app: &App, id: String) -> Result<Value, AppError> {
+    context_packet(app, vec![id], true)
 }
 
 pub(super) fn ownership(app: &App, id: String) -> Result<Value, AppError> {
-    ownership_packet(app, id, OWNERSHIP_SCHEMA)
+    let model = knowledge_model(app)?;
+    let requirement = requirement_by_id(&model, &id)?;
+    let reviewed = load_reviewed(app)?;
+    let references = scan_references(app)?;
+    let value = ownership_result(app, requirement, &reviewed, &references);
+    enforce_selected_packet_bound(
+        app,
+        "ownership_bound_exceeded",
+        "ownership",
+        &BTreeSet::from([id]),
+        &value,
+        Vec::new(),
+    )?;
+    Ok(value)
 }
 
-fn ownership_packet(app: &App, id: String, schema: &str) -> Result<Value, AppError> {
-    let model = knowledge_model(app)?;
-    let requirement = model
+fn requirement_by_id<'a>(
+    model: &'a KnowledgeModel,
+    id: &str,
+) -> Result<&'a RequirementObject, AppError> {
+    model
         .objects
         .iter()
         .find(|object| object.semantic_id == id)
-        .cloned()
-        .ok_or_else(|| AppError::new("unknown_requirement", &id))?;
+        .ok_or_else(|| AppError::new("unknown_requirement", id))
+}
+
+fn requirement_identity(requirement: &RequirementObject) -> Value {
+    json!({
+        "semantic_id": requirement.semantic_id,
+        "title": requirement.title,
+        "capability": requirement.capability,
+        "source": requirement.source_locator(),
+        "local_semantic_fingerprint": requirement.local_semantic_fingerprint,
+        "effective_semantic_fingerprint": requirement.effective_semantic_fingerprint,
+    })
+}
+
+fn direct_relationships(requirement: &RequirementObject) -> Value {
+    json!({
+        "requires": requirement.requires,
+        "refines": requirement.refines,
+        "required_by": requirement.required_by,
+        "refined_by": requirement.refined_by,
+    })
+}
+
+fn load_reviewed(app: &App) -> Result<ReviewedState, AppError> {
     let state: ReviewedState = read_toml(&app.root, REVIEWED_PATH)?;
     if state.schema != REVIEWED_SCHEMA {
         return Err(AppError::new(
@@ -569,14 +635,31 @@ fn ownership_packet(app: &App, id: String, schema: &str) -> Result<Value, AppErr
             state.schema,
         ));
     }
+    Ok(state)
+}
+
+fn reviewed_fact(state: &ReviewedState, id: &str) -> Value {
+    json!({
+        "local_fingerprint": state.local_fingerprints.get(id),
+        "effective_fingerprint": state.effective_fingerprints.get(id),
+        "outcome": state.outcomes.get(id),
+        "reason": state.reasons.get(id),
+    })
+}
+
+fn packet_references(
+    references: &[ScanRef],
+    selected: &BTreeSet<String>,
+    max_items: usize,
+) -> (Value, Value) {
     let mut implementation = Vec::new();
     let mut evidence = Vec::new();
     let mut curriculum = Vec::new();
     let mut documentation = Vec::new();
-    let mut refs = scan_references(app)?;
-    refs.retain(|reference| reference.id == id);
-    refs.sort_by(|a, b| (&a.kind, &a.path, a.line).cmp(&(&b.kind, &b.path, b.line)));
-    for reference in refs {
+    for reference in references
+        .iter()
+        .filter(|reference| selected.contains(&reference.id))
+    {
         let (relation, destination) = if reference.kind == "rust" {
             ("implements", &mut implementation)
         } else if reference.kind == "verification" {
@@ -587,74 +670,242 @@ fn ownership_packet(app: &App, id: String, schema: &str) -> Result<Value, AppErr
             ("explained_by", &mut documentation)
         };
         destination.push(Reference {
-            kind: reference.kind,
-            id: id.clone(),
-            path: reference.path,
+            kind: reference.kind.clone(),
+            id: reference.id.clone(),
+            path: reference.path.clone(),
             relation: relation.to_owned(),
             line: Some(reference.line),
         });
     }
-    let order = owner_before_dependent_order(&model, &id);
-    let totals = [
-        ("implementation", implementation.len()),
-        ("evidence", evidence.len()),
-        ("curriculum", curriculum.len()),
-        ("documentation", documentation.len()),
-        ("reading_order", order.len()),
-    ]
-    .into_iter()
-    .collect::<BTreeMap<_, _>>();
-    implementation.truncate(app.bounds.max_units);
-    evidence.truncate(app.bounds.max_units);
-    curriculum.truncate(app.bounds.max_units);
-    documentation.truncate(app.bounds.max_units);
-    let mut order = order;
-    order.truncate(app.bounds.max_units);
-    let value = json!({
-        "schema": schema,
-        "requirement": requirement,
-        "relationships": {
-            "requires": requirement.requires,
-            "refines": requirement.refines,
-            "required_by": requirement.required_by,
-            "refined_by": requirement.refined_by,
-        },
-        "reading_order": order,
-        "reviewed": {
-            "local_fingerprint": state.local_fingerprints.get(&id),
-            "effective_fingerprint": state.effective_fingerprints.get(&id),
-            "outcome": state.outcomes.get(&id),
-            "reason": state.reasons.get(&id),
-        },
-        "references": {
+    let implementation_omitted = bound_reference_category(&mut implementation, max_items);
+    let evidence_omitted = bound_reference_category(&mut evidence, max_items);
+    let curriculum_omitted = bound_reference_category(&mut curriculum, max_items);
+    let documentation_omitted = bound_reference_category(&mut documentation, max_items);
+    let omitted = selected
+        .iter()
+        .map(|id| {
+            (
+                id.clone(),
+                json!({
+                    "implementation": implementation_omitted.get(id).copied().unwrap_or(0),
+                    "evidence": evidence_omitted.get(id).copied().unwrap_or(0),
+                    "curriculum": curriculum_omitted.get(id).copied().unwrap_or(0),
+                    "documentation": documentation_omitted.get(id).copied().unwrap_or(0),
+                }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+    (
+        json!({
             "implementation": implementation,
             "evidence": evidence,
             "curriculum": curriculum,
             "documentation": documentation,
-        },
+        }),
+        Value::Object(omitted),
+    )
+}
+
+fn bound_reference_category(
+    references: &mut Vec<Reference>,
+    max_items: usize,
+) -> BTreeMap<String, usize> {
+    references.sort_by(|left, right| {
+        (&left.kind, &left.id, &left.path, &left.relation, left.line).cmp(&(
+            &right.kind,
+            &right.id,
+            &right.path,
+            &right.relation,
+            right.line,
+        ))
+    });
+    references.dedup();
+    let mut omitted = BTreeMap::<String, usize>::new();
+    for reference in references.iter().skip(max_items) {
+        *omitted.entry(reference.id.clone()).or_default() += 1;
+    }
+    references.truncate(max_items);
+    omitted
+}
+
+fn ownership_result(
+    app: &App,
+    requirement: &RequirementObject,
+    reviewed: &ReviewedState,
+    all_references: &[ScanRef],
+) -> Value {
+    let selected = BTreeSet::from([requirement.semantic_id.clone()]);
+    let (references, omitted) = packet_references(all_references, &selected, app.bounds.max_units);
+    json!({
+        "schema": OWNERSHIP_SCHEMA,
+        "requirement": requirement_identity(requirement),
+        "relationships": direct_relationships(requirement),
+        "reviewed": reviewed_fact(reviewed, &requirement.semantic_id),
+        "references": references,
         "bounds": {
             "max_items_per_category": app.bounds.max_units,
             "max_context_bytes": app.bounds.max_context_bytes,
         },
-        "omitted": {
-            "implementation": totals["implementation"].saturating_sub(app.bounds.max_units),
-            "evidence": totals["evidence"].saturating_sub(app.bounds.max_units),
-            "curriculum": totals["curriculum"].saturating_sub(app.bounds.max_units),
-            "documentation": totals["documentation"].saturating_sub(app.bounds.max_units),
-            "reading_order": totals["reading_order"].saturating_sub(app.bounds.max_units),
-        },
-    });
-    if serde_json::to_vec(&value)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX)
-        > app.bounds.max_context_bytes
-    {
-        return Err(AppError::new("context_bound_exceeded", id));
+        "omitted": omitted,
+    })
+}
+
+fn context_packet(app: &App, ids: Vec<String>, audit: bool) -> Result<Value, AppError> {
+    if ids.is_empty() {
+        return Err(AppError::new(
+            "usage",
+            if audit {
+                "audit-context requires at least one ID"
+            } else {
+                "context requires at least one ID"
+            },
+        ));
     }
+    let selected = ids.into_iter().collect::<BTreeSet<_>>();
+    if selected.len() > app.bounds.max_units {
+        return Err(AppError::new(
+            "context_unit_bound_exceeded",
+            selected.len().to_string(),
+        ));
+    }
+    let model = knowledge_model(app)?;
+    for id in &selected {
+        requirement_by_id(&model, id)?;
+    }
+    let reviewed = load_reviewed(app)?;
+    let all_references = scan_references(app)?;
+    let value = context_packet_value(app, &model, &reviewed, &all_references, &selected, audit);
+    let suggested_requests = if !audit && !packet_fits(app, &value) {
+        context_split_requests(app, &model, &reviewed, &all_references, &selected)
+    } else {
+        Vec::new()
+    };
+    enforce_selected_packet_bound(
+        app,
+        if audit {
+            "audit_context_bound_exceeded"
+        } else {
+            "context_bound_exceeded"
+        },
+        if audit { "audit-context" } else { "context" },
+        &selected,
+        &value,
+        suggested_requests,
+    )?;
     Ok(value)
 }
 
-fn owner_before_dependent_order(model: &KnowledgeModel, selected: &str) -> Vec<String> {
+fn context_packet_value(
+    app: &App,
+    model: &KnowledgeModel,
+    reviewed: &ReviewedState,
+    all_references: &[ScanRef],
+    selected: &BTreeSet<String>,
+    audit: bool,
+) -> Value {
+    let component = if audit {
+        connected_component(model, selected)
+    } else {
+        ordinary_context_component(model, selected)
+    };
+    let reading_order = topological_order(model, &component);
+    let requirements = reading_order
+        .iter()
+        .map(|id| {
+            let requirement =
+                requirement_by_id(model, id).expect("context component IDs are current");
+            let mut unit = requirement_identity(requirement);
+            unit["body"] = json!(&requirement.body);
+            unit
+        })
+        .collect::<Vec<_>>();
+    let relationships = model
+        .relationships
+        .iter()
+        .filter(|relationship| {
+            component.contains(&relationship.source) && component.contains(&relationship.target)
+        })
+        .map(|relationship| {
+            json!({
+                "source": relationship.source,
+                "kind": relationship.kind,
+                "target": relationship.target,
+            })
+        })
+        .collect::<Vec<_>>();
+    let review_facts = selected
+        .iter()
+        .map(|id| (id.clone(), reviewed_fact(reviewed, id)))
+        .collect::<BTreeMap<_, _>>();
+    let (references, omitted) = packet_references(all_references, selected, app.bounds.max_units);
+    json!({
+        "schema": if audit { AUDIT_CONTEXT_SCHEMA } else { CONTEXT_SCHEMA },
+        "requirements": requirements,
+        "relationships": relationships,
+        "reviewed": review_facts,
+        "references": references,
+        "reading_order": reading_order,
+        "bounds": {
+            "max_items_per_category": app.bounds.max_units,
+            "max_context_bytes": app.bounds.max_context_bytes,
+        },
+        "omitted": omitted,
+    })
+}
+
+fn context_split_requests(
+    app: &App,
+    model: &KnowledgeModel,
+    reviewed: &ReviewedState,
+    all_references: &[ScanRef],
+    selected: &BTreeSet<String>,
+) -> Vec<Vec<String>> {
+    if selected.len() < 2 {
+        return Vec::new();
+    }
+    let requests = selected
+        .iter()
+        .map(|id| vec![id.clone()])
+        .collect::<Vec<_>>();
+    if requests.iter().all(|request| {
+        let candidate = request.iter().cloned().collect::<BTreeSet<_>>();
+        packet_fits(
+            app,
+            &context_packet_value(app, model, reviewed, all_references, &candidate, false),
+        )
+    }) {
+        requests
+    } else {
+        Vec::new()
+    }
+}
+
+fn ordinary_context_component(
+    model: &KnowledgeModel,
+    selected: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut component = selected.clone();
+    let mut queue = VecDeque::from_iter(selected.iter().cloned());
+    while let Some(id) = queue.pop_front() {
+        for relationship in model
+            .relationships
+            .iter()
+            .filter(|relationship| relationship.source == id)
+        {
+            if component.insert(relationship.target.clone()) {
+                queue.push_back(relationship.target.clone());
+            }
+        }
+    }
+    for relationship in &model.relationships {
+        if selected.contains(&relationship.target) {
+            component.insert(relationship.source.clone());
+        }
+    }
+    component
+}
+
+fn connected_component(model: &KnowledgeModel, selected: &BTreeSet<String>) -> BTreeSet<String> {
     let mut neighbors = BTreeMap::<String, BTreeSet<String>>::new();
     for relationship in &model.relationships {
         neighbors
@@ -666,8 +917,8 @@ fn owner_before_dependent_order(model: &KnowledgeModel, selected: &str) -> Vec<S
             .or_default()
             .insert(relationship.source.clone());
     }
-    let mut component = BTreeSet::from([selected.to_owned()]);
-    let mut queue = VecDeque::from([selected.to_owned()]);
+    let mut component = selected.clone();
+    let mut queue = VecDeque::from_iter(selected.iter().cloned());
     while let Some(id) = queue.pop_front() {
         for neighbor in neighbors.get(&id).into_iter().flatten() {
             if component.insert(neighbor.clone()) {
@@ -675,7 +926,41 @@ fn owner_before_dependent_order(model: &KnowledgeModel, selected: &str) -> Vec<S
             }
         }
     }
-    topological_order(model, &component)
+    component
+}
+
+fn packet_fits(app: &App, value: &Value) -> bool {
+    serde_json::to_vec(value)
+        .map(|bytes| bytes.len())
+        .unwrap_or(usize::MAX)
+        <= app.bounds.max_context_bytes
+}
+
+fn enforce_selected_packet_bound(
+    app: &App,
+    code: &str,
+    command: &str,
+    selected: &BTreeSet<String>,
+    value: &Value,
+    suggested_requests: Vec<Vec<String>>,
+) -> Result<(), AppError> {
+    if packet_fits(app, value) {
+        return Ok(());
+    }
+    Err(AppError::new(
+        code,
+        if suggested_requests.is_empty() {
+            "the complete packet cannot be split without omission; increase max_context_bytes"
+        } else {
+            "retry the deterministic complete-packet split in details"
+        },
+    )
+    .details(json!({
+        "command": command,
+        "selected_ids": selected,
+        "suggested_requests": suggested_requests,
+        "max_context_bytes": app.bounds.max_context_bytes,
+    })))
 }
 
 fn topological_order(model: &KnowledgeModel, component: &BTreeSet<String>) -> Vec<String> {
@@ -734,7 +1019,7 @@ pub(super) fn affected(
         .map(|requirement| (requirement.semantic_id.as_str(), requirement))
         .collect::<BTreeMap<_, _>>();
     let references = scan_references(app)?;
-    let reviewed: ReviewedState = read_toml(&app.root, REVIEWED_PATH)?;
+    let reviewed = load_reviewed(app)?;
     let mut selected = BTreeMap::<String, (BTreeSet<String>, bool)>::new();
     let mut path_impacts = Vec::new();
 
@@ -860,7 +1145,7 @@ pub(super) fn affected(
     }
     let mut impacts = Vec::new();
     for (id, (reasons, review_required)) in selected {
-        let packet = context(app, id.clone())?;
+        let packet = ownership_result(app, current[id.as_str()], &reviewed, &references);
         let pages = packet["references"]["documentation"]
             .as_array()
             .into_iter()
@@ -883,7 +1168,7 @@ pub(super) fn affected(
             "review_required": review_required,
             "reasons": reasons,
             "pages": pages,
-            "context": packet
+            "ownership": packet
         }));
     }
     let value = json!({
@@ -2570,7 +2855,7 @@ mod tests {
                 .all(|reference| !reference.path.starts_with("docs/milestones/"))
         );
         write_reviewed(&root, &objects(&app).unwrap());
-        let packet = context(&app, "req.cap.one".to_owned()).unwrap();
+        let packet = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
         assert!(
             packet["references"]["implementation"]
                 .as_array()
@@ -2601,7 +2886,7 @@ mod tests {
 
         let before_objects = objects(&app).unwrap();
         let before_references = scan_references(&app).unwrap();
-        let before_context = context(&app, "req.cap.one".to_owned()).unwrap();
+        let before_context = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
         let before_ownership = ownership(&app, "req.cap.one".to_owned()).unwrap();
         let before_readiness = readiness(&app).unwrap();
 
@@ -2614,7 +2899,7 @@ mod tests {
         assert_eq!(objects(&app).unwrap(), before_objects);
         assert_eq!(scan_references(&app).unwrap(), before_references);
         assert_eq!(
-            context(&app, "req.cap.one".to_owned()).unwrap(),
+            context(&app, vec!["req.cap.one".to_owned()]).unwrap(),
             before_context
         );
         assert_eq!(
@@ -2806,7 +3091,7 @@ mod tests {
         assert_eq!(result["impacts"].as_array().unwrap().len(), 1);
         assert_eq!(result["impacts"][0]["semantic_id"], "req.cap.one");
         assert_eq!(
-            result["impacts"][0]["context"]["omitted"]["documentation"],
+            result["impacts"][0]["ownership"]["omitted"]["req.cap.one"]["documentation"],
             1
         );
         assert_eq!(result["impacts"][0]["pages"].as_array().unwrap().len(), 1);
@@ -2845,7 +3130,7 @@ mod tests {
             error.details.unwrap()["gate_counts"]["local-fingerprint-suspect"],
             1
         );
-        let packet = context(&app, "req.cap.one".to_owned()).unwrap();
+        let packet = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
         assert_eq!(
             packet["references"]["documentation"]
                 .as_array()
@@ -2903,14 +3188,238 @@ mod tests {
         assert_eq!(a.requires, ["req.cap.b"]);
         assert_eq!(b.required_by, ["req.cap.a"]);
         assert_eq!(b.refines, ["req.cap.c"]);
+        let component =
+            ordinary_context_component(&model, &BTreeSet::from(["req.cap.a".to_owned()]));
         assert_eq!(
-            owner_before_dependent_order(&model, "req.cap.a"),
+            topological_order(&model, &component),
             ["req.cap.c", "req.cap.b", "req.cap.a"]
         );
         let aggregation = capability_aggregation(&model.objects);
         assert_eq!(
             aggregation["cap"]["requirements"].as_array().unwrap().len(),
             3
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn inspect_uses_exact_source_locator_without_line_sensitive_identity() {
+        let (root, mut app) = fixture("inspect-source-locator");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        fs::write(&spec, requirement("The system SHALL remain stable.")).unwrap();
+        app.bounds.max_context_bytes = 1;
+
+        let before = inspect(&app, "req.cap.one".to_owned()).unwrap();
+        assert_eq!(before["schema"], INSPECT_SCHEMA);
+        assert_eq!(
+            before["requirement"]["source"],
+            "openspec/specs/cap/spec.md:5-8"
+        );
+        assert!(before["requirement"].get("source_path").is_none());
+        assert!(before["requirement"].get("heading_path").is_none());
+
+        fs::write(
+            &spec,
+            format!("\n\n{}", requirement("The system SHALL remain stable.")),
+        )
+        .unwrap();
+        let after = inspect(&app, "req.cap.one".to_owned()).unwrap();
+        assert_eq!(
+            after["requirement"]["source"],
+            "openspec/specs/cap/spec.md:7-10"
+        );
+        for field in [
+            "semantic_id",
+            "title",
+            "capability",
+            "local_semantic_fingerprint",
+            "effective_semantic_fingerprint",
+            "body",
+        ] {
+            assert_eq!(before["requirement"][field], after["requirement"][field]);
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_batches_units_and_keeps_whole_component_for_explicit_audit() {
+        let (root, mut app) = fixture("bounded-context");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                (
+                    "req.cap.a",
+                    &[("requires", "req.cap.b"), ("requires", "req.cap.x")],
+                    "A SHALL combine B and X.",
+                ),
+                ("req.cap.b", &[("requires", "req.cap.c")], "B SHALL use C."),
+                ("req.cap.c", &[], "C SHALL own the policy."),
+                ("req.cap.d", &[("requires", "req.cap.a")], "D SHALL use A."),
+                ("req.cap.x", &[], "X SHALL own an unrelated input."),
+                ("req.cap.y", &[], "Y SHALL own an independent policy."),
+            ]),
+        )
+        .unwrap();
+        assert_eq!(
+            context(&app, vec!["req.cap.unknown".to_owned()])
+                .unwrap_err()
+                .code,
+            "unknown_requirement"
+        );
+        write_reviewed(&root, &objects(&app).unwrap());
+
+        let packet = context(
+            &app,
+            vec![
+                "req.cap.b".to_owned(),
+                "req.cap.c".to_owned(),
+                "req.cap.b".to_owned(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(packet["schema"], CONTEXT_SCHEMA);
+        let requirement_ids = packet["requirements"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|unit| unit["semantic_id"].as_str().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(requirement_ids, ["req.cap.c", "req.cap.b", "req.cap.a"]);
+        assert!(
+            packet["requirements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|unit| unit["body"].as_str().is_some())
+        );
+        assert_eq!(
+            packet["reading_order"],
+            json!(["req.cap.c", "req.cap.b", "req.cap.a"])
+        );
+        assert_eq!(packet["relationships"].as_array().unwrap().len(), 2);
+        assert!(!packet.to_string().contains("req.cap.x"));
+
+        let overlapping = [
+            inspect(&app, "req.cap.b".to_owned()).unwrap(),
+            ownership(&app, "req.cap.b".to_owned()).unwrap(),
+            context(&app, vec!["req.cap.b".to_owned()]).unwrap(),
+            inspect(&app, "req.cap.c".to_owned()).unwrap(),
+            ownership(&app, "req.cap.c".to_owned()).unwrap(),
+            context(&app, vec!["req.cap.c".to_owned()]).unwrap(),
+        ];
+        let overlapping_bytes = overlapping
+            .iter()
+            .map(|value| serde_json::to_vec(value).unwrap().len())
+            .sum::<usize>();
+        assert!(serde_json::to_vec(&packet).unwrap().len() < overlapping_bytes);
+
+        let audit = audit_context(&app, "req.cap.b".to_owned()).unwrap();
+        assert_eq!(audit["schema"], AUDIT_CONTEXT_SCHEMA);
+        assert_eq!(
+            audit["reading_order"],
+            json!([
+                "req.cap.c",
+                "req.cap.b",
+                "req.cap.x",
+                "req.cap.a",
+                "req.cap.d"
+            ])
+        );
+        assert_eq!(
+            audit["requirements"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|unit| unit["semantic_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            audit["reading_order"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|id| id.as_str().unwrap())
+                .collect::<Vec<_>>()
+        );
+
+        let b = context(&app, vec!["req.cap.b".to_owned()]).unwrap();
+        let y = context(&app, vec!["req.cap.y".to_owned()]).unwrap();
+        let a = context(&app, vec!["req.cap.a".to_owned()]).unwrap();
+        let d = context(&app, vec!["req.cap.d".to_owned()]).unwrap();
+        app.bounds.max_context_bytes = serde_json::to_vec(&b)
+            .unwrap()
+            .len()
+            .max(serde_json::to_vec(&y).unwrap().len());
+        let split =
+            context(&app, vec!["req.cap.b".to_owned(), "req.cap.y".to_owned()]).unwrap_err();
+        assert_eq!(
+            split.details.unwrap()["suggested_requests"],
+            json!([["req.cap.b"], ["req.cap.y"]])
+        );
+
+        app.bounds.max_context_bytes = serde_json::to_vec(&a)
+            .unwrap()
+            .len()
+            .max(serde_json::to_vec(&d).unwrap().len());
+        let shared =
+            context(&app, vec!["req.cap.a".to_owned(), "req.cap.d".to_owned()]).unwrap_err();
+        assert_eq!(
+            shared.details.unwrap()["suggested_requests"],
+            json!([["req.cap.a"], ["req.cap.d"]])
+        );
+
+        app.bounds.max_context_bytes = 1;
+        let same_scope =
+            context(&app, vec!["req.cap.c".to_owned(), "req.cap.b".to_owned()]).unwrap_err();
+        assert_eq!(same_scope.code, "context_bound_exceeded");
+        assert_eq!(same_scope.details.unwrap()["suggested_requests"], json!([]));
+        let audit_error = audit_context(&app, "req.cap.b".to_owned()).unwrap_err();
+        assert_eq!(audit_error.code, "audit_context_bound_exceeded");
+        assert_eq!(
+            audit_error.details.unwrap()["suggested_requests"],
+            json!([])
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn batched_reference_omissions_are_attributable() {
+        let (root, mut app) = fixture("reference-omissions");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                ("req.cap.a", &[], "A SHALL own one policy."),
+                ("req.cap.b", &[], "B SHALL own another policy."),
+            ]),
+        )
+        .unwrap();
+        write_reviewed(&root, &objects(&app).unwrap());
+        for id in ["a", "b"] {
+            for index in 0..3 {
+                fs::write(
+                    root.join(format!("docs/{id}-{index}.md")),
+                    format!("Explanation for req.cap.{id}.\n"),
+                )
+                .unwrap();
+            }
+        }
+        app.bounds.max_units = 2;
+
+        let packet = context(&app, vec!["req.cap.a".to_owned(), "req.cap.b".to_owned()]).unwrap();
+        assert_eq!(
+            packet["omitted"],
+            json!({
+                "req.cap.a": {
+                    "implementation": 0,
+                    "evidence": 0,
+                    "curriculum": 0,
+                    "documentation": 1,
+                },
+                "req.cap.b": {
+                    "implementation": 0,
+                    "evidence": 0,
+                    "curriculum": 0,
+                    "documentation": 3,
+                },
+            })
         );
         fs::remove_dir_all(root).unwrap();
     }
@@ -3226,7 +3735,7 @@ mod tests {
         app.bounds.max_units = 2;
         let packet = ownership(&app, "req.cap.a".to_owned()).unwrap();
         assert_eq!(packet["schema"], OWNERSHIP_SCHEMA);
-        assert_eq!(packet["reading_order"], json!(["req.cap.b", "req.cap.a"]));
+        assert!(packet.get("reading_order").is_none());
         assert_eq!(
             packet["references"]["documentation"]
                 .as_array()
@@ -3234,7 +3743,7 @@ mod tests {
                 .len(),
             2
         );
-        assert_eq!(packet["omitted"]["documentation"], 1);
+        assert_eq!(packet["omitted"]["req.cap.a"]["documentation"], 1);
         assert!(packet.get("verdict").is_none());
         fs::remove_dir_all(root).unwrap();
     }

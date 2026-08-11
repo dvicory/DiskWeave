@@ -126,7 +126,7 @@ fn dispatch(args: &[String]) -> Result<Value, AppError> {
     match operation {
         "knowledge" => dispatch_knowledge(&app, &args[2..]),
         "planning-nomenclature" => knowledge::planning_nomenclature(&app),
-        "inspect" | "context" | "trace" | "why" | "ownership" | "affected" | "readiness" => {
+        "inspect" | "context" | "audit-context" | "ownership" | "affected" | "readiness" => {
             dispatch_knowledge(&app, args.get(1..).unwrap_or_default())
         }
         "doctor" => {
@@ -191,9 +191,10 @@ fn dispatch_knowledge(app: &App, args: &[String]) -> Result<Value, AppError> {
     match command {
         "help" => Ok(help_value()),
         "export" | "extract" | "export-sphinx" => knowledge::export(app),
-        "inspect" => knowledge::inspect(app, required_id(args, "inspect")?),
-        "context" | "trace" | "why" => knowledge::context(app, required_id(args, command)?),
-        "ownership" => knowledge::ownership(app, required_id(args, "ownership")?),
+        "inspect" => knowledge::inspect(app, required_exact_id(args, "inspect")?),
+        "context" => knowledge::context(app, required_ids(args, "context")?),
+        "audit-context" => knowledge::audit_context(app, required_exact_id(args, "audit-context")?),
+        "ownership" => knowledge::ownership(app, required_exact_id(args, "ownership")?),
         "affected" => {
             let mut ids = option_values(args, "--id");
             if let Some(id) = args.get(1).filter(|value| !value.starts_with("--")) {
@@ -223,6 +224,28 @@ fn required_id(args: &[String], operation: &str) -> Result<String, AppError> {
         .filter(|value| !value.starts_with("--"))
         .cloned()
         .ok_or_else(|| AppError::new("usage", format!("{operation} requires an ID")))
+}
+
+fn required_exact_id(args: &[String], operation: &str) -> Result<String, AppError> {
+    let ids = required_ids(args, operation)?;
+    if ids.len() != 1 {
+        return Err(AppError::new(
+            "usage",
+            format!("{operation} requires exactly one ID"),
+        ));
+    }
+    Ok(ids.into_iter().next().expect("one ID was required"))
+}
+
+fn required_ids(args: &[String], operation: &str) -> Result<Vec<String>, AppError> {
+    let ids = args.get(1..).unwrap_or_default();
+    if ids.is_empty() || ids.iter().any(|value| value.starts_with("--")) {
+        return Err(AppError::new(
+            "usage",
+            format!("{operation} requires one or more IDs and accepts no options"),
+        ));
+    }
+    Ok(ids.to_vec())
 }
 
 fn workspace_root() -> PathBuf {
@@ -394,18 +417,26 @@ fn run_sphinx(root: &Path, command: &str) -> Result<Value, AppError> {
 fn help_value() -> Value {
     json!({"schema": CLI_SCHEMA, "usage": "cargo xtask docs <operation>", "operations": [
         "help", "schema", "doctor", "check [--base <revision>]", "build", "serve", "clean-room",
-        "planning-nomenclature", "knowledge export|extract|export-sphinx", "inspect <id>",
-        "context|trace|why <id>", "ownership <id>",
-        "affected <id>|--id <id>|--path <repo-relative-path>",
+        "planning-nomenclature", "knowledge export|extract|export-sphinx",
+        "inspect <id> (exact source-unit-bounded canonical unit)",
+        "ownership <id> (direct ownership and endpoint facts)",
+        "context <id>... (complete canonical units for the directed task scope)",
+        "audit-context <id> (complete canonical units for the connected-component audit)",
+        "affected <id>|--id <id>|--path <repo-relative-path> (downstream change impact)",
         "knowledge doctor --path <repo-relative-path>", "readiness|check",
         "resolve <id> --outcome <reviewed|reference-only|deferred|superseded> --reason <text>"
-    ], "guarantees": ["offline deterministic scans", "bounded relation context", "atomic reviewed state"]})
+    ], "guarantees": ["offline deterministic scans", "bounded complete packets", "atomic reviewed state"]})
 }
 
 fn schema_value() -> Value {
     json!({"schema": CLI_SCHEMA, "commands": {
-        "knowledge_objects": "dwv.knowledge.objects.v2", "knowledge_context": "dwv.knowledge.context.v2",
-        "knowledge_ownership": "dwv.knowledge.ownership.v1", "knowledge_readiness": "dwv.knowledge.readiness.v2",
+        "knowledge_objects": "dwv.knowledge.objects.v2",
+        "knowledge_inspect": "dwv.knowledge.inspect.v1",
+        "knowledge_context": "dwv.knowledge.context.v3",
+        "knowledge_ownership": "dwv.knowledge.ownership.v2",
+        "knowledge_affected": "dwv.knowledge.affected.v3",
+        "knowledge_audit_context": "dwv.knowledge.audit-context.v1",
+        "knowledge_readiness": "dwv.knowledge.readiness.v2",
         "planning_nomenclature": "dwv.docs.planning-nomenclature.v1",
         "reviewed_state": "dwv.knowledge.reviewed-links.v2",
         "source_inventory": INVENTORY_SCHEMA
@@ -666,5 +697,65 @@ mod tests {
     #[test]
     fn path_join_rejects_escape() {
         assert!(safe_join(Path::new("/tmp"), "../x").is_err());
+    }
+
+    #[test]
+    fn knowledge_commands_have_distinct_fixed_contracts() {
+        let args = [
+            "context".to_owned(),
+            "req.cap.a".to_owned(),
+            "req.cap.b".to_owned(),
+        ];
+        assert_eq!(
+            required_ids(&args, "context").unwrap(),
+            ["req.cap.a", "req.cap.b"]
+        );
+        assert!(
+            required_ids(
+                &[
+                    "context".to_owned(),
+                    "--id".to_owned(),
+                    "req.cap.a".to_owned()
+                ],
+                "context"
+            )
+            .is_err()
+        );
+
+        let schema = schema_value();
+        assert_eq!(
+            schema["commands"]["knowledge_inspect"],
+            "dwv.knowledge.inspect.v1"
+        );
+        assert_eq!(
+            schema["commands"]["knowledge_context"],
+            "dwv.knowledge.context.v3"
+        );
+        assert_eq!(
+            schema["commands"]["knowledge_ownership"],
+            "dwv.knowledge.ownership.v2"
+        );
+        assert_eq!(
+            schema["commands"]["knowledge_audit_context"],
+            "dwv.knowledge.audit-context.v1"
+        );
+        assert_eq!(
+            schema["commands"]["knowledge_affected"],
+            "dwv.knowledge.affected.v3"
+        );
+        let audit_error = dispatch(&[
+            "docs".to_owned(),
+            "knowledge".to_owned(),
+            "audit-context".to_owned(),
+            "req.cap.a".to_owned(),
+            "req.cap.b".to_owned(),
+        ])
+        .unwrap_err();
+        assert_eq!(audit_error.code, "usage");
+        let help = help_value().to_string();
+        assert!(!help.contains("trace"));
+        assert!(!help.contains("why"));
+        assert!(help.contains("audit-context <id> ("));
+        assert!(!help.contains("audit-context <id>..."));
     }
 }

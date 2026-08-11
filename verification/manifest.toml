@@ -327,13 +327,15 @@ non_claims = [
 [[evidence]]
 id = "evidence.open-traceable-knowledge"
 path = "docs/verification/open-traceable-knowledge.md"
-claim = "The open-traceable-knowledge completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, provider-neutral change impact, and deterministic offline reconstruction."
+claim = "The open-traceable-knowledge completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, distinct bounded knowledge retrieval contracts, provider-neutral change impact, and deterministic offline reconstruction."
 tier = "documentation-acceptance"
-fault_model = ["reader incomprehension", "agent source hunting", "missing revision baseline", "stale generated state"]
-scope = ["Human Guide sampled usefulness", "fresh-agent bounded context", "change-boundary impact", "offline documentation reconstruction"]
+fault_model = ["reader incomprehension", "agent source hunting", "overlapping context retrieval", "whole-component overexpansion", "silent packet truncation", "missing revision baseline", "stale generated state"]
+scope = ["Human Guide sampled usefulness", "fresh-agent bounded context", "fixed knowledge command contracts", "multi-requirement context batching", "change-boundary impact", "offline documentation reconstruction"]
 requirements = [
   "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority",
+  "req.documentation-knowledge-architecture.provenance-is-claim-and-fragment-level",
   "req.documentation-knowledge-architecture.agent-context-is-graph-selected-and-reproducible",
+  "req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path",
   "req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded",
   "req.documentation-knowledge-architecture.usefulness-and-correctness-are-separate-checks",
   "req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable",
