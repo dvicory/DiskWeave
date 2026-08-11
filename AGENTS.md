@@ -1,5 +1,7 @@
 DiskWeave is correctness-first storage software. Prefer simple, explicit designs over clever abstractions.
 
+Write technical prose using ISO 24495-1 plain-language principles and Zinsser's principles of simplicity and economy. Optimize for the intended reader's ability to find, understand, and use the information. Preserve defined DiskWeave terminology and complete semantic distinctions; clarity must never remove correctness-relevant conditions, authority, uncertainty, failure behavior, or claim boundaries.
+
 Current `openspec/specs/*/spec.md` files own required product behavior. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing without silently overriding current specs; implementation and historical artifacts do not silently override them either. Surface contradictions, missing invariants, and consequential ambiguity. OpenSpec-specific naming and authoring rules live in `openspec/config.yaml`.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
