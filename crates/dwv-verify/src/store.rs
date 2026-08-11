@@ -1,22 +1,47 @@
 use dwv_core::ByteRange;
+use dwv_store::StoreCompletion;
 use std::fmt;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerificationStoreError {
     message: String,
+    completion: Option<Box<StoreCompletion>>,
 }
 
 impl VerificationStoreError {
     pub fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
+            completion: None,
         }
+    }
+
+    pub fn from_completion(message: impl Into<String>, completion: StoreCompletion) -> Self {
+        Self {
+            message: message.into(),
+            completion: Some(Box::new(completion)),
+        }
+    }
+
+    pub fn completion(&self) -> Option<&StoreCompletion> {
+        self.completion.as_deref()
     }
 }
 
 impl fmt::Display for VerificationStoreError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.message)
+        if let Some(completion) = &self.completion {
+            write!(
+                formatter,
+                "{}: {:?}, completed ranges {:?}, persistence {:?}",
+                self.message,
+                completion.disposition,
+                completion.completed.as_slice(),
+                completion.persistence
+            )
+        } else {
+            formatter.write_str(&self.message)
+        }
     }
 }
 

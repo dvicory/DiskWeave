@@ -81,10 +81,10 @@ impl<S: RandomAccessStore> VerificationStore for RebuildSource<S> {
         {
             Ok(bytes)
         } else {
-            Err(VerificationStoreError::new(format!(
-                "source read did not complete exactly: {:?}",
-                completion.disposition
-            )))
+            Err(VerificationStoreError::from_completion(
+                "source read did not complete exactly",
+                completion,
+            ))
         }
     }
 

@@ -20,7 +20,7 @@ use dwv_recovery::{
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
+    CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
     IdentityObservationSet, IdentitySourceKind, OperationSlotToken, PersistenceEvidence,
     RandomAccessStore, StoreId, StoreWriteWatermark, WriteIntent,
 };
@@ -495,31 +495,41 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.admission
                 .submit_all(token, flush_children.len())
                 .map_err(slot_error)?;
-            let mut all_durable = true;
+            let mut incomplete = None;
             for (member, child) in self.members.iter_mut().zip(&flush_children) {
                 let through = member
                     .store
                     .highest_accepted_watermark()
                     .unwrap_or(StoreWriteWatermark(0));
                 let completion = member.store.flush(*child, through);
-                all_durable &= matches!(completion.disposition, CompletionDisposition::Success)
-                    && completion.persistence.is_durable();
+                let reported = completion.clone();
                 self.admission
                     .complete(token, completion)
-                    .map_err(slot_error)?;
+                    .map_err(|error| {
+                        ServiceError::rejected_completion(
+                            FailureClass::Admission,
+                            reported.clone(),
+                            error.to_string(),
+                        )
+                    })?;
+                if incomplete.is_none()
+                    && (!matches!(reported.disposition, CompletionDisposition::Success)
+                        || !reported.persistence.is_durable())
+                {
+                    incomplete = Some(reported);
+                }
             }
-            if !all_durable {
-                self.state = ServiceState::Recovering;
-                return Err(ServiceError::io(
+            if let Some(completion) = incomplete {
+                return Err(ServiceError::store_completion(
                     FailureClass::Fence,
-                    "flush lacks covering host fence evidence",
+                    completion,
                 ));
             }
             Ok(OperationEvidence {
                 request,
                 completion: CompletionEvidence {
                     requested: ByteRange::empty(),
-                    completed: 0,
+                    completed: CompletedRangeSet::empty(),
                     disposition: CompletionDisposition::Success,
                     persistence: PersistenceClaim::HostFenceOnly,
                 },
@@ -533,6 +543,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 Ok(evidence)
             }
             Err(error) => {
+                if matches!(
+                    &error,
+                    ServiceError::Io {
+                        completion: Some(_),
+                        ..
+                    }
+                ) {
+                    self.state = ServiceState::Recovering;
+                }
                 let _ = self.finish(token, true);
                 Err(error.with_request(request))
             }
@@ -838,7 +857,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             request,
             completion: CompletionEvidence {
                 requested: request.range,
-                completed: request.range.length,
+                completed: CompletedRangeSet::new(vec![request.range])
+                    .expect("validated write range is a completion range"),
                 disposition: CompletionDisposition::Success,
                 persistence: PersistenceClaim::HostFenceOnly,
             },
@@ -1052,15 +1072,18 @@ fn read_child<S: RandomAccessStore>(
         .map_err(|_| ServiceError::io(FailureClass::Range, "range does not fit memory"))?;
     let mut bytes = vec![0; length];
     let result = store.read_at(child, range, &mut bytes);
-    let disposition = result.disposition.clone();
-    admission.complete(token, result).map_err(slot_error)?;
-    if matches!(disposition, CompletionDisposition::Success) {
+    let reported = result.clone();
+    admission.complete(token, result).map_err(|error| {
+        ServiceError::rejected_completion(
+            FailureClass::Admission,
+            reported.clone(),
+            error.to_string(),
+        )
+    })?;
+    if matches!(reported.disposition, CompletionDisposition::Success) {
         Ok(bytes)
     } else {
-        Err(ServiceError::io(
-            class,
-            format!("store read did not complete: {disposition:?}"),
-        ))
+        Err(ServiceError::store_completion(class, reported))
     }
 }
 
@@ -1072,9 +1095,25 @@ fn flush_member<S: RandomAccessStore>(
     through: StoreWriteWatermark,
 ) -> Result<PersistenceEvidence, ServiceError> {
     let result = store.flush(child, through);
+    let reported = result.clone();
     let persistence = result.persistence;
-    admission.complete(token, result).map_err(slot_error)?;
-    Ok(persistence)
+    admission.complete(token, result).map_err(|error| {
+        ServiceError::rejected_completion(
+            FailureClass::Admission,
+            reported.clone(),
+            error.to_string(),
+        )
+    })?;
+    if matches!(reported.disposition, CompletionDisposition::Success)
+        && reported.persistence.is_durable()
+    {
+        Ok(persistence)
+    } else {
+        Err(ServiceError::store_completion(
+            FailureClass::Fence,
+            reported,
+        ))
+    }
 }
 
 /// dwv:req req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments
@@ -1267,6 +1306,7 @@ fn empty_trace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{RebuildSource, RebuildStore};
     use dwv_core::{
         ArrayId, AssignmentGeneration, AssignmentInstanceId, BufferToken, CodingPosition,
         CodingProfile, FrontendId, OrderingIntent, ProtectedGeometry, RequestId, SlotId,
@@ -1282,7 +1322,7 @@ mod tests {
     };
     use dwv_store_file::{ControlProjection, FileStore, FileStoreConfig, FileSyncMode};
     use dwv_verify::{
-        ChecksumEvidence, DigestEvidence, VerificationIdentity, VerificationStore,
+        ChecksumEvidence, DigestEvidence, RebuildTarget, VerificationIdentity, VerificationStore,
         VerificationStoreError, apply_repair, plan_repairs, verify_exhaustive,
     };
     use std::fs;
@@ -1331,10 +1371,10 @@ mod tests {
             if matches!(completion.disposition, CompletionDisposition::Success) {
                 Ok(())
             } else {
-                Err(VerificationStoreError::new(format!(
-                    "repair write did not complete: {:?}",
-                    completion.disposition
-                )))
+                Err(VerificationStoreError::from_completion(
+                    "repair write did not complete",
+                    completion,
+                ))
             }
         }
     }
@@ -1343,9 +1383,18 @@ mod tests {
     enum FakeRead {
         Exact,
         Short,
+        NonPrefix,
         Failed,
         Uncertain,
         StaleToken,
+    }
+    #[derive(Clone, Copy, Debug)]
+    enum FakeEffect {
+        Success,
+        Failed,
+        StaleToken,
+        SuccessWithoutWriteWatermark,
+        Uncertain,
     }
 
     struct FakeStore {
@@ -1354,6 +1403,8 @@ mod tests {
         bytes: Vec<u8>,
         read: FakeRead,
         watermark: StoreWriteWatermark,
+        write: FakeEffect,
+        flush: FakeEffect,
     }
 
     impl FakeStore {
@@ -1363,8 +1414,16 @@ mod tests {
                 epoch,
                 bytes: vec![0; LENGTH as usize],
                 read,
+                write: FakeEffect::Success,
+                flush: FakeEffect::Success,
                 watermark: StoreWriteWatermark(0),
             }
+        }
+
+        fn with_effects(mut self, write: FakeEffect, flush: FakeEffect) -> Self {
+            self.write = write;
+            self.flush = flush;
+            self
         }
 
         fn completion(
@@ -1431,19 +1490,30 @@ mod tests {
             destination: &mut [u8],
         ) -> StoreCompletion {
             let start = range.offset as usize;
-            let completed = match self.read {
-                FakeRead::Exact | FakeRead::StaleToken => range.length,
-                FakeRead::Short => range.length / 2,
-                FakeRead::Failed | FakeRead::Uncertain => 0,
+            let half = range.length / 2;
+            let (completed, completed_range) = match self.read {
+                FakeRead::Exact | FakeRead::StaleToken => (range.length, Some(range)),
+                FakeRead::Short => (half, Some(ByteRange::new(range.offset, half).unwrap())),
+                FakeRead::NonPrefix => (
+                    half,
+                    Some(ByteRange::new(range.offset + half, half).unwrap()),
+                ),
+                FakeRead::Failed | FakeRead::Uncertain => (0, None),
             };
-            destination[..completed as usize]
-                .copy_from_slice(&self.bytes[start..start + completed as usize]);
+            if matches!(self.read, FakeRead::NonPrefix) {
+                destination[half as usize..completed as usize + half as usize].copy_from_slice(
+                    &self.bytes[start + half as usize..start + range.length as usize],
+                );
+            } else {
+                destination[..completed as usize]
+                    .copy_from_slice(&self.bytes[start..start + completed as usize]);
+            }
             if matches!(self.read, FakeRead::StaleToken) {
                 operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
             }
             let disposition = match self.read {
                 FakeRead::Exact | FakeRead::StaleToken => CompletionDisposition::Success,
-                FakeRead::Short => CompletionDisposition::Short,
+                FakeRead::Short | FakeRead::NonPrefix => CompletionDisposition::Short,
                 FakeRead::Failed => {
                     CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 })
                 }
@@ -1452,7 +1522,7 @@ mod tests {
             Self::completion(
                 operation_id,
                 range,
-                (completed != 0).then(|| ByteRange::new(range.offset, completed).unwrap()),
+                completed_range,
                 disposition,
                 PersistenceEvidence::VolatileOrUnknown,
             )
@@ -1460,45 +1530,96 @@ mod tests {
 
         fn write_at(
             &mut self,
-            operation_id: ChildOperationId,
+            mut operation_id: ChildOperationId,
             range: ByteRange,
             source: &[u8],
             _intent: WriteIntent,
         ) -> StoreCompletion {
             let start = range.offset as usize;
-            self.bytes[start..start + source.len()].copy_from_slice(source);
-            self.watermark = StoreWriteWatermark(self.watermark.0 + 1);
-            Self::completion(
-                operation_id,
-                range,
-                Some(range),
-                CompletionDisposition::Success,
-                PersistenceEvidence::VolatileOrUnknown,
-            )
-            .with_write_watermark(self.watermark)
+            if matches!(self.write, FakeEffect::StaleToken) {
+                operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
+            }
+            match self.write {
+                FakeEffect::Success
+                | FakeEffect::StaleToken
+                | FakeEffect::SuccessWithoutWriteWatermark => {
+                    self.bytes[start..start + source.len()].copy_from_slice(source);
+                    self.watermark = StoreWriteWatermark(self.watermark.0 + 1);
+                    let completion = Self::completion(
+                        operation_id,
+                        range,
+                        Some(range),
+                        CompletionDisposition::Success,
+                        PersistenceEvidence::VolatileOrUnknown,
+                    );
+                    if matches!(self.write, FakeEffect::SuccessWithoutWriteWatermark) {
+                        completion
+                    } else {
+                        completion.with_write_watermark(self.watermark)
+                    }
+                }
+                FakeEffect::Failed => Self::completion(
+                    operation_id,
+                    range,
+                    None,
+                    CompletionDisposition::Failed(StoreError::BackendFailure { code: 6 }),
+                    PersistenceEvidence::VolatileOrUnknown,
+                ),
+                FakeEffect::Uncertain => {
+                    self.bytes[start..start + source.len()].copy_from_slice(source);
+                    Self::completion(
+                        operation_id,
+                        range,
+                        None,
+                        CompletionDisposition::Uncertain,
+                        PersistenceEvidence::VolatileOrUnknown,
+                    )
+                }
+            }
         }
 
         fn flush(
             &mut self,
-            operation_id: ChildOperationId,
+            mut operation_id: ChildOperationId,
             through: StoreWriteWatermark,
         ) -> StoreCompletion {
-            Self::completion(
-                operation_id,
-                ByteRange::empty(),
-                None,
-                CompletionDisposition::Success,
-                PersistenceEvidence::DurableByFence {
-                    fence: StoreFenceRef {
-                        fence_id: FenceId(through.0),
-                        store_id: self.id,
-                        topology_epoch: self.epoch,
-                        store_incarnation: self.incarnation(),
-                        through,
-                        capability_evidence_id: CapabilityEvidenceId(self.id.0),
+            if matches!(self.flush, FakeEffect::StaleToken) {
+                operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
+            }
+            match self.flush {
+                FakeEffect::Success
+                | FakeEffect::StaleToken
+                | FakeEffect::SuccessWithoutWriteWatermark => Self::completion(
+                    operation_id,
+                    ByteRange::empty(),
+                    None,
+                    CompletionDisposition::Success,
+                    PersistenceEvidence::DurableByFence {
+                        fence: StoreFenceRef {
+                            fence_id: FenceId(through.0),
+                            store_id: self.id,
+                            topology_epoch: self.epoch,
+                            store_incarnation: self.incarnation(),
+                            through,
+                            capability_evidence_id: CapabilityEvidenceId(self.id.0),
+                        },
                     },
-                },
-            )
+                ),
+                FakeEffect::Failed => Self::completion(
+                    operation_id,
+                    ByteRange::empty(),
+                    None,
+                    CompletionDisposition::Failed(StoreError::BackendFailure { code: 7 }),
+                    PersistenceEvidence::VolatileOrUnknown,
+                ),
+                FakeEffect::Uncertain => Self::completion(
+                    operation_id,
+                    ByteRange::empty(),
+                    None,
+                    CompletionDisposition::Uncertain,
+                    PersistenceEvidence::VolatileOrUnknown,
+                ),
+            }
         }
 
         fn write_zeroes(
@@ -1590,6 +1711,15 @@ mod tests {
         read: FakeRead,
         config: ServiceConfig,
     ) -> HealthyPortableService<FakeStore, MemoryRecoveryStore> {
+        fake_service_with_effects(read, FakeEffect::Success, FakeEffect::Success, config)
+    }
+
+    fn fake_service_with_effects(
+        read: FakeRead,
+        write: FakeEffect,
+        flush: FakeEffect,
+        config: ServiceConfig,
+    ) -> HealthyPortableService<FakeStore, MemoryRecoveryStore> {
         let epoch = TopologyEpoch(4);
         let topology = topology(epoch);
         let members = topology
@@ -1602,12 +1732,31 @@ mod tests {
                     assignment,
                     epoch,
                     store_id,
-                    FakeStore::new(store_id, epoch, read),
+                    FakeStore::new(store_id, epoch, read).with_effects(write, flush),
                 )
             })
             .collect();
         HealthyPortableService::open(topology, members, MemoryRecoveryStore::new(epoch), config)
             .unwrap()
+    }
+
+    fn reported_store_completion(
+        error: ServiceError,
+        request: BlockRequest,
+        class: FailureClass,
+    ) -> Box<StoreCompletion> {
+        assert_eq!(error.request(), Some(request));
+        match error {
+            ServiceError::Io {
+                class: actual,
+                completion: Some(completion),
+                ..
+            } => {
+                assert_eq!(actual, class);
+                completion
+            }
+            other => panic!("expected exact store completion evidence, got {other:?}"),
+        }
     }
 
     #[test]
@@ -1639,7 +1788,7 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(bytes, vec![7; BLOCK as usize]);
-        assert_eq!(evidence.completion.completed, u64::from(BLOCK));
+        assert_eq!(evidence.completion.completed.as_slice(), &[range]);
         service
             .flush(request(
                 RequestId(3),
@@ -1678,20 +1827,20 @@ mod tests {
         }
 
         let mut stale = fake_service(FakeRead::StaleToken, ServiceConfig::default());
-        assert!(matches!(
-            stale.read(request(
-                RequestId(5),
-                epoch,
-                0,
-                BlockOp::Read,
-                range,
-                DurabilityIntent::Ordinary,
-            )),
-            Err(ServiceError::Io {
-                class: FailureClass::Admission,
-                ..
-            })
-        ));
+        let admitted = request(
+            RequestId(5),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let error = stale.read(admitted).unwrap_err();
+        let completion = reported_store_completion(error, admitted, FailureClass::Admission);
+        assert_eq!(completion.disposition, CompletionDisposition::Success);
+        assert_eq!(completion.completed.as_slice(), &[range]);
+        assert_eq!(stale.admission_usage().operation_slots, 0);
+        assert_eq!(stale.admission_usage().backend_submissions, 0);
 
         let exhausted = ServiceConfig {
             admission: AdmissionConfig {
@@ -1714,6 +1863,223 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[test]
+    fn non_prefix_read_keeps_request_aligned_bytes_and_exact_range() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let half = BLOCK as usize / 2;
+        let mut service = fake_service(FakeRead::NonPrefix, ServiceConfig::default());
+        service.members[0].store.bytes[half..BLOCK as usize].fill(0x6b);
+
+        let error = service
+            .read(request(
+                RequestId(7),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap_err();
+
+        match error {
+            ServiceError::IncompleteRead {
+                bytes, evidence, ..
+            } => {
+                assert_eq!(bytes.len(), BLOCK as usize);
+                assert_eq!(&bytes[..half], vec![0; half]);
+                assert_eq!(&bytes[half..], vec![0x6b; half]);
+                assert_eq!(evidence.requested, range);
+                assert_eq!(
+                    evidence.completed.as_slice(),
+                    &[ByteRange::new(half as u64, half as u64).unwrap()]
+                );
+                assert_eq!(evidence.disposition, CompletionDisposition::Short);
+            }
+            other => panic!("expected non-prefix partial read, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_file_store_preserves_write_flush_and_resource_failure_semantics() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let bytes = [0x3c; BLOCK as usize];
+
+        for effect in [FakeEffect::Failed, FakeEffect::Uncertain] {
+            let mut service = fake_service_with_effects(
+                FakeRead::Exact,
+                effect,
+                FakeEffect::Success,
+                ServiceConfig::default(),
+            );
+            let admitted = request(
+                RequestId(8),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            );
+            let error = service.write(admitted, &bytes).unwrap_err();
+            let completion = reported_store_completion(error, admitted, FailureClass::StoreWrite);
+            assert_eq!(completion.requested, range);
+            assert!(completion.completed.as_slice().is_empty());
+            assert_eq!(
+                matches!(completion.disposition, CompletionDisposition::Uncertain),
+                matches!(effect, FakeEffect::Uncertain)
+            );
+            assert_eq!(
+                &service.members[0].store.bytes[..BLOCK as usize],
+                if matches!(effect, FakeEffect::Uncertain) {
+                    &bytes
+                } else {
+                    &[0; BLOCK as usize]
+                }
+            );
+            assert_eq!(service.state(), ServiceState::Recovering);
+            assert_eq!(service.admission_usage().operation_slots, 0);
+            assert_eq!(service.admission_usage().backend_submissions, 0);
+        }
+
+        for effect in [FakeEffect::Failed, FakeEffect::Uncertain] {
+            let mut service = fake_service_with_effects(
+                FakeRead::Exact,
+                FakeEffect::Success,
+                effect,
+                ServiceConfig::default(),
+            );
+            let admitted = request(
+                RequestId(9),
+                epoch,
+                0,
+                BlockOp::Flush,
+                ByteRange::empty(),
+                DurabilityIntent::ExplicitFlush,
+            );
+            let error = service.flush(admitted).unwrap_err();
+            let completion = reported_store_completion(error, admitted, FailureClass::Fence);
+            assert!(completion.requested.is_empty());
+            assert!(completion.completed.as_slice().is_empty());
+            assert_eq!(
+                matches!(completion.disposition, CompletionDisposition::Uncertain),
+                matches!(effect, FakeEffect::Uncertain)
+            );
+            assert_eq!(
+                completion.persistence,
+                PersistenceEvidence::VolatileOrUnknown
+            );
+            assert_eq!(service.state(), ServiceState::Recovering);
+            assert_eq!(service.admission_usage().operation_slots, 0);
+            assert_eq!(service.admission_usage().backend_submissions, 0);
+        }
+
+        let mut service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::StaleToken,
+            FakeEffect::Success,
+            ServiceConfig::default(),
+        );
+        let admitted = request(
+            RequestId(10),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let error = service.write(admitted, &bytes).unwrap_err();
+        let completion = reported_store_completion(error, admitted, FailureClass::Admission);
+        assert_eq!(completion.disposition, CompletionDisposition::Success);
+        assert_eq!(completion.completed.as_slice(), &[range]);
+        assert_eq!(service.state(), ServiceState::Recovering);
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+
+        let mut service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::Success,
+            FakeEffect::StaleToken,
+            ServiceConfig::default(),
+        );
+        let admitted = request(
+            RequestId(11),
+            epoch,
+            0,
+            BlockOp::Flush,
+            ByteRange::empty(),
+            DurabilityIntent::ExplicitFlush,
+        );
+        let error = service.flush(admitted).unwrap_err();
+        let completion = reported_store_completion(error, admitted, FailureClass::Admission);
+        assert_eq!(completion.disposition, CompletionDisposition::Success);
+        assert!(completion.persistence.is_durable());
+        assert_eq!(service.state(), ServiceState::Recovering);
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+    }
+
+    #[test]
+    fn generic_rebuild_adapters_preserve_store_completion_evidence() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let half = u64::from(BLOCK) / 2;
+
+        let mut source = RebuildSource::new(
+            AssignmentInstanceId::from_bytes([1; 16]),
+            FakeStore::new(StoreId(1), epoch, FakeRead::NonPrefix),
+        );
+        let error = source.read_exact(range).unwrap_err();
+        let completion = error.completion().expect("source completion evidence");
+        assert_eq!(completion.disposition, CompletionDisposition::Short);
+        assert_eq!(
+            completion.completed.as_slice(),
+            &[ByteRange::new(half, half).unwrap()]
+        );
+
+        let mut replacement = RebuildStore::new(
+            FakeStore::new(StoreId(2), epoch, FakeRead::Exact)
+                .with_effects(FakeEffect::Uncertain, FakeEffect::Success),
+        );
+        let error = replacement
+            .write_exact(range, &[0x55; BLOCK as usize])
+            .unwrap_err();
+        let completion = error.completion().expect("write completion evidence");
+        assert_eq!(completion.disposition, CompletionDisposition::Uncertain);
+        assert!(completion.completed.as_slice().is_empty());
+
+        let mut replacement = RebuildStore::new(
+            FakeStore::new(StoreId(4), epoch, FakeRead::Exact).with_effects(
+                FakeEffect::SuccessWithoutWriteWatermark,
+                FakeEffect::Success,
+            ),
+        );
+        let error = replacement
+            .write_exact(range, &[0x5a; BLOCK as usize])
+            .unwrap_err();
+        let completion = error
+            .completion()
+            .expect("missing-watermark completion evidence");
+        assert_eq!(completion.disposition, CompletionDisposition::Success);
+        assert_eq!(completion.completed.as_slice(), &[range]);
+        assert_eq!(completion.write_watermark, None);
+
+        let mut replacement = RebuildStore::new(
+            FakeStore::new(StoreId(3), epoch, FakeRead::Exact)
+                .with_effects(FakeEffect::Success, FakeEffect::Uncertain),
+        );
+        replacement
+            .write_exact(range, &[0x66; BLOCK as usize])
+            .unwrap();
+        let error = replacement.flush_rebuild().unwrap_err();
+        let completion = error.completion().expect("flush completion evidence");
+        assert_eq!(completion.disposition, CompletionDisposition::Uncertain);
+        assert_eq!(
+            completion.persistence,
+            PersistenceEvidence::VolatileOrUnknown
+        );
     }
 
     fn bindings(
@@ -1976,7 +2342,7 @@ mod tests {
             DurabilityIntent::Ordinary,
         );
         let evidence = service.write(write_request, &bytes).unwrap();
-        assert_eq!(evidence.completion.completed, BLOCK as u64);
+        assert_eq!(evidence.completion.completed.as_slice(), &[range]);
         assert_eq!(evidence.request, write_request);
         assert_eq!(
             evidence.completion.persistence,
@@ -1993,7 +2359,7 @@ mod tests {
         );
         let (read, read_evidence) = service.read(read_request).unwrap();
         assert_eq!(read, bytes);
-        assert_eq!(read_evidence.completion.completed, BLOCK as u64);
+        assert_eq!(read_evidence.completion.completed.as_slice(), &[range]);
         assert_eq!(read_evidence.request, read_request);
         let parity = fs::read(root.join("member-3.raw")).unwrap();
         assert_eq!(&parity[..BLOCK as usize], &[0x5a; BLOCK as usize]);
@@ -2355,9 +2721,12 @@ mod tests {
                 evidence,
             }) => {
                 assert_eq!(*request, admitted);
-                assert_eq!(bytes.len(), (LENGTH - BLOCK as u64) as usize);
+                assert_eq!(bytes.len(), LENGTH as usize);
                 assert_eq!(evidence.requested, range);
-                assert_eq!(evidence.completed, LENGTH - BLOCK as u64);
+                assert_eq!(
+                    evidence.completed.as_slice(),
+                    &[ByteRange::new(0, LENGTH - BLOCK as u64).unwrap()]
+                );
                 assert_eq!(evidence.disposition, CompletionDisposition::Short);
             }
             other => panic!("expected partial read evidence, got {other:?}"),

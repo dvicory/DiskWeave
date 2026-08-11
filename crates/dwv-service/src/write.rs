@@ -1,7 +1,4 @@
-use crate::{
-    admission::slot_error,
-    failure::{FailureClass, ServiceError},
-};
+use crate::failure::{FailureClass, ServiceError};
 use dwv_codec::{Geometry as CodecGeometry, ParityCodec, XorReference};
 use dwv_core::ByteRange;
 use dwv_store::{
@@ -54,19 +51,20 @@ pub(crate) fn write_member<S: RandomAccessStore>(
     intent: WriteIntent,
 ) -> Result<StoreWriteWatermark, ServiceError> {
     let result = store.write_at(child, range, bytes, intent);
-    let disposition = result.disposition.clone();
+    let reported = result.clone();
     let watermark = result.write_watermark;
-    admission.complete(token, result).map_err(slot_error)?;
-    if !matches!(disposition, CompletionDisposition::Success) {
-        return Err(ServiceError::io(
+    admission.complete(token, result).map_err(|error| {
+        ServiceError::rejected_completion(
+            FailureClass::Admission,
+            reported.clone(),
+            error.to_string(),
+        )
+    })?;
+    if !matches!(reported.disposition, CompletionDisposition::Success) {
+        return Err(ServiceError::store_completion(
             FailureClass::StoreWrite,
-            "home mutation did not complete",
+            reported,
         ));
     }
-    watermark.ok_or_else(|| {
-        ServiceError::io(
-            FailureClass::Fence,
-            "successful home mutation lacks a store write watermark",
-        )
-    })
+    watermark.ok_or_else(|| ServiceError::store_completion(FailureClass::Fence, reported))
 }

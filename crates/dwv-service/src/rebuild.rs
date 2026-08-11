@@ -90,10 +90,10 @@ impl<S: RandomAccessStore> VerificationStore for RebuildStore<S> {
         {
             Ok(bytes)
         } else {
-            Err(VerificationStoreError::new(format!(
-                "replacement read did not complete exactly: {:?}",
-                completion.disposition
-            )))
+            Err(VerificationStoreError::from_completion(
+                "replacement read did not complete exactly",
+                completion,
+            ))
         }
     }
 
@@ -109,15 +109,19 @@ impl<S: RandomAccessStore> VerificationStore for RebuildStore<S> {
         if matches!(completion.disposition, CompletionDisposition::Success)
             && completion.completed.covers(range).unwrap_or(false)
         {
-            self.last_write_watermark = Some(completion.write_watermark.ok_or_else(|| {
-                VerificationStoreError::new("replacement write lacks a store watermark")
-            })?);
+            let Some(watermark) = completion.write_watermark else {
+                return Err(VerificationStoreError::from_completion(
+                    "replacement write lacks a store watermark",
+                    completion,
+                ));
+            };
+            self.last_write_watermark = Some(watermark);
             Ok(())
         } else {
-            Err(VerificationStoreError::new(format!(
-                "replacement write did not complete exactly: {:?}",
-                completion.disposition
-            )))
+            Err(VerificationStoreError::from_completion(
+                "replacement write did not complete exactly",
+                completion,
+            ))
         }
     }
 }
@@ -616,16 +620,22 @@ impl<S: RandomAccessStore> RebuildTarget for RebuildStore<S> {
             .ok_or_else(|| VerificationStoreError::new("no replacement write to flush"))?;
         let operation = self.next_operation();
         let completion = self.store.flush(operation, through);
-        match (completion.disposition, completion.persistence) {
+        let durable_fence = match (&completion.disposition, completion.persistence) {
             (CompletionDisposition::Success, PersistenceEvidence::DurableByFence { fence })
                 if fence.store_id == self.store_id && fence.through >= through =>
             {
-                self.last_fence = Some(fence);
-                Ok(fence)
+                Some(fence)
             }
-            (disposition, persistence) => Err(VerificationStoreError::new(format!(
-                "replacement flush lacks durable fence: {disposition:?} {persistence:?}"
-            ))),
+            _ => None,
+        };
+        if let Some(fence) = durable_fence {
+            self.last_fence = Some(fence);
+            Ok(fence)
+        } else {
+            Err(VerificationStoreError::from_completion(
+                "replacement flush lacks a covering durable fence",
+                completion,
+            ))
         }
     }
 }

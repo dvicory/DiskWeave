@@ -1,5 +1,5 @@
 use dwv_core::{BlockRequest, ByteRange};
-use dwv_store::{CompletionDisposition, PersistenceEvidence};
+use dwv_store::{CompletedRangeSet, CompletionDisposition, PersistenceEvidence};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersistenceClaim {
@@ -20,7 +20,7 @@ impl From<PersistenceEvidence> for PersistenceClaim {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompletionEvidence {
     pub requested: ByteRange,
-    pub completed: u64,
+    pub completed: CompletedRangeSet,
     pub disposition: CompletionDisposition,
     pub persistence: PersistenceClaim,
 }

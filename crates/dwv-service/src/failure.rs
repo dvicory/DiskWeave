@@ -1,4 +1,5 @@
 use dwv_core::BlockRequest;
+use dwv_store::StoreCompletion;
 use std::fmt;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +37,7 @@ pub enum ServiceError {
         request: Option<Box<BlockRequest>>,
         class: FailureClass,
         detail: String,
+        completion: Option<Box<StoreCompletion>>,
     },
 }
 
@@ -53,6 +55,29 @@ impl ServiceError {
             request: None,
             class,
             detail: detail.into(),
+            completion: None,
+        }
+    }
+
+    pub(crate) fn store_completion(class: FailureClass, completion: StoreCompletion) -> Self {
+        Self::Io {
+            request: None,
+            class,
+            detail: format!("store completion: {:?}", completion.disposition),
+            completion: Some(Box::new(completion)),
+        }
+    }
+
+    pub(crate) fn rejected_completion(
+        class: FailureClass,
+        completion: StoreCompletion,
+        detail: impl Into<String>,
+    ) -> Self {
+        Self::Io {
+            request: None,
+            class,
+            detail: detail.into(),
+            completion: Some(Box::new(completion)),
         }
     }
 
@@ -82,10 +107,16 @@ impl ServiceError {
                 class,
                 detail,
             },
-            Self::Io { class, detail, .. } => Self::Io {
+            Self::Io {
+                class,
+                detail,
+                completion,
+                ..
+            } => Self::Io {
                 request: Some(Box::new(request)),
                 class,
                 detail,
+                completion,
             },
             error => error,
         }
@@ -107,10 +138,23 @@ impl fmt::Display for ServiceError {
             Self::Blocked(class) => write!(formatter, "portable service is blocked: {class:?}"),
             Self::IncompleteRead { evidence, .. } => write!(
                 formatter,
-                "read completed only {}/{} bytes: {:?}",
-                evidence.completed, evidence.requested.length, evidence.disposition
+                "read completed ranges {:?} of {:?}: {:?}",
+                evidence.completed.as_slice(),
+                evidence.requested,
+                evidence.disposition
             ),
             Self::Invalid { class, detail, .. } => write!(formatter, "{class:?}: {detail}"),
+            Self::Io {
+                class,
+                detail,
+                completion: Some(completion),
+                ..
+            } => write!(
+                formatter,
+                "{class:?}: {detail}; completed ranges {:?}, persistence {:?}",
+                completion.completed.as_slice(),
+                completion.persistence
+            ),
             Self::Io { class, detail, .. } => write!(formatter, "{class:?}: {detail}"),
         }
     }
