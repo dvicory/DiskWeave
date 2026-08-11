@@ -596,6 +596,13 @@ mod tests {
 
     #[test]
     fn fixture_rejects_escape_replacement_and_wider_profile() {
+        let undersized = temp_root("undersized");
+        assert!(matches!(
+            Fixture::initialize(&undersized, 4096),
+            Err(AdapterError::Invalid(_))
+        ));
+        assert!(!undersized.exists());
+
         let root = temp_root("refusal");
         let mut manifest = Fixture::initialize(&root, 16 * 1024 * 1024).unwrap();
         manifest.data_files[0] = "../outside.raw".into();
@@ -704,6 +711,8 @@ mod tests {
             Fixture::load(&root),
             Err(AdapterError::Conflict(_))
         ));
+        fs::remove_file(&recovery_path).unwrap();
+        assert!(matches!(Fixture::load(&root), Err(AdapterError::Io(_))));
         assert_eq!(
             fs::read(root.join(&manifest.data_files[0])).unwrap(),
             data_before

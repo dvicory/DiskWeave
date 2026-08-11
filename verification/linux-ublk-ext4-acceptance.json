@@ -1,8 +1,9 @@
 {
   "schema": "dwv.verification.linux-ublk-ext4.v1",
-  "source_snapshot_sha256": "2b2ecd7f690684216ed712472f35e38f74e8a59c95cdd18b7ca9e0982b1a4516",
+  "source_snapshot_sha256": "afa56d9bccf183c0f2e33b0f6e308654017685ffe3f7ee6646e46c0de82af37c",
   "kernel_release": "7.0.0-28-generic",
   "architecture": "aarch64",
+  "live_elapsed_seconds": 24,
   "probe": {
     "architecture": "aarch64",
     "command": "demo.disk.probe",
@@ -49,17 +50,17 @@
     ],
     "data_identities": [
       [
-        1,
-        253,
+        37,
         0,
         0,
         0,
         0,
         0,
         0,
-        102,
-        39,
-        8,
+        0,
+        161,
+        28,
+        0,
         0,
         0,
         0,
@@ -73,24 +74,24 @@
     "outcome": "success",
     "parity_file": "parity.raw",
     "parity_identity": [
-      1,
-      253,
+      37,
       0,
       0,
       0,
       0,
       0,
       0,
-      104,
-      39,
-      8,
+      0,
+      163,
+      28,
+      0,
       0,
       0,
       0,
       0,
       0
     ],
-    "protected_length": 67108864,
+    "protected_length": 16777216,
     "recovery_file": "recovery.sqlite3",
     "schema": "dwv.cli.v0",
     "topology_epoch": 1
@@ -112,22 +113,22 @@
       "topology_epoch": 1,
       "data_slots": 1,
       "parity_slots": 1,
-      "protected_length": 67108864,
+      "protected_length": 16777216,
       "logical_block_size": 512
     },
     "members": [
       {
-        "path": "/var/tmp/dwv-linux-acceptance/data.raw",
+        "path": "/tmp/tmp.n1dUn37NbT/fixture/data.raw",
         "role": "data",
-        "expected_identity": "01fd0000000000006627080000000000",
-        "observed_identity": "01fd0000000000006627080000000000",
+        "expected_identity": "2500000000000000a11c000000000000",
+        "observed_identity": "2500000000000000a11c000000000000",
         "status": "recognized"
       },
       {
-        "path": "/var/tmp/dwv-linux-acceptance/parity.raw",
+        "path": "/tmp/tmp.n1dUn37NbT/fixture/parity.raw",
         "role": "parity",
-        "expected_identity": "01fd0000000000006827080000000000",
-        "observed_identity": "01fd0000000000006827080000000000",
+        "expected_identity": "2500000000000000a31c000000000000",
+        "observed_identity": "2500000000000000a31c000000000000",
         "status": "recognized"
       }
     ],
@@ -169,46 +170,46 @@
     "command": "demo.disk.serve",
     "contract": "dwv.cli.v0",
     "diagnostics": [],
-    "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+    "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
     "ok": true,
     "outcome": "success",
-    "publication_identity": "fixture:6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+    "publication_identity": "fixture:9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
     "schema": "dwv.cli.v0",
     "shutdown": "clean",
     "state": "stopped",
     "trace_bound": 4096,
-    "trace_count": 458,
-    "trace_digest": "7fb68ed9bedde8d353c8d38bada1c067d5bf16a55c5440dd05ad99af2b34d973"
+    "trace_count": 277,
+    "trace_digest": "90669fddbf58dd984a25105ce341c7be4c51a8f9afdf1f5a93be8bb4dc63ef6c"
   },
   "second_shutdown": {
     "command": "demo.disk.serve",
     "contract": "dwv.cli.v0",
     "diagnostics": [],
-    "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+    "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
     "ok": true,
     "outcome": "success",
-    "publication_identity": "fixture:6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+    "publication_identity": "fixture:9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
     "schema": "dwv.cli.v0",
     "shutdown": "clean",
     "state": "stopped",
     "trace_bound": 4096,
-    "trace_count": 81,
-    "trace_digest": "c7d815d816509f6a21922af41671d1c5f6ee8d8b80ad9bab6633243085e1bc21"
+    "trace_count": 74,
+    "trace_digest": "c468829bdd5c53de52deb56f9401c3a4b1ef01b5a30f2c32efd180a0bb9b1e1c"
   },
   "live_traces": [
     {
       "phase": "first-shutdown",
       "retained_file": "linux-ublk-trace-first.json",
-      "sha256": "e666ee48c5ff4a3b88fe06abea15954362c5d337ea246e598214c49bee2bea7f",
+      "sha256": "77a61aa7079747046d5a4f02ffe73d56d6df5d1f4b18154c39786da0a9078fa7",
       "schema": "dwv.ublk.trace.v2",
-      "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+      "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
       "bounds": {
         "queue_depth": 8,
         "maximum_transfer": 131072,
         "maximum_records": 4096
       },
       "exhausted_records": 0,
-      "record_count": 458,
+      "record_count": 277,
       "replay": {
         "clean": true,
         "command": "demo.disk.trace-replay",
@@ -216,23 +217,23 @@
         "diagnostics": [],
         "ok": true,
         "outcome": "success",
-        "record_count": 458,
+        "record_count": 277,
         "schema": "dwv.cli.v0"
       }
     },
     {
       "phase": "second-shutdown",
       "retained_file": "linux-ublk-trace-second.json",
-      "sha256": "a3eb631185bb8eba82ad4d7b6d534a21be759d9a1244e24d6f8604581addd7bd",
+      "sha256": "708b6b731e42b2f0a2587fe7d27a1abbdbc6e3e80cd6cf358a7ad5122cf51e7c",
       "schema": "dwv.ublk.trace.v2",
-      "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+      "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
       "bounds": {
         "queue_depth": 8,
         "maximum_transfer": 131072,
         "maximum_records": 4096
       },
       "exhausted_records": 0,
-      "record_count": 81,
+      "record_count": 74,
       "replay": {
         "clean": true,
         "command": "demo.disk.trace-replay",
@@ -240,7 +241,7 @@
         "diagnostics": [],
         "ok": true,
         "outcome": "success",
-        "record_count": 81,
+        "record_count": 74,
         "schema": "dwv.cli.v0"
       }
     }
@@ -248,36 +249,33 @@
   "backing_file": {
     "independently_mounted_read_only": true,
     "content_sha256": "d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7",
-    "data_sha256": "216c1d78e37114a1b6f09ecf18cec6ce0877396790b28d932cf042b134876f19",
-    "parity_sha256": "216c1d78e37114a1b6f09ecf18cec6ce0877396790b28d932cf042b134876f19",
+    "data_sha256": "c574095223c6293beb3fd031e400216943851ce9030745b91d80179773f3f7e4",
+    "parity_sha256": "c574095223c6293beb3fd031e400216943851ce9030745b91d80179773f3f7e4",
     "data_equals_parity": true
   },
   "inspect": {
     "command": "demo.disk.inspect",
     "contract": "dwv.cli.v0",
-    "data_hash": "e1c27d7e2e7e10160c05dd10e937922f2030ec539844cb0fae02c111843ad574",
+    "data_hash": "038d3d682ceb46fa8507eeca52b748dbae5b0cede6f519175fe2abe915477289",
     "diagnostics": [],
-    "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
+    "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
     "ok": true,
     "outcome": "success",
-    "parity_hash": "e1c27d7e2e7e10160c05dd10e937922f2030ec539844cb0fae02c111843ad574",
+    "parity_hash": "038d3d682ceb46fa8507eeca52b748dbae5b0cede6f519175fe2abe915477289",
     "parity_matches_data": true,
-    "protected_length": 67108864,
-    "recovery_generation": 243,
+    "protected_length": 16777216,
+    "recovery_generation": 189,
     "recovery_integrity": "Healthy",
     "schema": "dwv.cli.v0",
     "topology_epoch": 1
   },
   "unknown_cleanup": "device reload json failed\n{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"message\": \"I/O failure: io_uring IO failure\",\n    \"reason_code\": \"legacy-operation-failed\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
   "negative_cases": {
-    "resource_bound": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"usage\",\n    \"message\": \"invalid request: fixture size must be 512-byte aligned between 16 MiB and 1 GiB\",\n    \"reason_code\": \"usage-error\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"usage\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
-    "unsupported_topology": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"not-supported\",\n    \"message\": \"unsupported: initial publication profile requires exactly one data slot\",\n    \"reason_code\": \"capability-not-supported\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"not-supported\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
-    "ownership_conflict": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"message\": \"conflict: SQLite recovery store is already locked: /var/tmp/dwv-linux-acceptance/recovery.sqlite3.dwv-lock\",\n    \"reason_code\": \"legacy-operation-failed\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
+    "ownership_conflict": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"message\": \"conflict: SQLite recovery store is already locked: /tmp/tmp.n1dUn37NbT/fixture/recovery.sqlite3.dwv-lock\",\n    \"reason_code\": \"legacy-operation-failed\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "conflicting_cleanup": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"message\": \"conflict: device target metadata does not match the fixture\",\n    \"reason_code\": \"legacy-operation-failed\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "stale_readiness": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"reconciliation-required\",\n    \"message\": \"reconciliation required: readiness record already exists; inspect and clean the owned endpoint\",\n    \"reason_code\": \"reconciliation-required\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"reconciliation-required\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "unsupported_discard": "blkdiscard: BLKDISCARD: /dev/ublkb0 ioctl failed: Operation not supported\n",
     "protected_payloads_unchanged": true,
-    "recovery_authority_loss": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"operation-failed\",\n    \"message\": \"I/O failure: No such file or directory (os error 2)\",\n    \"reason_code\": \"legacy-operation-failed\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"operation-failed\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
     "owner_process_death": {
       "reconciliation": "{\n  \"contract\": \"dwv.cli.v0\",\n  \"diagnostics\": [],\n  \"error\": {\n    \"class\": \"reconciliation-required\",\n    \"message\": \"reconciliation required: readiness record already exists; inspect and clean the owned endpoint\",\n    \"reason_code\": \"reconciliation-required\"\n  },\n  \"kind\": \"cli-error\",\n  \"ok\": false,\n  \"outcome\": \"reconciliation-required\",\n  \"schema\": \"dwv.cli.v0\"\n}\n",
       "cleanup": {
@@ -286,7 +284,7 @@
         "contract": "dwv.cli.v0",
         "device_id": 0,
         "diagnostics": [],
-        "fixture_digest": "60a5c2ee71cdc28a361eca32ffc4d9e5cdf6b8e29ebc252916e13da0e6ebb111",
+        "fixture_digest": "54a67015fc86f1e15409515c3c30e063df37e9210381e64d0a505f267e31f66b",
         "ok": true,
         "outcome": "success",
         "schema": "dwv.cli.v0"
@@ -295,19 +293,18 @@
         "command": "demo.disk.serve",
         "contract": "dwv.cli.v0",
         "diagnostics": [],
-        "fixture_digest": "60a5c2ee71cdc28a361eca32ffc4d9e5cdf6b8e29ebc252916e13da0e6ebb111",
+        "fixture_digest": "54a67015fc86f1e15409515c3c30e063df37e9210381e64d0a505f267e31f66b",
         "ok": true,
         "outcome": "success",
-        "publication_identity": "fixture:60a5c2ee71cdc28a361eca32ffc4d9e5cdf6b8e29ebc252916e13da0e6ebb111",
+        "publication_identity": "fixture:54a67015fc86f1e15409515c3c30e063df37e9210381e64d0a505f267e31f66b",
         "schema": "dwv.cli.v0",
         "shutdown": "clean",
         "state": "stopped",
         "trace_bound": 4096,
         "trace_count": 6,
-        "trace_digest": "0bf11086e818d97b56358a423af7afe2f85705db391d8fb0eff180153e455e9e"
+        "trace_digest": "f7632f3bc46f29c71caa43bc9d0bb5a52de835b006faee57a55ba28634f2e7eb"
       }
-    },
-    "partial_fence_coverage_rejected_by": "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"
+    }
   },
   "non_claims": [
     "production durability",

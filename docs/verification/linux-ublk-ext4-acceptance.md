@@ -6,32 +6,32 @@ This record proves a disposable one-data/one-parity file-backed fixture can be e
 
 ## Evidence run
 
-Run on 2026-08-10 with `tools/linux-disk-acceptance/run.sh` after the Milestone 9 operator path and production-start acceptance step were present:
+Run on 2026-08-11 with `tools/linux-disk-acceptance/run.sh` through the prepared reusable Lima runner:
 
-- Exact execution-archive SHA-256: `2b2ecd7f690684216ed712472f35e38f74e8a59c95cdd18b7ca9e0982b1a4516`.
-- `run.sh:20-29` archived repository root `.` before guest startup and before copying new evidence back. It excluded `.git`, `.jj`, `.omp`, `target`, and `tools/macos-bridge-probe/.build`; every other present working-tree path was included, including source, tests, scripts, specs, documentation, and prior verification files.
-- The generated evidence and traces were copied into `verification/` only after the archive was closed and hashed. The digest identifies the exact archive executed in the guest, not a content-stable digest of the later post-run tree; the gzip header makes separate compressed snapshots differ even when their uncompressed tar payloads are identical.
-- VM prefix: `dwv-linux-acceptance-`; observed instance: `dwv-linux-acceptance-1786439038`.
-- Fixture root: `/var/tmp/dwv-linux-acceptance`; mountpoint: `/mnt/dwv-linux-acceptance`.
-- Guest evidence path: `/tmp/dwv-linux-acceptance-evidence.json`.
-- Guest: Ubuntu 26.04 arm64 image, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
-- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json` (12,032 bytes, SHA-256 `6052b83551790d62058f97c162931f8a9dd1716eb9c86d77942f1fe1c86af078`).
+- Exact final execution-archive SHA-256: `afa56d9bccf183c0f2e33b0f6e308654017685ffe3f7ee6646e46c0de82af37c`.
+- `run.sh` archived repository root `.` with `tar -C` before guest startup and before copying new evidence back. It excluded `.git`, `.jj`, `.omp`, `target`, and `tools/macos-bridge-probe/.build`; every other present working-tree path was included.
+- The runner staged generated evidence and traces in a host `mktemp` directory, enforced the warm bound, and promoted them only after the bound passed. The archive digest identifies the exact guest input rather than the later tree containing refreshed evidence and prose; gzip headers also make separate compressed snapshots differ.
+- Runner instance: `dwv-linux-acceptance`. Guest: Ubuntu 26.04 arm64 image, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
+- Host and guest workspaces, the fixture, mountpoint, and scratch files came from `mktemp`. The runner derived repository and Lima configuration paths from its script location. Invoking the absolute script from `/tmp` with a relative output path completed successfully.
+- Cold preparation completed in 83 seconds, including a 57-second first release build; its live platform phase completed in 23 seconds. The final prepared invocation completed in 26 seconds, including a 24-second live platform phase.
+- The 16 MiB fixture retained ext4 journaling; `mkfs.ext4` created a 1,024-block journal.
+- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json` (10,749 bytes, SHA-256 `c6024af2a2d6924b7b0fc32af26842d6ca32cf1ded020af7265f4d184ee85cdf`).
 - Before production start, the acceptance deliberately changed fixture-local array identity while leaving the admitted `array.json` unchanged. The production `dwv start --array ... --json` path re-observed two recognized members, passed admitted array and publication identity to the frontend without reopening fixture authority, reported `reason_code: frontend-published`, `lifecycle: online`, `access: read-write`, and `publication.status: published` for `/dev/ublkb0`, then remained attached until signal-driven clean shutdown.
-- Retained live traces: `verification/linux-ublk-trace-first.json` (450,485 bytes, 458 records, SHA-256 `e666ee48c5ff4a3b88fe06abea15954362c5d337ea246e598214c49bee2bea7f`) and `verification/linux-ublk-trace-second.json` (79,533 bytes, 81 records, SHA-256 `a3eb631185bb8eba82ad4d7b6d534a21be759d9a1244e24d6f8604581addd7bd`).
-- Both traces use `dwv.ublk.trace.v2`, record queue depth 8, maximum transfer 131,072 bytes, maximum 4,096 records, no exhaustion, and clean deterministic replay through the current root `dwv demo disk trace-replay`.
+- Retained live traces: `verification/linux-ublk-trace-first.json` (272,306 bytes, 277 records, SHA-256 `77a61aa7079747046d5a4f02ffe73d56d6df5d1f4b18154c39786da0a9078fa7`) and `verification/linux-ublk-trace-second.json` (72,636 bytes, 74 records, SHA-256 `708b6b731e42b2f0a2587fe7d27a1abbdbc6e3e80cd6cf358a7ad5122cf51e7c`).
+- Both traces use `dwv.ublk.trace.v2`, record queue depth 8, maximum transfer 131,072 bytes, maximum 4,096 records, no exhaustion, and clean replay through the current root `dwv demo disk trace-replay`.
 - Workload: mkfs.ext4, mount, create, fsync, overwrite, rename, directory sync, read, delete, unmount, clean shutdown, restart, and read-only remount.
 - Durable file content SHA-256 before and after restart: `d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7`.
-- Data and parity payload SHA-256 after shutdown: `216c1d78e37114a1b6f09ecf18cec6ce0877396790b28d932cf042b134876f19`; byte equality passed.
+- Data and parity payload SHA-256 after shutdown: `c574095223c6293beb3fd031e400216943851ce9030745b91d80179773f3f7e4`; byte equality passed.
 - The ordinary data backing file mounted directly as read-only ext4 after service shutdown and exposed the same content.
 - Both workload ublk runs ended in lifecycle state `stopped` only after drain, checkpoint, endpoint-removal, and trace-replay checks passed.
 
-Negative cases failed closed for undersized geometry, unsupported topology, second-owner acquisition, cleanup against a differently owned endpoint, stale readiness, missing recovery authority, unsupported discard, unknown endpoint cleanup, and owner process death. Owner-death evidence required explicit owned-endpoint cleanup before successful reacquisition. Payload hashes were unchanged across pre-publication refusal cases. Partial multi-store fence coverage was rejected by the portable transaction regression executed in the guest.
+Live negative cases failed closed for second-owner acquisition, cleanup against a differently owned endpoint, stale readiness, unsupported discard, unknown endpoint cleanup, and owner process death. Owner-death evidence required explicit owned-endpoint cleanup before successful reacquisition. Payload hashes remained unchanged across the live discard refusal. Deterministic Rust tests separately covered undersized geometry, unsupported topology, missing recovery authority without payload mutation, adapter behavior, and partial multi-store fence refusal.
 
 ## Portable and proof evidence
 
-- `cargo test --workspace --all-targets`: 313 passed across 23 suites; 1 explicitly ignored hardware-dependent test.
-- `cargo test -p dwv-frontend-ublk` in the Linux guest: 13 passed, including bounded trace replay/divergence, pre-admission reservation, stale/duplicate completion, lifecycle refusal, probe/shutdown classification, borrowed write-payload identity, array-scoped publication discovery, and fixture validation.
-- `cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected` in the Linux guest: passed.
+- `cargo test --workspace --all-targets`: 317 passed across 23 suites; 1 explicitly ignored hardware-dependent test.
+- `cargo test -p dwv-frontend-ublk`: 13 passed across two suites, including the deterministic undersized-fixture and missing-recovery-authority checks moved out of the guest workflow.
+- `cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected`: passed outside the timed guest workflow.
 - `cargo test --test cli_demo`: covers portable trace replay, malformed trace refusal, oversized trace refusal, lifecycle confirmation, and source-preserving replay.
 - TLC 2.19 on `verification/tla/RecoveryProtocol.tla`: 234 states generated, 125 distinct states, complete depth 9, all configured invariants passed. The model composes durable dirty intent, data/parity mutation, per-store fences, recovery checkpointing, clean publication, and crash/restart handoff.
 - Kani 0.67.0 `dirty_region_mapping_covers_every_intersection_once`: 0 of 584 checks failed, 7 unreachable.

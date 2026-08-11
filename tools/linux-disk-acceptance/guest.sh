@@ -2,9 +2,12 @@
 set -euo pipefail
 
 source_hash=${1:?source snapshot hash required}
-source_root=/tmp/diskweave-src
-fixture=/var/tmp/dwv-linux-acceptance
-mountpoint=/mnt/dwv-linux-acceptance
+source_root=${2:?source root required}
+results_root=${3:?results root required}
+work=$(mktemp -d)
+fixture=$work/fixture
+mountpoint=$work/mount
+scratch=$work/scratch
 server_pid=
 
 cleanup() {
@@ -13,6 +16,7 @@ cleanup() {
     kill -TERM "$server_pid"
     wait "$server_pid" || true
   fi
+  rm -rf "$work"
 }
 trap cleanup EXIT
 
@@ -26,13 +30,10 @@ wait_ready() {
 }
 
 cd "$source_root"
-cargo test -p dwv-frontend-ublk
-cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected
-cargo build --bin dwv
-./target/debug/dwv demo disk probe > /tmp/dwv-probe.json
-rm -rf "$fixture" /var/tmp/dwv-too-small /var/tmp/dwv-negative /var/tmp/dwv-recovery-loss /var/tmp/dwv-cleanup-conflict /var/tmp/dwv-owner-death
-mkdir -p "$mountpoint"
-./target/debug/dwv demo disk init --root "$fixture" --size 67108864 > /tmp/dwv-init.json
+mkdir -p "$mountpoint" "$results_root" "$scratch"
+live_started=$SECONDS
+./target/release/dwv demo disk probe > "$scratch/dwv-probe.json"
+./target/release/dwv demo disk init --root "$fixture" --size 16777216 > "$scratch/dwv-init.json"
 jq '
   def hex:
     [ .[] | . as $n |
@@ -71,12 +72,12 @@ jq '
     frontend: "linux-ublk"
   }
 ' "$fixture/fixture.json" > "$fixture/array.json"
-./target/debug/dwv status --array "$fixture/array.json" --json > /tmp/dwv-production-status.json
-cp "$fixture/fixture.json" /tmp/dwv-production-fixture.json
+./target/release/dwv status --array "$fixture/array.json" --json > "$scratch/dwv-production-status.json"
+cp "$fixture/fixture.json" "$scratch/dwv-production-fixture.json"
 jq '.array_id = [66,66,66,66,66,66,66,66,66,66,66,66,66,66,66,66]' \
-  /tmp/dwv-production-fixture.json > "$fixture/fixture.json"
-./target/debug/dwv start --array "$fixture/array.json" --json \
-  > /tmp/dwv-production-start.json 2> /tmp/dwv-production-start-error.json &
+  "$scratch/dwv-production-fixture.json" > "$fixture/fixture.json"
+./target/release/dwv start --array "$fixture/array.json" --json \
+  > "$scratch/dwv-production-start.json" 2> "$scratch/dwv-production-start-error.json" &
 server_pid=$!
 published=
 for _ in $(seq 1 300); do
@@ -88,15 +89,15 @@ for _ in $(seq 1 300); do
   sleep 0.1
 done
 if [[ -z "$published" ]]; then
-  cat /tmp/dwv-production-status.json /tmp/dwv-production-start.json \
-    /tmp/dwv-production-start-error.json >&2
+  cat "$scratch/dwv-production-status.json" "$scratch/dwv-production-start.json" \
+    "$scratch/dwv-production-start-error.json" >&2
   exit 1
 fi
 kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
 [[ ! -b /dev/ublkb0 ]]
-mv /tmp/dwv-production-fixture.json "$fixture/fixture.json"
+mv "$scratch/dwv-production-fixture.json" "$fixture/fixture.json"
 jq -e '
   .schema == "dwv.operator.v1" and
   .command == "start" and
@@ -104,50 +105,27 @@ jq -e '
   .reason_code == "frontend-published" and
   .publication.status == "published" and
   .publication.device_path == "/dev/ublkb0"
-' /tmp/dwv-production-start.json >/dev/null
-if ./target/debug/dwv demo disk init --root /var/tmp/dwv-too-small --size 4096 2> /tmp/dwv-resource-bound.json; then
-  echo "fixture initializer unexpectedly accepted an undersized device" >&2
-  exit 1
-fi
-[[ ! -e /var/tmp/dwv-too-small ]]
-negative_fixture=/var/tmp/dwv-negative
-./target/debug/dwv demo disk init --root "$negative_fixture" --size 16777216 > /tmp/dwv-negative-init.json
-jq '.data_files += ["unsupported.raw"]' "$negative_fixture/fixture.json" > /tmp/dwv-negative-manifest.json
-mv /tmp/dwv-negative-manifest.json "$negative_fixture/fixture.json"
-negative_before=$(sha256sum "$negative_fixture/data.raw" "$negative_fixture/parity.raw")
-if ./target/debug/dwv demo disk inspect --root "$negative_fixture" 2> /tmp/dwv-unsupported-topology.json; then
-  echo "inspection unexpectedly accepted an unsupported topology" >&2
-  exit 1
-fi
-[[ "$negative_before" == "$(sha256sum "$negative_fixture/data.raw" "$negative_fixture/parity.raw")" ]]
-recovery_loss_fixture=/var/tmp/dwv-recovery-loss
-./target/debug/dwv demo disk init --root "$recovery_loss_fixture" --size 16777216 > /tmp/dwv-recovery-loss-init.json
-recovery_loss_before=$(sha256sum "$recovery_loss_fixture/data.raw" "$recovery_loss_fixture/parity.raw")
-rm "$recovery_loss_fixture/recovery.sqlite3"
-if ./target/debug/dwv demo disk inspect --root "$recovery_loss_fixture" 2> /tmp/dwv-recovery-loss.json; then
-  echo "inspection unexpectedly accepted missing recovery authority" >&2
-  exit 1
-fi
-[[ "$recovery_loss_before" == "$(sha256sum "$recovery_loss_fixture/data.raw" "$recovery_loss_fixture/parity.raw")" ]]
+' "$scratch/dwv-production-start.json" >/dev/null
+printf 'production publication: %ss\n' "$((SECONDS - live_started))" >&2
 
-./target/debug/dwv demo disk serve --root "$fixture" > /tmp/dwv-serve-first.json &
+./target/release/dwv demo disk serve --root "$fixture" > "$scratch/dwv-serve-first.json" &
 server_pid=$!
 wait_ready
 device=$(jq -r .device_path "$fixture/ready.json")
 device_id=$(jq -r .device_id "$fixture/ready.json")
-if ./target/debug/dwv demo disk serve --root "$fixture" 2> /tmp/dwv-ownership-conflict.json; then
+if ./target/release/dwv demo disk serve --root "$fixture" 2> "$scratch/dwv-ownership-conflict.json"; then
   echo "second server unexpectedly acquired the fixture" >&2
   exit 1
 fi
-cleanup_fixture=/var/tmp/dwv-cleanup-conflict
-./target/debug/dwv demo disk init --root "$cleanup_fixture" --size 16777216 > /tmp/dwv-cleanup-conflict-init.json
-if ./target/debug/dwv demo disk cleanup --root "$cleanup_fixture" --device-id "$device_id" 2> /tmp/dwv-conflicting-cleanup.json; then
+cleanup_fixture=$work/cleanup-conflict
+./target/release/dwv demo disk init --root "$cleanup_fixture" --size 16777216 > "$scratch/dwv-cleanup-conflict-init.json"
+if ./target/release/dwv demo disk cleanup --root "$cleanup_fixture" --device-id "$device_id" 2> "$scratch/dwv-conflicting-cleanup.json"; then
   echo "cleanup unexpectedly removed a differently owned endpoint" >&2
   exit 1
 fi
 [[ -b "$device" ]]
 pre_discard=$(sha256sum "$fixture/data.raw" "$fixture/parity.raw")
-if blkdiscard "$device" 2> /tmp/dwv-unsupported-discard.txt; then
+if blkdiscard "$device" 2> "$scratch/dwv-unsupported-discard.txt"; then
   echo "discard unexpectedly succeeded" >&2
   exit 1
 fi
@@ -172,9 +150,10 @@ kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
 [[ ! -e "$fixture/ready.json" ]]
-cp "$fixture/trace.json" /tmp/dwv-trace-first.json
+cp "$fixture/trace.json" "$scratch/dwv-trace-first.json"
+printf 'first ext4 lifecycle: %ss\n' "$((SECONDS - live_started))" >&2
 
-./target/debug/dwv demo disk serve --root "$fixture" > /tmp/dwv-serve-second.json &
+./target/release/dwv demo disk serve --root "$fixture" > "$scratch/dwv-serve-second.json" &
 server_pid=$!
 wait_ready
 device=$(jq -r .device_path "$fixture/ready.json")
@@ -187,55 +166,57 @@ kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
 [[ ! -e "$fixture/ready.json" ]]
-cp "$fixture/trace.json" /tmp/dwv-trace-second.json
-./target/debug/dwv demo disk trace-replay --trace /tmp/dwv-trace-first.json > /tmp/dwv-trace-first-replay.json
-./target/debug/dwv demo disk trace-replay --trace /tmp/dwv-trace-second.json > /tmp/dwv-trace-second-replay.json
-first_trace_digest=$(sha256sum /tmp/dwv-trace-first.json | cut -d' ' -f1)
-second_trace_digest=$(sha256sum /tmp/dwv-trace-second.json | cut -d' ' -f1)
+cp "$fixture/trace.json" "$scratch/dwv-trace-second.json"
+./target/release/dwv demo disk trace-replay --trace "$scratch/dwv-trace-first.json" > "$scratch/dwv-trace-first-replay.json"
+./target/release/dwv demo disk trace-replay --trace "$scratch/dwv-trace-second.json" > "$scratch/dwv-trace-second-replay.json"
+first_trace_digest=$(sha256sum "$scratch/dwv-trace-first.json" | cut -d' ' -f1)
+second_trace_digest=$(sha256sum "$scratch/dwv-trace-second.json" | cut -d' ' -f1)
 jq -e \
-  --arg digest "$(jq -r .fixture_digest /tmp/dwv-serve-first.json)" \
-  --argjson count "$(jq -r .trace_count /tmp/dwv-serve-first.json)" \
+  --arg digest "$(jq -r .fixture_digest "$scratch/dwv-serve-first.json")" \
+  --argjson count "$(jq -r .trace_count "$scratch/dwv-serve-first.json")" \
   '.schema == "dwv.ublk.trace.v2" and .fixture_digest == $digest and
    .bounds.queue_depth == 8 and .bounds.maximum_transfer == 131072 and
    .bounds.maximum_records == 4096 and .exhausted_records == 0 and
-   (.records | length) == $count' /tmp/dwv-trace-first.json >/dev/null
+   (.records | length) == $count' "$scratch/dwv-trace-first.json" >/dev/null
 jq -e \
-  --arg digest "$(jq -r .fixture_digest /tmp/dwv-serve-second.json)" \
-  --argjson count "$(jq -r .trace_count /tmp/dwv-serve-second.json)" \
+  --arg digest "$(jq -r .fixture_digest "$scratch/dwv-serve-second.json")" \
+  --argjson count "$(jq -r .trace_count "$scratch/dwv-serve-second.json")" \
   '.schema == "dwv.ublk.trace.v2" and .fixture_digest == $digest and
    .bounds.queue_depth == 8 and .bounds.maximum_transfer == 131072 and
    .bounds.maximum_records == 4096 and .exhausted_records == 0 and
-   (.records | length) == $count' /tmp/dwv-trace-second.json >/dev/null
-[[ $(stat -c %s /tmp/dwv-trace-first.json) -le 4194304 ]]
-[[ $(stat -c %s /tmp/dwv-trace-second.json) -le 4194304 ]]
+   (.records | length) == $count' "$scratch/dwv-trace-second.json" >/dev/null
+[[ $(stat -c %s "$scratch/dwv-trace-first.json") -le 4194304 ]]
+[[ $(stat -c %s "$scratch/dwv-trace-second.json") -le 4194304 ]]
+printf 'second ext4 lifecycle and trace checks: %ss\n' "$((SECONDS - live_started))" >&2
 printf '{}\n' > "$fixture/ready.json"
-if ./target/debug/dwv demo disk serve --root "$fixture" 2> /tmp/dwv-stale-readiness.json; then
+if ./target/release/dwv demo disk serve --root "$fixture" 2> "$scratch/dwv-stale-readiness.json"; then
   echo "serve unexpectedly accepted stale readiness state" >&2
   exit 1
 fi
 rm "$fixture/ready.json"
 main_fixture=$fixture
-fixture=/var/tmp/dwv-owner-death
-./target/debug/dwv demo disk init --root "$fixture" --size 16777216 > /tmp/dwv-owner-death-init.json
-./target/debug/dwv demo disk serve --root "$fixture" > /tmp/dwv-owner-death-first.json &
+fixture=$work/owner-death
+./target/release/dwv demo disk init --root "$fixture" --size 16777216 > "$scratch/dwv-owner-death-init.json"
+./target/release/dwv demo disk serve --root "$fixture" > "$scratch/dwv-owner-death-first.json" &
 server_pid=$!
 wait_ready
 owner_device_id=$(jq -r .device_id "$fixture/ready.json")
 kill -KILL "$server_pid"
 wait "$server_pid" || true
 server_pid=
-if ./target/debug/dwv demo disk serve --root "$fixture" 2> /tmp/dwv-owner-death-reconciliation.json; then
+if ./target/release/dwv demo disk serve --root "$fixture" 2> "$scratch/dwv-owner-death-reconciliation.json"; then
   echo "serve unexpectedly ignored stale publication after owner death" >&2
   exit 1
 fi
-./target/debug/dwv demo disk cleanup --root "$fixture" --device-id "$owner_device_id" > /tmp/dwv-owner-death-cleanup.json
-./target/debug/dwv demo disk serve --root "$fixture" > /tmp/dwv-owner-death-restart.json &
+./target/release/dwv demo disk cleanup --root "$fixture" --device-id "$owner_device_id" > "$scratch/dwv-owner-death-cleanup.json"
+./target/release/dwv demo disk serve --root "$fixture" > "$scratch/dwv-owner-death-restart.json" &
 server_pid=$!
 wait_ready
 kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
 fixture=$main_fixture
+printf 'owner-death lifecycle: %ss\n' "$((SECONDS - live_started))" >&2
 
 mount -o loop,ro,noload "$fixture/data.raw" "$mountpoint"
 backing_hash=$(sha256sum "$mountpoint/durable.txt" | cut -d' ' -f1)
@@ -245,9 +226,15 @@ umount "$mountpoint"
 cmp "$fixture/data.raw" "$fixture/parity.raw"
 data_hash=$(sha256sum "$fixture/data.raw" | cut -d' ' -f1)
 parity_hash=$(sha256sum "$fixture/parity.raw" | cut -d' ' -f1)
-./target/debug/dwv demo disk inspect --root "$fixture" > /tmp/dwv-inspect.json
-if ./target/debug/dwv demo disk cleanup --root "$fixture" --device-id 2147483647 2> /tmp/dwv-unknown-cleanup.json; then
+./target/release/dwv demo disk inspect --root "$fixture" > "$scratch/dwv-inspect.json"
+if ./target/release/dwv demo disk cleanup --root "$fixture" --device-id 2147483647 2> "$scratch/dwv-unknown-cleanup.json"; then
   echo "cleanup unexpectedly accepted an unknown endpoint" >&2
+  exit 1
+fi
+printf 'final direct inspection: %ss\n' "$((SECONDS - live_started))" >&2
+live_elapsed_seconds=$((SECONDS - live_started))
+if ((live_elapsed_seconds >= 30)); then
+  echo "live Linux disk acceptance reached the 30-second limit: ${live_elapsed_seconds}s" >&2
   exit 1
 fi
 
@@ -255,37 +242,36 @@ jq -n \
   --arg source_snapshot_sha256 "$source_hash" \
   --arg kernel_release "$(uname -r)" \
   --arg architecture "$(uname -m)" \
+  --argjson live_elapsed_seconds "$live_elapsed_seconds" \
   --arg content_sha256 "$first_hash" \
   --arg data_sha256 "$data_hash" \
   --arg parity_sha256 "$parity_hash" \
   --arg first_trace_sha256 "$first_trace_digest" \
   --arg second_trace_sha256 "$second_trace_digest" \
-  --slurpfile probe /tmp/dwv-probe.json \
-  --slurpfile init /tmp/dwv-init.json \
-  --slurpfile first_shutdown /tmp/dwv-serve-first.json \
-  --slurpfile second_shutdown /tmp/dwv-serve-second.json \
-  --slurpfile inspect /tmp/dwv-inspect.json \
-  --slurpfile production_start /tmp/dwv-production-start.json \
-  --slurpfile first_trace /tmp/dwv-trace-first.json \
-  --slurpfile second_trace /tmp/dwv-trace-second.json \
-  --slurpfile first_trace_replay /tmp/dwv-trace-first-replay.json \
-  --slurpfile second_trace_replay /tmp/dwv-trace-second-replay.json \
-  --rawfile unknown_cleanup /tmp/dwv-unknown-cleanup.json \
-  --rawfile resource_bound /tmp/dwv-resource-bound.json \
-  --rawfile unsupported_topology /tmp/dwv-unsupported-topology.json \
-  --rawfile ownership_conflict /tmp/dwv-ownership-conflict.json \
-  --rawfile conflicting_cleanup /tmp/dwv-conflicting-cleanup.json \
-  --rawfile stale_readiness /tmp/dwv-stale-readiness.json \
-  --rawfile recovery_loss /tmp/dwv-recovery-loss.json \
-  --rawfile owner_death_reconciliation /tmp/dwv-owner-death-reconciliation.json \
-  --slurpfile owner_death_cleanup /tmp/dwv-owner-death-cleanup.json \
-  --slurpfile owner_death_restart /tmp/dwv-owner-death-restart.json \
-  --rawfile unsupported_discard /tmp/dwv-unsupported-discard.txt \
+  --slurpfile probe "$scratch/dwv-probe.json" \
+  --slurpfile init "$scratch/dwv-init.json" \
+  --slurpfile first_shutdown "$scratch/dwv-serve-first.json" \
+  --slurpfile second_shutdown "$scratch/dwv-serve-second.json" \
+  --slurpfile inspect "$scratch/dwv-inspect.json" \
+  --slurpfile production_start "$scratch/dwv-production-start.json" \
+  --slurpfile first_trace "$scratch/dwv-trace-first.json" \
+  --slurpfile second_trace "$scratch/dwv-trace-second.json" \
+  --slurpfile first_trace_replay "$scratch/dwv-trace-first-replay.json" \
+  --slurpfile second_trace_replay "$scratch/dwv-trace-second-replay.json" \
+  --rawfile unknown_cleanup "$scratch/dwv-unknown-cleanup.json" \
+  --rawfile ownership_conflict "$scratch/dwv-ownership-conflict.json" \
+  --rawfile conflicting_cleanup "$scratch/dwv-conflicting-cleanup.json" \
+  --rawfile stale_readiness "$scratch/dwv-stale-readiness.json" \
+  --rawfile owner_death_reconciliation "$scratch/dwv-owner-death-reconciliation.json" \
+  --slurpfile owner_death_cleanup "$scratch/dwv-owner-death-cleanup.json" \
+  --slurpfile owner_death_restart "$scratch/dwv-owner-death-restart.json" \
+  --rawfile unsupported_discard "$scratch/dwv-unsupported-discard.txt" \
   '{
     schema: "dwv.verification.linux-ublk-ext4.v1",
     source_snapshot_sha256: $source_snapshot_sha256,
     kernel_release: $kernel_release,
     architecture: $architecture,
+    live_elapsed_seconds: $live_elapsed_seconds,
     probe: $probe[0],
     init: $init[0],
     production_start: $production_start[0],
@@ -330,21 +316,19 @@ jq -n \
     inspect: $inspect[0],
     unknown_cleanup: $unknown_cleanup,
     negative_cases: {
-      resource_bound: $resource_bound,
-      unsupported_topology: $unsupported_topology,
       ownership_conflict: $ownership_conflict,
       conflicting_cleanup: $conflicting_cleanup,
       stale_readiness: $stale_readiness,
       unsupported_discard: $unsupported_discard,
       protected_payloads_unchanged: true,
-      recovery_authority_loss: $recovery_loss,
       owner_process_death: {
         reconciliation: $owner_death_reconciliation,
         cleanup: $owner_death_cleanup[0],
         restart: $owner_death_restart[0]
-      },
-      partial_fence_coverage_rejected_by: "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"
+      }
     },
     non_claims: ["production durability", "power-loss safety", "multi-device publication", "daemon recovery", "FUA", "discard", "write-zeroes", "online topology mutation", "hardware safety"]
-  }' > /tmp/dwv-linux-acceptance-evidence.json
-cat /tmp/dwv-linux-acceptance-evidence.json
+  }' > "$results_root/evidence.json"
+cp "$scratch/dwv-trace-first.json" "$results_root/linux-ublk-trace-first.json"
+cp "$scratch/dwv-trace-second.json" "$results_root/linux-ublk-trace-second.json"
+cat "$results_root/evidence.json"
