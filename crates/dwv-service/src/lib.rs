@@ -29,6 +29,6 @@ pub use rebuild::{
     commit_verified_rebuild_completion, validate_rebuild_resume,
 };
 pub use service::{
-    HealthyPortableService, MemberBinding, ServiceConfig, WritableStartAssessment,
-    assess_writable_start,
+    HealthyPortableService, MemberBinding, PublicationIdentity, PublicationIdentityError,
+    ServiceConfig, WritableStartAssessment, assess_writable_start, publication_identity,
 };

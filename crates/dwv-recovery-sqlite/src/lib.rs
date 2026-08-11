@@ -8,14 +8,15 @@
 //! power-loss behavior.
 
 use dwv_recovery::{
-    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, MetadataLossAuthorization, RecoveryError,
-    RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
-    RecoveryMigrationPlan, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
-    RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase, SqliteJournalMode,
-    SqliteSynchronousMode, TopologySnapshot,
+    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, MetadataLossAuthorization,
+    RecoveryCommitObservation, RecoveryError, RecoveryFormatLayer, RecoveryGeneration,
+    RecoveryInspection, RecoveryManifest, RecoveryMigrationPlan, RecoverySchemaVersion,
+    RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, SqliteEvaluationCase,
+    SqliteJournalMode, SqliteSynchronousMode, TopologySnapshot,
 };
 use std::fmt;
 use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 #[cfg(test)]
@@ -461,6 +462,7 @@ pub enum SqliteRecoveryStoreError {
     MissingTarget,
     Prototype(SqlitePrototypeError),
     Semantic(String),
+    ReconciliationRequired,
 }
 
 impl fmt::Display for SqliteRecoveryStoreError {
@@ -479,6 +481,9 @@ impl fmt::Display for SqliteRecoveryStoreError {
             Self::Prototype(error) => error.fmt(formatter),
             Self::Semantic(message) => {
                 write!(formatter, "SQLite recovery state is invalid: {message}")
+            }
+            Self::ReconciliationRequired => {
+                formatter.write_str("SQLite recovery commit requires reconciliation")
             }
         }
     }
@@ -504,6 +509,15 @@ pub struct SqliteRecoveryStore {
     prototype: SqlitePrototype,
     memory: MemoryRecoveryStore,
     _lock: File,
+    #[cfg(test)]
+    failure_point: Option<SqliteFailurePoint>,
+}
+
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SqliteFailurePoint {
+    AfterCommitIntent,
+    AfterManifestWrite,
 }
 
 impl SqliteRecoveryStore {
@@ -543,6 +557,8 @@ impl SqliteRecoveryStore {
                 prototype,
                 memory,
                 _lock: lock,
+                #[cfg(test)]
+                failure_point: None,
             }),
             Err(error) => {
                 let _ = std::fs::remove_file(&database_path);
@@ -562,6 +578,7 @@ impl SqliteRecoveryStore {
             prototype
                 .initialize()
                 .map_err(SqliteRecoveryStoreError::Prototype)?;
+            reconcile_commit_intent(&prototype)?;
             let manifest = prototype
                 .load_manifest()
                 .map_err(SqliteRecoveryStoreError::Prototype)?;
@@ -574,13 +591,15 @@ impl SqliteRecoveryStore {
                 prototype,
                 memory,
                 _lock: lock,
+                #[cfg(test)]
+                failure_point: None,
             }),
             Err(error) => Err(error),
         }
     }
 
     /// Observes recovery state without taking a writer lease or running DDL,
-    /// initialization, or migration.
+    /// initialization, migration, or commit reconciliation.
     /// dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout
     pub fn inspect(database_path: impl Into<PathBuf>) -> RecoveryInspection {
         let database_path = database_path.into();
@@ -588,6 +607,9 @@ impl SqliteRecoveryStore {
             return RecoveryInspection::Absent;
         }
         if !database_path.is_file() {
+            return RecoveryInspection::CorruptOrUnreadable;
+        }
+        if commit_intent_path(&database_path).exists() {
             return RecoveryInspection::CorruptOrUnreadable;
         }
         let prototype = SqlitePrototype::new(database_path);
@@ -653,6 +675,10 @@ impl SqliteRecoveryStore {
         self.prototype.database_path()
     }
 
+    #[cfg(test)]
+    fn fail_at(&mut self, failure_point: SqliteFailurePoint) {
+        self.failure_point = Some(failure_point);
+    }
     pub fn snapshot(&self) -> Result<RecoverySnapshot, RecoveryError> {
         self.load_assembly_snapshot()
     }
@@ -668,6 +694,125 @@ impl SqliteRecoveryStore {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CommitIntent {
+    prior_generation: RecoveryGeneration,
+    prior_digest: String,
+    proposed_generation: RecoveryGeneration,
+    proposed_digest: String,
+}
+
+impl CommitIntent {
+    fn encode(&self) -> String {
+        format!(
+            "{}\n{}\n{}\n{}\n",
+            self.prior_generation.0,
+            self.prior_digest,
+            self.proposed_generation.0,
+            self.proposed_digest
+        )
+    }
+
+    fn decode(bytes: &[u8]) -> Result<Self, SqliteRecoveryStoreError> {
+        let value = std::str::from_utf8(bytes)
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+        let mut lines = value.lines();
+        let prior_generation = lines
+            .next()
+            .and_then(|value| value.parse().ok())
+            .map(RecoveryGeneration)
+            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
+        let prior_digest = lines
+            .next()
+            .filter(|value| value.len() == 64)
+            .map(str::to_owned)
+            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
+        let proposed_generation = lines
+            .next()
+            .and_then(|value| value.parse().ok())
+            .map(RecoveryGeneration)
+            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
+        let proposed_digest = lines
+            .next()
+            .filter(|value| value.len() == 64)
+            .map(str::to_owned)
+            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
+        if lines.next().is_some() {
+            return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+        }
+        Ok(Self {
+            prior_generation,
+            prior_digest,
+            proposed_generation,
+            proposed_digest,
+        })
+    }
+}
+
+fn commit_intent_path(database_path: &Path) -> PathBuf {
+    let mut path = database_path.as_os_str().to_owned();
+    path.push(".commit-intent");
+    PathBuf::from(path)
+}
+
+fn manifest_digest(manifest: &RecoveryManifest) -> Result<String, SqliteRecoveryStoreError> {
+    let manifest = serialize_manifest(manifest).map_err(SqliteRecoveryStoreError::Prototype)?;
+    Ok(blake3::hash(manifest.as_bytes()).to_hex().to_string())
+}
+
+fn sync_parent(path: &Path) -> Result<(), SqliteRecoveryStoreError> {
+    File::open(path.parent().unwrap_or_else(|| Path::new(".")))
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))
+}
+
+fn write_commit_intent(
+    database_path: &Path,
+    intent: &CommitIntent,
+) -> Result<(), SqliteRecoveryStoreError> {
+    let path = commit_intent_path(database_path);
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = PathBuf::from(temporary);
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&temporary)
+        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    file.write_all(intent.encode().as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    std::fs::rename(&temporary, &path)
+        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    sync_parent(&path)
+}
+
+fn remove_commit_intent(database_path: &Path) -> Result<(), SqliteRecoveryStoreError> {
+    let path = commit_intent_path(database_path);
+    std::fs::remove_file(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    sync_parent(&path)
+}
+
+fn reconcile_commit_intent(prototype: &SqlitePrototype) -> Result<(), SqliteRecoveryStoreError> {
+    let path = commit_intent_path(prototype.database_path());
+    if !path.exists() {
+        return Ok(());
+    }
+    let intent = CommitIntent::decode(
+        &std::fs::read(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?,
+    )?;
+    let manifest = prototype
+        .load_manifest()
+        .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+    let observed = (manifest.snapshot.generation, manifest_digest(&manifest)?);
+    if observed != (intent.prior_generation, intent.prior_digest.clone())
+        && observed != (intent.proposed_generation, intent.proposed_digest.clone())
+    {
+        return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+    }
+    remove_commit_intent(prototype.database_path())
+}
+
 impl RecoveryStateStore for SqliteRecoveryStore {
     fn load_assembly_snapshot(&self) -> Result<RecoverySnapshot, RecoveryError> {
         let health = self.verify_integrity();
@@ -678,6 +823,9 @@ impl RecoveryStateStore for SqliteRecoveryStore {
     }
 
     fn verify_integrity(&self) -> RecoveryStoreHealth {
+        if commit_intent_path(self.prototype.database_path()).exists() {
+            return RecoveryStoreHealth::Corrupt;
+        }
         let Ok(valid) = self.prototype.integrity_check() else {
             return RecoveryStoreHealth::Corrupt;
         };
@@ -711,12 +859,41 @@ impl RecoveryStateStore for SqliteRecoveryStore {
             return Err(RecoveryError::Unhealthy(health));
         }
         let expected = self.memory.snapshot().generation;
+        let prior = self.memory.export_manifest(expected)?;
         let mut candidate = self.memory.clone();
         let generation = candidate.commit_durable(txn)?;
-        let manifest = candidate.export_manifest(generation)?;
+        let proposed = candidate.export_manifest(generation)?;
+        let intent = CommitIntent {
+            prior_generation: expected,
+            prior_digest: manifest_digest(&prior).map_err(|_| {
+                RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected)
+            })?,
+            proposed_generation: generation,
+            proposed_digest: manifest_digest(&proposed).map_err(|_| {
+                RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected)
+            })?,
+        };
+        write_commit_intent(self.prototype.database_path(), &intent)
+            .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected))?;
+        #[cfg(test)]
+        if self.failure_point == Some(SqliteFailurePoint::AfterCommitIntent) {
+            self.failure_point = None;
+            return Err(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Lost,
+            ));
+        }
         self.prototype
-            .write_manifest_if_generation(expected, &manifest)
-            .map_err(|error| RecoveryError::Unhealthy(Self::health_for(&error)))?;
+            .write_manifest_if_generation(expected, &proposed)
+            .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Lost))?;
+        #[cfg(test)]
+        if self.failure_point == Some(SqliteFailurePoint::AfterManifestWrite) {
+            self.failure_point = None;
+            return Err(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Lost,
+            ));
+        }
+        remove_commit_intent(self.prototype.database_path())
+            .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Lost))?;
         self.memory = candidate;
         Ok(generation)
     }
@@ -1177,6 +1354,93 @@ mod tests {
         );
 
         drop(reopened);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn uncertain_commit_reopens_to_exactly_prior_or_proposed_state() {
+        for (failure_point, expected_generation) in [
+            (
+                SqliteFailurePoint::AfterCommitIntent,
+                RecoveryGeneration::ZERO,
+            ),
+            (
+                SqliteFailurePoint::AfterManifestWrite,
+                RecoveryGeneration(1),
+            ),
+        ] {
+            let path = temp_database();
+            let initial = MemoryRecoveryStore::new(TopologyEpoch(0));
+            let manifest = initial.export_manifest(RecoveryGeneration::ZERO).unwrap();
+            let mut store = SqliteRecoveryStore::create_new(&path, manifest).unwrap();
+            let mut checkpoint =
+                store.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+            checkpoint.push(RecoveryMutation::RecordMaintenanceCheckpoint {
+                job: dwv_recovery::JobId(9),
+                cursor: dwv_recovery::RecoveryCursor(4),
+            });
+            store.fail_at(failure_point);
+            assert_eq!(
+                store.commit_durable(checkpoint),
+                Err(RecoveryError::CommitNotDurable(
+                    RecoveryCommitObservation::Lost
+                ))
+            );
+            assert_eq!(store.verify_integrity(), RecoveryStoreHealth::Corrupt);
+            drop(store);
+
+            let reopened = SqliteRecoveryStore::open(&path).unwrap();
+            let snapshot = reopened.snapshot().unwrap();
+            assert_eq!(snapshot.generation, expected_generation);
+            assert_eq!(
+                snapshot.maintenance_checkpoints.len(),
+                usize::from(expected_generation == RecoveryGeneration(1))
+            );
+            assert!(!commit_intent_path(&path).exists());
+            drop(reopened);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
+    fn uncertain_commit_refuses_an_unrecognized_durable_state() {
+        let path = temp_database();
+        let initial = MemoryRecoveryStore::new(TopologyEpoch(0));
+        let manifest = initial.export_manifest(RecoveryGeneration::ZERO).unwrap();
+        let mut store = SqliteRecoveryStore::create_new(&path, manifest.clone()).unwrap();
+        let mut proposed = store.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+        proposed.push(RecoveryMutation::RecordMaintenanceCheckpoint {
+            job: dwv_recovery::JobId(9),
+            cursor: dwv_recovery::RecoveryCursor(4),
+        });
+        store.fail_at(SqliteFailurePoint::AfterCommitIntent);
+        assert!(matches!(
+            store.commit_durable(proposed),
+            Err(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Lost
+            ))
+        ));
+
+        let mut conflicting = MemoryRecoveryStore::from_manifest(manifest).unwrap();
+        let mut transaction =
+            conflicting.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+        transaction.push(RecoveryMutation::RecordMaintenanceCheckpoint {
+            job: dwv_recovery::JobId(9),
+            cursor: dwv_recovery::RecoveryCursor(8),
+        });
+        conflicting.commit_durable(transaction).unwrap();
+        store
+            .prototype
+            .write_manifest(&conflicting.export_manifest(RecoveryGeneration(1)).unwrap())
+            .unwrap();
+        drop(store);
+
+        assert!(matches!(
+            SqliteRecoveryStore::open(&path),
+            Err(SqliteRecoveryStoreError::ReconciliationRequired)
+        ));
+        assert!(commit_intent_path(&path).exists());
+        let _ = std::fs::remove_file(commit_intent_path(&path));
         let _ = std::fs::remove_file(path);
     }
 

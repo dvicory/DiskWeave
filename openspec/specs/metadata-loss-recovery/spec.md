@@ -75,12 +75,12 @@ The current product has no validator-issued certificate receipt. Every current p
 <!-- dwv:requires req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments -->
 <!-- dwv:refines req.anchorless-topology-identity.writable-assembly-fails-closed-on-unresolved-identity -->
 
-Metadata-loss recovery SHALL preserve all candidates and require an unambiguous topology, profile, and coding-position interpretation before writable assembly. Duplicate clone evidence, ambiguous parity candidates, lost historical Q coding positions, and unresolved assignment mappings SHALL produce read-only or refused outcomes. When all data survive and historical identity is unnecessary, a new array lineage SHALL be explicit rather than silently reusing an old assignment.
+Metadata-loss recovery SHALL preserve all candidates and require independently established, unambiguous topology, profile, coding-position, and member-identity authority before recovering a prior array lineage or permitting writable assembly. Declarative policy and algebraic parity agreement SHALL NOT manufacture historical identity or topology authority. Duplicate clone evidence, ambiguous parity candidates, lost historical Q coding positions, and unresolved assignment mappings SHALL produce read-only or refused outcomes. When all data survive but prior recovery authority is unavailable, the operation SHALL be classified as explicit new-lineage creation rather than recovery of the policy-described topology.
 
 #### Scenario: All data survive but prior recovery state is unavailable
 
-- **WHEN** data members are explicitly identified and a new topology is proposed
-- **THEN** the plan requires a new lineage and fresh parity/checksum baseline, preserves old parity as evidence or targets new parity separately, and blocks fresh state until rebuild and baseline completion are verified
+- **WHEN** all payload members named by declarative policy are readable and parity equations match but independent current evidence cannot establish the prior array identity, assignments, and topology epoch
+- **THEN** the plan is non-executable recovery, requires explicit new-lineage creation with fresh independently verified parity and checksum baselines, preserves old parity as evidence or targets new parity separately, and creates no fresh recovery state
 
 #### Scenario: A cloned candidate or parity identity is ambiguous
 

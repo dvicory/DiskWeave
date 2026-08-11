@@ -174,6 +174,17 @@ pub fn translate_request(
     sequence: SubmissionSequence,
     generation: u32,
 ) -> Result<TranslatedRequest, AdapterError> {
+    translate_request_for_slot(raw, capacity, epoch, DATA_SLOT, sequence, generation)
+}
+
+pub(crate) fn translate_request_for_slot(
+    raw: KernelRequest,
+    capacity: u64,
+    epoch: TopologyEpoch,
+    slot: SlotId,
+    sequence: SubmissionSequence,
+    generation: u32,
+) -> Result<TranslatedRequest, AdapterError> {
     if raw.flags & !SEMANTICALLY_NEUTRAL_FLAGS != 0 {
         return Err(AdapterError::Unsupported("request flags"));
     }
@@ -214,7 +225,7 @@ pub fn translate_request(
     let request = BlockRequest::new(
         RequestId(sequence.0),
         FRONTEND_ID,
-        DATA_SLOT,
+        slot,
         epoch,
         op,
         range,
@@ -491,6 +502,29 @@ where
 {
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
 }
+#[cfg(target_os = "linux")]
+pub fn serve_admitted_with_publication<F>(
+    service: dwv_service::HealthyPortableService<dwv_recovery_sqlite::SqliteRecoveryStore>,
+    device_id: i32,
+    on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    linux::serve_admitted_with_publication(service, device_id, on_published)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn serve_admitted_with_publication<F>(
+    _service: dwv_service::HealthyPortableService<dwv_recovery_sqlite::SqliteRecoveryStore>,
+    _device_id: i32,
+    _on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    Err(AdapterError::Unsupported("ublk serving requires Linux"))
+}
 
 #[cfg(target_os = "linux")]
 pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
@@ -502,6 +536,19 @@ pub fn live_publication(_root: &Path) -> Result<Option<serde_json::Value>, Adapt
     Err(AdapterError::Unsupported("ublk serving requires Linux"))
 }
 
+#[cfg(target_os = "linux")]
+pub fn live_admitted_publication(
+    identity: dwv_service::PublicationIdentity,
+) -> Result<Option<serde_json::Value>, AdapterError> {
+    linux::live_admitted_publication(identity)
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn live_admitted_publication(
+    _identity: dwv_service::PublicationIdentity,
+) -> Result<Option<serde_json::Value>, AdapterError> {
+    Err(AdapterError::Unsupported("ublk serving requires Linux"))
+}
 #[cfg(target_os = "linux")]
 pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, AdapterError> {
     linux::cleanup(root, device_id)

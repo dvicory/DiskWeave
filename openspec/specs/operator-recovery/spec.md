@@ -77,7 +77,7 @@ The production status, members, scrub, and damage commands SHALL use current rea
 <!-- dwv:requires req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit -->
 <!-- dwv:requires req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations -->
 
-Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action payload-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish the required exhaustive verification prior to command authority. It SHALL invoke the canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, or unsupported facts SHALL refuse before fresh authority or payload mutation. The supported all-data/single-P/exhaustive-match case SHALL write fresh semantic state atomically with zero data or parity bytes and SHALL return a fresh assessment after the recovery operation.
+Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action payload-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish every canonical authorization prerequisite. It SHALL invoke a canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, unsupported, or non-executable facts SHALL refuse before fresh authority or payload mutation. Total loss of recovery metadata SHALL NOT be treated as executable recovery merely because policy-selected members satisfy parity equations; the current product SHALL preview the required new-lineage operation and refuse apply until that separately specified operation exists.
 
 #### Scenario: Recovery is previewed
 
@@ -89,15 +89,35 @@ Production recovery preview SHALL report the current metadata-loss disposition, 
 - **WHEN** any proposal input or current identity, topology, recovery, or verification fact differs before apply
 - **THEN** apply refuses before recovery or payload mutation and a new preview is required
 
+#### Scenario: Policy and parity agree after total metadata loss
+
+- **WHEN** recovery state is absent or untrusted and exhaustive verification shows only that policy-selected payload members satisfy the policy-selected parity equations
+- **THEN** preview reports non-executable new-lineage creation and apply refuses without creating recovery state or writing payload
+
 #### Scenario: Supported recovery is applied
 
-- **WHEN** current claims are exclusive, topology is unambiguous, recovery loss is the supported all-data/single-P case, and a new exhaustive scan completely matches every equation
-- **THEN** canonical authorization creates fresh recovery state carrying the mandatory new-checksum-baseline obligation, writes zero data or parity bytes, and returns the resulting baseline-required start state
+- **WHEN** a canonical matrix case is currently executable from independently established current authority and apply revalidates every prerequisite
+- **THEN** canonical authorization performs only that case's bounded transition and returns its resulting current assessment without inferring authority from policy or parity agreement
 
 #### Scenario: Recovery commit observation is uncertain
 
-- **WHEN** replacement of fresh recovery state cannot prove whether the proposed durable state became current
+- **WHEN** a future authorized replacement of recovery state cannot prove whether the proposed durable state became current
 - **THEN** apply returns reconciliation-required, does not retry automatically, and preserves enough prior and proposed evidence for explicit reconciliation
+
+### Requirement: Production commands share one semantic result boundary
+<!-- dwv:req req.operator-recovery.production-commands-share-one-semantic-result-boundary -->
+
+After a production command has parsed and entered operator semantics, success, semantic refusal, blocked or unavailable state, unsupported capability, reconciliation-required uncertainty, and operational failure SHALL all be represented by the same versioned semantic result contract. Human and structured renderings SHALL preserve the same command, outcome, reason code, reason, and available multidimensional assessment. Usage and input-shape errors MAY remain parser diagnostics outside that contract.
+
+#### Scenario: A semantic start refusal is rendered
+
+- **WHEN** start reaches operator semantics but a current admission prerequisite is unavailable
+- **THEN** human and structured modes render the shared result with the same refusal or blockage outcome and deterministic process status rather than substituting an unrelated error envelope
+
+#### Scenario: A frontend capability is unsupported
+
+- **WHEN** current portable topology is valid but the selected frontend cannot publish its profile
+- **THEN** the shared result reports unsupported capability without changing the topology classification or omitting available assessment context
 
 ### Requirement: Start composes admission and actual publication
 <!-- dwv:req req.operator-recovery.start-composes-admission-and-actual-publication -->

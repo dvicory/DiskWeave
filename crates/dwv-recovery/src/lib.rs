@@ -335,6 +335,14 @@ pub struct DirtyRegionRecord {
     pub last_clean_fence: Option<FenceCertificate>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct ChecksumEvidenceBinding {
+    pub extent: ChecksumExtent,
+    pub profile: ChecksumProfileId,
+    pub set_generation: ChecksumSetGeneration,
+    pub topology_epoch: TopologyEpoch,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum IntegrityState {
     Absent,
@@ -342,6 +350,7 @@ pub enum IntegrityState {
         stale_generation: RecoveryGeneration,
     },
     Valid {
+        binding: ChecksumEvidenceBinding,
         content_generation: RecoveryGeneration,
         durable_fence: StoreFenceRef,
         digest: Vec<u8>,
@@ -657,6 +666,7 @@ pub enum TransitionError {
     CheckpointGenerationBehind,
     IntegrityCoverageMissing,
     IntegrityContentGenerationFuture,
+    IntegrityBindingMismatch,
 }
 
 impl fmt::Display for RecoveryError {
@@ -1048,19 +1058,34 @@ impl MemoryRecoveryStore {
                 record.last_clean_fence = Some(fence);
             }
             RecoveryMutation::InstallIntegrityDigest { record } => {
-                let (content_generation, durable_fence, digest, verified_at) = match record.state {
-                    IntegrityState::Valid {
-                        content_generation,
-                        durable_fence,
-                        digest,
-                        verified_at,
-                    } => (content_generation, durable_fence, digest, verified_at),
-                    _ => {
-                        return Err(RecoveryError::InvalidTransition(
-                            TransitionError::IntegrityFenceMissing,
-                        ));
-                    }
-                };
+                let (binding, content_generation, durable_fence, digest, verified_at) =
+                    match record.state {
+                        IntegrityState::Valid {
+                            binding,
+                            content_generation,
+                            durable_fence,
+                            digest,
+                            verified_at,
+                        } => (
+                            binding,
+                            content_generation,
+                            durable_fence,
+                            digest,
+                            verified_at,
+                        ),
+                        _ => {
+                            return Err(RecoveryError::InvalidTransition(
+                                TransitionError::IntegrityFenceMissing,
+                            ));
+                        }
+                    };
+                if binding.extent.id != record.extent
+                    || binding.topology_epoch != expected_topology_epoch
+                {
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::IntegrityBindingMismatch,
+                    ));
+                }
                 validate_store_fence(&durable_fence, expected_topology_epoch)?;
                 let has_fence = snapshot
                     .fences
@@ -1109,6 +1134,7 @@ impl MemoryRecoveryStore {
                 let value = IntegrityRecord {
                     extent: record.extent,
                     state: IntegrityState::Valid {
+                        binding,
                         content_generation,
                         durable_fence,
                         digest,
@@ -1906,6 +1932,16 @@ mod tests {
             record: IntegrityRecord {
                 extent: IntegrityExtentId(9),
                 state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent: ChecksumExtent {
+                            id: IntegrityExtentId(9),
+                            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+                            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+                        },
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
                     content_generation: RecoveryGeneration(1),
                     durable_fence: store_fence,
                     digest: vec![1, 2, 3],
@@ -2220,6 +2256,16 @@ mod tests {
             record: IntegrityRecord {
                 extent: IntegrityExtentId(9),
                 state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent: ChecksumExtent {
+                            id: IntegrityExtentId(9),
+                            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+                            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+                        },
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
                     content_generation: RecoveryGeneration(2),
                     durable_fence: store_fence,
                     digest: vec![1],

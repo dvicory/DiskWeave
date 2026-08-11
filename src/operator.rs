@@ -6,10 +6,10 @@ use dwv_core::{
     TopologySnapshot,
 };
 use dwv_recovery::{
-    ChecksumBaselineStatus, ChecksumTarget, FenceCertificate, IntegrityRecord, IntegrityState,
-    MetadataLossCase, MetadataLossPlan, MetadataLossVerification, RecoveryInspection,
-    RecoveryManifest, RecoveryMutation, RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth,
-    TopologySnapshot as RecoveryTopologySnapshot, assess_checksum_baseline, create_fresh_manifest,
+    ChecksumBaselineStatus, ChecksumEvidenceBinding, ChecksumTarget, FenceCertificate,
+    IntegrityRecord, IntegrityState, MetadataLossCase, MetadataLossPlan, RecoveryInspection,
+    RecoveryManifest, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
+    TopologySnapshot as RecoveryTopologySnapshot, assess_checksum_baseline,
     pending_checksum_baseline_extents,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
@@ -20,7 +20,7 @@ use dwv_store::{
     ChildOperationId, CompletionDisposition, OperationSlotToken, PersistenceEvidence, StoreId,
     StoreWriteWatermark,
 };
-use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode};
+use dwv_store_file::{FileStore, FileStoreConfig, FileSyncMode, observe_file_identity};
 use dwv_verify::{
     ChecksumEvidence, DigestEvidence, MemberRef, MismatchClass, RegionDisposition, ScanConfig,
     ScanMode, VerificationReport, verify_exhaustive,
@@ -268,6 +268,26 @@ impl OperatorError {
         }
     }
 }
+pub fn operation_error_result(
+    policy: &ArrayPolicy,
+    command: &'static str,
+    error: OperatorError,
+) -> OperatorResult {
+    let mut result = observe(policy, command);
+    result.outcome = error.outcome();
+    result.reason_code = error.reason_code();
+    result.reason = error.message().into();
+    result.next_action = match result.outcome {
+        Outcome::Usage => "correct-input",
+        Outcome::Refused => "inspect",
+        Outcome::Blocked => "restore-prerequisite",
+        Outcome::NotSupported => "select-supported-operation",
+        Outcome::OperationFailed => "inspect-operation-failure",
+        Outcome::ReconciliationRequired => "reconcile",
+        Outcome::Success => "none",
+    };
+    result
+}
 
 /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
 pub fn observe(policy: &ArrayPolicy, command: &'static str) -> OperatorResult {
@@ -370,14 +390,24 @@ pub fn members_result(policy: &ArrayPolicy) -> OperatorResult {
 /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
 pub fn scrub(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorError> {
     let inspection = SqliteRecoveryStore::inspect(&policy.recovery_path);
-    let manifest = match inspection {
-        RecoveryInspection::Supported(_) => Some(current_manifest(policy)?),
-        _ => None,
+    let Some(manifest) = inspection.manifest().cloned() else {
+        let mut result = observe(policy, "scrub");
+        result.outcome = Outcome::Blocked;
+        result.reason_code = "recovery-authority-not-current";
+        result.reason =
+            "exhaustive verification requires a current canonical topology from recovery state"
+                .into();
+        result.parity = "not-established";
+        result.damage = "unresolved";
+        result.next_action = "recover";
+        result.verification = Some(unavailable_verification(policy, &result.members));
+        return Ok(result);
     };
     let topology = manifest
-        .as_ref()
-        .and_then(|manifest| manifest.snapshot.active_topology.clone())
-        .unwrap_or(policy_topology(policy)?);
+        .snapshot
+        .active_topology
+        .clone()
+        .ok_or_else(|| OperatorError::Invalid("current recovery topology is missing".into()))?;
     let mut result = observe(policy, "scrub");
     result.topology = Some(topology_assessment(&topology));
     if result
@@ -419,12 +449,7 @@ pub fn scrub(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorError> {
         result.verification = Some(unavailable_verification(policy, &result.members));
         return Ok(result);
     }
-    let run = run_exhaustive(
-        policy,
-        &topology,
-        false,
-        manifest.as_ref().map(|manifest| &manifest.snapshot),
-    )?;
+    let run = run_exhaustive(policy, &topology, false, Some(&manifest.snapshot))?;
     let scope_complete = run
         .report
         .regions()
@@ -463,16 +488,18 @@ pub fn damage(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorError> {
 pub fn recover_preview(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorError> {
     let recovery = SqliteRecoveryStore::inspect(&policy.recovery_path);
     let recognized = usable_topology_from_members(policy)?;
-    let (case, executable, missing) = match &recovery {
+    let (case, missing) = match &recovery {
         RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable if recognized => (
-            MetadataLossCase::AllDataSingleParityUncertified,
-            true,
-            Vec::new(),
+            MetadataLossCase::AllMetadataAllDataPresent,
+            vec![
+                "explicit new array lineage".into(),
+                "separate parity target".into(),
+                "verified parity rebuild and checksum baseline".into(),
+            ],
         ),
         RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable => (
-            MetadataLossCase::AllDataSingleParityUncertified,
-            false,
-            vec!["every declared member must be present with its expected identity".into()],
+            MetadataLossCase::TopologyAmbiguous,
+            vec!["unambiguous independently observed member identity and topology evidence".into()],
         ),
         RecoveryInspection::Supported(_) => {
             let mut result = observe(policy, "recover");
@@ -481,18 +508,15 @@ pub fn recover_preview(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorE
             return Ok(result);
         }
         RecoveryInspection::Unsupported { .. } => (
-            MetadataLossCase::AllDataSingleParityUncertified,
-            false,
-            vec!["supported recovery-state schema".into()],
+            MetadataLossCase::AllMetadataAllDataPresent,
+            vec!["supported recovery-state schema or explicit new-lineage workflow".into()],
         ),
         RecoveryInspection::MigrationRequired { .. } => (
-            MetadataLossCase::AllDataSingleParityUncertified,
-            false,
-            vec!["explicit writable recovery migration or recreation".into()],
+            MetadataLossCase::AllMetadataAllDataPresent,
+            vec!["explicit writable recovery migration or new-lineage workflow".into()],
         ),
         RecoveryInspection::ReconciliationRequired => (
-            MetadataLossCase::AllDataSingleParityUncertified,
-            false,
+            MetadataLossCase::AllMetadataAllDataPresent,
             vec!["exact prior or proposed recovery authority".into()],
         ),
     };
@@ -507,18 +531,13 @@ pub fn recover_preview(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorE
         required_evidence: plan.required_evidence().id(),
         payload_write_policy: plan.payload_write_policy().id(),
         baseline: plan.baseline().id(),
-        executable,
+        executable: false,
         missing,
     });
-    if executable {
-        result.reason_code = "recovery-applicable";
-        result.reason =
-            "supported recovery can be applied; apply will reacquire claims and rerun exhaustive verification"
-                .into();
-    } else {
-        result.reason_code = "recovery-not-executable";
-        result.reason = "current recovery proposal is previewed but not executable".into();
-    }
+    result.reason_code = "recovery-not-executable";
+    result.reason =
+        "declarative policy and algebraic consistency do not establish historical topology authority"
+            .into();
     Ok(result)
 }
 
@@ -541,47 +560,9 @@ pub fn recover_apply(policy: &ArrayPolicy, plan_id: &str) -> Result<OperatorResu
             preview_plan.missing.join("; ")
         )));
     }
-    let recovery_claim = SqliteRecoveryStore::claim(&policy.recovery_path)
-        .map_err(|error| OperatorError::Blocked(error.to_string()))?;
-
-    let topology = policy_topology(policy)?;
-    let run = run_exhaustive(policy, &topology, true, None)?;
-    let current_inspection = SqliteRecoveryStore::inspect(&policy.recovery_path);
-    let plan = MetadataLossPlan::for_case(MetadataLossCase::AllDataSingleParityUncertified);
-    if proposal_id(policy, &current_inspection, &plan) != plan_id {
-        return Err(OperatorError::Invalid(
-            "recovery plan became stale after claims were acquired".into(),
-        ));
-    }
-    if !run.report.exhaustive_complete() || !run.report.parity_consistent() {
-        return Err(OperatorError::Invalid(
-            "current exhaustive verification is incomplete or does not match parity".into(),
-        ));
-    }
-    let source_health = match current_inspection {
-        RecoveryInspection::Absent => RecoveryStoreHealth::Missing,
-        RecoveryInspection::CorruptOrUnreadable => RecoveryStoreHealth::Corrupt,
-        _ => {
-            return Err(OperatorError::Invalid(
-                "recovery source state is no longer eligible for this proposal".into(),
-            ));
-        }
-    };
-    let authorization = plan
-        .authorize(MetadataLossVerification::ExhaustiveMatches)
-        .map_err(|error| OperatorError::Invalid(error.to_string()))?;
-    let proposed = create_fresh_manifest(authorization, topology, source_health)
-        .map_err(|error| OperatorError::Failed(error.to_string()))?;
-    publish_fresh_recovery(&policy.recovery_path, &proposed, source_health)?;
-    drop(run);
-    drop(recovery_claim);
-
-    let mut result = observe(policy, "recover");
-    result.reason_code = "recovery-applied";
-    result.reason =
-        "fresh recovery state committed from current exhaustive evidence; checksum baseline is required"
-            .into();
-    Ok(result)
+    Err(OperatorError::Unsupported(
+        "no current production recovery plan is authorized to create fresh state".into(),
+    ))
 }
 
 pub fn baseline(
@@ -716,6 +697,12 @@ pub fn baseline(
             record: IntegrityRecord {
                 extent: extent.id,
                 state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent,
+                        profile: baseline.profile.id,
+                        set_generation: baseline.set_generation,
+                        topology_epoch: baseline.topology_epoch,
+                    },
                     content_generation: baseline.content_generation,
                     durable_fence: fence,
                     digest: digest.as_bytes().to_vec(),
@@ -807,7 +794,6 @@ where
         ServiceConfig::default(),
     )
     .map_err(service_error)?;
-    drop(service);
 
     if policy.frontend == FrontendPolicy::None {
         return Err(OperatorError::Unsupported(
@@ -820,14 +806,9 @@ where
                 .into(),
         ));
     }
-    let root = policy
-        .recovery_path
-        .parent()
-        .ok_or_else(|| OperatorError::Invalid("recovery path has no frontend root".into()))?
-        .to_path_buf();
     let callback_policy = policy.clone();
-    dwv_frontend_ublk::serve_with_publication(
-        &root,
+    dwv_frontend_ublk::serve_admitted_with_publication(
+        service,
         device_id.map_or(-1, |id| id as i32),
         move |ready| {
             let mut result = observe(&callback_policy, "start");
@@ -1334,12 +1315,14 @@ fn publication(policy: &ArrayPolicy) -> PublicationAssessment {
     match policy.frontend {
         FrontendPolicy::None => PublicationAssessment::NotPublished,
         FrontendPolicy::LinuxUblk => {
-            let Some(root) = policy.recovery_path.parent() else {
-                return PublicationAssessment::Unsupported {
-                    reason: "recovery path has no frontend root".into(),
-                };
+            let identity = match current_publication_identity(policy) {
+                Ok(Some(identity)) => identity,
+                Ok(None) => return PublicationAssessment::NotPublished,
+                Err(reason) => {
+                    return PublicationAssessment::ReconciliationRequired { reason };
+                }
             };
-            match dwv_frontend_ublk::live_publication(root) {
+            match dwv_frontend_ublk::live_admitted_publication(identity) {
                 Ok(Some(value)) => PublicationAssessment::Published {
                     device_path: value
                         .get("device_path")
@@ -1362,6 +1345,38 @@ fn publication(policy: &ArrayPolicy) -> PublicationAssessment {
             }
         }
     }
+}
+
+fn current_publication_identity(
+    policy: &ArrayPolicy,
+) -> Result<Option<dwv_service::PublicationIdentity>, String> {
+    let RecoveryInspection::Supported(manifest) =
+        SqliteRecoveryStore::inspect(&policy.recovery_path)
+    else {
+        return Ok(None);
+    };
+    let Some(topology) = manifest.snapshot.active_topology.as_ref() else {
+        return Ok(None);
+    };
+    let mut identities = Vec::with_capacity(topology.assignments().len());
+    for assignment in topology.assignments() {
+        let member = policy
+            .members
+            .iter()
+            .find(|member| member.store_id == assignment.store_id().0)
+            .ok_or_else(|| {
+                format!(
+                    "current topology store {:?} has no observed member",
+                    assignment.store_id()
+                )
+            })?;
+        let identity = observe_file_identity(&member.path)
+            .map_err(|error| format!("cannot establish published member identity: {error}"))?;
+        identities.push((assignment.store_id(), identity));
+    }
+    dwv_service::publication_identity(topology, &identities)
+        .map(Some)
+        .map_err(|error| error.to_string())
 }
 
 fn verification_assessment(report: &dwv_verify::VerificationReport) -> VerificationAssessment {
@@ -1481,101 +1496,6 @@ fn artifact_fingerprint(path: &Path) -> String {
             }
             Err(_) => return "unreadable".into(),
         }
-    }
-}
-
-fn publish_fresh_recovery(
-    target: &Path,
-    proposed: &RecoveryManifest,
-    source_health: RecoveryStoreHealth,
-) -> Result<(), OperatorError> {
-    let file_name = target
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| OperatorError::Invalid("recovery path has no UTF-8 file name".into()))?;
-    let candidate = target.with_file_name(format!("{file_name}.dwv-candidate"));
-    if candidate.exists() {
-        return Err(OperatorError::Reconciliation(
-            "a prior recovery candidate still exists and requires reconciliation".into(),
-        ));
-    }
-    let candidate_store = SqliteRecoveryStore::create_new(&candidate, proposed.clone())
-        .map_err(|error| OperatorError::Failed(error.to_string()))?;
-    drop(candidate_store);
-    if SqliteRecoveryStore::inspect(&candidate).manifest() != Some(proposed) {
-        return Err(OperatorError::Failed(
-            "fresh recovery candidate failed semantic validation".into(),
-        ));
-    }
-
-    let mut preserved = None;
-    match source_health {
-        RecoveryStoreHealth::Missing if target.exists() => {
-            return Err(OperatorError::Invalid(
-                "recovery state appeared before fresh publication".into(),
-            ));
-        }
-        RecoveryStoreHealth::Corrupt if !target.exists() => {
-            return Err(OperatorError::Invalid(
-                "the untrusted recovery artifact disappeared before publication".into(),
-            ));
-        }
-        RecoveryStoreHealth::Corrupt => {
-            let fingerprint = artifact_fingerprint(target);
-            let suffix = &fingerprint[..fingerprint.len().min(12)];
-            let path = target.with_file_name(format!("{file_name}.dwv-untrusted-{suffix}"));
-            if path.exists() {
-                return Err(OperatorError::Reconciliation(
-                    "the bounded untrusted recovery preservation path already exists".into(),
-                ));
-            }
-            std::fs::rename(target, &path)
-                .map_err(|error| OperatorError::Failed(error.to_string()))?;
-            preserved = Some(path);
-        }
-        RecoveryStoreHealth::Missing => {}
-        RecoveryStoreHealth::Healthy | RecoveryStoreHealth::Stale => {
-            return Err(OperatorError::Invalid(
-                "fresh publication requires missing or corrupt source state".into(),
-            ));
-        }
-    }
-
-    if let Err(error) = std::fs::hard_link(&candidate, target) {
-        let reopened = SqliteRecoveryStore::inspect(target);
-        if matches!(
-            &reopened,
-            RecoveryInspection::Supported(manifest) if manifest.as_ref() == proposed
-        ) {
-            let _ = std::fs::remove_file(&candidate);
-            return Ok(());
-        }
-        if let Some(preserved) = &preserved {
-            if target.exists() {
-                return Err(OperatorError::Reconciliation(format!(
-                    "fresh recovery publication returned an error but another target exists: {error}"
-                )));
-            }
-            if std::fs::rename(preserved, target).is_err() {
-                return Err(OperatorError::Reconciliation(format!(
-                    "fresh recovery publication failed and prior artifact restoration is uncertain: {error}"
-                )));
-            }
-        } else if target.exists() {
-            return Err(OperatorError::Reconciliation(format!(
-                "fresh recovery publication returned an error but the target now exists: {error}"
-            )));
-        }
-        return Err(OperatorError::Failed(format!(
-            "fresh recovery publication failed: {error}"
-        )));
-    }
-    let _ = std::fs::remove_file(&candidate);
-    match SqliteRecoveryStore::inspect(target) {
-        RecoveryInspection::Supported(manifest) if manifest.as_ref() == proposed => Ok(()),
-        _ => Err(OperatorError::Reconciliation(
-            "published recovery state does not match the validated proposal".into(),
-        )),
     }
 }
 

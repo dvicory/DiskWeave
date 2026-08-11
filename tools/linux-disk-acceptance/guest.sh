@@ -72,10 +72,22 @@ jq '
   }
 ' "$fixture/fixture.json" > "$fixture/array.json"
 ./target/debug/dwv status --array "$fixture/array.json" --json > /tmp/dwv-production-status.json
+cp "$fixture/fixture.json" /tmp/dwv-production-fixture.json
+jq '.array_id = [66,66,66,66,66,66,66,66,66,66,66,66,66,66,66,66]' \
+  /tmp/dwv-production-fixture.json > "$fixture/fixture.json"
 ./target/debug/dwv start --array "$fixture/array.json" --json \
   > /tmp/dwv-production-start.json 2> /tmp/dwv-production-start-error.json &
 server_pid=$!
-if ! wait_ready; then
+published=
+for _ in $(seq 1 300); do
+  if [[ -b /dev/ublkb0 ]]; then
+    published=true
+    break
+  fi
+  kill -0 "$server_pid"
+  sleep 0.1
+done
+if [[ -z "$published" ]]; then
   cat /tmp/dwv-production-status.json /tmp/dwv-production-start.json \
     /tmp/dwv-production-start-error.json >&2
   exit 1
@@ -83,7 +95,8 @@ fi
 kill -TERM "$server_pid"
 wait "$server_pid"
 server_pid=
-[[ ! -e "$fixture/ready.json" ]]
+[[ ! -b /dev/ublkb0 ]]
+mv /tmp/dwv-production-fixture.json "$fixture/fixture.json"
 jq -e '
   .schema == "dwv.operator.v1" and
   .command == "start" and

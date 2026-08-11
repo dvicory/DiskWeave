@@ -3,9 +3,14 @@ use crate::{
     LifecycleState, MAX_TRACE_RECORDS, MAX_TRANSFER, NormalizedTraceRequest, PHYSICAL_BLOCK_SIZE,
     ProbeDisposition, ProbeReport, QUEUE_DEPTH, TagTable, TerminalResult, TraceLog, TraceRecord,
     borrowed_write_payload, classify_control_access, completion_was_delivered,
-    map_kernel_completion, translate_request, validate_shutdown_evidence,
+    map_kernel_completion, translate_request_for_slot, validate_shutdown_evidence,
 };
-use dwv_core::{SubmissionSequence, TopologyEpoch};
+use dwv_core::{
+    BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId, OrderingIntent,
+    RequestId, SlotId, SubmissionSequence, TopologyEpoch,
+};
+use dwv_recovery_sqlite::SqliteRecoveryStore;
+use dwv_service::{HealthyPortableService, PublicationIdentity};
 use libublk::helpers::IoBuf;
 use libublk::io::{UblkDev, UblkQueue};
 use libublk::{BufDesc, UblkError, UblkFlags};
@@ -46,8 +51,151 @@ pub fn probe() -> ProbeReport {
     }
 }
 
+enum Backend {
+    Fixture(crate::OpenFixture),
+    Admitted(HealthyPortableService<SqliteRecoveryStore>),
+}
+
+impl Backend {
+    fn execute(
+        &mut self,
+        request: BlockRequest,
+        write_bytes: Option<&[u8]>,
+    ) -> Result<Vec<u8>, AdapterError> {
+        match self {
+            Self::Fixture(fixture) => fixture.execute(request, write_bytes),
+            Self::Admitted(service) => match request.op {
+                BlockOp::Read => service
+                    .read(request)
+                    .map(|(bytes, _)| bytes)
+                    .map_err(|error| AdapterError::Io(error.to_string())),
+                BlockOp::Write => {
+                    let bytes =
+                        write_bytes.ok_or(AdapterError::Invalid("write buffer is missing"))?;
+                    if bytes.len() as u64 != request.range.length {
+                        return Err(AdapterError::Invalid(
+                            "write buffer length differs from request",
+                        ));
+                    }
+                    service
+                        .write(request, bytes)
+                        .map(|_| Vec::new())
+                        .map_err(|error| AdapterError::Io(error.to_string()))
+                }
+                BlockOp::Flush => service
+                    .flush(request)
+                    .map(|_| Vec::new())
+                    .map_err(|error| AdapterError::Io(error.to_string())),
+                _ => Err(AdapterError::Unsupported("normalized operation")),
+            },
+        }
+    }
+
+    fn flush(
+        &mut self,
+        request_id: u64,
+        slot: SlotId,
+        epoch: TopologyEpoch,
+    ) -> Result<(), AdapterError> {
+        let request = BlockRequest::new(
+            RequestId(request_id),
+            FrontendId(1),
+            slot,
+            epoch,
+            BlockOp::Flush,
+            ByteRange::empty(),
+            None,
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(request_id),
+                preflush: false,
+                fence_domain: FenceDomain(1),
+            },
+            DurabilityIntent::ExplicitFlush,
+        );
+        self.execute(request, None)
+            .map(|_| ())
+            .map_err(|error| AdapterError::ReconciliationRequired(error.to_string()))
+    }
+}
+
+struct ServeConfig {
+    capacity: u64,
+    epoch: TopologyEpoch,
+    data_slot: SlotId,
+    publication_identity: String,
+    fixture_digest: Option<String>,
+    root: Option<PathBuf>,
+    name: &'static str,
+}
+
 pub fn serve_with_publication<F>(
     root: &Path,
+    device_id: i32,
+    on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    let fixture = Fixture::load(root)?;
+    let digest = fixture.manifest().digest()?;
+    let config = ServeConfig {
+        capacity: fixture.manifest().protected_length,
+        epoch: TopologyEpoch(fixture.manifest().topology_epoch),
+        data_slot: crate::DATA_SLOT,
+        publication_identity: format!("fixture:{digest}"),
+        fixture_digest: Some(digest),
+        root: Some(fs::canonicalize(root).map_err(|error| AdapterError::Io(error.to_string()))?),
+        name: "diskweave-demo",
+    };
+    serve_backend(
+        Backend::Fixture(fixture.open()?),
+        config,
+        device_id,
+        on_published,
+    )
+}
+
+pub fn serve_admitted_with_publication<F>(
+    service: HealthyPortableService<SqliteRecoveryStore>,
+    device_id: i32,
+    on_published: F,
+) -> Result<serde_json::Value, AdapterError>
+where
+    F: FnOnce(&serde_json::Value) + Send + Sync + 'static,
+{
+    let topology = service.topology();
+    if topology.profile().data_slots() != 1
+        || topology.profile().parity_slots() != 1
+        || topology.geometry().logical_block_size() != 512
+    {
+        return Err(AdapterError::Unsupported(
+            "initial ublk publication requires one data member, one parity member, and 512-byte logical blocks",
+        ));
+    }
+    let data_slot = topology
+        .assignments()
+        .iter()
+        .find(|assignment| assignment.role() == dwv_core::MemberRole::Data)
+        .map(dwv_core::TopologyAssignment::slot_id)
+        .ok_or(AdapterError::Invalid("admitted topology has no data slot"))?;
+    let config = ServeConfig {
+        capacity: topology.geometry().protected_length(),
+        epoch: topology.topology_epoch(),
+        data_slot,
+        publication_identity: service
+            .publication_identity()
+            .map_err(|error| AdapterError::Conflict(error.to_string()))?
+            .hex(),
+        fixture_digest: None,
+        root: None,
+        name: "diskweave",
+    };
+    serve_backend(Backend::Admitted(service), config, device_id, on_published)
+}
+
+fn serve_backend<F>(
+    backend: Backend,
+    config: ServeConfig,
     device_id: i32,
     on_published: F,
 ) -> Result<serde_json::Value, AdapterError>
@@ -59,29 +207,31 @@ where
     install_signal_handlers()?;
     let mut lifecycle = Lifecycle::default();
     lifecycle.transition(LifecycleState::Assembling)?;
-    let fixture = Fixture::load(root)?;
-    let digest = fixture.manifest().digest()?;
-    let capacity = fixture.manifest().protected_length;
-    let epoch = TopologyEpoch(fixture.manifest().topology_epoch);
-    let root = fs::canonicalize(root).map_err(|error| AdapterError::Io(error.to_string()))?;
-    if root.join("ready.json").exists() {
+    if config
+        .root
+        .as_ref()
+        .is_some_and(|root| root.join("ready.json").exists())
+    {
         return Err(AdapterError::ReconciliationRequired(
             "readiness record already exists; inspect and clean the owned endpoint".into(),
         ));
     }
-    let conflicts = owned_devices(&digest);
+    let conflicts = owned_devices(&config.publication_identity);
     if !conflicts.is_empty() {
         return Err(AdapterError::ReconciliationRequired(format!(
             "owned ublk endpoint already exists: {conflicts:?}"
         )));
     }
-    let opened = Arc::new(Mutex::new(fixture.open()?));
+    let opened = Arc::new(Mutex::new(backend));
     let tags = Arc::new(Mutex::new(TagTable::default()));
     let trace = Arc::new(Mutex::new(TraceLog::default()));
     let sequence = Arc::new(AtomicU64::new(0));
+    let capacity = config.capacity;
+    let epoch = config.epoch;
+    let data_slot = config.data_slot;
 
     let ctrl = libublk::ctrl::UblkCtrlBuilder::default()
-        .name("diskweave-demo")
+        .name(config.name)
         .id(device_id)
         .nr_queues(1)
         .depth(QUEUE_DEPTH as u16)
@@ -90,8 +240,8 @@ where
         .build()
         .map_err(ublk_io)?;
 
-    let target_digest = digest.clone();
-    let target_root = root.clone();
+    let target_identity = config.publication_identity.clone();
+    let target_fixture_digest = config.fixture_digest.clone();
     let target_init = move |dev: &mut UblkDev| {
         dev.tgt.dev_size = capacity;
         dev.tgt.params = libublk::sys::ublk_params {
@@ -109,9 +259,9 @@ where
             ..Default::default()
         };
         dev.set_target_json(json!({
-            "contract": "dwv.ublk.target.v1",
-            "fixture_digest": target_digest,
-            "fixture_root_digest": blake3::hash(target_root.as_os_str().as_encoded_bytes()).to_hex().to_string(),
+            "contract": "dwv.ublk.target.v2",
+            "publication_identity": target_identity,
+            "fixture_digest": target_fixture_digest,
         }));
         Ok(())
     };
@@ -130,25 +280,30 @@ where
             Arc::clone(&queue_sequence),
             capacity,
             epoch,
+            data_slot,
         );
     };
 
-    let ready_root = root.clone();
-    let ready_digest = digest.clone();
+    let ready_root = config.root.clone();
+    let ready_identity = config.publication_identity.clone();
+    let ready_fixture_digest = config.fixture_digest.clone();
     lifecycle.transition(LifecycleState::Published)?;
     let run_result = ctrl.run_target(target_init, queue_fn, move |running| {
         let id = running.dev_info().dev_id;
         let ready = json!({
-            "schema": "dwv.ublk.ready.v1",
+            "schema": "dwv.ublk.ready.v2",
             "device_id": id,
             "device_path": format!("/dev/ublkb{id}"),
-            "fixture_digest": ready_digest,
+            "publication_identity": ready_identity,
+            "fixture_digest": ready_fixture_digest,
             "queue_count": 1,
             "queue_depth": QUEUE_DEPTH,
             "maximum_transfer": MAX_TRANSFER,
         });
-        if let Ok(bytes) = serde_json::to_vec_pretty(&ready) {
-            let _ = fs::write(ready_root.join("ready.json"), bytes);
+        if let Some(root) = &ready_root
+            && let Ok(bytes) = serde_json::to_vec_pretty(&ready)
+        {
+            let _ = fs::write(root.join("ready.json"), bytes);
         }
         on_published(&ready);
         while !STOP_REQUESTED.load(Ordering::SeqCst) {
@@ -158,14 +313,20 @@ where
     });
     lifecycle.transition(LifecycleState::AdmissionClosed)?;
     lifecycle.transition(LifecycleState::Draining)?;
+    let trace_identity = config
+        .fixture_digest
+        .clone()
+        .unwrap_or_else(|| config.publication_identity.clone());
     let trace_document = trace
         .lock()
         .map_err(|_| AdapterError::Io("trace lock poisoned".into()))?
-        .document(digest.clone(), capacity, epoch.0)?;
+        .document(trace_identity, capacity, epoch.0)?;
     let replay = trace_document.replay()?;
     let trace_bytes = trace_document.to_json()?;
-    fs::write(root.join("trace.json"), &trace_bytes)
-        .map_err(|error| AdapterError::Io(error.to_string()))?;
+    if let Some(root) = &config.root {
+        fs::write(root.join("trace.json"), &trace_bytes)
+            .map_err(|error| AdapterError::Io(error.to_string()))?;
+    }
     let trace_digest = blake3::hash(&trace_bytes).to_hex().to_string();
     let trace_count = replay.record_count;
     if let Err(error) = run_result {
@@ -197,22 +358,27 @@ where
     opened
         .lock()
         .map_err(|_| AdapterError::ReconciliationRequired("service lock poisoned".into()))?
-        .flush(sequence.fetch_add(1, Ordering::SeqCst) + 1)?;
-    let checkpointed = true;
+        .flush(
+            sequence.fetch_add(1, Ordering::SeqCst) + 1,
+            config.data_slot,
+            config.epoch,
+        )?;
     ctrl.del_dev().map_err(ublk_reconcile)?;
-    let endpoint_removed = true;
-    validate_shutdown_evidence(drained, checkpointed, endpoint_removed)?;
-    fs::remove_file(root.join("ready.json")).map_err(|error| {
-        AdapterError::ReconciliationRequired(format!(
-            "endpoint removed but readiness cleanup failed: {error}"
-        ))
-    })?;
+    validate_shutdown_evidence(drained, true, true)?;
+    if let Some(root) = &config.root {
+        fs::remove_file(root.join("ready.json")).map_err(|error| {
+            AdapterError::ReconciliationRequired(format!(
+                "endpoint removed but readiness cleanup failed: {error}"
+            ))
+        })?;
+    }
     drop(opened);
     lifecycle.transition(LifecycleState::Stopped)?;
     Ok(json!({
         "shutdown": "clean",
         "state": lifecycle.state(),
-        "fixture_digest": digest,
+        "publication_identity": config.publication_identity,
+        "fixture_digest": config.fixture_digest,
         "trace_count": trace_count,
         "trace_bound": MAX_TRACE_RECORDS,
         "trace_digest": trace_digest,
@@ -221,13 +387,23 @@ where
 
 pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, AdapterError> {
     let fixture = Fixture::load(root)?;
-    let digest = fixture.manifest().digest()?;
-    let devices = owned_devices(&digest);
+    live_publication_identity(&format!("fixture:{}", fixture.manifest().digest()?))
+}
+
+pub fn live_admitted_publication(
+    identity: PublicationIdentity,
+) -> Result<Option<serde_json::Value>, AdapterError> {
+    live_publication_identity(&identity.hex())
+}
+
+fn live_publication_identity(identity: &str) -> Result<Option<serde_json::Value>, AdapterError> {
+    let devices = owned_devices(identity);
     match devices.as_slice() {
         [] => Ok(None),
         [device_id] => Ok(Some(json!({
             "device_id": device_id,
             "device_path": format!("/dev/ublkb{device_id}"),
+            "publication_identity": identity,
         }))),
         _ => Err(AdapterError::ReconciliationRequired(format!(
             "multiple owned ublk endpoints exist: {devices:?}"
@@ -238,15 +414,16 @@ pub fn live_publication(root: &Path) -> Result<Option<serde_json::Value>, Adapte
 pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, AdapterError> {
     let fixture = Fixture::load(root)?;
     let expected = fixture.manifest().digest()?;
+    let publication_identity = format!("fixture:{expected}");
     let ctrl = libublk::ctrl::UblkCtrl::new_simple(device_id as i32).map_err(ublk_io)?;
     let target = ctrl
         .get_target_data_from_json()
         .ok_or_else(|| AdapterError::Conflict("device has no exported target metadata".into()))?;
-    if target.get("contract").and_then(serde_json::Value::as_str) != Some("dwv.ublk.target.v1")
+    if target.get("contract").and_then(serde_json::Value::as_str) != Some("dwv.ublk.target.v2")
         || target
-            .get("fixture_digest")
+            .get("publication_identity")
             .and_then(serde_json::Value::as_str)
-            != Some(expected.as_str())
+            != Some(publication_identity.as_str())
     {
         return Err(AdapterError::Conflict(
             "device target metadata does not match the fixture".into(),
@@ -270,12 +447,13 @@ pub fn cleanup(root: &Path, device_id: u32) -> Result<serde_json::Value, Adapter
 fn run_queue(
     qid: u16,
     dev: &UblkDev,
-    opened: Arc<Mutex<crate::OpenFixture>>,
+    opened: Arc<Mutex<Backend>>,
     tags: Arc<Mutex<TagTable>>,
     trace: Arc<Mutex<TraceLog>>,
     sequence: Arc<AtomicU64>,
     capacity: u64,
     epoch: TopologyEpoch,
+    data_slot: SlotId,
 ) {
     let queue = match UblkQueue::new(qid, dev) {
         Ok(queue) => Rc::new(queue),
@@ -290,7 +468,11 @@ fn run_queue(
         let trace = Arc::clone(&trace);
         let sequence = Arc::clone(&sequence);
         tasks.push(executor.spawn(async move {
-            match io_task(&queue, tag, opened, tags, trace, sequence, capacity, epoch).await {
+            match io_task(
+                &queue, tag, opened, tags, trace, sequence, capacity, epoch, data_slot,
+            )
+            .await
+            {
                 Ok(()) | Err(UblkError::QueueIsDown) => {}
                 Err(_) => {
                     QUEUE_FAILED.store(true, Ordering::SeqCst);
@@ -316,12 +498,13 @@ fn run_queue(
 async fn io_task(
     queue: &UblkQueue<'_>,
     tag: u16,
-    opened: Arc<Mutex<crate::OpenFixture>>,
+    opened: Arc<Mutex<Backend>>,
     tags: Arc<Mutex<TagTable>>,
     trace: Arc<Mutex<TraceLog>>,
     sequence: Arc<AtomicU64>,
     capacity: u64,
     epoch: TopologyEpoch,
+    data_slot: SlotId,
 ) -> Result<(), UblkError> {
     let mut buffer = IoBuf::<u8>::new(MAX_TRANSFER as usize);
     queue
@@ -360,10 +543,11 @@ async fn io_task(
         let (token, generation, normalized_request, semantic_result, completed_length) = match token
         {
             Ok(token) => {
-                match translate_request(
+                match translate_request_for_slot(
                     raw,
                     capacity,
                     epoch,
+                    data_slot,
                     SubmissionSequence(sequence_number),
                     token.generation,
                 ) {
@@ -479,6 +663,10 @@ fn kernel_operation(operation: u32) -> KernelOperation {
     }
 }
 
+fn errno(error: &AdapterError) -> i32 {
+    terminal_errno(error.terminal())
+}
+
 fn completion_code(completion: KernelCompletion) -> i32 {
     match completion {
         KernelCompletion::Success { bytes } => i32::try_from(bytes).unwrap_or(-libc::EIO),
@@ -496,22 +684,17 @@ fn terminal_errno(terminal: TerminalResult) -> i32 {
         TerminalResult::Success => 0,
     }
 }
-
-fn errno(error: &AdapterError) -> i32 {
-    terminal_errno(error.terminal())
-}
-
-fn owned_devices(digest: &str) -> Vec<u32> {
+fn owned_devices(identity: &str) -> Vec<u32> {
     let matches = Arc::new(Mutex::new(Vec::new()));
     let found = Arc::clone(&matches);
-    let expected = digest.to_owned();
+    let expected = identity.to_owned();
     libublk::ctrl::UblkCtrl::for_each_dev_id(move |id| {
         let Ok(ctrl) = libublk::ctrl::UblkCtrl::new_simple(id as i32) else {
             return;
         };
         if ctrl
             .get_target_data_from_json()
-            .and_then(|value| value.get("fixture_digest").cloned())
+            .and_then(|value| value.get("publication_identity").cloned())
             .and_then(|value| value.as_str().map(str::to_owned))
             .as_deref()
             == Some(expected.as_str())

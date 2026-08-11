@@ -20,8 +20,8 @@ use dwv_recovery::{
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletionDisposition, FenceDomain, OperationSlotToken, PersistenceEvidence, StoreId,
-    StoreWriteWatermark, WriteIntent,
+    CompletionDisposition, FenceDomain, IdentityObservationSet, IdentitySourceKind,
+    OperationSlotToken, PersistenceEvidence, StoreId, StoreWriteWatermark, WriteIntent,
 };
 use dwv_store_file::{FileStore, IdentityComparison};
 use dwv_transaction_ref::{
@@ -58,6 +58,108 @@ impl MemberBinding {
             store_id,
             store,
         }
+    }
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicationIdentity([u8; 32]);
+
+impl PublicationIdentity {
+    pub fn hex(self) -> String {
+        self.0.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PublicationIdentityError {
+    MemberCount,
+    InvalidTopology,
+    MissingMember(StoreId),
+}
+
+impl std::fmt::Display for PublicationIdentityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MemberCount => formatter.write_str("publication member count mismatch"),
+            Self::InvalidTopology => formatter.write_str("publication topology is invalid"),
+            Self::MissingMember(store_id) => {
+                write!(
+                    formatter,
+                    "publication identity is missing store {store_id:?}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for PublicationIdentityError {}
+
+pub fn publication_identity(
+    topology: &dwv_recovery::TopologySnapshot,
+    identities: &[(StoreId, IdentityObservationSet)],
+) -> Result<PublicationIdentity, PublicationIdentityError> {
+    if topology.assignments().len() != identities.len() {
+        return Err(PublicationIdentityError::MemberCount);
+    }
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"dwv.service.publication.v1");
+    hash.update(&topology.array_id().as_bytes());
+    hash.update(&topology.topology_epoch().0.to_le_bytes());
+    hash.update(&topology.profile().data_slots().to_le_bytes());
+    hash.update(&topology.profile().parity_slots().to_le_bytes());
+    hash.update(&topology.geometry().protected_length().to_le_bytes());
+    hash.update(&topology.geometry().logical_block_size().to_le_bytes());
+    for assignment in topology.assignments() {
+        hash.update(&assignment.slot_id().as_bytes());
+        hash.update(&[assignment.role().id().0]);
+        hash.update(&assignment.coding_position().0.to_le_bytes());
+        hash.update(&assignment.assignment_instance().as_bytes());
+        hash.update(&assignment.assignment_generation().0.to_le_bytes());
+        hash.update(&assignment.store_id().0.to_le_bytes());
+        let evidence = assignment.evidence();
+        hash.update(&[
+            evidence.observed_sources(),
+            evidence.stable_sources(),
+            evidence.conflict_count(),
+            confidence_id(evidence.confidence()),
+        ]);
+        let identity = identities
+            .iter()
+            .find_map(|(store_id, identity)| {
+                (*store_id == assignment.store_id()).then_some(identity)
+            })
+            .ok_or(PublicationIdentityError::MissingMember(
+                assignment.store_id(),
+            ))?;
+        hash.update(&(identity.observations.len() as u64).to_le_bytes());
+        for observation in &identity.observations {
+            hash.update(&[identity_source_id(observation.source)]);
+            hash.update(&observation.fingerprint);
+        }
+    }
+    Ok(PublicationIdentity(*hash.finalize().as_bytes()))
+}
+
+const fn confidence_id(confidence: dwv_core::EvidenceConfidence) -> u8 {
+    match confidence {
+        dwv_core::EvidenceConfidence::None => 0,
+        dwv_core::EvidenceConfidence::Low => 1,
+        dwv_core::EvidenceConfidence::Medium => 2,
+        dwv_core::EvidenceConfidence::High => 3,
+        dwv_core::EvidenceConfidence::Attested => 4,
+    }
+}
+
+const fn identity_source_id(source: IdentitySourceKind) -> u8 {
+    match source {
+        IdentitySourceKind::StableDeviceId => 0,
+        IdentitySourceKind::Serial => 1,
+        IdentitySourceKind::FilesystemId => 2,
+        IdentitySourceKind::WorldWideName => 3,
+        IdentitySourceKind::FileId => 4,
+        IdentitySourceKind::Capacity => 5,
+        IdentitySourceKind::Geometry => 6,
+        IdentitySourceKind::OperatorAttestation => 7,
+        IdentitySourceKind::Path => 8,
     }
 }
 
@@ -205,6 +307,19 @@ impl<R: RecoveryStateStore> HealthyPortableService<R> {
     }
     pub fn topology(&self) -> &TopologySnapshot {
         &self.topology
+    }
+    pub fn publication_identity(&self) -> Result<PublicationIdentity, PublicationIdentityError> {
+        let topology = dwv_recovery::TopologySnapshot::from_core(
+            self.topology.clone(),
+            self.members.iter().map(|member| member.store_id).collect(),
+        )
+        .map_err(|_| PublicationIdentityError::InvalidTopology)?;
+        let identities = self
+            .members
+            .iter()
+            .map(|member| (member.store_id, member.store.capabilities_report().identity))
+            .collect::<Vec<_>>();
+        publication_identity(&topology, &identities)
     }
     pub fn recovery(&self) -> &R {
         &self.recovery
@@ -1408,6 +1523,23 @@ mod tests {
                 .push(dwv_recovery::IntegrityRecord {
                     extent: extent.id,
                     state: IntegrityState::Valid {
+                        binding: dwv_recovery::ChecksumEvidenceBinding {
+                            extent: *extent,
+                            profile: manifest
+                                .snapshot
+                                .checksum_baseline
+                                .as_ref()
+                                .unwrap()
+                                .profile
+                                .id,
+                            set_generation: manifest
+                                .snapshot
+                                .checksum_baseline
+                                .as_ref()
+                                .unwrap()
+                                .set_generation,
+                            topology_epoch: epoch,
+                        },
                         content_generation: RecoveryGeneration::ZERO,
                         durable_fence: fence,
                         digest: vec![0; 32],
@@ -2438,5 +2570,40 @@ mod tests {
         drop(parity_store);
         drop(data);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn publication_identity_binds_the_admitted_member_observations() {
+        let topology = dwv_recovery::TopologySnapshot::from_core(
+            topology(TopologyEpoch(1)),
+            vec![StoreId(1), StoreId(2), StoreId(3)],
+        )
+        .unwrap();
+        let identities = |last| {
+            [1_u64, 2, 3]
+                .into_iter()
+                .map(|store_id| {
+                    (
+                        StoreId(store_id),
+                        IdentityObservationSet::new(
+                            vec![dwv_store::IdentityObservation {
+                                source: IdentitySourceKind::FileId,
+                                fingerprint: [if store_id == 3 { last } else { store_id as u8 };
+                                    16],
+                            }],
+                            dwv_store::IdentityAssessment::Confirmed,
+                        ),
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let admitted_a = publication_identity(&topology, &identities(3)).unwrap();
+        assert_eq!(
+            admitted_a,
+            publication_identity(&topology, &identities(3)).unwrap()
+        );
+        assert_ne!(
+            admitted_a,
+            publication_identity(&topology, &identities(4)).unwrap()
+        );
     }
 }

@@ -1,6 +1,6 @@
 {
   "schema": "dwv.verification.linux-ublk-ext4.v1",
-  "source_snapshot_sha256": "e52fb259ee5b44bd51c12c1cb70bba4a5bf4721fa9f0a4a0a24278aaa0e0f248",
+  "source_snapshot_sha256": "2d052477a1ac7c95d545bc3e2ebdc55c4df8b8a52ecbad37fee7c05c45505f55",
   "kernel_release": "7.0.0-28-generic",
   "architecture": "aarch64",
   "probe": {
@@ -172,12 +172,13 @@
     "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
     "ok": true,
     "outcome": "success",
+    "publication_identity": "fixture:6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
     "schema": "dwv.cli.v0",
     "shutdown": "clean",
     "state": "stopped",
     "trace_bound": 4096,
-    "trace_count": 453,
-    "trace_digest": "3adac91bd0fc8ddfe4c06bf19bdd650286cde52d07615aa00906219f9df3c433"
+    "trace_count": 459,
+    "trace_digest": "c0584e4c20de4a16174ca70a223e064cc01502955262a7d388504b5c7ac21a8f"
   },
   "second_shutdown": {
     "command": "demo.disk.serve",
@@ -186,18 +187,19 @@
     "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
     "ok": true,
     "outcome": "success",
+    "publication_identity": "fixture:6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
     "schema": "dwv.cli.v0",
     "shutdown": "clean",
     "state": "stopped",
     "trace_bound": 4096,
     "trace_count": 81,
-    "trace_digest": "0a889df522e8b216c3c34c1f5d3fe923293f2937c98c582a2304662f5d6966d3"
+    "trace_digest": "75be4101cc7c789b033b22f806b6d638781b5dc89fecc1f1db67c5c7dda4b61c"
   },
   "live_traces": [
     {
       "phase": "first-shutdown",
       "retained_file": "linux-ublk-trace-first.json",
-      "sha256": "626ddaffd4f79d81f66f7245508a56cf3bddcf40da14d9bf682d4c4b26057a86",
+      "sha256": "855eed4ef7ba96030208caa4c8c4e50715e6c0cd80313c010854586910842b10",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
       "bounds": {
@@ -206,7 +208,7 @@
         "maximum_records": 4096
       },
       "exhausted_records": 0,
-      "record_count": 453,
+      "record_count": 459,
       "replay": {
         "clean": true,
         "command": "demo.disk.trace-replay",
@@ -214,14 +216,14 @@
         "diagnostics": [],
         "ok": true,
         "outcome": "success",
-        "record_count": 453,
+        "record_count": 459,
         "schema": "dwv.cli.v0"
       }
     },
     {
       "phase": "second-shutdown",
       "retained_file": "linux-ublk-trace-second.json",
-      "sha256": "5b2a0254b7a7c42b90a5cd595aceb7cc09e5457ffa35c131001f85023d3aad8e",
+      "sha256": "5b3b11d30d34951075d60e3754ebdc85878361a8a95618874af5087029884f2c",
       "schema": "dwv.ublk.trace.v2",
       "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
       "bounds": {
@@ -246,22 +248,22 @@
   "backing_file": {
     "independently_mounted_read_only": true,
     "content_sha256": "d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7",
-    "data_sha256": "7449ab38bf601076ec46b307b565b7ee19a0b1c8b684b1b3d5ca9763a3419924",
-    "parity_sha256": "7449ab38bf601076ec46b307b565b7ee19a0b1c8b684b1b3d5ca9763a3419924",
+    "data_sha256": "ee2128debcb80c2b254e2d6b69f6fe169be8ccd500cb62abf3d267f0f04363ac",
+    "parity_sha256": "ee2128debcb80c2b254e2d6b69f6fe169be8ccd500cb62abf3d267f0f04363ac",
     "data_equals_parity": true
   },
   "inspect": {
     "command": "demo.disk.inspect",
     "contract": "dwv.cli.v0",
-    "data_hash": "a2ab165432b3c1199af32994be952fdfa577748fae3672b76d7328466d107820",
+    "data_hash": "aa609559820b70798157fe90f149745416c0ee599ac9e37c70d2291779c66385",
     "diagnostics": [],
     "fixture_digest": "6bc8589665979d4ea1fb5458d9c19995b38730ed13f1ae57636d30ca14941a08",
     "ok": true,
     "outcome": "success",
-    "parity_hash": "a2ab165432b3c1199af32994be952fdfa577748fae3672b76d7328466d107820",
+    "parity_hash": "aa609559820b70798157fe90f149745416c0ee599ac9e37c70d2291779c66385",
     "parity_matches_data": true,
     "protected_length": 67108864,
-    "recovery_generation": 237,
+    "recovery_generation": 243,
     "recovery_integrity": "Healthy",
     "schema": "dwv.cli.v0",
     "topology_epoch": 1
@@ -296,12 +298,13 @@
         "fixture_digest": "60a5c2ee71cdc28a361eca32ffc4d9e5cdf6b8e29ebc252916e13da0e6ebb111",
         "ok": true,
         "outcome": "success",
+        "publication_identity": "fixture:60a5c2ee71cdc28a361eca32ffc4d9e5cdf6b8e29ebc252916e13da0e6ebb111",
         "schema": "dwv.cli.v0",
         "shutdown": "clean",
         "state": "stopped",
         "trace_bound": 4096,
-        "trace_count": 5,
-        "trace_digest": "15ef7f2e091d7b8a265bd4187f43ee2711dfd54fc1feab922755a80ba6424796"
+        "trace_count": 12,
+        "trace_digest": "a88fb95602a2024ead1148ae4df8e25d189d88b6c70167fce9538339d8fd40c1"
       }
     },
     "partial_fence_coverage_rejected_by": "cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected"

@@ -111,6 +111,7 @@ pub fn assess_checksum_baseline(snapshot: &RecoverySnapshot) -> ChecksumBaseline
             return ChecksumBaselineStatus::Invalid(ChecksumBaselineInvalidReason::DuplicateRecord);
         }
         let IntegrityState::Valid {
+            binding,
             content_generation,
             durable_fence,
             digest,
@@ -119,6 +120,15 @@ pub fn assess_checksum_baseline(snapshot: &RecoverySnapshot) -> ChecksumBaseline
         else {
             continue;
         };
+        if binding.extent != *extent
+            || binding.profile != baseline.profile.id
+            || binding.set_generation != baseline.set_generation
+            || binding.topology_epoch != baseline.topology_epoch
+        {
+            return ChecksumBaselineStatus::Invalid(
+                ChecksumBaselineInvalidReason::InvalidCurrentEvidence,
+            );
+        }
         if *content_generation != baseline.content_generation
             || *verified_at < baseline.content_generation
             || *verified_at > snapshot.generation

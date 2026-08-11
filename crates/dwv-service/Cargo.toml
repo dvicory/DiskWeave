@@ -5,6 +5,7 @@ edition = "2024"
 publish = false
 
 [dependencies]
+blake3 = "1"
 dwv-codec = { path = "../dwv-codec" }
 dwv-core = { path = "../dwv-core" }
 dwv-recovery = { path = "../dwv-recovery" }

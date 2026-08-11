@@ -2,7 +2,7 @@ use crate::array;
 use crate::demo::DemoError;
 use crate::operator::{
     OperatorError, OperatorResult, Outcome, baseline, damage, members_result, observe,
-    recover_apply, recover_preview, scrub, start,
+    operation_error_result, recover_apply, recover_preview, scrub, start,
 };
 use clap::{Args, Parser, Subcommand};
 use serde_json::json;
@@ -304,21 +304,26 @@ struct CliExit {
 
 fn execute(cli: Cli) -> Result<CliExit, OperatorError> {
     match cli.command {
-        TopCommand::Status(args) => policy_result(args, |policy| Ok(observe(policy, "status"))),
-        TopCommand::Members(args) => policy_result(args, |policy| Ok(members_result(policy))),
-        TopCommand::Scrub(args) => policy_result(args, scrub),
-        TopCommand::Damage(args) => policy_result(args, damage),
+        TopCommand::Status(args) => {
+            policy_result(args, "status", |policy| Ok(observe(policy, "status")))
+        }
+        TopCommand::Members(args) => {
+            policy_result(args, "members", |policy| Ok(members_result(policy)))
+        }
+        TopCommand::Scrub(args) => policy_result(args, "scrub", scrub),
+        TopCommand::Damage(args) => policy_result(args, "damage", damage),
         TopCommand::Recover(args) => {
             let json = args.array.json;
             let policy = load_policy(&args.array.array)?;
-            let result = if let Some(plan_id) = args.apply {
-                recover_apply(&policy, &plan_id)?
+            let operation = if let Some(plan_id) = args.apply {
+                recover_apply(&policy, &plan_id)
             } else {
-                recover_preview(&policy)?
+                recover_preview(&policy)
             };
             Ok(CliExit {
                 json,
-                result,
+                result: operation
+                    .unwrap_or_else(|error| operation_error_result(&policy, "recover", error)),
                 already_printed: false,
             })
         }
@@ -327,17 +332,19 @@ fn execute(cli: Cli) -> Result<CliExit, OperatorError> {
             let policy = load_policy(&args.array.array)?;
             Ok(CliExit {
                 json,
-                result: baseline(&policy, args.max_extents)?,
+                result: baseline(&policy, args.max_extents)
+                    .unwrap_or_else(|error| operation_error_result(&policy, "baseline", error)),
                 already_printed: false,
             })
         }
         TopCommand::Start(args) => {
             let json = args.array.json;
             let policy = load_policy(&args.array.array)?;
-            let (result, published) =
-                start(&policy, args.read_only, args.device_id, move |result| {
-                    render_result(json, &result)
-                })?;
+            let started = start(&policy, args.read_only, args.device_id, move |result| {
+                render_result(json, &result)
+            });
+            let (result, published) = started
+                .unwrap_or_else(|error| (operation_error_result(&policy, "start", error), false));
             Ok(CliExit {
                 json,
                 result,
@@ -350,10 +357,13 @@ fn execute(cli: Cli) -> Result<CliExit, OperatorError> {
 
 fn policy_result(
     args: ArrayArgs,
+    command: &'static str,
     operation: impl FnOnce(&array::ArrayPolicy) -> Result<OperatorResult, OperatorError>,
 ) -> Result<CliExit, OperatorError> {
     let policy = load_policy(&args.array)?;
-    operation(&policy).map(|result| CliExit {
+    let result =
+        operation(&policy).unwrap_or_else(|error| operation_error_result(&policy, command, error));
+    Ok(CliExit {
         json: args.json,
         result,
         already_printed: false,
