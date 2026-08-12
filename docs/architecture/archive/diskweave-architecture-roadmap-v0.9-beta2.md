@@ -8,7 +8,7 @@ id: arch.diskweave.v0.9-beta2
 series: arch.diskweave
 kind: architecture-roadmap
 revision: v0.9-beta2
-status: candidate
+status: superseded
 scope: whole-system
 supersedes: arch.diskweave.v0.8
 ---
