@@ -195,6 +195,13 @@ fn dispatch_knowledge(app: &App, args: &[String]) -> Result<Value, AppError> {
         "context" => knowledge::context(app, required_ids(args, "context")?),
         "audit-context" => knowledge::audit_context(app, required_exact_id(args, "audit-context")?),
         "ownership" => knowledge::ownership(app, required_exact_id(args, "ownership")?),
+        "architecture-candidate" => knowledge::architecture_candidate(
+            app,
+            required_exact_id(args, "architecture-candidate")?,
+        ),
+        "architecture-history" => {
+            knowledge::architecture_history(app, required_exact_id(args, "architecture-history")?)
+        }
         "affected" => {
             let mut ids = option_values(args, "--id");
             if let Some(id) = args.get(1).filter(|value| !value.starts_with("--")) {
@@ -258,6 +265,24 @@ fn workspace_root() -> PathBuf {
                 .to_path_buf()
         })
 }
+const CLEAN_ROOM_INPUTS: [&str; 15] = [
+    "Cargo.toml",
+    "Cargo.lock",
+    ".cargo",
+    "mise.toml",
+    "src",
+    "tests",
+    "crates",
+    "xtask",
+    "tools/dwv-sphinx.py",
+    "openspec/specs",
+    "verification",
+    "docs/sphinx",
+    "docs/curriculum.toml",
+    "docs/reviewed-requirements.toml",
+    ".agents/skills/diskweave-knowledge",
+];
+
 fn clean_room(app: &App) -> Result<Value, AppError> {
     knowledge::export(app)?;
     let expected = fs::read(app.root.join("target/dwv-docs/knowledge/objects.json"))
@@ -270,25 +295,7 @@ fn clean_room(app: &App) -> Result<Value, AppError> {
     fs::create_dir(&root)
         .map_err(|error| AppError::new("clean_room_create_failed", error.to_string()))?;
     let result = (|| {
-        for relative in [
-            "Cargo.toml",
-            "Cargo.lock",
-            ".cargo",
-            "mise.toml",
-            "src",
-            "tests",
-            "crates",
-            "xtask",
-            "tools/dwv-sphinx.py",
-            "openspec/specs",
-            "verification",
-            "docs/sphinx",
-            "docs/curriculum.toml",
-            "docs/reviewed-requirements.toml",
-            ".agents/skills/diskweave-knowledge",
-        ] {
-            copy_permanent_input(&app.root, &root, relative)?;
-        }
+        copy_clean_room_inputs(&app.root, &root)?;
         let output = Command::new("cargo")
             .args([
                 "run",
@@ -323,9 +330,11 @@ fn clean_room(app: &App) -> Result<Value, AppError> {
         }
         Ok(json!({
             "schema": "dwv.docs.clean-room.v1",
+            "scope": "current-semantic-reconstructibility",
             "equivalent": true,
             "objects_digest": digest_bytes(&actual),
-            "excluded": ["active and archived architecture roadmaps", "archived changes", "milestones", "generated output", "global Python packages"]
+            "retained": ["selected active architecture roadmap"],
+            "excluded": ["candidate and superseded architecture roadmaps", "archived changes", "milestones", "generated output", "global Python packages"]
         }))
     })();
     let cleanup = fs::remove_dir_all(&root);
@@ -337,6 +346,69 @@ fn clean_room(app: &App) -> Result<Value, AppError> {
             error.to_string(),
         )),
     }
+}
+
+fn copy_clean_room_inputs(source_root: &Path, target_root: &Path) -> Result<(), AppError> {
+    for relative in CLEAN_ROOM_INPUTS {
+        copy_permanent_input(source_root, target_root, relative)?;
+    }
+    copy_active_architecture(source_root, target_root)
+}
+
+fn copy_active_architecture(source_root: &Path, target_root: &Path) -> Result<(), AppError> {
+    let architecture = source_root.join("docs/architecture");
+    let mut active = Vec::new();
+    if architecture.is_dir() {
+        collect_active_architecture(source_root, &architecture, &mut active)?;
+    }
+    if active.len() != 1 {
+        return Err(AppError::new(
+            "clean_room_active_architecture_count",
+            active.len().to_string(),
+        ));
+    }
+    let relative = active.remove(0);
+    copy_permanent_input(source_root, target_root, &relative)
+}
+
+fn collect_active_architecture(
+    root: &Path,
+    path: &Path,
+    active: &mut Vec<String>,
+) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("clean_room_copy_failed", error.to_string()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::new(
+            "clean_room_symlink",
+            path.display().to_string(),
+        ));
+    }
+    if metadata.is_dir() {
+        let mut entries = fs::read_dir(path)
+            .map_err(|error| AppError::new("clean_room_copy_failed", error.to_string()))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| AppError::new("clean_room_copy_failed", error.to_string()))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            collect_active_architecture(root, &entry.path(), active)?;
+        }
+    } else if path.extension().and_then(|value| value.to_str()) == Some("md") {
+        let text = fs::read_to_string(path)
+            .map_err(|error| AppError::new("clean_room_copy_failed", error.to_string()))?;
+        if text
+            .lines()
+            .any(|line| line.trim() == "<!-- dwv:active-architecture-roadmap -->")
+        {
+            active.push(
+                path.strip_prefix(root)
+                    .expect("architecture path is under root")
+                    .to_string_lossy()
+                    .replace('\\', "/"),
+            );
+        }
+    }
+    Ok(())
 }
 
 fn copy_permanent_input(
@@ -422,6 +494,8 @@ fn help_value() -> Value {
         "ownership <id> (direct ownership and endpoint facts)",
         "context <id>... (complete canonical units for the directed task scope)",
         "audit-context <id> (complete canonical units for the connected-component audit)",
+        "architecture-candidate <document-id> (non-authoritative candidate comparison)",
+        "architecture-history <document-id> (bounded historical architecture)",
         "affected <id>|--id <id>|--path <repo-relative-path> (downstream change impact)",
         "knowledge doctor --path <repo-relative-path>", "readiness|check",
         "resolve <id> --outcome <reviewed|reference-only|deferred|superseded> --reason <text>"
@@ -430,13 +504,15 @@ fn help_value() -> Value {
 
 fn schema_value() -> Value {
     json!({"schema": CLI_SCHEMA, "commands": {
-        "knowledge_objects": "dwv.knowledge.objects.v2",
-        "knowledge_inspect": "dwv.knowledge.inspect.v1",
-        "knowledge_context": "dwv.knowledge.context.v3",
-        "knowledge_ownership": "dwv.knowledge.ownership.v2",
+        "knowledge_objects": "dwv.knowledge.objects.v3",
+        "knowledge_inspect": "dwv.knowledge.inspect.v2",
+        "knowledge_context": "dwv.knowledge.context.v4",
+        "knowledge_ownership": "dwv.knowledge.ownership.v3",
         "knowledge_affected": "dwv.knowledge.affected.v3",
-        "knowledge_audit_context": "dwv.knowledge.audit-context.v1",
-        "knowledge_readiness": "dwv.knowledge.readiness.v2",
+        "knowledge_audit_context": "dwv.knowledge.audit-context.v2",
+        "knowledge_architecture_candidate": "dwv.knowledge.architecture-candidate.v1",
+        "knowledge_architecture_history": "dwv.knowledge.architecture-history.v1",
+        "knowledge_readiness": "dwv.knowledge.readiness.v3",
         "planning_nomenclature": "dwv.docs.planning-nomenclature.v1",
         "reviewed_state": "dwv.knowledge.reviewed-links.v2",
         "source_inventory": INVENTORY_SCHEMA
@@ -700,6 +776,35 @@ mod tests {
     }
 
     #[test]
+    fn clean_room_selection_copies_only_the_marked_active_roadmap() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let source = env::temp_dir().join(format!("dwv-clean-room-source-{nonce}"));
+        let target = env::temp_dir().join(format!("dwv-clean-room-target-{nonce}"));
+        fs::create_dir_all(source.join("docs/architecture/archive")).unwrap();
+        fs::create_dir_all(&target).unwrap();
+        fs::write(
+            source.join("docs/architecture/active.md"),
+            "<!-- dwv:active-architecture-roadmap -->\n",
+        )
+        .unwrap();
+        fs::write(source.join("docs/architecture/candidate.md"), "candidate\n").unwrap();
+        fs::write(
+            source.join("docs/architecture/archive/history.md"),
+            "historical\n",
+        )
+        .unwrap();
+        copy_active_architecture(&source, &target).unwrap();
+        assert!(target.join("docs/architecture/active.md").is_file());
+        assert!(!target.join("docs/architecture/candidate.md").exists());
+        assert!(!target.join("docs/architecture/archive/history.md").exists());
+        fs::remove_dir_all(source).unwrap();
+        fs::remove_dir_all(target).unwrap();
+    }
+
+    #[test]
     fn knowledge_commands_have_distinct_fixed_contracts() {
         let args = [
             "context".to_owned(),
@@ -725,19 +830,19 @@ mod tests {
         let schema = schema_value();
         assert_eq!(
             schema["commands"]["knowledge_inspect"],
-            "dwv.knowledge.inspect.v1"
+            "dwv.knowledge.inspect.v2"
         );
         assert_eq!(
             schema["commands"]["knowledge_context"],
-            "dwv.knowledge.context.v3"
+            "dwv.knowledge.context.v4"
         );
         assert_eq!(
             schema["commands"]["knowledge_ownership"],
-            "dwv.knowledge.ownership.v2"
+            "dwv.knowledge.ownership.v3"
         );
         assert_eq!(
             schema["commands"]["knowledge_audit_context"],
-            "dwv.knowledge.audit-context.v1"
+            "dwv.knowledge.audit-context.v2"
         );
         assert_eq!(
             schema["commands"]["knowledge_affected"],

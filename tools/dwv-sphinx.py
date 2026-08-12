@@ -20,7 +20,7 @@ RUST_SOURCE = STATE / "rust-source"
 HTML = STATE / "html"
 OBJECTS = ROOT / "target" / "dwv-docs" / "knowledge" / "objects.json"
 MANIFEST = ROOT / "verification" / "manifest.toml"
-SCHEMA = "dwv.knowledge.objects.v2"
+SCHEMA = "dwv.knowledge.objects.v3"
 VERIFICATION_SCHEMA = "dwv.verification.manifest.v1"
 MAX_FIXTURE_BYTES = 1_000_000
 RUST_MARKER_RE = re.compile(r"(?m)^(?P<prefix>\s*///\s*)dwv:req\s+(?P<id>req\.[a-z0-9.-]+)\s*$")
@@ -66,6 +66,7 @@ def load_knowledge() -> tuple[
         "refines",
         "required_by",
         "refined_by",
+        "constrained_by",
         "body",
     }
     result = []
@@ -82,7 +83,7 @@ def load_knowledge() -> tuple[
         if not all(
             isinstance(item.get(field), list)
             and all(isinstance(target, str) for target in item[field])
-            for field in ("requires", "refines", "required_by", "refined_by")
+            for field in ("requires", "refines", "required_by", "refined_by", "constrained_by")
         ):
             fail(f"invalid relationships for {semantic_id}")
         seen.add(semantic_id)

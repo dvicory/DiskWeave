@@ -17,7 +17,14 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 5. If a bound failure returns `suggested_requests`, run every suggested request; the set is complete only as a whole. No suggestions means a required semantic scope cannot be split without omission.
 6. Use `knowledge inspect <requirement-id>` alone for an exact local-unit lookup, `knowledge ownership <requirement-id>` alone for direct ownership and endpoint troubleshooting, `knowledge affected <requirement-id>` after an owner or relationship changes, and `knowledge audit-context <requirement-id>` only for a deliberate whole-component audit.
 7. Never request overlapping `inspect`, `ownership`, and `context` packets for the same need, and never choose packet fields, graph depth, relationship direction, or closure policy.
-8. Treat the marked active architecture roadmap, `docs/architecture/archive/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests roadmap planning or history.
+8. Treat unmarked active-roadmap prose, candidate architecture, `docs/architecture/archive/**`, archived changes, and generated `target/**` content as non-authoritative unless the task explicitly requests roadmap planning, candidate review, or history. Marked active invariant units returned by ordinary current commands are current architecture constraints, not detailed product authority.
+
+## Architecture revision lookup
+
+- Continue to use current requirement and context commands for ordinary implementation work; they include only current canonical requirements and directly applicable marked active architecture constraints.
+- Use `cargo xtask docs knowledge architecture-candidate <document-id>` only for explicit candidate review. Its output is non-authoritative reconciliation and impact input: it changes no current semantics, readiness, reviewed state, or implementation authority, and an affected requirement does not imply a required edit or implementation task.
+- Use `cargo xtask docs knowledge architecture-history <document-id>` only for explicit historical or lineage investigation. Its output is non-authoritative and cannot satisfy current coverage or resolve an architecture/OpenSpec conflict.
+- Reconcile candidate impact against current canonical `req.*` ownership. Do not infer requirement edits from architecture prose.
 
 ## Editing rules
 

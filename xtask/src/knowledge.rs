@@ -10,15 +10,17 @@ use super::{
     safe_join, write_json,
 };
 
-const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v2";
-const INSPECT_SCHEMA: &str = "dwv.knowledge.inspect.v1";
-const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v3";
-const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v2";
+const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v3";
+const INSPECT_SCHEMA: &str = "dwv.knowledge.inspect.v2";
+const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v4";
+const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v3";
 const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v3";
-const AUDIT_CONTEXT_SCHEMA: &str = "dwv.knowledge.audit-context.v1";
+const AUDIT_CONTEXT_SCHEMA: &str = "dwv.knowledge.audit-context.v2";
+const ARCHITECTURE_CANDIDATE_SCHEMA: &str = "dwv.knowledge.architecture-candidate.v1";
+const ARCHITECTURE_HISTORY_SCHEMA: &str = "dwv.knowledge.architecture-history.v1";
 const OBJECTS_PATH: &str = "target/dwv-docs/knowledge/objects.json";
 const REVIEWED_PATH: &str = "docs/reviewed-requirements.toml";
-const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v2";
+const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v3";
 const REVIEWED_SCHEMA: &str = "dwv.knowledge.reviewed-links.v2";
 const OUTCOMES: [&str; 4] = ["reviewed", "reference-only", "deferred", "superseded"];
 
@@ -43,6 +45,7 @@ pub(super) struct RequirementObject {
     pub refines: Vec<String>,
     pub required_by: Vec<String>,
     pub refined_by: Vec<String>,
+    pub constrained_by: Vec<String>,
     pub body: String,
 }
 
@@ -55,6 +58,59 @@ impl RequirementObject {
     }
 }
 
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct ArchitectureDocument {
+    id: String,
+    series: String,
+    revision: String,
+    kind: String,
+    status: String,
+    scope: String,
+    source_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    supersedes: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct ArchitectureInvariant {
+    semantic_id: String,
+    title: String,
+    document_id: String,
+    lifecycle: String,
+    source_path: String,
+    heading_path: Vec<String>,
+    #[serde(skip)]
+    source_start_line: usize,
+    #[serde(skip)]
+    source_end_line: usize,
+    local_semantic_fingerprint: String,
+    constrains: Vec<String>,
+    supersedes: Vec<String>,
+    superseded_by: Vec<String>,
+    body: String,
+}
+
+impl ArchitectureInvariant {
+    fn source_locator(&self) -> String {
+        format!(
+            "{}:{}-{}",
+            self.source_path, self.source_start_line, self.source_end_line
+        )
+    }
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ArchitectureConstraint {
+    source: String,
+    target: String,
+}
+
+#[derive(Debug, Clone)]
+struct ArchitectureCatalog {
+    documents: Vec<ArchitectureDocument>,
+    invariants: Vec<ArchitectureInvariant>,
+    active_document_id: String,
+}
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 struct Reference {
     kind: String,
@@ -96,9 +152,12 @@ struct SemanticRelationship {
     line: usize,
 }
 
+#[derive(Debug)]
 struct KnowledgeModel {
     objects: Vec<RequirementObject>,
     relationships: Vec<SemanticRelationship>,
+    architecture: ArchitectureCatalog,
+    constraints: Vec<ArchitectureConstraint>,
 }
 
 pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
@@ -168,6 +227,7 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
                 refines: Vec::new(),
                 required_by: Vec::new(),
                 refined_by: Vec::new(),
+                constrained_by: Vec::new(),
                 body,
             });
         }
@@ -229,9 +289,12 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
             )
         })
         .collect::<BTreeMap<_, _>>();
+    let architecture = architecture_catalog(app)?;
+    let constraints = validate_architecture_semantics(&mut objects, &architecture)?;
+    let active_inputs = active_constraint_inputs(&architecture);
     let mut effective = BTreeMap::new();
     for id in indexes.keys() {
-        effective_fingerprint(id, &locals, &outgoing, &mut effective);
+        effective_fingerprint(id, &locals, &outgoing, &active_inputs, &mut effective);
     }
     for object in &mut objects {
         object.effective_semantic_fingerprint = effective[&object.semantic_id].clone();
@@ -239,7 +302,645 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
     Ok(KnowledgeModel {
         objects,
         relationships,
+        architecture,
+        constraints,
     })
+}
+
+fn architecture_catalog(app: &App) -> Result<ArchitectureCatalog, AppError> {
+    let root = app.root.join("docs/architecture");
+    let mut files = Vec::new();
+    collect_markdown_files(&app.root, &root, &mut files)?;
+    files.sort();
+    let mut documents = Vec::new();
+    let mut invariants = Vec::new();
+    let mut markers = Vec::new();
+    for path in files {
+        let relative = rel(&app.root, &path);
+        let text = read_authority_file(&app.root, &path)?;
+        let Some(metadata) = architecture_metadata(&text, &relative)? else {
+            continue;
+        };
+        let marker_count = text
+            .lines()
+            .filter(|line| line.trim() == ACTIVE_ROADMAP_MARKER)
+            .count();
+        if marker_count > 0 {
+            markers.extend(std::iter::repeat_n(relative.clone(), marker_count));
+        }
+        let document = ArchitectureDocument {
+            id: required_metadata(&metadata, "id", &relative)?.to_owned(),
+            series: required_metadata(&metadata, "series", &relative)?.to_owned(),
+            revision: required_metadata(&metadata, "revision", &relative)?.to_owned(),
+            kind: required_metadata(&metadata, "kind", &relative)?.to_owned(),
+            status: required_metadata(&metadata, "status", &relative)?.to_owned(),
+            scope: required_metadata(&metadata, "scope", &relative)?.to_owned(),
+            source_path: relative.clone(),
+            supersedes: metadata.get("supersedes").cloned(),
+        };
+        validate_architecture_document(&document)?;
+        invariants.extend(extract_architecture_invariants(app, &text, &document)?);
+        documents.push(document);
+    }
+    populate_superseded_by(&mut invariants);
+    documents.sort_by(|left, right| left.id.cmp(&right.id));
+    invariants.sort_by(|left, right| {
+        (&left.document_id, &left.semantic_id).cmp(&(&right.document_id, &right.semantic_id))
+    });
+    validate_architecture_catalog(&documents, &invariants, &markers)?;
+    let active_document_id = documents
+        .iter()
+        .find(|document| document.status == "active")
+        .expect("catalog validation requires one active document")
+        .id
+        .clone();
+    Ok(ArchitectureCatalog {
+        documents,
+        invariants,
+        active_document_id,
+    })
+}
+
+fn architecture_metadata(
+    text: &str,
+    source_path: &str,
+) -> Result<Option<BTreeMap<String, String>>, AppError> {
+    let mut lines = text.lines();
+    if lines.next() != Some("---") {
+        return Ok(None);
+    }
+    let mut metadata = BTreeMap::new();
+    let mut closed = false;
+    for line in lines {
+        if line == "---" {
+            closed = true;
+            break;
+        }
+        let Some((key, value)) = line.split_once(':') else {
+            return Err(architecture_error(
+                "architecture_metadata_invalid",
+                source_path,
+                format!("metadata line is not a scalar key-value pair: {line}"),
+            ));
+        };
+        let key = key.trim();
+        let value = value.trim();
+        if key.is_empty() || value.is_empty() || value.contains(['[', ']', '{', '}', '\n']) {
+            return Err(architecture_error(
+                "architecture_metadata_invalid",
+                source_path,
+                format!("metadata field {key:?} must have one non-empty scalar value"),
+            ));
+        }
+        if metadata.insert(key.to_owned(), value.to_owned()).is_some() {
+            return Err(architecture_error(
+                "architecture_metadata_duplicate",
+                source_path,
+                format!("metadata field {key} occurs more than once"),
+            ));
+        }
+    }
+    if !closed {
+        return Err(architecture_error(
+            "architecture_metadata_invalid",
+            source_path,
+            "leading metadata block is not closed",
+        ));
+    }
+    if metadata.get("kind").map(String::as_str) == Some("architecture-roadmap") {
+        Ok(Some(metadata))
+    } else {
+        Ok(None)
+    }
+}
+
+fn required_metadata<'a>(
+    metadata: &'a BTreeMap<String, String>,
+    key: &str,
+    source_path: &str,
+) -> Result<&'a str, AppError> {
+    metadata.get(key).map(String::as_str).ok_or_else(|| {
+        architecture_error(
+            "architecture_metadata_missing",
+            source_path,
+            format!("required metadata field {key} is absent"),
+        )
+    })
+}
+
+fn validate_architecture_document(document: &ArchitectureDocument) -> Result<(), AppError> {
+    validate_architecture_id(&document.id).map_err(|_| {
+        architecture_error(
+            "architecture_document_id_invalid",
+            &document.source_path,
+            &document.id,
+        )
+    })?;
+    validate_architecture_id(&document.series).map_err(|_| {
+        architecture_error(
+            "architecture_series_invalid",
+            &document.source_path,
+            &document.series,
+        )
+    })?;
+    if document.kind != "architecture-roadmap" {
+        return Err(architecture_error(
+            "architecture_kind_invalid",
+            &document.source_path,
+            &document.kind,
+        ));
+    }
+    if document.scope != "whole-system" {
+        return Err(architecture_error(
+            "architecture_scope_invalid",
+            &document.source_path,
+            &document.scope,
+        ));
+    }
+    if !matches!(
+        document.status.as_str(),
+        "active" | "candidate" | "superseded"
+    ) {
+        return Err(architecture_error(
+            "architecture_status_invalid",
+            &document.source_path,
+            &document.status,
+        ));
+    }
+    if document.revision.trim().is_empty() {
+        return Err(architecture_error(
+            "architecture_revision_invalid",
+            &document.source_path,
+            "revision is empty",
+        ));
+    }
+    if let Some(predecessor) = &document.supersedes {
+        validate_architecture_id(predecessor).map_err(|_| {
+            architecture_error(
+                "architecture_supersedes_invalid",
+                &document.source_path,
+                predecessor,
+            )
+        })?;
+        if predecessor == &document.id {
+            return Err(architecture_error(
+                "architecture_supersedes_self",
+                &document.source_path,
+                predecessor,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_architecture_catalog(
+    documents: &[ArchitectureDocument],
+    invariants: &[ArchitectureInvariant],
+    markers: &[String],
+) -> Result<(), AppError> {
+    if documents.is_empty() {
+        return Err(AppError::new(
+            "architecture_document_missing",
+            "no whole-system architecture-roadmap document found",
+        ));
+    }
+    let mut ids = BTreeMap::new();
+    let mut series = BTreeSet::new();
+    for document in documents {
+        if let Some(previous) = ids.insert(document.id.as_str(), document) {
+            return Err(
+                AppError::new("architecture_document_duplicate", document.id.clone())
+                    .details(json!({"paths": [previous.source_path, document.source_path]})),
+            );
+        }
+        series.insert(document.series.as_str());
+    }
+    if series.len() != 1 {
+        return Err(AppError::new(
+            "architecture_series_ambiguous",
+            "whole-system architecture documents must share one series",
+        )
+        .details(json!({"series": series})));
+    }
+    let active = documents
+        .iter()
+        .filter(|document| document.status == "active")
+        .collect::<Vec<_>>();
+    if active.len() != 1 || markers.len() != 1 || markers[0] != active[0].source_path {
+        return Err(AppError::new(
+            "active_architecture_selection_invalid",
+            "exactly one active document must carry the sole active marker",
+        )
+        .details(json!({
+            "active_documents": active.iter().map(|document| &document.source_path).collect::<Vec<_>>(),
+            "marker_paths": markers,
+        })));
+    }
+    for document in documents {
+        if let Some(predecessor) = &document.supersedes
+            && let Some(target) = ids.get(predecessor.as_str())
+            && target.series != document.series
+        {
+            return Err(architecture_error(
+                "architecture_supersedes_cross_series",
+                &document.source_path,
+                predecessor,
+            ));
+        }
+    }
+    if let Some(cycle) = document_supersession_cycle(documents) {
+        return Err(AppError::new(
+            "architecture_supersession_cycle",
+            "document supersession contains a cycle",
+        )
+        .details(json!({"cycle": cycle})));
+    }
+    let mut active_ids = BTreeSet::new();
+    let mut per_document = BTreeSet::new();
+    let document_ids = ids.keys().copied().collect::<BTreeSet<_>>();
+    for invariant in invariants {
+        if document_ids.contains(invariant.semantic_id.as_str()) {
+            return Err(architecture_error(
+                "architecture_invariant_id_collision",
+                &invariant.source_path,
+                &invariant.semantic_id,
+            ));
+        }
+        if !per_document.insert((
+            invariant.document_id.as_str(),
+            invariant.semantic_id.as_str(),
+        )) {
+            return Err(architecture_error(
+                "architecture_invariant_duplicate",
+                &invariant.source_path,
+                &invariant.semantic_id,
+            ));
+        }
+        if invariant.lifecycle == "active" && !active_ids.insert(invariant.semantic_id.as_str()) {
+            return Err(architecture_error(
+                "active_architecture_invariant_duplicate",
+                &invariant.source_path,
+                &invariant.semantic_id,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn document_supersession_cycle(documents: &[ArchitectureDocument]) -> Option<Vec<String>> {
+    let present = documents
+        .iter()
+        .map(|document| document.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let edges = documents
+        .iter()
+        .filter_map(|document| {
+            document
+                .supersedes
+                .as_ref()
+                .filter(|target| present.contains(target.as_str()))
+                .map(|target| SemanticRelationship {
+                    source: document.id.clone(),
+                    kind: "supersedes".to_owned(),
+                    target: target.clone(),
+                    source_path: document.source_path.clone(),
+                    line: 1,
+                })
+        })
+        .collect::<Vec<_>>();
+    smallest_cycle(&edges)
+}
+
+fn extract_architecture_invariants(
+    app: &App,
+    text: &str,
+    document: &ArchitectureDocument,
+) -> Result<Vec<ArchitectureInvariant>, AppError> {
+    let headings = markdown_headings(text)?;
+    let mut invariants = Vec::new();
+    for (index, heading) in headings
+        .iter()
+        .enumerate()
+        .filter(|(_, heading)| heading.title.starts_with("Invariant:"))
+    {
+        let end = headings
+            .iter()
+            .skip(index + 1)
+            .find(|next| next.level <= heading.level)
+            .map(|next| next.start)
+            .unwrap_or(text.len());
+        let section = &text[heading.start..end];
+        let lines = section.lines().collect::<Vec<_>>();
+        let Some((identity_line, marker)) = lines
+            .iter()
+            .enumerate()
+            .skip(1)
+            .find(|(_, line)| !line.trim().is_empty())
+        else {
+            continue;
+        };
+        let Some(id) = parse_marker(marker, "dwv:arch-invariant") else {
+            if marker.trim().contains("dwv:arch-invariant") {
+                return Err(architecture_error(
+                    "architecture_invariant_marker_invalid",
+                    &document.source_path,
+                    marker.trim(),
+                ));
+            }
+            continue;
+        };
+        validate_architecture_id(id).map_err(|_| {
+            architecture_error(
+                "architecture_invariant_id_invalid",
+                &document.source_path,
+                id,
+            )
+        })?;
+        let mut constrains = Vec::new();
+        let mut supersedes = Vec::new();
+        let mut cursor = identity_line + 1;
+        while cursor < lines.len() {
+            if lines[cursor].trim().is_empty() {
+                cursor += 1;
+                continue;
+            }
+            if let Some(target) = parse_marker(lines[cursor], "dwv:constrains") {
+                constrains.push(target.to_owned());
+            } else if let Some(target) = parse_marker(lines[cursor], "dwv:arch-supersedes") {
+                supersedes.push(target.to_owned());
+            } else {
+                break;
+            }
+            cursor += 1;
+        }
+        let normalized = normalize_markdown(section)?;
+        let body = normalize_invariant_heading(&normalized);
+        if body.len() > app.bounds.max_source_bytes {
+            return Err(AppError::new("unit_bound_exceeded", id));
+        }
+        let source_start_line = text[..heading.start].lines().count() + 1;
+        let source_end_line = text[..end].lines().count().max(source_start_line);
+        invariants.push(ArchitectureInvariant {
+            semantic_id: id.to_owned(),
+            title: heading
+                .title
+                .trim_start_matches("Invariant:")
+                .trim()
+                .to_owned(),
+            document_id: document.id.clone(),
+            lifecycle: document.status.clone(),
+            source_path: document.source_path.clone(),
+            heading_path: heading.path.clone(),
+            source_start_line,
+            source_end_line,
+            local_semantic_fingerprint: digest_text(&body),
+            constrains,
+            supersedes,
+            superseded_by: Vec::new(),
+            body,
+        });
+    }
+    Ok(invariants)
+}
+
+fn normalize_invariant_heading(normalized: &str) -> String {
+    let Some((heading, rest)) = normalized.split_once('\n') else {
+        return normalized.to_owned();
+    };
+    if heading.starts_with('H') && heading.contains(":Invariant:") {
+        format!("H:{}", heading.split_once(':').unwrap().1)
+            + if rest.is_empty() { "" } else { "\n" }
+            + rest
+    } else {
+        normalized.to_owned()
+    }
+}
+
+fn parse_marker<'a>(line: &'a str, name: &str) -> Option<&'a str> {
+    line.trim()
+        .strip_prefix("<!-- ")
+        .and_then(|line| line.strip_suffix(" -->"))
+        .and_then(|line| line.strip_prefix(name))
+        .and_then(|line| line.strip_prefix(' '))
+        .filter(|value| !value.is_empty() && !value.contains(char::is_whitespace))
+}
+
+fn populate_superseded_by(invariants: &mut [ArchitectureInvariant]) {
+    let edges = invariants
+        .iter()
+        .flat_map(|invariant| {
+            invariant
+                .supersedes
+                .iter()
+                .map(|predecessor| (predecessor.clone(), invariant.semantic_id.clone()))
+        })
+        .collect::<Vec<_>>();
+    for invariant in invariants {
+        invariant.superseded_by = edges
+            .iter()
+            .filter(|(predecessor, _)| predecessor == &invariant.semantic_id)
+            .map(|(_, successor)| successor.clone())
+            .collect();
+        invariant.superseded_by.sort();
+        invariant.superseded_by.dedup();
+    }
+}
+
+fn validate_architecture_id(id: &str) -> Result<(), AppError> {
+    let parts = id.split('.').collect::<Vec<_>>();
+    let valid = |part: &&str| {
+        !part.is_empty()
+            && !part.starts_with('-')
+            && !part.ends_with('-')
+            && part.chars().all(|character| {
+                character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+            })
+    };
+    if parts.len() < 2 || parts[0] != "arch" || !parts[1..].iter().all(valid) {
+        return Err(AppError::new("malformed_architecture_id", id));
+    }
+    Ok(())
+}
+
+fn architecture_error(code: &str, source_path: &str, message: impl Into<String>) -> AppError {
+    AppError::new(code, message).details(json!({"source_path": source_path}))
+}
+fn validate_architecture_semantics(
+    objects: &mut [RequirementObject],
+    catalog: &ArchitectureCatalog,
+) -> Result<Vec<ArchitectureConstraint>, AppError> {
+    let indexes = objects
+        .iter()
+        .enumerate()
+        .map(|(index, object)| (object.semantic_id.clone(), index))
+        .collect::<BTreeMap<_, _>>();
+    let locations = catalog
+        .invariants
+        .iter()
+        .enumerate()
+        .map(|(index, invariant)| {
+            (
+                (
+                    invariant.document_id.as_str(),
+                    invariant.semantic_id.as_str(),
+                ),
+                index,
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let identities = catalog.invariants.iter().fold(
+        BTreeMap::<&str, Vec<usize>>::new(),
+        |mut result, invariant| {
+            result
+                .entry(invariant.semantic_id.as_str())
+                .or_default()
+                .push(
+                    locations[&(
+                        invariant.document_id.as_str(),
+                        invariant.semantic_id.as_str(),
+                    )],
+                );
+            result
+        },
+    );
+    let mut constraints = BTreeSet::new();
+    let mut lineage = Vec::new();
+    for invariant in &catalog.invariants {
+        let mut targets = BTreeSet::new();
+        for target in &invariant.constrains {
+            validate_semantic_id(target).map_err(|_| {
+                architecture_semantic_error(
+                    "architecture_constraint_target_invalid",
+                    invariant,
+                    target,
+                )
+            })?;
+            if !targets.insert(target.as_str()) {
+                return Err(architecture_semantic_error(
+                    "architecture_constraint_duplicate",
+                    invariant,
+                    target,
+                ));
+            }
+            if invariant.lifecycle != "superseded" && !indexes.contains_key(target) {
+                return Err(architecture_semantic_error(
+                    "architecture_constraint_dangling",
+                    invariant,
+                    target,
+                ));
+            }
+            if invariant.lifecycle == "active" {
+                constraints.insert(ArchitectureConstraint {
+                    source: invariant.semantic_id.clone(),
+                    target: target.clone(),
+                });
+            }
+        }
+        let mut predecessors = BTreeSet::new();
+        for predecessor in &invariant.supersedes {
+            validate_architecture_id(predecessor).map_err(|_| {
+                architecture_semantic_error(
+                    "architecture_lineage_target_invalid",
+                    invariant,
+                    predecessor,
+                )
+            })?;
+            if predecessor == &invariant.semantic_id {
+                return Err(architecture_semantic_error(
+                    "architecture_lineage_self",
+                    invariant,
+                    predecessor,
+                ));
+            }
+            if !predecessors.insert(predecessor.as_str()) {
+                return Err(architecture_semantic_error(
+                    "architecture_lineage_duplicate",
+                    invariant,
+                    predecessor,
+                ));
+            }
+            let Some(candidates) = identities.get(predecessor.as_str()) else {
+                return Err(architecture_semantic_error(
+                    "architecture_lineage_dangling",
+                    invariant,
+                    predecessor,
+                ));
+            };
+            let valid = candidates
+                .iter()
+                .any(|index| catalog.invariants[*index].document_id != invariant.document_id);
+            if !valid {
+                return Err(architecture_semantic_error(
+                    "architecture_lineage_same_revision",
+                    invariant,
+                    predecessor,
+                ));
+            }
+            lineage.push((invariant.semantic_id.clone(), predecessor.clone()));
+        }
+    }
+    let relationships = lineage
+        .iter()
+        .map(|(source, target)| SemanticRelationship {
+            source: source.clone(),
+            kind: "supersedes".to_owned(),
+            target: target.clone(),
+            source_path: String::new(),
+            line: 0,
+        })
+        .collect::<Vec<_>>();
+    if let Some(cycle) = smallest_cycle(&relationships) {
+        return Err(AppError::new(
+            "architecture_lineage_cycle",
+            "invariant supersession contains a cycle",
+        )
+        .details(json!({"cycle": cycle})));
+    }
+    for constraint in &constraints {
+        let target = indexes[&constraint.target];
+        objects[target]
+            .constrained_by
+            .push(constraint.source.clone());
+    }
+    for object in objects {
+        object.constrained_by.sort();
+    }
+    Ok(constraints.into_iter().collect())
+}
+
+fn active_constraint_inputs(
+    catalog: &ArchitectureCatalog,
+) -> BTreeMap<String, Vec<(String, String)>> {
+    let mut inputs = BTreeMap::<String, Vec<(String, String)>>::new();
+    for invariant in catalog
+        .invariants
+        .iter()
+        .filter(|invariant| invariant.lifecycle == "active")
+    {
+        for target in &invariant.constrains {
+            inputs.entry(target.clone()).or_default().push((
+                invariant.semantic_id.clone(),
+                invariant.local_semantic_fingerprint.clone(),
+            ));
+        }
+    }
+    for values in inputs.values_mut() {
+        values.sort();
+    }
+    inputs
+}
+
+fn architecture_semantic_error(
+    code: &str,
+    invariant: &ArchitectureInvariant,
+    target: &str,
+) -> AppError {
+    AppError::new(code, target).details(json!({
+        "invariant_id": invariant.semantic_id,
+        "target_id": target,
+        "document_id": invariant.document_id,
+        "source": invariant.source_locator(),
+    }))
 }
 
 fn extract_relationships(
@@ -463,6 +1164,7 @@ fn effective_fingerprint(
     id: &str,
     locals: &BTreeMap<String, String>,
     outgoing: &BTreeMap<String, Vec<SemanticRelationship>>,
+    active_inputs: &BTreeMap<String, Vec<(String, String)>>,
     memo: &mut BTreeMap<String, String>,
 ) -> String {
     if let Some(fingerprint) = memo.get(id) {
@@ -476,12 +1178,17 @@ fn effective_fingerprint(
             (
                 relationship.kind.clone(),
                 relationship.target.clone(),
-                effective_fingerprint(&relationship.target, locals, outgoing, memo),
+                effective_fingerprint(&relationship.target, locals, outgoing, active_inputs, memo),
             )
         })
         .collect::<Vec<_>>();
-    let encoded = serde_json::to_string(&(locals[id].as_str(), imported))
-        .expect("fingerprint input serializes");
+    let architecture = active_inputs.get(id).cloned().unwrap_or_default();
+    let encoded = if architecture.is_empty() {
+        serde_json::to_string(&(locals[id].as_str(), imported))
+    } else {
+        serde_json::to_string(&(locals[id].as_str(), imported, architecture))
+    }
+    .expect("fingerprint input serializes");
     let fingerprint = digest_text(&encoded);
     memo.insert(id.to_owned(), fingerprint.clone());
     fingerprint
@@ -498,9 +1205,20 @@ pub(super) fn export(app: &App) -> Result<Value, AppError> {
             .map(|object| object.semantic_id.clone())
             .collect(),
     );
+    let architecture_invariants = model
+        .architecture
+        .invariants
+        .iter()
+        .filter(|invariant| invariant.lifecycle == "active")
+        .collect::<Vec<_>>();
     let value = json!({
         "schema": OBJECTS_SCHEMA,
         "objects": model.objects,
+        "architecture": {
+            "active_document_id": model.architecture.active_document_id,
+            "invariants": architecture_invariants,
+            "constraints": model.constraints,
+        },
         "capabilities": capabilities,
         "reading_order": reading_order,
     });
@@ -607,6 +1325,187 @@ fn requirement_by_id<'a>(
         .ok_or_else(|| AppError::new("unknown_requirement", id))
 }
 
+pub(super) fn architecture_candidate(app: &App, id: String) -> Result<Value, AppError> {
+    let model = knowledge_model(app)?;
+    let candidate = architecture_document(&model.architecture, &id, "candidate")?;
+    let active = architecture_document(
+        &model.architecture,
+        &model.architecture.active_document_id,
+        "active",
+    )?;
+    let candidate_invariants = document_invariants(&model.architecture, &candidate.id);
+    let active_invariants = document_invariants(&model.architecture, &active.id);
+    let candidate_by_id = candidate_invariants
+        .iter()
+        .map(|invariant| (invariant.semantic_id.as_str(), *invariant))
+        .collect::<BTreeMap<_, _>>();
+    let active_by_id = active_invariants
+        .iter()
+        .map(|invariant| (invariant.semantic_id.as_str(), *invariant))
+        .collect::<BTreeMap<_, _>>();
+    let identities = candidate_by_id
+        .keys()
+        .chain(active_by_id.keys())
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let mut direct = BTreeSet::new();
+    let comparisons = identities
+        .into_iter()
+        .map(|identity| {
+            let candidate = candidate_by_id.get(identity).copied();
+            let active = active_by_id.get(identity).copied();
+            let candidate_targets = candidate
+                .map(|invariant| {
+                    invariant.constrains.iter().cloned().collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            let active_targets = active
+                .map(|invariant| {
+                    invariant.constrains.iter().cloned().collect::<BTreeSet<_>>()
+                })
+                .unwrap_or_default();
+            let added_constraints = candidate_targets
+                .difference(&active_targets)
+                .cloned()
+                .collect::<Vec<_>>();
+            let removed_constraints = active_targets
+                .difference(&candidate_targets)
+                .cloned()
+                .collect::<Vec<_>>();
+            direct.extend(added_constraints.iter().cloned());
+            direct.extend(removed_constraints.iter().cloned());
+            let classification = match (active, candidate) {
+                (None, Some(_)) => "added",
+                (Some(_), None) => "removed",
+                (Some(active), Some(candidate))
+                    if active.local_semantic_fingerprint
+                        == candidate.local_semantic_fingerprint
+                        && added_constraints.is_empty()
+                        && removed_constraints.is_empty() =>
+                {
+                    "unchanged"
+                }
+                (Some(_), Some(_)) => "changed",
+                (None, None) => unreachable!("identity comes from one document"),
+            };
+            if classification == "changed" {
+                direct.extend(active_targets.iter().cloned());
+                direct.extend(candidate_targets.iter().cloned());
+            }
+            let supersedes = candidate
+                .map(|invariant| invariant.supersedes.clone())
+                .unwrap_or_default();
+            let superseded_by = candidate
+                .map(|invariant| invariant.superseded_by.clone())
+                .unwrap_or_default();
+            json!({
+                "semantic_id": identity,
+                "classification": classification,
+                "active_fingerprint": active.map(|invariant| &invariant.local_semantic_fingerprint),
+                "candidate_fingerprint": candidate.map(|invariant| &invariant.local_semantic_fingerprint),
+                "added_constraints": added_constraints,
+                "removed_constraints": removed_constraints,
+                "supersedes": supersedes,
+                "superseded_by": superseded_by,
+            })
+        })
+        .collect::<Vec<_>>();
+    let dependent_closure = current_dependent_closure(&model, &direct);
+    let value = json!({
+        "schema": ARCHITECTURE_CANDIDATE_SCHEMA,
+        "authority": "non-authoritative-candidate",
+        "document": candidate,
+        "active_document_id": active.id,
+        "invariants": candidate_invariants,
+        "comparisons": comparisons,
+        "directly_affected_requirements": direct,
+        "dependent_closure": dependent_closure,
+        "bounds": {"max_context_bytes": app.bounds.max_context_bytes},
+    });
+    enforce_context_bound(app, "architecture_candidate_bound_exceeded", &value)?;
+    Ok(value)
+}
+
+pub(super) fn architecture_history(app: &App, id: String) -> Result<Value, AppError> {
+    let model = knowledge_model(app)?;
+    let document = architecture_document(&model.architecture, &id, "superseded")?;
+    let invariants = document_invariants(&model.architecture, &document.id);
+    let constraints = invariants
+        .iter()
+        .flat_map(|invariant| {
+            invariant
+                .constrains
+                .iter()
+                .map(|target| ArchitectureConstraint {
+                    source: invariant.semantic_id.clone(),
+                    target: target.clone(),
+                })
+        })
+        .collect::<Vec<_>>();
+    let value = json!({
+        "schema": ARCHITECTURE_HISTORY_SCHEMA,
+        "authority": "historical",
+        "document": document,
+        "invariants": invariants,
+        "constraints": constraints,
+        "bounds": {"max_context_bytes": app.bounds.max_context_bytes},
+    });
+    enforce_context_bound(app, "architecture_history_bound_exceeded", &value)?;
+    Ok(value)
+}
+
+fn architecture_document<'a>(
+    catalog: &'a ArchitectureCatalog,
+    id: &str,
+    expected_status: &str,
+) -> Result<&'a ArchitectureDocument, AppError> {
+    let document = catalog
+        .documents
+        .iter()
+        .find(|document| document.id == id)
+        .ok_or_else(|| AppError::new("unknown_architecture_document", id))?;
+    if document.status != expected_status {
+        return Err(AppError::new(
+            "architecture_document_lifecycle_mismatch",
+            format!("{id} is {}, expected {expected_status}", document.status),
+        ));
+    }
+    Ok(document)
+}
+
+fn document_invariants<'a>(
+    catalog: &'a ArchitectureCatalog,
+    document_id: &str,
+) -> Vec<&'a ArchitectureInvariant> {
+    catalog
+        .invariants
+        .iter()
+        .filter(|invariant| invariant.document_id == document_id)
+        .collect()
+}
+
+fn current_dependent_closure(
+    model: &KnowledgeModel,
+    direct: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut closure = direct.clone();
+    let mut queue = VecDeque::from_iter(direct.iter().cloned());
+    while let Some(id) = queue.pop_front() {
+        if let Ok(requirement) = requirement_by_id(model, &id) {
+            for dependent in requirement
+                .required_by
+                .iter()
+                .chain(&requirement.refined_by)
+            {
+                if closure.insert(dependent.clone()) {
+                    queue.push_back(dependent.clone());
+                }
+            }
+        }
+    }
+    closure
+}
+
 fn requirement_identity(requirement: &RequirementObject) -> Value {
     json!({
         "semantic_id": requirement.semantic_id,
@@ -623,6 +1522,7 @@ fn direct_relationships(requirement: &RequirementObject) -> Value {
         "requires": requirement.requires,
         "refines": requirement.refines,
         "required_by": requirement.required_by,
+        "constrained_by": requirement.constrained_by,
         "refined_by": requirement.refined_by,
     })
 }
@@ -833,6 +1733,30 @@ fn context_packet_value(
             })
         })
         .collect::<Vec<_>>();
+    let architecture_invariants = model
+        .architecture
+        .invariants
+        .iter()
+        .filter(|invariant| {
+            invariant.lifecycle == "active"
+                && invariant
+                    .constrains
+                    .iter()
+                    .any(|target| component.contains(target))
+        })
+        .collect::<Vec<_>>();
+    let architecture_ids = architecture_invariants
+        .iter()
+        .map(|invariant| invariant.semantic_id.as_str())
+        .collect::<BTreeSet<_>>();
+    let architecture_constraints = model
+        .constraints
+        .iter()
+        .filter(|constraint| {
+            architecture_ids.contains(constraint.source.as_str())
+                && component.contains(&constraint.target)
+        })
+        .collect::<Vec<_>>();
     let review_facts = selected
         .iter()
         .map(|id| (id.clone(), reviewed_fact(reviewed, id)))
@@ -842,6 +1766,8 @@ fn context_packet_value(
         "schema": if audit { AUDIT_CONTEXT_SCHEMA } else { CONTEXT_SCHEMA },
         "requirements": requirements,
         "relationships": relationships,
+        "architecture_invariants": architecture_invariants,
+        "architecture_constraints": architecture_constraints,
         "reviewed": review_facts,
         "references": references,
         "reading_order": reading_order,
@@ -2415,16 +3341,21 @@ pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Resul
 
 fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
     let mut refs = Vec::new();
+    let architecture_paths = architecture_catalog(app)?
+        .documents
+        .into_iter()
+        .map(|document| document.source_path)
+        .collect::<BTreeSet<_>>();
     for (directory, rust) in [("docs", false), ("crates", true), ("xtask", true)] {
         let path = app.root.join(directory);
         if path.exists() {
-            scan_tree(&app.root, &path, rust, app, &mut refs)?;
+            scan_tree(&app.root, &path, rust, app, &architecture_paths, &mut refs)?;
         }
     }
     for relative in ["docs/curriculum.toml", "verification/manifest.toml"] {
         let path = app.root.join(relative);
         if path.is_file() {
-            scan_file(&app.root, &path, false, app, &mut refs)?;
+            scan_file(&app.root, &path, false, app, &architecture_paths, &mut refs)?;
         }
     }
     refs.sort_by(|a, b| (&a.id, &a.kind, &a.path, a.line).cmp(&(&b.id, &b.kind, &b.path, b.line)));
@@ -2436,10 +3367,11 @@ fn scan_tree(
     path: &Path,
     rust: bool,
     app: &App,
+    architecture_paths: &BTreeSet<String>,
     refs: &mut Vec<ScanRef>,
 ) -> Result<(), AppError> {
     let relative = rel(root, path);
-    if excluded(&relative) {
+    if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
     let mut entries = entries(path, "reference_scan_failed")?;
@@ -2452,12 +3384,12 @@ fn scan_tree(
             return Err(AppError::new("reference_symlink", rel(root, &entry.path())));
         }
         if kind.is_dir() {
-            scan_tree(root, &entry.path(), rust, app, refs)?;
+            scan_tree(root, &entry.path(), rust, app, architecture_paths, refs)?;
         } else if kind.is_file()
             && entry.path().extension().and_then(|x| x.to_str())
                 == Some(if rust { "rs" } else { "md" })
         {
-            scan_file(root, &entry.path(), rust, app, refs)?;
+            scan_file(root, &entry.path(), rust, app, architecture_paths, refs)?;
         }
     }
     Ok(())
@@ -2468,10 +3400,11 @@ fn scan_file(
     path: &Path,
     rust: bool,
     app: &App,
+    architecture_paths: &BTreeSet<String>,
     refs: &mut Vec<ScanRef>,
 ) -> Result<(), AppError> {
     let relative = rel(root, path);
-    if excluded(&relative) {
+    if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
     let text = read_bounded(path, &relative, app)?;
@@ -2653,6 +3586,7 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("dwv-knowledge-{name}-{nonce}"));
         fs::create_dir_all(root.join("openspec/specs/cap")).unwrap();
+        write_roadmap(&root);
         let app = App::new(root.clone());
         (root, app)
     }
@@ -2713,14 +3647,729 @@ mod tests {
     }
 
     fn write_roadmap(root: &Path) {
-        fs::create_dir_all(root.join("docs/architecture")).unwrap();
+        write_architecture(
+            root,
+            "diskweave-architecture-roadmap-v0.8.md",
+            "arch.test.v0.8",
+            "v0.8",
+            "active",
+            None,
+            "",
+        );
+    }
+
+    fn write_architecture(
+        root: &Path,
+        relative: &str,
+        id: &str,
+        revision: &str,
+        status: &str,
+        supersedes: Option<&str>,
+        body: &str,
+    ) {
+        let path = root.join("docs/architecture").join(relative);
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let predecessor = supersedes
+            .map(|value| format!("supersedes: {value}\n"))
+            .unwrap_or_default();
+        let marker = if status == "active" {
+            format!("{ACTIVE_ROADMAP_MARKER}\n")
+        } else {
+            String::new()
+        };
         fs::write(
-            root.join("docs/architecture/diskweave-architecture-roadmap-v0.8.md"),
-            "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n",
+            path,
+            format!(
+                "---\nid: {id}\nseries: arch.test.series\nkind: architecture-roadmap\nrevision: {revision}\nstatus: {status}\nscope: whole-system\n{predecessor}---\n{marker}# Architecture\n\n{body}\n"
+            ),
         )
         .unwrap();
     }
 
+    fn replace_architectures(
+        root: &Path,
+        documents: &[(&str, &str, &str, &str, Option<&str>, &str)],
+    ) {
+        fs::remove_dir_all(root.join("docs/architecture")).unwrap();
+        for (path, id, revision, status, supersedes, body) in documents {
+            write_architecture(root, path, id, revision, status, *supersedes, body);
+        }
+    }
+
+    fn semantic_fingerprints(app: &App) -> BTreeMap<String, (String, String)> {
+        objects(app)
+            .unwrap()
+            .into_iter()
+            .map(|object| {
+                (
+                    object.semantic_id,
+                    (
+                        object.local_semantic_fingerprint,
+                        object.effective_semantic_fingerprint,
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn real_retained_architecture_catalog_is_valid_and_history_is_empty() {
+        let app = App::new(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .unwrap()
+                .to_owned(),
+        );
+        let catalog = architecture_catalog(&app).unwrap();
+        assert_eq!(catalog.active_document_id, "arch.diskweave.v0.8");
+        assert_eq!(
+            catalog
+                .documents
+                .iter()
+                .map(|document| (
+                    document.id.as_str(),
+                    document.status.as_str(),
+                    document.supersedes.as_deref()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("arch.diskweave.v0.6", "superseded", None),
+                (
+                    "arch.diskweave.v0.7",
+                    "superseded",
+                    Some("arch.diskweave.v0.6")
+                ),
+                ("arch.diskweave.v0.8", "active", Some("arch.diskweave.v0.7")),
+            ]
+        );
+        assert!(catalog.invariants.is_empty());
+        let history = architecture_history(&app, "arch.diskweave.v0.7".to_owned()).unwrap();
+        assert_eq!(history["authority"], "historical");
+        assert_eq!(history["document"]["status"], "superseded");
+        assert_eq!(history["invariants"], json!([]));
+        assert_eq!(history["constraints"], json!([]));
+    }
+
+    #[test]
+    fn unmarked_predecessor_changes_do_not_change_current_semantics() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let copy = std::env::temp_dir().join(format!("dwv-history-isolation-{nonce}"));
+        fs::create_dir_all(copy.join("openspec/specs/cap")).unwrap();
+        fs::create_dir_all(copy.join("docs/architecture/archive")).unwrap();
+        fs::create_dir_all(copy.join("docs")).unwrap();
+        fs::write(
+            copy.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_architecture(
+            &copy,
+            "active.md",
+            "arch.test.v2",
+            "v2",
+            "active",
+            Some("arch.test.v1"),
+            "",
+        );
+        write_architecture(
+            &copy,
+            "archive/v1.md",
+            "arch.test.v1",
+            "v1",
+            "superseded",
+            None,
+            "Historical prose without invariant markers.",
+        );
+        let copy_app = App::new(copy.clone());
+        let copy_before = semantic_fingerprints(&copy_app);
+        fs::write(
+            copy.join("docs/architecture/archive/v1.md"),
+            "---\nid: arch.test.v1\nseries: arch.test.series\nkind: architecture-roadmap\nrevision: v1\nstatus: superseded\nscope: whole-system\n---\n# Architecture\n\nChanged historical prose without invariant markers.\n",
+        )
+        .unwrap();
+        assert_eq!(copy_before, semantic_fingerprints(&copy_app));
+        fs::remove_dir_all(copy).unwrap();
+    }
+
+    #[test]
+    fn active_invariant_context_inverse_and_review_propagation_are_exact() {
+        let (root, app) = fixture("active-architecture");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                ("req.cap.a", &[], "A SHALL own the policy."),
+                ("req.cap.b", &[("requires", "req.cap.a")], "B SHALL use A."),
+                ("req.cap.c", &[], "C SHALL remain unrelated."),
+            ]),
+        )
+        .unwrap();
+        let invariant = "### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.a -->\n\nThe architecture SHALL preserve boundary one.";
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v1", "v1", "active", None, invariant)],
+        );
+        let before = objects(&app).unwrap();
+        write_reviewed(&root, &before);
+        let a = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        let b = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.b")
+            .unwrap();
+        let c = before
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.c")
+            .unwrap();
+        assert_eq!(a.constrained_by, vec!["arch.test.boundary"]);
+        let packet = context(&app, vec!["req.cap.a".to_owned()]).unwrap();
+        assert_eq!(
+            packet["architecture_invariants"][0]["semantic_id"],
+            "arch.test.boundary"
+        );
+        assert_eq!(packet["architecture_constraints"][0]["target"], "req.cap.a");
+        let before_fingerprints = BTreeMap::from([
+            ("a", a.effective_semantic_fingerprint.clone()),
+            ("b", b.effective_semantic_fingerprint.clone()),
+            ("c", c.effective_semantic_fingerprint.clone()),
+        ]);
+        let changed = invariant.replace("boundary one", "boundary two");
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v1", "v1", "active", None, &changed)],
+        );
+        let after = objects(&app).unwrap();
+        let after_a = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.a")
+            .unwrap();
+        let after_b = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.b")
+            .unwrap();
+        let after_c = after
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.c")
+            .unwrap();
+        assert_ne!(
+            before_fingerprints["a"],
+            after_a.effective_semantic_fingerprint
+        );
+        assert_ne!(
+            before_fingerprints["b"],
+            after_b.effective_semantic_fingerprint
+        );
+        assert_eq!(
+            before_fingerprints["c"],
+            after_c.effective_semantic_fingerprint
+        );
+        let error = readiness(&app).unwrap_err();
+        assert_eq!(error.code, "knowledge_not_ready");
+        let details = error.details.unwrap();
+        let stale = details["diagnostics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|diagnostic| diagnostic["gate"] == "semantic-prerequisite-changed")
+            .map(|diagnostic| diagnostic["semantic_id"].as_str().unwrap())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(stale, BTreeSet::from(["req.cap.a", "req.cap.b"]));
+    }
+
+    #[test]
+    fn marked_active_invariant_survives_clean_room_input_reconstruction() {
+        let (root, app) = fixture("active-clean-room-source");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL preserve the current boundary."),
+        )
+        .unwrap();
+        let unconstrained_effective = objects(&app).unwrap()[0]
+            .effective_semantic_fingerprint
+            .clone();
+        replace_architectures(
+            &root,
+            &[
+                (
+                    "active.md",
+                    "arch.test.v2",
+                    "v2",
+                    "active",
+                    Some("arch.test.v1"),
+                    "### Invariant: Current boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.one -->\n\nThe architecture SHALL preserve the active boundary.",
+                ),
+                (
+                    "candidate.md",
+                    "arch.test.v3",
+                    "v3",
+                    "candidate",
+                    Some("arch.test.v2"),
+                    "### Invariant: Candidate boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.one -->\n\nThe candidate architecture SHALL preserve a proposed boundary.",
+                ),
+                (
+                    "archive/v1.md",
+                    "arch.test.v1",
+                    "v1",
+                    "superseded",
+                    None,
+                    "### Invariant: Historical boundary\n<!-- dwv:arch-invariant arch.test.old-boundary -->\n<!-- dwv:constrains req.cap.one -->\n\nThe historical architecture SHALL preserve the former boundary.",
+                ),
+            ],
+        );
+        let source_objects = objects(&app).unwrap();
+        let source_requirement = source_objects
+            .iter()
+            .find(|object| object.semantic_id == "req.cap.one")
+            .unwrap();
+        assert_ne!(
+            source_requirement.effective_semantic_fingerprint,
+            unconstrained_effective
+        );
+        assert_eq!(source_requirement.constrained_by, ["arch.test.boundary"]);
+        write_reviewed(&root, &source_objects);
+        let source_context = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
+        let source_readiness = readiness(&app).unwrap();
+        assert_eq!(
+            source_context["architecture_invariants"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            source_context["architecture_invariants"][0]["semantic_id"],
+            "arch.test.boundary"
+        );
+        assert!(
+            source_context["architecture_invariants"][0]["local_semantic_fingerprint"]
+                .as_str()
+                .is_some_and(|fingerprint| !fingerprint.is_empty())
+        );
+        assert_eq!(
+            source_context["architecture_constraints"],
+            json!([{"source": "arch.test.boundary", "target": "req.cap.one"}])
+        );
+        assert_eq!(source_context["references"]["documentation"], json!([]));
+        assert_eq!(source_readiness["ready"], true);
+
+        let reconstructed = root.with_extension("reconstructed");
+        fs::create_dir_all(&reconstructed).unwrap();
+        crate::copy_clean_room_inputs(&root, &reconstructed).unwrap();
+        assert!(reconstructed.join("docs/architecture/active.md").is_file());
+        assert!(
+            !reconstructed
+                .join("docs/architecture/candidate.md")
+                .exists()
+        );
+        assert!(
+            !reconstructed
+                .join("docs/architecture/archive/v1.md")
+                .exists()
+        );
+
+        let reconstructed_app = App::new(reconstructed.clone());
+        assert_eq!(objects(&reconstructed_app).unwrap(), source_objects);
+        assert_eq!(
+            context(&reconstructed_app, vec!["req.cap.one".to_owned()]).unwrap(),
+            source_context
+        );
+        assert_eq!(readiness(&reconstructed_app).unwrap(), source_readiness);
+        let reconstructed_catalog = architecture_catalog(&reconstructed_app).unwrap();
+        assert_eq!(reconstructed_catalog.documents.len(), 1);
+        assert_eq!(reconstructed_catalog.active_document_id, "arch.test.v2");
+        assert_eq!(
+            architecture_candidate(&reconstructed_app, "arch.test.v3".to_owned())
+                .unwrap_err()
+                .code,
+            "unknown_architecture_document"
+        );
+        assert_eq!(
+            architecture_history(&reconstructed_app, "arch.test.v1".to_owned())
+                .unwrap_err()
+                .code,
+            "unknown_architecture_document"
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(reconstructed).unwrap();
+    }
+
+    #[test]
+    fn active_context_obeys_packet_bound_without_partial_units() {
+        let (root, mut app) = fixture("active-context-bound");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        replace_architectures(
+            &root,
+            &[(
+                "active.md",
+                "arch.test.v1",
+                "v1",
+                "active",
+                None,
+                "### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.one -->\n\nThe architecture SHALL preserve a deliberately long boundary body.",
+            )],
+        );
+        write_reviewed(&root, &objects(&app).unwrap());
+        app.bounds.max_context_bytes = 100;
+        assert_eq!(
+            context(&app, vec!["req.cap.one".to_owned()])
+                .unwrap_err()
+                .code,
+            "context_bound_exceeded"
+        );
+    }
+
+    #[test]
+    fn candidate_preview_is_non_authoritative_and_current_output_is_stable() {
+        let (root, app) = fixture("candidate-preview");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                ("req.cap.a", &[], "A SHALL own policy."),
+                (
+                    "req.cap.b",
+                    &[("requires", "req.cap.a")],
+                    "B SHALL depend on A.",
+                ),
+            ]),
+        )
+        .unwrap();
+        let active = "### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.a -->\n\nThe architecture SHALL preserve one boundary.";
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v1", "v1", "active", None, active)],
+        );
+        let current_before = semantic_fingerprints(&app);
+        write_reviewed(&root, &objects(&app).unwrap());
+        let candidate = "### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n<!-- dwv:constrains req.cap.b -->\n\nThe architecture SHALL preserve a changed boundary.\n\n### Invariant: Unlinked\n<!-- dwv:arch-invariant arch.test.unlinked -->\n\nThe architecture SHALL preserve an unlinked boundary.";
+        write_architecture(
+            &root,
+            "candidate.md",
+            "arch.test.v2",
+            "v2",
+            "candidate",
+            Some("arch.test.v1"),
+            candidate,
+        );
+        let readiness_before = readiness(&app).unwrap();
+        assert_eq!(readiness_before["ready"], true);
+        let current_with_candidate = semantic_fingerprints(&app);
+        let packet = context(&app, vec!["req.cap.a".to_owned()]).unwrap();
+        assert!(
+            packet["architecture_invariants"][0]["body"]
+                .as_str()
+                .unwrap()
+                .contains("preserve one boundary")
+        );
+        assert_eq!(readiness(&app).unwrap(), readiness_before);
+        assert_eq!(current_before, current_with_candidate);
+        let preview = architecture_candidate(&app, "arch.test.v2".to_owned()).unwrap();
+        assert_eq!(preview["authority"], "non-authoritative-candidate");
+        assert_eq!(
+            preview["comparisons"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|entry| (
+                    entry["semantic_id"].as_str().unwrap(),
+                    entry["classification"].as_str().unwrap()
+                ))
+                .collect::<Vec<_>>(),
+            vec![
+                ("arch.test.boundary", "changed"),
+                ("arch.test.unlinked", "added"),
+            ]
+        );
+        assert_eq!(
+            preview["dependent_closure"],
+            json!(["req.cap.a", "req.cap.b"])
+        );
+        fs::remove_file(root.join("docs/architecture/candidate.md")).unwrap();
+        assert_eq!(current_before, semantic_fingerprints(&app));
+    }
+
+    #[test]
+    fn invariant_fingerprint_ignores_format_location_and_lifecycle() {
+        let (root, app) = fixture("invariant-fingerprint");
+        let first = "### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n\nThe architecture SHALL preserve one boundary.";
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v1", "v1", "active", None, first)],
+        );
+        let initial = architecture_catalog(&app).unwrap().invariants[0]
+            .local_semantic_fingerprint
+            .clone();
+        let moved = "## Context\n\n#### Invariant: Boundary\n<!-- dwv:arch-invariant arch.test.boundary -->\n\nThe architecture SHALL preserve one\nboundary.";
+        replace_architectures(
+            &root,
+            &[
+                (
+                    "archive/v1.md",
+                    "arch.test.v1",
+                    "v1",
+                    "superseded",
+                    None,
+                    first,
+                ),
+                (
+                    "candidate.md",
+                    "arch.test.v2",
+                    "v2",
+                    "candidate",
+                    Some("arch.test.v1"),
+                    moved,
+                ),
+                (
+                    "active.md",
+                    "arch.test.v3",
+                    "v3",
+                    "active",
+                    Some("arch.test.v2"),
+                    "",
+                ),
+            ],
+        );
+        let catalog = architecture_catalog(&app).unwrap();
+        let moved_fingerprint = catalog
+            .invariants
+            .iter()
+            .find(|invariant| invariant.document_id == "arch.test.v2")
+            .unwrap()
+            .local_semantic_fingerprint
+            .clone();
+        assert_eq!(initial, moved_fingerprint);
+        let changed = moved.replace("one", "another");
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v2", "v2", "active", None, &changed)],
+        );
+        assert_ne!(
+            initial,
+            architecture_catalog(&app).unwrap().invariants[0].local_semantic_fingerprint
+        );
+    }
+
+    #[test]
+    fn candidate_unchanged_classification_includes_zero_edge_identity() {
+        let (root, app) = fixture("candidate-unchanged");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        let invariant = "### Invariant: Unlinked\n<!-- dwv:arch-invariant arch.test.unlinked -->\n\nThe architecture SHALL preserve an unlinked boundary.";
+        replace_architectures(
+            &root,
+            &[("active.md", "arch.test.v1", "v1", "active", None, invariant)],
+        );
+        write_architecture(
+            &root,
+            "candidate.md",
+            "arch.test.v2",
+            "v2",
+            "candidate",
+            Some("arch.test.v1"),
+            invariant,
+        );
+        let preview = architecture_candidate(&app, "arch.test.v2".to_owned()).unwrap();
+        assert_eq!(preview["comparisons"][0]["classification"], "unchanged");
+        assert_eq!(preview["comparisons"][0]["added_constraints"], json!([]));
+        assert_eq!(preview["comparisons"][0]["removed_constraints"], json!([]));
+        assert_eq!(preview["directly_affected_requirements"], json!([]));
+    }
+
+    #[test]
+    fn candidate_preview_obeys_packet_bound_without_partial_units() {
+        let (root, mut app) = fixture("candidate-bound");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_architecture(
+            &root,
+            "candidate.md",
+            "arch.test.v2",
+            "v2",
+            "candidate",
+            Some("arch.test.v0.8"),
+            "### Invariant: Candidate\n<!-- dwv:arch-invariant arch.test.candidate -->\n\nCandidate policy.",
+        );
+        app.bounds.max_context_bytes = 100;
+        assert_eq!(
+            architecture_candidate(&app, "arch.test.v2".to_owned())
+                .unwrap_err()
+                .code,
+            "architecture_candidate_bound_exceeded"
+        );
+    }
+
+    #[test]
+    fn lineage_preserves_replacement_split_and_merge_edges() {
+        let (root, app) = fixture("lineage");
+        replace_architectures(
+            &root,
+            &[
+                (
+                    "archive/v1.md",
+                    "arch.test.v1",
+                    "v1",
+                    "superseded",
+                    None,
+                    "### Invariant: Old\n<!-- dwv:arch-invariant arch.test.old -->\n\nOld policy.",
+                ),
+                (
+                    "archive/v2.md",
+                    "arch.test.v2",
+                    "v2",
+                    "superseded",
+                    Some("arch.test.v1"),
+                    "### Invariant: Left\n<!-- dwv:arch-invariant arch.test.left -->\n<!-- dwv:arch-supersedes arch.test.old -->\n\nLeft policy.\n\n### Invariant: Right\n<!-- dwv:arch-invariant arch.test.right -->\n<!-- dwv:arch-supersedes arch.test.old -->\n\nRight policy.",
+                ),
+                (
+                    "candidate.md",
+                    "arch.test.v3",
+                    "v3",
+                    "candidate",
+                    Some("arch.test.v2"),
+                    "### Invariant: Merged\n<!-- dwv:arch-invariant arch.test.merged -->\n<!-- dwv:arch-supersedes arch.test.left -->\n<!-- dwv:arch-supersedes arch.test.right -->\n\nMerged policy.",
+                ),
+                (
+                    "active.md",
+                    "arch.test.v4",
+                    "v4",
+                    "active",
+                    Some("arch.test.v3"),
+                    "",
+                ),
+            ],
+        );
+        let catalog = architecture_catalog(&app).unwrap();
+        validate_architecture_semantics(&mut objects(&app).unwrap(), &catalog).unwrap();
+        let old = catalog
+            .invariants
+            .iter()
+            .find(|invariant| invariant.semantic_id == "arch.test.old")
+            .unwrap();
+        assert_eq!(old.superseded_by, vec!["arch.test.left", "arch.test.right"]);
+        let merged = catalog
+            .invariants
+            .iter()
+            .find(|invariant| invariant.semantic_id == "arch.test.merged")
+            .unwrap();
+        assert_eq!(merged.supersedes, vec!["arch.test.left", "arch.test.right"]);
+        let history = architecture_history(&app, "arch.test.v2".to_owned()).unwrap();
+        assert_eq!(history["authority"], "historical");
+        assert_eq!(history["document"]["status"], "superseded");
+        assert_eq!(
+            history["invariants"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|invariant| invariant["semantic_id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["arch.test.left", "arch.test.right"]
+        );
+        assert_eq!(
+            history["invariants"][0]["superseded_by"],
+            json!(["arch.test.merged"])
+        );
+    }
+
+    #[test]
+    fn malformed_lifecycle_duplicate_and_dangling_constraints_fail() {
+        let (root, app) = fixture("architecture-invalid");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_architecture(
+            &root,
+            "candidate.md",
+            "arch.test.v2",
+            "v2",
+            "active",
+            None,
+            "",
+        );
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "active_architecture_selection_invalid"
+        );
+        fs::remove_file(root.join("docs/architecture/candidate.md")).unwrap();
+        replace_architectures(
+            &root,
+            &[(
+                "active.md",
+                "arch.test.v1",
+                "v1",
+                "active",
+                None,
+                "### Invariant: One\n<!-- dwv:arch-invariant arch.test.same -->\n\nOne.\n\n### Invariant: Two\n<!-- dwv:arch-invariant arch.test.same -->\n\nTwo.",
+            )],
+        );
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "architecture_invariant_duplicate"
+        );
+        replace_architectures(
+            &root,
+            &[(
+                "active.md",
+                "arch.test.v1",
+                "v1",
+                "active",
+                None,
+                "### Invariant: One\n<!-- dwv:arch-invariant arch.test.one -->\n<!-- dwv:constrains req.cap.unknown -->\n\nOne.",
+            )],
+        );
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "architecture_constraint_dangling"
+        );
+        replace_architectures(
+            &root,
+            &[(
+                "active.md",
+                "arch.test.v1",
+                "v1",
+                "active",
+                None,
+                "### Invariant: One\n<!-- dwv:arch-invariant arch.test.one -->\n<!-- dwv:constrains req.cap.one -->\n<!-- dwv:constrains req.cap.one -->\n\nOne.",
+            )],
+        );
+        assert_eq!(
+            objects(&app).unwrap_err().code,
+            "architecture_constraint_duplicate"
+        );
+    }
+
+    #[test]
+    fn production_discovery_ignores_architecture_text_outside_its_root() {
+        let (root, app) = fixture("architecture-root-isolation");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        fs::write(
+            root.join("fixture.md"),
+            "---\nid: arch.test.fake\nseries: arch.test.series\nkind: architecture-roadmap\nrevision: fake\nstatus: active\nscope: whole-system\n---\n<!-- dwv:active-architecture-roadmap -->\n### Invariant: Fake\n<!-- dwv:arch-invariant arch.test.fake-invariant -->",
+        )
+        .unwrap();
+        let catalog = architecture_catalog(&app).unwrap();
+        assert_eq!(catalog.documents.len(), 1);
+        assert!(catalog.invariants.is_empty());
+    }
     #[test]
     fn malformed_missing_duplicate_ids_rejected() {
         assert!(validate_semantic_id("").is_err());
