@@ -1,6 +1,6 @@
 ---
 name: diskweave-knowledge
-description: Inspect DiskWeave requirement ownership, evidence, explanations, and readiness before changing correctness-sensitive behavior or documentation.
+description: Use before changing DiskWeave product code, canonical OpenSpecs, verification evidence, or maintained documentation. Inspect requirement ownership, evidence, explanations, and readiness first.
 ---
 
 # DiskWeave knowledge workflow

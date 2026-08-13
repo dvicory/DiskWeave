@@ -1,3 +1,6 @@
+# Local agent working state; see AGENTS.md.
+/work
+
 # Rust build artifacts
 /target/
 **/target/

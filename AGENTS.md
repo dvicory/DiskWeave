@@ -1,23 +1,23 @@
 DiskWeave is correctness-first storage software. Prefer simple, explicit designs over clever abstractions.
 
-Write technical prose using ISO 24495-1 plain-language principles and Zinsser's principles of simplicity and economy. Optimize for the intended reader's ability to find, understand, and use the information. Preserve defined DiskWeave terminology and complete semantic distinctions; clarity must never remove correctness-relevant conditions, authority, uncertainty, failure behavior, or claim boundaries.
+Write technical prose using ISO 24495-1 plain-language principles and Zinsser's principles of simplicity and economy. Optimize for the reader without removing DiskWeave terminology or correctness-relevant conditions, authority, uncertainty, failure behavior, or claim boundaries.
 
-Current `openspec/specs/*/spec.md` files own required product behavior. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing without silently overriding current specs; implementation and historical artifacts do not silently override them either. Surface contradictions, missing invariants, and consequential ambiguity. OpenSpec-specific naming and authoring rules live in `openspec/config.yaml`.
+Current `openspec/specs/*/spec.md` files own required product behavior. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
 
-During early development, do not preserve backward compatibility at the expense of a better design. Persistent formats and schemas may change freely, but changes must be coherent across readers, writers, recovery logic, simulators, fixtures, and tests. Prefer clean breaks over compatibility scaffolding until the project explicitly declares a stability boundary.
+Persistent formats and schemas may change to satisfy current canonical semantics. Do not preserve an obsolete format merely for compatibility or silently reinterpret persisted state. Define needed migration, rejection, or reset behavior and update affected readers, writers, recovery paths, fixtures, and tests.
 
-Prefer explicit, typed effects at correctness boundaries and deterministic/testable interpreters where useful. Do not introduce a general effect-system framework unless it clearly improves the design without obscuring DiskWeave-specific I/O, durability, cancellation, or ownership semantics.
+Proceed on reversible implementation choices. Human approval is required for destructive or irreversible changes, operator-visible recovery behavior changes, or changes to an existing compatibility guarantee. Surface choices that materially affect architecture or correctness semantics.
 
-Keep correctness-boundary effects, ownership, durability, and state transitions explicit and testable. Design correctness-critical state machines and I/O/recovery seams so failures, interleavings, and crash points can be exercised deterministically. Do not assume cancellation means rollback, I/O completion means durability, or dropping an async operation means the underlying I/O did not occur.
+Keep correctness-boundary effects, ownership, durability, and state transitions explicit and testable. Prefer typed effects and deterministic interpreters where useful, but do not introduce a general effect-system framework unless it clearly improves the design without obscuring DiskWeave-specific I/O, durability, cancellation, or ownership semantics. Design critical state machines and I/O/recovery seams so failures, interleavings, and crash points can be exercised deterministically. Do not assume cancellation means rollback, I/O completion means durability, or dropping an async operation means the underlying I/O did not occur.
 
-For reversible implementation choices, use good judgment and proceed. Surface choices that materially affect architecture or correctness semantics.
+## Local agent work
 
-## Knowledge workflow
+`work/` is a Git-ignored symlink to persistent local agent state for evidence, experiments, handoffs, and useful intermediate work that does not belong in DiskWeave. Nothing there is semantic authority.
 
-For correctness-sensitive code, canonical specs, verification evidence, or maintained documentation, follow `.agents/skills/diskweave-knowledge/SKILL.md` and run `cargo xtask docs knowledge readiness`.
+Use `jj workspace` for isolated or parallel repository changes. Launch implementation agents from the workspace they own. Do not create independent jj or Git repositories inside DiskWeave workspaces.
 
-## Comments
+## Code and comments
 
-Prefer self-explanatory code and encode constraints in types, structure, assertions, or tests where practical. Comment non-local invariants, lifecycle/order dependencies, ownership or concurrency constraints, external-system semantics, and deliberately non-obvious choices that a future maintainer might otherwise simplify incorrectly.
+Prefer types and structure that make constraints explicit. Use rustdoc for public APIs when types alone do not express behavior needed for correct use. Comment non-local invariants, lifecycle or ordering dependencies, ownership or concurrency constraints, external-system semantics, and non-obvious choices a future maintainer might incorrectly simplify.
