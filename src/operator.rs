@@ -13,9 +13,7 @@ use dwv_recovery::{
     pending_checksum_baseline_extents,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
-use dwv_service::{
-    RebuildSource, ServiceConfig, ServiceError, WritableStartAssessment, assess_writable_start,
-};
+use dwv_service::{RebuildSource, ServiceConfig, ServiceError};
 use dwv_store::{
     ChildOperationId, CompletionDisposition, OperationSlotToken, PersistenceEvidence, StoreId,
     StoreWriteWatermark,
@@ -29,7 +27,7 @@ use serde::Serialize;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
-pub const RESULT_SCHEMA: &str = "dwv.operator.v1";
+pub const RESULT_SCHEMA: &str = "dwv.operator.v2";
 
 type FileRebuildSource = RebuildSource<FileStore>;
 const MAX_EXTENTS: usize = 1_048_576;
@@ -60,6 +58,90 @@ impl Outcome {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum LineageDisposition {
+    Accepted,
+    Ambiguous,
+    Unproved,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct LineageAssessment {
+    pub disposition: LineageDisposition,
+    pub reason: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)] // C0a emits only evidence-proven states; later capabilities may prove the others.
+pub enum CustodyDisposition {
+    ContinuityProved,
+    GapObserved,
+    ContinuityUnproved,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct CustodyAssessment {
+    pub disposition: CustodyDisposition,
+    pub reason: &'static str,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(dead_code)] // C0a conservatively emits not-yet-interpretable without basis evidence.
+pub enum ProtectionBasis {
+    Current,
+    Prior,
+    Unprotected,
+    Indeterminate,
+    NotYetInterpretable,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+pub struct AuthorityRange {
+    pub offset: u64,
+    pub length: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct ProtectionBasisCoverage {
+    pub role: String,
+    pub basis: ProtectionBasis,
+    pub range_count: usize,
+    pub bytes: u64,
+    pub exact_ranges: Vec<AuthorityRange>,
+    pub detail_truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct AuthorityAssessment {
+    pub lineage: LineageAssessment,
+    pub custody: CustodyAssessment,
+    pub protection_basis: Vec<ProtectionBasisCoverage>,
+    pub blocker: &'static str,
+    pub authorization: &'static str,
+}
+impl AuthorityAssessment {
+    const NON_AUTHORIZATION: &'static str = "observation authorizes no publication, payload mutation, repair, reconstruction, protection-epoch transition, currentization, historical continuity, or destructive recovery action";
+
+    fn unassessed() -> Self {
+        Self {
+            lineage: LineageAssessment {
+                disposition: LineageDisposition::Unproved,
+                reason: "lineage authority was not assessed",
+            },
+            custody: CustodyAssessment {
+                disposition: CustodyDisposition::ContinuityUnproved,
+                reason: "custody continuity was not assessed",
+            },
+            protection_basis: Vec::new(),
+            blocker: "authority was not assessed",
+            authorization: Self::NON_AUTHORIZATION,
+        }
+    }
+}
+
 /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
 #[derive(Clone, Debug, Serialize)]
 pub struct OperatorResult {
@@ -69,6 +151,7 @@ pub struct OperatorResult {
     pub outcome: Outcome,
     pub reason_code: &'static str,
     pub reason: String,
+    pub authority: AuthorityAssessment,
     pub recovery: RecoveryAssessment,
     pub topology: Option<TopologyAssessment>,
     pub members: Vec<MemberAssessment>,
@@ -99,6 +182,7 @@ impl OperatorResult {
             outcome,
             reason_code,
             reason: reason.into(),
+            authority: AuthorityAssessment::unassessed(),
             recovery: RecoveryAssessment::Unavailable {
                 reason: "unassessed".into(),
             },
@@ -291,6 +375,121 @@ pub fn operation_error_result(
     result
 }
 
+const MAX_AUTHORITY_DETAIL_RANGES: usize = 64;
+
+fn authority_assessment(
+    policy: &ArrayPolicy,
+    recovery: &RecoveryInspection,
+    members: &[ObservedMember],
+    topology_matches: bool,
+) -> AuthorityAssessment {
+    let lineage = if !matches!(recovery, RecoveryInspection::Supported(_)) || !topology_matches {
+        LineageAssessment {
+            disposition: LineageDisposition::Unproved,
+            reason: "independent recovery and topology evidence is unavailable or mismatched",
+        }
+    } else if members
+        .iter()
+        .any(|member| member.status == "ambiguous-clone")
+    {
+        LineageAssessment {
+            disposition: LineageDisposition::Ambiguous,
+            reason: "multiple policy entries resolve to one observed member identity",
+        }
+    } else if members.iter().all(|member| member.status == "recognized") {
+        LineageAssessment {
+            disposition: LineageDisposition::Accepted,
+            reason: "recovery topology and every current member identity agree",
+        }
+    } else {
+        LineageAssessment {
+            disposition: LineageDisposition::Unproved,
+            reason: "one or more required member identities are missing or changed",
+        }
+    };
+
+    let custody = CustodyAssessment {
+        disposition: CustodyDisposition::ContinuityUnproved,
+        reason: if matches!(recovery, RecoveryInspection::Supported(_)) {
+            "the raw-member observation has no certified continuity evidence for the interval"
+        } else {
+            "recovery evidence cannot establish custody continuity"
+        },
+    };
+
+    let protection_basis = policy
+        .members
+        .iter()
+        .filter(|member| member.role == "parity")
+        .map(|member| {
+            coverage_for_ranges(
+                member.role.clone(),
+                ProtectionBasis::NotYetInterpretable,
+                &[AuthorityRange {
+                    offset: 0,
+                    length: policy.protected_length,
+                }],
+            )
+            .expect("policy protected length must be representable")
+        })
+        .collect();
+
+    AuthorityAssessment {
+        lineage,
+        custody,
+        protection_basis,
+        blocker: "no canonical evidence names a current, prior, or unprotected parity basis for these ranges",
+        authorization: AuthorityAssessment::NON_AUTHORIZATION,
+    }
+}
+
+fn coverage_for_ranges(
+    role: String,
+    basis: ProtectionBasis,
+    ranges: &[AuthorityRange],
+) -> Result<ProtectionBasisCoverage, &'static str> {
+    let mut merged: Vec<AuthorityRange> = Vec::new();
+    for range in ranges.iter().copied().filter(|range| range.length != 0) {
+        let end = range
+            .offset
+            .checked_add(range.length)
+            .ok_or("authority range exceeds u64")?;
+        if let Some(previous) = merged.last_mut() {
+            let previous_end = previous
+                .offset
+                .checked_add(previous.length)
+                .ok_or("authority range exceeds u64")?;
+            if previous_end >= range.offset {
+                let merged_end = previous_end.max(end);
+                previous.length = merged_end
+                    .checked_sub(previous.offset)
+                    .ok_or("authority range merge underflow")?;
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+    let bytes = merged.iter().try_fold(0_u64, |total, range| {
+        total
+            .checked_add(range.length)
+            .ok_or("authority coverage exceeds u64")
+    })?;
+    let detail_truncated = merged.len() > MAX_AUTHORITY_DETAIL_RANGES;
+    let exact_ranges = merged
+        .iter()
+        .take(MAX_AUTHORITY_DETAIL_RANGES)
+        .copied()
+        .collect();
+    Ok(ProtectionBasisCoverage {
+        role,
+        basis,
+        range_count: merged.len(),
+        bytes,
+        exact_ranges,
+        detail_truncated,
+    })
+}
+
 /// dwv:req req.operator-recovery.production-assessment-is-observational-and-multidimensional
 pub fn observe(policy: &ArrayPolicy, command: &'static str) -> OperatorResult {
     let recovery = SqliteRecoveryStore::inspect(&policy.recovery_path);
@@ -317,18 +516,16 @@ pub fn observe(policy: &ArrayPolicy, command: &'static str) -> OperatorResult {
     let policy_topology_matches = policy_topology(policy)
         .ok()
         .is_some_and(|expected| topology.as_ref() == Some(&expected));
-    let members_current =
+    let lineage_accepted =
         policy_topology_matches && members.iter().all(|member| member.status == "recognized");
-    let start = assess_writable_start(
-        recovery.manifest().map(|manifest| &manifest.snapshot),
-        members_current,
-    );
+    let authority = authority_assessment(policy, &recovery, &members, policy_topology_matches);
     let mut result = OperatorResult::new(
         command,
         Outcome::Success,
-        "current-array-observed",
-        "observed current array",
+        "array-observed",
+        "observed array without granting stronger authority",
     );
+    result.authority = authority;
     result.recovery = recovery_assessment(&recovery);
     result.topology = topology.as_ref().map(topology_assessment);
     result.members = members.iter().map(member_assessment).collect();
@@ -337,41 +534,17 @@ pub fn observe(policy: &ArrayPolicy, command: &'static str) -> OperatorResult {
         .map(checksum_assessment)
         .unwrap_or(ChecksumAssessment::NotRequired);
     result.publication = publication(policy);
-    result.redundancy = if members_current {
-        topology
-            .as_ref()
-            .map(|topology| {
-                format!(
-                    "{} current parity member(s)",
-                    topology.profile().parity_slots()
-                )
-            })
-            .unwrap_or_else(|| "not-established".into())
+    result.parity = "not-authorized";
+    result.redundancy = "not-established".into();
+    if !matches!(recovery, RecoveryInspection::Supported(_)) {
+        result.start = "recovery-required";
+        result.next_action = "recover";
+    } else if !lineage_accepted {
+        result.start = "member-resolution-required";
+        result.next_action = "members";
     } else {
-        "not-established".into()
-    };
-    match start {
-        WritableStartAssessment::Available => {
-            result.start = "read-write-available";
-            result.next_action = "start";
-        }
-        WritableStartAssessment::RecoveryUnavailable
-        | WritableStartAssessment::RecoveryRequired => {
-            result.start = "recovery-required";
-            result.next_action = "recover";
-        }
-        WritableStartAssessment::MembersUnavailable => {
-            result.start = "member-resolution-required";
-            result.next_action = "members";
-        }
-        WritableStartAssessment::BaselineRequired => {
-            result.start = "baseline-required";
-            result.next_action = "baseline";
-        }
-        WritableStartAssessment::BaselineInvalid => {
-            result.start = "baseline-invalid";
-            result.next_action = "inspect";
-        }
+        result.start = "authority-assessment-required";
+        result.next_action = "reconcile-authority";
     }
     if matches!(result.publication, PublicationAssessment::Published { .. }) {
         result.lifecycle = "online";
@@ -497,15 +670,19 @@ pub fn recover_preview(policy: &ArrayPolicy) -> Result<OperatorResult, OperatorE
     let recovery = SqliteRecoveryStore::inspect(&policy.recovery_path);
     let recognized = usable_topology_from_members(policy)?;
     let (case, missing) = match &recovery {
-        RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable if recognized => (
-            MetadataLossCase::AllMetadataAllDataPresent,
-            vec![
-                "explicit new array lineage".into(),
-                "separate parity target".into(),
-                "verified parity rebuild and checksum baseline".into(),
-            ],
-        ),
-        RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable => (
+        RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable { .. }
+            if recognized =>
+        {
+            (
+                MetadataLossCase::AllMetadataAllDataPresent,
+                vec![
+                    "explicit new array lineage".into(),
+                    "separate parity target".into(),
+                    "verified parity rebuild and checksum baseline".into(),
+                ],
+            )
+        }
+        RecoveryInspection::Absent | RecoveryInspection::CorruptOrUnreadable { .. } => (
             MetadataLossCase::TopologyAmbiguous,
             vec!["unambiguous independently observed member identity and topology evidence".into()],
         ),
@@ -1225,18 +1402,18 @@ fn recovery_assessment(inspection: &RecoveryInspection) -> RecoveryAssessment {
             generation: manifest.snapshot.generation.0,
             topology_epoch: manifest.snapshot.topology_epoch.0,
         },
-        RecoveryInspection::CorruptOrUnreadable => RecoveryAssessment::CorruptOrUnreadable,
-        RecoveryInspection::Unsupported { layer, version } => RecoveryAssessment::Unsupported {
+        RecoveryInspection::CorruptOrUnreadable { .. } => RecoveryAssessment::CorruptOrUnreadable,
+        RecoveryInspection::Unsupported { layer, version, .. } => RecoveryAssessment::Unsupported {
             layer: format!("{layer:?}"),
             version: *version,
         },
-        RecoveryInspection::MigrationRequired { layer, from, to } => {
-            RecoveryAssessment::MigrationRequired {
-                layer: format!("{layer:?}"),
-                from: *from,
-                to: *to,
-            }
-        }
+        RecoveryInspection::MigrationRequired {
+            layer, from, to, ..
+        } => RecoveryAssessment::MigrationRequired {
+            layer: format!("{layer:?}"),
+            from: *from,
+            to: *to,
+        },
         RecoveryInspection::ReconciliationRequired => RecoveryAssessment::ReconciliationRequired,
     }
 }
@@ -1593,5 +1770,57 @@ mod tests {
             )),
             OperatorError::Failed(_)
         ));
+    }
+    #[test]
+    fn authority_coverage_merges_ranges_and_checks_totals() {
+        let coverage = coverage_for_ranges(
+            "parity".into(),
+            ProtectionBasis::Current,
+            &[
+                AuthorityRange {
+                    offset: 0,
+                    length: 4,
+                },
+                AuthorityRange {
+                    offset: 4,
+                    length: 8,
+                },
+                AuthorityRange {
+                    offset: 32,
+                    length: 8,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(coverage.range_count, 2);
+        assert_eq!(coverage.bytes, 20);
+        assert_eq!(
+            coverage.exact_ranges,
+            vec![
+                AuthorityRange {
+                    offset: 0,
+                    length: 12,
+                },
+                AuthorityRange {
+                    offset: 32,
+                    length: 8,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn authority_coverage_bounds_exception_detail() {
+        let ranges: Vec<_> = (0..MAX_AUTHORITY_DETAIL_RANGES + 1)
+            .map(|index| AuthorityRange {
+                offset: (index as u64) * 2,
+                length: 1,
+            })
+            .collect();
+        let coverage =
+            coverage_for_ranges("parity".into(), ProtectionBasis::Indeterminate, &ranges).unwrap();
+        assert_eq!(coverage.range_count, MAX_AUTHORITY_DETAIL_RANGES + 1);
+        assert_eq!(coverage.exact_ranges.len(), MAX_AUTHORITY_DETAIL_RANGES);
+        assert!(coverage.detail_truncated);
     }
 }

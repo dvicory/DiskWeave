@@ -10,15 +10,20 @@ pub enum RecoveryFormatLayer {
 pub enum RecoveryInspection {
     Absent,
     Supported(Box<RecoveryManifest>),
-    CorruptOrUnreadable,
+    CorruptOrUnreadable {
+        storage_version: Option<u64>,
+        semantic_version: Option<u64>,
+    },
     Unsupported {
         layer: RecoveryFormatLayer,
         version: Option<u64>,
+        storage_version: Option<u64>,
     },
     MigrationRequired {
         layer: RecoveryFormatLayer,
         from: u64,
         to: u64,
+        storage_version: Option<u64>,
     },
     ReconciliationRequired,
 }
@@ -28,7 +33,7 @@ impl RecoveryInspection {
         match self {
             Self::Absent => "absent",
             Self::Supported(_) => "supported",
-            Self::CorruptOrUnreadable => "corrupt-or-unreadable",
+            Self::CorruptOrUnreadable { .. } => "corrupt-or-unreadable",
             Self::Unsupported { .. } => "unsupported",
             Self::MigrationRequired { .. } => "migration-required",
             Self::ReconciliationRequired => "reconciliation-required",
@@ -119,7 +124,14 @@ mod tests {
             RecoveryReconciliation::ReconciliationRequired
         );
         assert_eq!(
-            reconcile_uncertain_commit(&prior, &proposed, &RecoveryInspection::CorruptOrUnreadable,),
+            reconcile_uncertain_commit(
+                &prior,
+                &proposed,
+                &RecoveryInspection::CorruptOrUnreadable {
+                    storage_version: None,
+                    semantic_version: None,
+                },
+            ),
             RecoveryReconciliation::ReconciliationRequired
         );
     }

@@ -26,6 +26,8 @@ pub const RECOVERY_SQLITE_SCHEMA_V2: &str =
     include_str!("../migrations/0002_complete_manifest.sql");
 pub const CURRENT_RECOVERY_SQLITE_SCHEMA: u64 = 2;
 pub const MAX_MANIFEST_JSON_BYTES: usize = 16 * 1024 * 1024;
+/// The artifact cap leaves room for SQLite pages and duplicated bounded manifest data.
+pub const MAX_RECOVERY_ARTIFACT_BYTES: u64 = (MAX_MANIFEST_JSON_BYTES as u64) * 4;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqliteJournalMode {
@@ -422,6 +424,26 @@ impl SqlitePrototype {
                 storage_schema,
             ));
         }
+        let manifest_length_output = self.run_with(
+            "SELECT length(CAST(manifest_json AS BLOB)) FROM recovery_state WHERE singleton=1;\n",
+            read_only,
+        )?;
+        let manifest_length_line = manifest_length_output
+            .lines()
+            .next()
+            .filter(|line| !line.is_empty())
+            .ok_or(SqlitePrototypeError::MissingCompleteManifest)?;
+        let manifest_length = parse_u64(Some(manifest_length_line), "manifest_json_length")?;
+        if manifest_length == 0 {
+            return Err(SqlitePrototypeError::MissingCompleteManifest);
+        }
+        let manifest_length = usize::try_from(manifest_length).unwrap_or(usize::MAX);
+        if manifest_length > MAX_MANIFEST_JSON_BYTES {
+            return Err(SqlitePrototypeError::ManifestTooLarge {
+                actual: manifest_length,
+                maximum: MAX_MANIFEST_JSON_BYTES,
+            });
+        }
         let output = self.run_with(
             "SELECT schema_version || '|' || generation || '|' || topology_epoch || '|' || hex(CAST(manifest_json AS BLOB)) || '|' || manifest_digest FROM recovery_state WHERE singleton=1;\n",
             read_only,
@@ -753,7 +775,25 @@ impl SqliteRecoveryStore {
             return RecoveryInspection::Absent;
         }
         if !database_path.is_file() {
-            return RecoveryInspection::CorruptOrUnreadable;
+            return RecoveryInspection::CorruptOrUnreadable {
+                storage_version: None,
+                semantic_version: None,
+            };
+        }
+        let artifact_size = match std::fs::metadata(&database_path) {
+            Ok(metadata) => metadata.len(),
+            Err(_) => {
+                return RecoveryInspection::CorruptOrUnreadable {
+                    storage_version: None,
+                    semantic_version: None,
+                };
+            }
+        };
+        if artifact_size > MAX_RECOVERY_ARTIFACT_BYTES {
+            return RecoveryInspection::CorruptOrUnreadable {
+                storage_version: None,
+                semantic_version: None,
+            };
         }
         if commit_intent_path(&database_path).exists() {
             return RecoveryInspection::ReconciliationRequired;
@@ -765,9 +805,15 @@ impl SqliteRecoveryStore {
                 return RecoveryInspection::Unsupported {
                     layer: RecoveryFormatLayer::Storage,
                     version: None,
+                    storage_version: None,
                 };
             }
-            Err(_) => return RecoveryInspection::CorruptOrUnreadable,
+            Err(_) => {
+                return RecoveryInspection::CorruptOrUnreadable {
+                    storage_version: None,
+                    semantic_version: None,
+                };
+            }
         };
         if storage_schema != CURRENT_RECOVERY_SQLITE_SCHEMA {
             return if storage_schema < CURRENT_RECOVERY_SQLITE_SCHEMA {
@@ -775,18 +821,25 @@ impl SqliteRecoveryStore {
                     layer: RecoveryFormatLayer::Storage,
                     from: storage_schema,
                     to: CURRENT_RECOVERY_SQLITE_SCHEMA,
+                    storage_version: None,
                 }
             } else {
                 RecoveryInspection::Unsupported {
                     layer: RecoveryFormatLayer::Storage,
                     version: Some(storage_schema),
+                    storage_version: None,
                 }
             };
         }
 
         let semantic_schema = match prototype.semantic_schema_version_with(true) {
             Ok(version) => version,
-            Err(_) => return RecoveryInspection::CorruptOrUnreadable,
+            Err(_) => {
+                return RecoveryInspection::CorruptOrUnreadable {
+                    storage_version: Some(storage_schema),
+                    semantic_version: None,
+                };
+            }
         };
         if semantic_schema != u64::from(CURRENT_RECOVERY_SCHEMA.0) {
             let from = u16::try_from(semantic_schema)
@@ -799,11 +852,13 @@ impl SqliteRecoveryStore {
                     layer: RecoveryFormatLayer::Semantic,
                     from: semantic_schema,
                     to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
+                    storage_version: Some(storage_schema),
                 }
             } else {
                 RecoveryInspection::Unsupported {
                     layer: RecoveryFormatLayer::Semantic,
                     version: Some(semantic_schema),
+                    storage_version: Some(storage_schema),
                 }
             };
         }
@@ -812,8 +867,12 @@ impl SqliteRecoveryStore {
             Err(SqlitePrototypeError::SqliteUnavailable) => RecoveryInspection::Unsupported {
                 layer: RecoveryFormatLayer::Storage,
                 version: None,
+                storage_version: None,
             },
-            Err(_) => RecoveryInspection::CorruptOrUnreadable,
+            Err(_) => RecoveryInspection::CorruptOrUnreadable {
+                storage_version: Some(storage_schema),
+                semantic_version: Some(semantic_schema),
+            },
         }
     }
 
@@ -1674,6 +1733,7 @@ mod tests {
                 layer: RecoveryFormatLayer::Semantic,
                 from: 3,
                 to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
+                storage_version: Some(CURRENT_RECOVERY_SQLITE_SCHEMA),
             }
         );
         std::fs::write(commit_intent_path(&path), b"uninterpreted intent").unwrap();
