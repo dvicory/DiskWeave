@@ -16,7 +16,7 @@ Keep correctness-boundary effects, ownership, durability, and state transitions 
 
 `work/` is a Git-ignored symlink to persistent local agent state for evidence, experiments, handoffs, and useful intermediate work that does not belong in DiskWeave. Nothing there is semantic authority.
 
-Use `jj workspace` for isolated or parallel repository changes. Launch implementation agents from the workspace they own. Do not create independent jj or Git repositories inside DiskWeave workspaces.
+Use `jj workspace` inside `work/workspaces/` for isolated or parallel repository changes. Launch implementation agents from the workspace they own. Do not create independent jj or Git repositories inside DiskWeave workspaces.
 
 ## Code and comments
 
