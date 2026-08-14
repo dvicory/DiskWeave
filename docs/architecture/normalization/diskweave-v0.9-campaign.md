@@ -165,7 +165,7 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | U08 | Closed-mutation-set checkpoint concurrency | C1–C3, C5 | **ownership-or-scope-unresolved** | R3; v0.8 §11.7 and v0.9 §9.11. Keep separate from lock mechanism and generic fence evidence. |
 | U09 | Background rollover lifecycle, progress, restart, failure, and completion | C3 | **target-delta; mapped** | v0.9 §§9.13, 10.6–10.9. |
 | U10 | Cross-operation fairness and starvation limits | C3, C5, C7 | **target-delta; mapped** | v0.8 §11.10 and v0.9 §9.13; independent of resource admission. |
-| U11 | Portable shutdown, endpoint withdrawal, and claim-release ordering | C1, C2 | **target-delta; mapped** | v0.8 §§4.6, 11.8, 15.4–15.6; v0.9 §§9.8, 13.8. Linux owns a current platform refinement, not necessarily the portable whole. |
+| U11 | Portable shutdown, endpoint withdrawal, and claim-release ordering | C1, C2 | **OpenSpec planned; implementation blocked** | Change `add-portable-shutdown-claim-release` defines the target ordering but is not current authority. Implementation inspection found no service-owned durable writable-session begin/close path, so exact close-session evidence is unavailable. Bead `dwv-hg0.4` owns prerequisite reconciliation and blocks `dwv-hg0.1`; U03, U08, and U25 are review inputs only, not declared unblockers. |
 | U12 | Long-running job identity, resume/cancel, and correctness cursor | C3, C5, C7 | **unresolved retained intent** | R4; v0.8 §19.4. Determine whether operation-specific owners compose completely. |
 | U13 | Historical artifact roles and coherent named recovery points | C0b, C4, C7 | **target-delta; mapped** | v0.9 §§7.7–7.9, 11.6–11.7, 12.3–12.5. |
 | U14 | Baseline rule that an advertised recovery claim cannot outlive required material | C2, C3, C5–C7 | **target-delta; mapped** | Marked A14 and v0.9 §11.10. Must remain even if positive history features are deferred. |
@@ -313,6 +313,28 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 - Evidence `crates/dwv-recovery-sqlite/tests/recovery_inspect.rs` covers all dispositions, renderer equivalence, deterministic statuses, hostile bounds, byte-for-byte non-mutation, and dependency isolation. Beads `dwv-bno`, `.1`, `.2`, and `.3` are closed.
 - This closure authorizes no U26b tooling, migration, repair, recovery, parity construction, candidate export, or stable-format claim. U27 remains open.
 
+### 9.3 U11 — Stop a running service without releasing live ownership early
+
+**Operator story:** An operator stops a running service. DiskWeave closes new admission, quiesces frontends and namespace writers, drains or durably hands off admitted work, reconciles indeterminate completions where possible, obtains only exact owner-approved checkpoint and close-session evidence, withdraws exported writable endpoints, and releases store/recovery claims only after no writable alias can remain. The result distinguishes clean completion from failure or reconciliation-required state.
+
+**Safe claim:** A clean result means the bounded shutdown sequence and its required evidence completed for the admitted service. A non-clean result preserves conservative dirty, indeterminate, stale-endpoint, and reconciliation consequences.
+
+**Stronger claim refused:** Shutdown does not establish custody continuity, current or historical protection, lineage, recovery authority, payload integrity, publication, currentization, retention, repair, migration, or stable-format status. A flush, timeout, forced stop, process exit, unmount, endpoint removal, or in-memory transition cannot manufacture a clean close.
+
+**Why planning is retained but implementation is blocked:**
+
+- Current owners define frontend abandonment, operation-slot lifetime, transaction outcomes, dirty/restart consequences, exact store watermarks, typed checkpoint evidence, recovery writable-session mutations, and Linux endpoint/descriptor behavior.
+- `RecoveryMutation` exposes writable-session begin/close semantics, but `HealthyPortableService` has no service-owned durable begin/close path. The discarded implementation attempt therefore supplies no accepted evidence.
+- Bead `dwv-hg0.4` must reconcile one canonical owner and durable OpenSpec boundary for session begin/close and failure/restart consequences before product implementation.
+- U03, U08, and U25 are review inputs because they touch adjacent transitions; none is declared the unblocker.
+
+**Durable work anchors (2026-08-14):**
+
+- OpenSpec change `openspec/changes/add-portable-shutdown-claim-release/` contains the target proposal, healthy-portable-io delta, Linux refinement, design, and blocked dependency-ordered tasks. It is not current canonical authority or implementation-ready work.
+- Bead `dwv-hg0.4` blocks implementation Bead `dwv-hg0.1`; `.2` remains focused evidence after implementation, and `.3` remains verification/archive/canonicalization.
+- Durable handoff is the integrated OpenSpec and Bead graph. A future agent starts from integrated main in a fresh owned jj workspace under `work/workspaces/`; it does not depend on the discarded implementation workspace.
+- These anchors authorize no U11 product implementation, startup/publication, currentization, recovery mutation, retention, history, deployment, or recovery-inspection work.
+
 ## 10. Resumption record
 
 Start a future pass with:
@@ -356,4 +378,4 @@ cargo xtask docs knowledge context \
   req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission
 ```
 
-All five packets succeeded at this snapshot. C0a and C8a independent recovery-state inspection are canonicalized. C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`; Bead chain `dwv-bno` -> `.1` -> `.2` -> `.3` is closed. Do not start C0b, C2, U26b, migration, recovery, mutation, or stable-format work from this closure.
+All five packets succeeded at this snapshot. C0a and C8a independent recovery-state inspection are canonicalized. C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`; Bead chain `dwv-bno` -> `.1` -> `.2` -> `.3` is closed. U11 target semantics remain planned under `add-portable-shutdown-claim-release`, but implementation is blocked: `dwv-hg0.4` must reconcile durable writable-session begin/close ownership before `dwv-hg0.1`; `.2` and `.3` remain downstream. U03, U08, and U25 are review inputs only. Do not start U11 implementation, C0b, C2, U26b, migration, recovery, mutation, deployment, or stable-format work from this state.
