@@ -15,10 +15,10 @@
 | Settled target input | `arch.diskweave.v0.9`, content-final non-authoritative candidate |
 | Target source SHA-256 | `18051e58d9386d25015ef574f178953735b389d45f17c7e6fe681ca5ebe1618a` |
 | Imported F2 SHA-256 | `092875c01e73d7908be8e7f3f8da08d690349a81b0f7c4eac6268182d53cd559` |
-| Current canonical requirements | 165 |
-| Readiness at campaign repair | Green; no diagnostics |
+| Current canonical requirements | 166 |
+| Readiness after C8a archive | Green; no diagnostics |
 | Candidate impact | 21 marked v0.9 invariants; 53 directly affected current requirements |
-| Actual transition owners | None |
+| Durable transition posture | C0a and C8a canonicalized; U11 blocked planning; C8b implementation-ready planning |
 | Source-exclusion proof | Premature and not attempted |
 
 Authority posture:
@@ -181,7 +181,7 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | U24 | Optional encryption integration surface | C1 | **ownership-or-scope-unresolved** | v0.8 §15.1; v0.9 §13.6. Optional and not a baseline publication blocker. |
 | U25 | Baseline deployment/startup/shutdown dependency ordering | C1, C2 | **target-delta; mapped** | Split from optional encryption; v0.8 §§15.3–15.6 and v0.9 §§13.7–13.8. |
 | U26a | Independent read-only recovery-state inspection | C8 | **canonicalized** | `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`; implementation `crates/dwv-recovery-sqlite/src/recovery_inspect.rs`; evidence `crates/dwv-recovery-sqlite/tests/recovery_inspect.rs`; closed Bead chain `dwv-bno` -> `.1` -> `.2` -> `.3`. The command remains experimental and authorizes no U26b or U27 action. |
-| U26b | Independent equation verification, current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills | C8 | **target-delta; mapped** | Remaining v0.8 stable-format gate and v0.9 §§7.11, 16.9 tool breadth. U26a does not authorize or imply these surfaces. |
+| U26b | Independent equation verification, current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills | C8 | **split: C8b planned; remainder target-delta** | `add-bounded-parity-scrub` owns only standalone bounded single-XOR equation verification and is not current authority. Current parity build, export, plan explanation, migration, and damaged/unknown drills remain open. U26a, U11, and U27 remain separate. |
 | U27 | Stable-format graduation claim gate | C8 | **target-delta; mapped** | A21. Separate from building tools so a partial tool does not imply stable format. |
 | U28 | P/Q production profile and exact codeword coherence | C4, C5 | **deferred positive profile** | No baseline P/Q fields or implementation duty; same-codeword rule remains at profile boundary. |
 | U29 | Strict pre-publication verification/currentization | C2 | **deferred optional profile** | Full scan does not prove historical continuity. |
@@ -265,7 +265,7 @@ Normalization is complete only when all are true:
 
 The gate is **not satisfied**. Source exclusion is premature while A and U rows remain open.
 
-## 9. Selected semantically closed useful capabilities
+## 9. Selected and durable capability boundaries
 
 ### 9.1 C0a — Assess post-gap authority without mutation
 
@@ -335,6 +335,30 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 - Durable handoff is the integrated OpenSpec and Bead graph. A future agent starts from integrated main in a fresh owned jj workspace under `work/workspaces/`; it does not depend on the discarded implementation workspace.
 - These anchors authorize no U11 product implementation, startup/publication, currentization, recovery mutation, retention, history, deployment, or recovery-inspection work.
 
+### 9.4 C8b — Verify a bounded parity equation independently
+
+**Operator story:** A recovery investigator invokes one standalone read-only verifier with an experimental descriptor naming bounded single-XOR protected geometry, a selected range, and distinct data/parity payloads. The verifier reads only declared ranges, applies only explicitly declared logical zero tails, checks each equation byte-for-byte, and returns one deterministic human or structured result and process status.
+
+**Safe claim:** `matched`, `mismatched`, `incomplete`, `unknown`, invalid, unsupported, and resource-bound outcomes are bounded observations at the declared file-backed/model evidence tier.
+
+**Stronger claim refused:** A result does not establish production identity, generation, custody, current or historical protection, checksum validity, hardware durability, clean state, a bad shard, repair authority, recovery authority, writable publication, or stable-format status.
+
+**Why this boundary is independently closed:**
+
+- Existing XOR, exhaustive parity-verification, evidence-scope, fail-closed uncertainty, deterministic-artifact, and resource-bound requirements remain the detailed owners.
+- The target delta owns only independent invocation, experimental descriptor binding, bounded reads and reports, equivalent rendering, process status, and explicit non-authorization.
+- It does not inspect recovery state and does not depend on C8a/U26a implementation results, U11, production service/operator/frontend private state, recovery databases, implementation feedback, or another open campaign item.
+- Current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills remain separate U26b work; P/Q and stable-format graduation remain U28 and U27.
+
+**Durable planning anchors (target, not current authority):**
+
+- OpenSpec change `openspec/changes/add-bounded-parity-scrub/` proposes one new independent-parity-verification requirement. The planned identifier is not current authority and is intentionally omitted here until archive.
+- Bead `dwv-ykl` owns the feature; `dwv-ykl.1` is open, unclaimed, and ready; `.2` is evidence blocked by `.1`; `.3` is verification/archive/canonicalization blocked by `.2`. The parent closes last.
+- Focused evidence must cover match/mismatch, incomplete and failed reads, logical zero tails, invalid/unsupported/alias/bounds input, unchanged sources, human/JSON equivalence, deterministic statuses, bounded resources, experimental scope, and dependency isolation.
+- U11 is planned but blocked on `dwv-hg0.4`; C8b neither depends on nor advances it. No product implementation has started for C8b.
+
+**Rejected adjacent candidates:** current parity build needs complete-data and output/persistence semantics; export and plan explanation need provenance, claim-lifetime, and recovery-authority semantics; migration and damaged/unknown drills need unresolved transition semantics; C0b, C2, C5, and C7 remain blocked by their recorded history, mutation, coordination, checkpoint, retention, or authorization joins.
+
 ## 10. Resumption record
 
 Start a future pass with:
@@ -378,4 +402,4 @@ cargo xtask docs knowledge context \
   req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission
 ```
 
-All five packets succeeded at this snapshot. C0a and C8a independent recovery-state inspection are canonicalized. C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`; Bead chain `dwv-bno` -> `.1` -> `.2` -> `.3` is closed. U11 target semantics remain planned under `add-portable-shutdown-claim-release`, but implementation is blocked: `dwv-hg0.4` must reconcile durable writable-session begin/close ownership before `dwv-hg0.1`; `.2` and `.3` remain downstream. U03, U08, and U25 are review inputs only. Do not start U11 implementation, C0b, C2, U26b, migration, recovery, mutation, deployment, or stable-format work from this state.
+All five campaign-repair packets succeeded at this snapshot. C0a and C8a are canonicalized; C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`, and Beads `dwv-bno` -> `.1` -> `.2` -> `.3` are closed. U11 target semantics remain planned but implementation is blocked: `dwv-hg0.4` must reconcile durable writable-session begin/close ownership before `.1`; U03, U08, and U25 are review inputs only. C8b is implementation-ready planning under `add-bounded-parity-scrub`; `dwv-ykl.1` is the only ready child, followed by `.2` and `.3`. Do not start U11, C0b, C2, U26b remainder, migration, recovery, mutation, deployment, or stable-format work from these selections.
