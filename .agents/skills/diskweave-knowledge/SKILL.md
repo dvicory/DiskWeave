@@ -1,6 +1,6 @@
 ---
 name: diskweave-knowledge
-description: Use before changing DiskWeave product code, canonical OpenSpecs, verification evidence, or maintained documentation. Inspect requirement ownership, evidence, explanations, and readiness first.
+description: Use before changing DiskWeave product code, canonical OpenSpecs, verification evidence, or maintained documentation. Load relevant requirement context and use readiness at change boundaries.
 ---
 
 # DiskWeave knowledge workflow
@@ -11,8 +11,8 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 ## Before editing
 
 1. Name the canonical semantic requirement IDs involved. If unknown, search current `openspec/specs/*/spec.md`; do not infer authority from handoffs or archived changes.
-2. Run `cargo xtask docs knowledge readiness` once at the applicable change boundary.
-3. For normal correctness work, run one `cargo xtask docs knowledge context <requirement-id>...` command with every initially relevant current requirement ID.
+2. Run `cargo xtask docs knowledge readiness` once before relying on derived knowledge for a change, unless readiness is already established for the current revision. Skip it for read-only research.
+3. When the task needs prerequisite or dependent semantics, run one `cargo xtask docs knowledge context <requirement-id>...` command with every initially relevant current requirement ID.
 4. A successful context packet contains complete canonical units for every selected requirement, transitive prerequisite, and direct dependent in its reading order. Do not reread canonical specs merely to reconstruct semantic context already present in the packet or add `inspect`/`ownership` retrieval for the same need. Open the located canonical source normally when the task requires editing or source-level inspection.
 5. If a bound failure returns `suggested_requests`, run every suggested request; the set is complete only as a whole. No suggestions means a required semantic scope cannot be split without omission.
 6. Use `knowledge inspect <requirement-id>` alone for an exact local-unit lookup, `knowledge ownership <requirement-id>` alone for direct ownership and endpoint troubleshooting, `knowledge affected <requirement-id>` after an owner or relationship changes, and `knowledge audit-context <requirement-id>` only for a deliberate whole-component audit.
