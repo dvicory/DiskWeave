@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs::{File, Metadata};
+use std::fs::{File, Metadata, OpenOptions};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +27,21 @@ const MAX_REGION_SIZE: u64 = 8 * 1024 * 1024;
 const MAX_REGION_COUNT: usize = 16_384;
 const MAX_BUFFER_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_RESULT_BYTES: usize = 4 * 1024 * 1024;
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const NONBLOCK_FLAG: i32 = 0o4000;
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+const NONBLOCK_FLAG: i32 = 0x0004;
 
 const NON_CLAIMS: &[&str] = &[
     "does not establish production identity, generation, custody, or current protection",
@@ -297,6 +312,16 @@ impl<'de> DeserializeSeed<'de> for DuplicateKeySeed {
     }
 }
 
+fn deserialize_present_option<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawRange {
@@ -310,13 +335,17 @@ struct RawDescriptor {
     version: Option<String>,
     profile: Option<String>,
     protected_length: Option<u64>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     selected_range: Option<Option<RawRange>>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     whole_protected_range: Option<Option<bool>>,
     region_size: Option<u64>,
     max_regions: Option<u64>,
     data_payloads: Option<Vec<String>>,
     parity_payload: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     features: Option<Option<Vec<String>>>,
+    #[serde(default, deserialize_with = "deserialize_present_option")]
     output: Option<Option<String>>,
 }
 
@@ -517,14 +546,61 @@ enum DescriptorLoadError {
     Operational(&'static str),
 }
 
+#[cfg(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+fn open_bounded_readonly(path: &Path) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    OpenOptions::new()
+        .read(true)
+        .custom_flags(NONBLOCK_FLAG)
+        .open(path)
+}
+
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "android",
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "tvos",
+    target_os = "watchos",
+    target_os = "visionos",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+)))]
+fn open_bounded_readonly(_: &Path) -> io::Result<File> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "bounded regular-file admission is unsupported on this platform",
+    ))
+}
+
 fn read_descriptor(path: &Path) -> Result<Vec<u8>, DescriptorLoadError> {
-    let file = match File::open(path) {
+    let file = match open_bounded_readonly(path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             return Err(DescriptorLoadError::Invalid("descriptor file is missing"));
         }
         Err(error) if error.kind() == io::ErrorKind::InvalidInput => {
             return Err(DescriptorLoadError::Invalid("descriptor path is invalid"));
+        }
+        Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+            return Err(DescriptorLoadError::Invalid(
+                "platform cannot guarantee bounded regular-file admission",
+            ));
         }
         Err(_) => return Err(DescriptorLoadError::Operational("descriptor could not be read")),
     };
@@ -629,12 +705,20 @@ fn open_payloads(
     let mut opened = Vec::with_capacity(canonical_paths.len());
     let mut identities = Vec::with_capacity(canonical_paths.len());
     for path in canonical_paths {
-        let file = File::open(&path)
-            .map_err(|_| DescriptorError("payload identity is unavailable"))?;
+        let file = open_bounded_readonly(&path).map_err(|error| {
+            if error.kind() == io::ErrorKind::Unsupported {
+                DescriptorError("platform cannot guarantee bounded regular-file admission")
+            } else {
+                DescriptorError("payload identity is unavailable")
+            }
+        })?;
         let metadata = file
             .metadata()
             .map_err(|_| DescriptorError("payload metadata is unavailable"))?;
-        if !metadata.is_file() || metadata.len() > descriptor.protected_length {
+        if !metadata.is_file() {
+            return Err(DescriptorError("payload is not a regular file"));
+        }
+        if metadata.len() > descriptor.protected_length {
             return Err(DescriptorError("payload geometry is outside its bound"));
         }
         let path_metadata = std::fs::metadata(&path)
