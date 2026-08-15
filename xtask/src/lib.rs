@@ -47,6 +47,7 @@ pub(crate) struct Bounds {
     pub(crate) max_source_bytes: usize,
     pub(crate) max_context_bytes: usize,
     pub(crate) max_units: usize,
+    pub(crate) max_planning_scan_paths: usize,
 }
 
 impl Default for Bounds {
@@ -55,6 +56,7 @@ impl Default for Bounds {
             max_source_bytes: 262_144,
             max_context_bytes: 65_536,
             max_units: 512,
+            max_planning_scan_paths: 2_048,
         }
     }
 }

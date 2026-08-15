@@ -2984,10 +2984,14 @@ fn planning_scan_paths(app: &App) -> Result<Vec<String>, AppError> {
     };
     paths.sort();
     paths.dedup();
-    if paths.len() > app.bounds.max_units {
+    if paths.len() > app.bounds.max_planning_scan_paths {
         return Err(AppError::new(
-            "planning_scan_unit_bound_exceeded",
-            paths.len().to_string(),
+            "planning_scan_path_bound_exceeded",
+            format!(
+                "{} (max {})",
+                paths.len(),
+                app.bounds.max_planning_scan_paths
+            ),
         ));
     }
     Ok(paths)
@@ -4449,6 +4453,21 @@ mod tests {
         assert_eq!(diagnostics[0]["source"], "content");
         assert_eq!(diagnostics[0]["line"], 2);
         assert_eq!(diagnostics[0]["column"], 1);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn planning_scanner_uses_independent_path_capacity() {
+        let (root, mut app) = fixture("planning-scan-bound");
+        fs::write(root.join("notes.txt"), "ordinary goal language\n").unwrap();
+
+        app.bounds.max_units = 1;
+        app.bounds.max_planning_scan_paths = 2;
+        assert!(planning_nomenclature(&app).is_ok());
+
+        app.bounds.max_planning_scan_paths = 1;
+        let error = planning_nomenclature(&app).unwrap_err();
+        assert_eq!(error.code, "planning_scan_path_bound_exceeded");
         fs::remove_dir_all(root).unwrap();
     }
     fn commit_git_fixture(root: &Path) {
