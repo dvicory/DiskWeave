@@ -561,6 +561,26 @@ fn print_human(result: &OperatorResult) {
     println!("redundancy: {}", result.redundancy);
     println!("next: {}", result.next_action);
     println!(
+        "lineage: {:?} ({})",
+        result.authority.lineage.disposition, result.authority.lineage.reason
+    );
+    println!(
+        "custody: {:?} ({})",
+        result.authority.custody.disposition, result.authority.custody.reason
+    );
+    println!("authority-blocker: {}", result.authority.blocker);
+    println!("authorization: {}", result.authority.authorization);
+    for coverage in &result.authority.protection_basis {
+        println!(
+            "basis: role={} state={:?} ranges={} bytes={} detail-truncated={}",
+            coverage.role,
+            coverage.basis,
+            coverage.range_count,
+            coverage.bytes,
+            coverage.detail_truncated
+        );
+    }
+    println!(
         "checksums: {}",
         serde_json::to_string(&result.checksum).expect("checksum JSON cannot fail")
     );

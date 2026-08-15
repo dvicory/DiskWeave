@@ -90,13 +90,32 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
     assert_eq!(status["lifecycle"], "stopped");
     assert_eq!(status["access"], "none");
     assert_eq!(status["kind"], "array-operator-result");
-    assert_eq!(status["reason_code"], "current-array-observed");
-    assert_eq!(status["parity"], "not-verified");
+    assert_eq!(status["reason_code"], "array-observed");
+    assert_eq!(status["parity"], "not-authorized");
     assert_eq!(status["damage"], "not-assessed");
-    assert_eq!(status["start"], "read-write-available");
+    assert_eq!(status["start"], "authority-assessment-required");
     assert_eq!(status["recovery"]["classification"], "supported");
     assert_eq!(status["checksum"]["status"], "not-required");
     assert_eq!(status["publication"]["status"], "not-published");
+    assert_eq!(status["authority"]["lineage"]["disposition"], "accepted");
+    assert_eq!(
+        status["authority"]["custody"]["disposition"],
+        "continuity-unproved"
+    );
+    assert_eq!(
+        status["authority"]["protection_basis"][0]["basis"],
+        "not-yet-interpretable"
+    );
+    assert_eq!(
+        status["authority"]["protection_basis"][0]["bytes"],
+        status["topology"]["protected_length"]
+    );
+    assert!(
+        status["authority"]["authorization"]
+            .as_str()
+            .unwrap()
+            .contains("authorizes no publication")
+    );
     assert!(status["members"].is_array());
     assert!(status["topology"].is_object());
     let human = run_human(&root, "status", &[]);
@@ -104,11 +123,13 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
     let human = String::from_utf8(human.stdout).unwrap();
     for expected in [
         "kind: array-operator-result",
-        "reason-code: current-array-observed",
+        "reason-code: array-observed",
         "outcome: Success",
         "state: stopped",
         "access: none",
-        "start: read-write-available",
+        "start: authority-assessment-required",
+        "lineage: Accepted",
+        "custody: ContinuityUnproved",
         "\"classification\":\"supported\"",
         "\"status\":\"not-required\"",
         "\"status\":\"not-published\"",
@@ -190,7 +211,7 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
 fn semantic_failures_use_the_shared_operator_result_contract() {
     let root = fixture();
     let unsupported = failure(run(&root, "start", &[]), 5);
-    assert_eq!(unsupported["schema"], "dwv.operator.v1");
+    assert_eq!(unsupported["schema"], "dwv.operator.v2");
     assert_eq!(unsupported["kind"], "array-operator-result");
     assert_eq!(unsupported["command"], "start");
     assert_eq!(unsupported["outcome"], "not-supported");
@@ -273,7 +294,7 @@ fn policy_and_parity_cannot_manufacture_recovery_topology_authority() {
         );
         let plan_id = preview["recovery_plan"]["plan_id"].as_str().unwrap();
         let refused = failure(run(&root, "recover", &["--apply", plan_id]), 4);
-        assert_eq!(refused["schema"], "dwv.operator.v1");
+        assert_eq!(refused["schema"], "dwv.operator.v2");
         assert_eq!(refused["outcome"], "refused");
         assert_eq!(refused["reason_code"], "semantic-refusal");
         assert!(
@@ -310,8 +331,8 @@ fn declarative_member_order_is_not_topology_semantics() {
     fs::write(&policy_path, serde_json::to_vec_pretty(&policy).unwrap()).unwrap();
 
     let status = success(run(&root, "status", &[]));
+    assert_eq!(status["start"], "authority-assessment-required");
     assert_eq!(status["recovery"]["classification"], "supported");
-    assert_eq!(status["start"], "read-write-available");
     assert!(
         status["members"]
             .as_array()
