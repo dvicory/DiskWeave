@@ -1,7 +1,7 @@
 use dwv_codec::{Geometry, ParityCodec, XorReference};
-use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::env;
 use std::ffi::OsStr;
@@ -279,10 +279,7 @@ impl<'de> Visitor<'de> for DuplicateKeyVisitor {
     where
         A: SeqAccess<'de>,
     {
-        while sequence
-            .next_element_seed(DuplicateKeySeed)?
-            .is_some()
-        {}
+        while sequence.next_element_seed(DuplicateKeySeed)?.is_some() {}
         Ok(())
     }
 
@@ -312,9 +309,7 @@ impl<'de> DeserializeSeed<'de> for DuplicateKeySeed {
     }
 }
 
-fn deserialize_present_option<'de, D, T>(
-    deserializer: D,
-) -> Result<Option<Option<T>>, D::Error>
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
 where
     D: Deserializer<'de>,
     T: Deserialize<'de>,
@@ -386,7 +381,9 @@ fn parse_path(path: &str) -> Result<PathBuf, DescriptorError> {
         return Err(DescriptorError("payload identity contains a NUL byte"));
     }
     if path.is_empty() || path.as_bytes().len() > MAX_PATH_BYTES {
-        return Err(DescriptorError("payload identity is empty or over its bound"));
+        return Err(DescriptorError(
+            "payload identity is empty or over its bound",
+        ));
     }
     Ok(PathBuf::from(path))
 }
@@ -444,9 +441,7 @@ fn parse_descriptor(bytes: &[u8]) -> Result<Descriptor, DescriptorError> {
             return Err(DescriptorError("selected range has the wrong type"));
         }
         (None, Some(None)) => {
-            return Err(DescriptorError(
-                "whole protected range has the wrong type",
-            ));
+            return Err(DescriptorError("whole protected range has the wrong type"));
         }
         (Some(_), Some(_)) => {
             return Err(DescriptorError("descriptor must select exactly one range"));
@@ -500,7 +495,9 @@ fn parse_descriptor(bytes: &[u8]) -> Result<Descriptor, DescriptorError> {
             .checked_add(path.as_os_str().len())
             .ok_or(DescriptorError("payload identities exceed their bound"))?;
         if data_paths.iter().any(|existing| existing == &path) || path == parity_path {
-            return Err(DescriptorError("payload identities are duplicate or aliased"));
+            return Err(DescriptorError(
+                "payload identities are duplicate or aliased",
+            ));
         }
         data_paths.push(path);
     }
@@ -602,7 +599,11 @@ fn read_descriptor(path: &Path) -> Result<Vec<u8>, DescriptorLoadError> {
                 "platform cannot guarantee bounded regular-file admission",
             ));
         }
-        Err(_) => return Err(DescriptorLoadError::Operational("descriptor could not be read")),
+        Err(_) => {
+            return Err(DescriptorLoadError::Operational(
+                "descriptor could not be read",
+            ));
+        }
     };
     let metadata = match file.metadata() {
         Ok(metadata) => metadata,
@@ -629,9 +630,8 @@ fn read_descriptor(path: &Path) -> Result<Vec<u8>, DescriptorLoadError> {
         ));
     }
     let mut bytes = Vec::with_capacity(
-        usize::try_from(metadata.len()).map_err(|_| {
-            DescriptorLoadError::Invalid("descriptor size does not fit its bound")
-        })?,
+        usize::try_from(metadata.len())
+            .map_err(|_| DescriptorLoadError::Invalid("descriptor size does not fit its bound"))?,
     );
     let mut limited = file.take(MAX_DESCRIPTOR_BYTES + 1);
     limited
@@ -699,7 +699,9 @@ fn open_payloads(
             .skip(index + 1)
             .any(|other| other == path)
         {
-            return Err(DescriptorError("payload identities are duplicate or aliased"));
+            return Err(DescriptorError(
+                "payload identities are duplicate or aliased",
+            ));
         }
     }
     let mut opened = Vec::with_capacity(canonical_paths.len());
@@ -737,7 +739,9 @@ fn open_payloads(
             .iter()
             .any(|other| identities_alias(other, &identity))
         {
-            return Err(DescriptorError("payload identities are duplicate or aliased"));
+            return Err(DescriptorError(
+                "payload identities are duplicate or aliased",
+            ));
         }
         identities.push(identity);
         opened.push(OpenedPayload {
@@ -856,27 +860,26 @@ fn observe(descriptor: Descriptor) -> SemanticResult {
                 "a required payload read was incomplete",
             )
         } else if let Some(parity_bytes) = parity_bytes {
-            let geometry =
-                match Geometry::new(vec![range.length; data_bytes.len()], range.length) {
-                    Ok(geometry) => geometry,
-                    Err(_) => {
-                        regions.push(RegionFinding {
-                            range,
-                            disposition: Disposition::Unknown,
-                            reason: "the bounded equation could not be evaluated",
-                        });
-                        remaining -= range.length;
-                        if remaining > 0 {
-                            offset = match offset.checked_add(range.length) {
-                                Some(offset) => offset,
-                                None => {
-                                    return SemanticResult::invalid("selected range overflows");
-                                }
-                            };
-                        }
-                        continue;
+            let geometry = match Geometry::new(vec![range.length; data_bytes.len()], range.length) {
+                Ok(geometry) => geometry,
+                Err(_) => {
+                    regions.push(RegionFinding {
+                        range,
+                        disposition: Disposition::Unknown,
+                        reason: "the bounded equation could not be evaluated",
+                    });
+                    remaining -= range.length;
+                    if remaining > 0 {
+                        offset = match offset.checked_add(range.length) {
+                            Some(offset) => offset,
+                            None => {
+                                return SemanticResult::invalid("selected range overflows");
+                            }
+                        };
                     }
-                };
+                    continue;
+                }
+            };
             let references = data_bytes.iter().map(Vec::as_slice).collect::<Vec<_>>();
             let expected = match XorReference.compute_parity(&geometry, &references) {
                 Ok(expected) => expected,
@@ -929,10 +932,7 @@ fn observe(descriptor: Descriptor) -> SemanticResult {
     SemanticResult::completed(regions)
 }
 
-fn parse_args() -> Result<
-    (Option<OutputMode>, PathBuf),
-    (OutputMode, &'static str),
-> {
+fn parse_args() -> Result<(Option<OutputMode>, PathBuf), (OutputMode, &'static str)> {
     let mut arguments = env::args_os().skip(1);
     let first = match arguments.next() {
         Some(first) => first,
@@ -1042,7 +1042,7 @@ fn finish(result: SemanticResult, mode: OutputMode) -> ExitCode {
         }
     }
 }
-
+/// dwv:req req.independent-parity-verification.standalone-equation-verification-is-bounded-read-only-and-non-authorizing
 fn run() -> ExitCode {
     let (requested_mode, descriptor_path) = match parse_args() {
         Ok(arguments) => arguments,

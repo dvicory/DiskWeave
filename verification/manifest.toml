@@ -433,3 +433,18 @@ non_claims = [
   "It does not broaden frontend profiles, degraded service, repair, replacement, or P/Q recovery.",
   "Newly calculated checksum evidence is current coverage and not historical correctness proof.",
 ]
+
+[[evidence]]
+id = "evidence.independent-parity-verification"
+path = "docs/verification/independent-parity-verification.md"
+claim = "The standalone independent parity verifier has focused file-backed evidence for bounded equations, explicit incomplete and mismatched dispositions, non-mutation, renderer equivalence, deterministic status, hostile bounds, and production-state isolation."
+tier = "file-backed-model"
+fault_model = ["equation mismatch", "short or unavailable payload", "zero-extension confusion", "duplicate or aliased payload identity", "invalid geometry", "resource exhaustion", "renderer or status drift", "fixture mutation", "private-state dependency"]
+scope = ["dwv-independent-parity descriptor admission", "single-XOR equation observation", "bounded region reporting", "human and structured rendering", "disposable regular-file fixtures"]
+requirements = [
+  "req.independent-parity-verification.standalone-equation-verification-is-bounded-read-only-and-non-authorizing",
+]
+non_claims = [
+  "The evidence is file-backed/model tier and does not establish hardware durability, current or historical protection, identity, custody, clean state, checksum authority, repair, recovery, publication, migration, or stable-format compatibility.",
+  "The verifier's unavailable-file and incomplete-file cases do not claim arbitrary filesystem fault injection.",
+]
