@@ -332,6 +332,7 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 - Implementation: `src/operator.rs` and `src/cli.rs`; structured result cut over to `dwv.operator.v2`.
 - Evidence: `src/operator.rs` operator unit tests and `tests/operator_cli.rs`; `cargo test -p diskweave --bin dwv operator::tests` and `cargo test -p diskweave --test operator_cli` passed. Knowledge readiness, docs check, and docs build passed with zero diagnostics.
 - Beads `dwv-roy.1`, `.2`, and `.3` are complete. C0a is canonicalized; these anchors authorize no C0b, C2, recovery-state mutation, publication, write, repair, or historical-recovery work.
+- The retained Linux acceptance artifact still predates the `dwv.operator.v2` cutover; the active runner now asserts v2, and Bead `dwv-cfh` tracks one fresh bounded run to refresh the artifact. Historical M9 `dwv.operator.v1` evidence remains explicitly historical and is not rewritten.
 
 ### 9.2 C8a — Inspect recovery state independently without mutation
 

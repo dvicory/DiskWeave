@@ -549,6 +549,7 @@ fn render_result(json: bool, result: &OperatorResult) {
 }
 
 fn print_human(result: &OperatorResult) {
+    println!("schema: {}", result.schema);
     println!("{}: {}", result.command, result.reason);
     println!("kind: {}", result.kind);
     println!("reason-code: {}", result.reason_code);
@@ -579,6 +580,12 @@ fn print_human(result: &OperatorResult) {
             coverage.bytes,
             coverage.detail_truncated
         );
+        for range in &coverage.exact_ranges {
+            println!(
+                "  basis-range: role={} basis={:?} offset={} length={}",
+                coverage.role, coverage.basis, range.offset, range.length
+            );
+        }
     }
     println!(
         "checksums: {}",
@@ -623,6 +630,17 @@ fn print_human(result: &OperatorResult) {
             verification.matching_regions,
             verification.regions.len()
         );
+        for region in &verification.regions {
+            println!(
+                "  verification-region: offset={} length={} disposition={} data-evidence={} parity-evidence={}",
+                region.offset,
+                region.length,
+                region.disposition,
+                serde_json::to_string(&region.data_evidence)
+                    .expect("verification data evidence JSON cannot fail"),
+                region.parity_evidence
+            );
+        }
     }
     if let Some(plan) = &result.recovery_plan {
         println!(

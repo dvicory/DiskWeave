@@ -122,6 +122,7 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
     assert!(human.status.success());
     let human = String::from_utf8(human.stdout).unwrap();
     for expected in [
+        "schema: dwv.operator.v2",
         "kind: array-operator-result",
         "reason-code: array-observed",
         "outcome: Success",
@@ -133,6 +134,7 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
         "\"classification\":\"supported\"",
         "\"status\":\"not-required\"",
         "\"status\":\"not-published\"",
+        "basis-range: role=parity basis=NotYetInterpretable offset=0 length=16384",
     ] {
         assert!(
             human.contains(expected),
@@ -142,6 +144,19 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
 
     for command in ["members", "scrub", "damage", "recover"] {
         success(run(&root, command, &[]));
+    }
+    let scrub_human = run_human(&root, "scrub", &[]);
+    assert!(scrub_human.status.success());
+    let scrub_human = String::from_utf8(scrub_human.stdout).unwrap();
+    for expected in [
+        "schema: dwv.operator.v2",
+        "verification: mode=exhaustive complete=true matching=1/1",
+        "verification-region: offset=0 length=16384 disposition=match-without-current-evidence",
+    ] {
+        assert!(
+            scrub_human.contains(expected),
+            "missing human verification detail: {expected}"
+        );
     }
     for (name, bytes) in tracked.iter().zip(before) {
         assert_eq!(fs::read(root.join(name)).unwrap(), bytes, "{name} changed");

@@ -99,7 +99,7 @@ server_pid=
 [[ ! -b /dev/ublkb0 ]]
 mv "$scratch/dwv-production-fixture.json" "$fixture/fixture.json"
 jq -e '
-  .schema == "dwv.operator.v1" and
+  .schema == "dwv.operator.v2" and
   .command == "start" and
   .outcome == "success" and
   .reason_code == "frontend-published" and
