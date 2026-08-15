@@ -410,6 +410,8 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 
 **Open owner questions:** A future bounded reconciliation must decide event meaning, crash/interruption semantics, retention and safe compaction, identity and generation binding, uncertainty representation, and how the ledger composes with U07–U08, U13–U17, U36, and U38 without creating a second semantic registry. No implementation, Bead dependency, or product claim is authorized by this record.
 
+**Tracking guard:** Any future slice that changes a C2 entry or exit obligation—especially U03–U08, U13–U17, U36, or U38—must check whether its event meaning, generation binding, crash/interruption handling, retained-material or claim semantics, uncertainty, or evidence references affect this candidate. Carry the result in that slice's existing artifact and either preserve or explicitly disposition the effect; do not create implementation work or a dependency solely for C2-PROV.
+
 **Rejected adjacent candidates:** current parity build needs complete-data and output/persistence semantics; export and plan explanation need provenance, claim-lifetime, and recovery-authority semantics; migration and damaged/unknown drills need unresolved transition semantics; C0b, C2, C5, and C7 remain blocked by their recorded history, mutation, coordination, checkpoint, retention, or authorization joins.
 
 ## 10. Resumption record
