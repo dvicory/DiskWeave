@@ -880,13 +880,24 @@ mod tests {
         let mut log = TraceLog::default();
         let first = log.reserve().unwrap();
         log.complete(first, successful_trace_record(1)).unwrap();
-        for sequence in 2..=MAX_TRACE_RECORDS as u64 {
+        let incomplete = log.reserve().unwrap();
+        for sequence in 2..(MAX_TRACE_RECORDS as u64) {
             let reservation = log.reserve().unwrap();
             log.complete(reservation, successful_trace_record(sequence))
                 .unwrap();
         }
         assert!(matches!(log.reserve(), Err(AdapterError::Exhausted(_))));
+        assert!(matches!(
+            log.document("fixture".into(), 8192, 3),
+            Err(AdapterError::ReconciliationRequired(_))
+        ));
 
+        log.complete(
+            incomplete,
+            successful_trace_record(MAX_TRACE_RECORDS as u64 + 2),
+        )
+        .unwrap();
+        log.mark_reclaimable(incomplete).unwrap();
         log.mark_reclaimable(first).unwrap();
         let renewed = log.reserve().unwrap();
         assert!(log.complete(first, successful_trace_record(0)).is_err());
@@ -899,15 +910,55 @@ mod tests {
 
         let document = log.document("fixture".into(), 8192, 3).unwrap();
         assert_eq!(document.records.len(), MAX_TRACE_RECORDS);
-        assert_eq!(document.records[0].sequence, 2);
-        assert_eq!(
-            document.records.last().unwrap().sequence,
-            MAX_TRACE_RECORDS as u64 + 1
-        );
+        assert_eq!(document.exhausted_records, 1);
         assert_eq!(document.retired_records, 1);
+        let retained_sequences: Vec<_> =
+            document.records.iter().map(|record| record.sequence).collect();
+        assert_eq!(retained_sequences.first(), Some(&2));
+        assert_eq!(retained_sequences.get(1), Some(&3));
+        assert_eq!(
+            retained_sequences.last(),
+            Some(&(MAX_TRACE_RECORDS as u64 + 2))
+        );
         let replay = document.replay().unwrap();
         assert!(!replay.clean);
         assert!(replay.partial_session);
+
+        let mut divergent = document;
+        divergent.records[0]
+            .normalized_request
+            .as_mut()
+            .unwrap()
+            .offset += 512;
+        assert!(matches!(
+            divergent.replay(),
+            Err(AdapterError::Conflict(message)) if message.contains("sequence 2")
+        ));
+    }
+
+    #[test]
+    fn saturated_retirement_accounting_does_not_stop_reuse() {
+        let mut log = TraceLog::default();
+        let first = log.reserve().unwrap();
+        log.complete(first, successful_trace_record(1)).unwrap();
+        log.mark_reclaimable(first).unwrap();
+        log.set_retired_records_for_test(u64::MAX - 1);
+
+        let renewed = log.reserve().unwrap();
+        log.complete(renewed, successful_trace_record(2)).unwrap();
+        log.mark_reclaimable(renewed).unwrap();
+        let after_saturation = log.reserve().unwrap();
+        log.complete(after_saturation, successful_trace_record(3))
+            .unwrap();
+        log.mark_reclaimable(after_saturation).unwrap();
+
+        let document = log.document("fixture".into(), 8192, 3).unwrap();
+        assert_eq!(document.retired_records, u64::MAX);
+        assert!(document.retired_records_saturated);
+        assert_eq!(document.exhausted_records, 0);
+        let replay = document.replay().unwrap();
+        assert!(replay.partial_session);
+        assert!(!replay.clean);
     }
 
     /// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow

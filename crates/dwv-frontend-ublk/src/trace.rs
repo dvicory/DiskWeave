@@ -308,6 +308,13 @@ impl Default for TraceLog {
         }
     }
 }
+#[cfg(test)]
+impl TraceLog {
+    pub(crate) fn set_retired_records_for_test(&mut self, count: u64) {
+        self.retired_records = count;
+        self.retired_records_saturated = count == u64::MAX;
+    }
+}
 
 impl TraceLog {
     pub fn reserve(&mut self) -> Result<TraceReservation, AdapterError> {
