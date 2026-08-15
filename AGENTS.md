@@ -1,6 +1,6 @@
 DiskWeave is correctness-first storage software. Prefer simple, explicit designs over clever abstractions.
 
-Write technical prose using ISO 24495-1 plain-language principles and Zinsser's principles of simplicity and economy. Optimize for the reader without removing DiskWeave terminology or correctness-relevant conditions, authority, uncertainty, failure behavior, or claim boundaries.
+Write technical prose using ISO 24495-1 and Zinsser's principles of simplicity and economy. Preserve DiskWeave terminology and correctness-relevant semantics.
 
 Current `openspec/specs/*/spec.md` files own required product behavior. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity.
 
@@ -17,6 +17,8 @@ Keep correctness-boundary effects, ownership, durability, and state transitions 
 `work/` is a Git-ignored symlink to persistent local agent state for evidence, experiments, handoffs, and useful intermediate work that does not belong in DiskWeave. Nothing there is semantic authority.
 
 Use `jj workspace` inside `work/workspaces/` for isolated or parallel repository changes. Launch implementation agents from the workspace they own. Do not create independent jj or Git repositories inside DiskWeave workspaces.
+
+DiskWeave uses Beads (`bd`) for shared executable work. Beads belongs to the DiskWeave repository, not `work/`. OpenSpec owns required product semantics; Beads records execution state and dependencies only. Use `bd prime` for workflow guidance and `bd where` to verify the shared tracker before changing work from a jj workspace.
 
 ## Code and comments
 
