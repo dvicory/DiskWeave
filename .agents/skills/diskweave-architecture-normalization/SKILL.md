@@ -1,6 +1,6 @@
 ---
 name: diskweave-architecture-normalization
-description: Reconcile a settled DiskWeave architecture revision or bounded architecture delta into operator-centered product semantics and durable canonical authority before behavior-changing implementation. Preserve invariant impact, inherited obligations, unresolved target meaning, and source-retirement proof without duplicating semantic reconciliation or creating a parallel requirements system.
+description: Reconcile a settled DiskWeave architecture revision or bounded architecture delta into operator-centered product semantics through reviewed OpenSpec changes. Preserve invariant impact, inherited obligations, unresolved target meaning, and source-retirement proof without duplicating semantic reconciliation or creating a parallel requirements system.
 ---
 
 # DiskWeave architecture normalization
@@ -9,7 +9,7 @@ Normalize architecture into **operator-meaningful product semantics**.
 
 Architecture supplies constitutional constraints and target intent.
 
-Canonical OpenSpecs own detailed required product behavior.
+Canonical OpenSpecs own current required product behavior.
 
 `diskweave-semantic-reconciliation` determines current canonical semantic ownership and coherence.
 
@@ -40,6 +40,7 @@ There is no preferred capability count, ledger-row count, source-cluster count, 
 Keep these roles distinct:
 
 * Current `openspec/specs/*/spec.md` owns current detailed required product behavior.
+* A reviewed active OpenSpec change defines the target for work within that change until verified and synced.
 * The active architecture supplies current constitutional/design direction under its declared authority boundary.
 * A candidate architecture supplies target intent and constitutional constraints only; it does not silently override current OpenSpecs.
 * Current implementation shows realized behavior, not semantic authority.
@@ -49,6 +50,8 @@ Keep these roles distinct:
 
 Never implement changed product behavior directly from candidate architecture prose.
 
+A selected capability needs sufficiently precise reviewed OpenSpec target semantics before behavior-changing implementation.
+
 A green readiness result proves consistency of semantics the repository currently models. It does **not** prove that every consequential semantic remaining only in architecture prose already has a durable home.
 
 Treat deterministic architecture impact as review scope, not proof that an owner must change.
@@ -57,7 +60,7 @@ Use existing workflows instead of duplicating them:
 
 * `diskweave-knowledge` for deterministic current context, relationships, architecture impact, history, affected paths, and readiness;
 * `diskweave-semantic-reconciliation` for current canonical ownership, refinement/composition, contradictions, gaps, failure/uncertainty coherence, and dependent review;
-* normal OpenSpec workflow for canonical target semantics and coherent change boundaries;
+* normal OpenSpec workflow for reviewed target semantics and coherent change boundaries;
 * milestone planning only after a coherent operator capability or independently useful increment is selected.
 
 Do not prescribe OpenSpec change names/count, speculative `req.*` IDs, `design.md`, task decomposition, Rust modules/types/files, reversible implementation choices, or agent orchestration.
@@ -225,7 +228,7 @@ A preliminary pass may leave a likely conclusion at `impact-mapped`. Do not prom
 For semantics requiring a transition, distinguish:
 
 * **mapped** — target meaning and review surface are understood;
-* **target-specified** — canonical target semantics determine success, refusal, uncertainty, authority, relevant transitions, inherited obligations, claim limits, and immediately usable behavior, with required current semantic reconciliation complete;
+* **target-specified** — reviewed OpenSpec target semantics determine success, refusal, uncertainty, authority, relevant transitions, inherited obligations, claim limits, and immediately usable behavior, with required current semantic reconciliation complete;
 * **canonicalized** — the target semantic has durable current canonical authority under normal repository rules.
 
 Implementation and evidence remain separate.
@@ -515,11 +518,11 @@ When advancing one capability:
 6. consume its ownership/composition, contradiction/gap, failure/uncertainty, and dependent-review conclusions;
 7. classify the architecture relationship as `current-entailed`, `target-delta`, current debt, or unresolved;
 8. resolve constitutional ambiguity before detailed target specification;
-9. use normal OpenSpec workflow to determine the minimum coherent canonical target transition;
+9. use normal OpenSpec workflow to determine the minimum coherent reviewed target transition;
 10. preserve stable `req.*` identity when the same durable contract evolves;
 11. create a new requirement identity only when reconciliation establishes an independently owned semantic decision;
 12. record the actual transition owner;
-13. rerun the operator story and transition-inheritance test against the canonical target;
+13. rerun the operator story and transition-inheritance test against the reviewed OpenSpec target;
 14. update only affected campaign findings.
 
 Do not preselect split, merge, supersession, new owner, existing-owner evolution, or an umbrella composition requirement before semantic reconciliation establishes the correct ownership shape.
@@ -530,7 +533,7 @@ Treat that as feedback to the artifact that owns the issue, never as semantic au
 
 The whole architecture need not be canonicalized before the first coherent capability can proceed.
 
-Behavior-changing implementation of that capability does require sufficiently precise canonical target semantics.
+Behavior-changing implementation of that capability may proceed once its reviewed OpenSpec target semantics are sufficiently precise.
 
 # Normalization completion
 
