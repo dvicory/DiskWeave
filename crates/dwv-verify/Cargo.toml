@@ -7,8 +7,14 @@ publish = false
 [lib]
 path = "src/lib.rs"
 
+[[bin]]
+name = "dwv-independent-parity"
+path = "src/independent_parity.rs"
+
 [dependencies]
 dwv-codec = { path = "../dwv-codec" }
 dwv-core = { path = "../dwv-core" }
 dwv-recovery = { path = "../dwv-recovery" }
 dwv-store = { path = "../dwv-store" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
