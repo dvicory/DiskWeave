@@ -18,7 +18,7 @@
 | Current canonical requirements | 166 |
 | Readiness after C8a archive | Green; no diagnostics |
 | Candidate impact | 21 marked v0.9 invariants; 53 directly affected current requirements |
-| Durable transition posture | C0a and C8a canonicalized; U11 blocked planning; C8b implementation-ready planning |
+| Durable transition posture | C0a and C8a canonicalized; U11 blocked planning; C8b implementation under adversarial repair; renewable Linux trace retention planned |
 | Source-exclusion proof | Premature and not attempted |
 
 Authority posture:
@@ -122,6 +122,24 @@ The accepted product direction is a **target-delta**: successful rebuilds do not
 
 **Next safe gate:** Determine the exact point after all ranges pass per-range and final verification, a prepared topology exists, durable topology commit and request-visible publication complete, restart reconciles any committed generation after interrupted publication, and any explicitly selected claim dependencies have been preserved in a verified retained copy or narrowed/retired by their owner, when the detailed rebuild record ceases to be authoritative. Only then may a bounded OpenSpec change be proposed. This campaign does not choose automatic eviction, identifier reuse, a numeric bound, migration, generic lifecycle/GC/audit policy, or an implementation mechanism; source retirement remains gated by Section 8.
 
+### R7 — Long-horizon finite-resource audit
+
+**Current closure inspected:**
+
+- Linux trace and live resource owners: `req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe`, `req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority`, `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics`, and `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations`.
+- Fence and recovery owners: `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation`, `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence`, `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence`, and `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`.
+- Cross-cutting bound: `req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission`.
+- The implementation producers, consumers, export limits, and reset or retirement paths for frontend trace records, home-write fence certificates, rebuild records, recovery-manifest bytes, and finite generation/tag identities.
+
+**Result:** Current canonical semantics require bounded admission and explicit exhaustion, but they do not state that every finite retained-state capacity is renewable across the advertised service lifetime. The audit separated four independently advancing boundaries rather than creating one generic lifecycle rule.
+
+1. **Linux trace retention has a current lifetime defect.** The canonical Linux requirement explicitly refuses another request when the configured trace count is retained, and the implementation stops the queue at 4,096 records. The validated planning change `make-linux-trace-retention-renewable` modifies that same owner: reserve before admission, reuse only the oldest fully terminal and reconciled record, disclose partial-session retention and saturated accounting, and never reclaim an incomplete or live owner. This is planned target behavior, not current authority. Bead chain `dwv-x6y.1.1` -> `.2` -> `.3` owns implementation through canonicalization.
+2. **Home-write fence capacity is not ready for canonical retirement semantics.** `RecoverySnapshot::fences` is append-only and the default export limit is 16,384, but no current rule makes successful writes a lifetime allowance or defines fence liveness, compacted coverage, pre-intent capacity reservation, or atomic retirement. A fence remains live while any clean, integrity, session, uncertain, or selected historical claim needs its exact typed coverage. Beads `dwv-x6y.2.1`–`.3` preserve the separate witness, admission, and session-close joins; `.2.3` depends on `dwv-hg0.4`.
+3. **Finite reusable identities need owner-local reset domains.** Checked exhaustion is safe; silent wrap or same-process reuse is not. A reset requires a new disambiguating namespace/incarnation or proof that every old channel and reference is fenced and reconciled. This remains U39 under `dwv-x6y.4`, not a universal counter framework.
+4. **Recovery-manifest size is adapter conformance after liveness.** The 16 MiB SQLite profile must represent every admitted supported semantic snapshot or select an explicit unsupported/migration outcome before dependent mutation. It does not authorize truncation or retirement. `dwv-x6y.5` depends on the fence and rebuild liveness results.
+
+**Invariant boundary:** One narrowed A17 long-horizon rule may be governed only after these owner-local rules are coherent: ordinary supported operation must not consume an undeclared irreversible lifetime allowance, while mathematically finite identities may still fail explicitly at pre-mutation exhaustion. Bead `dwv-x6y.6` depends on the trace, fence, rebuild, and identity work. U12 remains a separate operation-by-operation lifecycle audit under `dwv-x6y.7`.
+
 ## 4. Corrected operator capability map
 
 Labels are disposable campaign navigation.
@@ -163,7 +181,7 @@ All 21 v0.9 marked invariants were inspected through `knowledge architecture-can
 | A14 | `arch.diskweave.recovery-claims-do-not-outlive-required-material` | C2, C3, C5–C7 | **target-delta**; no current impact links; F2 correctly found no complete current owner | U13–U16; governance. |
 | A15 | `arch.diskweave.crash-safety-is-evidence-ordered` | C1–C8 | **target-delta** for epochs, basis, and claim retirement; current dirty/fence core is only impact-mapped | Apply to each new transition; do not create parallel crash policy. |
 | A16 | `arch.diskweave.abandonment-does-not-end-operation-ownership` | C1–C7 | **impact-mapped** to normalized lifecycle and operation-slot owners | Reconcile applicability to rollover, retention, migration, and adoption. |
-| A17 | `arch.diskweave.correctness-resources-are-bounded-and-observable` | All | **impact-mapped** to security, store, adapter, Linux, and evidence owners | R6 and U36 cover offline-rebuild record capacity; U10 remains separate. Reconcile target background/history operations and govern invariant. |
+| A17 | `arch.diskweave.correctness-resources-are-bounded-and-observable` | All | **impact-mapped** to security, store, adapter, Linux, and evidence owners | R6–R7 and U36–U40 separate rebuild, trace, fence, identity, and representation bounds. Govern only after owner-local rules close under `dwv-x6y.6`; U10 fairness remains separate. |
 | A18 | `arch.diskweave.semantic-granularities-remain-independent` | All | **impact-mapped** to request, store, XOR, dirty, and checksum owners | Reconcile protection-range and role-basis applicability. |
 | A19 | `arch.diskweave.claims-remain-evidence-tier-specific` | C0a, C0b, C2, C4, C5, C7, C8 | **impact-mapped** to evidence-boundaries owner | Reconcile new restart/history/tool claims. |
 | A20 | `arch.diskweave.format-interpretation-fails-closed` | C0a, C1, C2, C5–C8 | **impact-mapped** to architecture, recovery schema, and envelope owners | Reconcile epoch/history format evolution and migration refusal. |
@@ -186,7 +204,7 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | U09 | Background rollover lifecycle, progress, restart, failure, and completion | C3 | **target-delta; mapped** | v0.9 §§9.13, 10.6–10.9. |
 | U10 | Cross-operation fairness and starvation limits | C3, C5, C7 | **target-delta; mapped** | v0.8 §11.10 and v0.9 §9.13; independent of resource admission. |
 | U11 | Portable shutdown, endpoint withdrawal, and claim-release ordering | C1, C2 | **OpenSpec planned; implementation blocked** | Change `add-portable-shutdown-claim-release` defines the target ordering but is not current authority. Implementation inspection found no service-owned durable writable-session begin/close path, so exact close-session evidence is unavailable. Bead `dwv-hg0.4` owns prerequisite reconciliation and blocks `dwv-hg0.1`; U03, U08, and U25 are review inputs only, not declared unblockers. |
-| U12 | Long-running job identity, resume/cancel, and correctness cursor | C3, C5, C7 | **unresolved retained intent** | R4; v0.8 §19.4. Determine whether operation-specific owners compose completely. |
+| U12 | Long-running job identity, resume/cancel, and correctness cursor | C3, C5, C7 | **unresolved retained intent** | R4; v0.8 §19.4. Determine whether operation-specific owners compose completely; `dwv-x6y.7` owns the later bounded audit and must not create an umbrella owner for symmetry. |
 | U13 | Historical artifact roles and coherent named recovery points | C0b, C4, C7 | **target-delta; mapped** | v0.9 §§7.7–7.9, 11.6–11.7, 12.3–12.5. |
 | U14 | Baseline rule that an advertised recovery claim cannot outlive required material | C2, C3, C5–C7 | **target-delta; mapped** | Marked A14 and v0.9 §11.10. Must remain even if positive history features are deferred. |
 | U15 | Positive retention extent, replication, expiry, and garbage-collection defaults | C0b, C3, C7 | **ownership-or-scope-unresolved; product decision** | Split from U14; no default is selected by this campaign. |
@@ -201,7 +219,7 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | U24 | Optional encryption integration surface | C1 | **ownership-or-scope-unresolved** | v0.8 §15.1; v0.9 §13.6. Optional and not a baseline publication blocker. |
 | U25 | Baseline deployment/startup/shutdown dependency ordering | C1, C2 | **target-delta; mapped** | Split from optional encryption; v0.8 §§15.3–15.6 and v0.9 §§13.7–13.8. |
 | U26a | Independent read-only recovery-state inspection | C8 | **canonicalized** | `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`; implementation `crates/dwv-recovery-sqlite/src/recovery_inspect.rs`; evidence `crates/dwv-recovery-sqlite/tests/recovery_inspect.rs`; closed Bead chain `dwv-bno` -> `.1` -> `.2` -> `.3`. The command remains experimental and authorizes no U26b or U27 action. |
-| U26b | Independent equation verification, current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills | C8 | **split: C8b planned; remainder target-delta** | `add-bounded-parity-scrub` owns only standalone bounded single-XOR equation verification and is not current authority. Current parity build, export, plan explanation, migration, and damaged/unknown drills remain open. U26a, U11, and U27 remain separate. |
+| U26b | Independent equation verification, current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills | C8 | **split: C8b implementation under repair; remainder target-delta** | `add-bounded-parity-scrub` owns only standalone bounded single-XOR equation verification and is not current authority. An isolated implementation revision failed its first adversarial review on resource accounting, hostile descriptors, portable alias refusal, and result/status handling; `dwv-ykl.1` remains in progress until those defects are repaired. Current parity build, export, plan explanation, migration, and damaged/unknown drills remain open. U26a, U11, and U27 remain separate. |
 | U27 | Stable-format graduation claim gate | C8 | **target-delta; mapped** | A21. Separate from building tools so a partial tool does not imply stable format. |
 | U28 | P/Q production profile and exact codeword coherence | C4, C5 | **deferred positive profile** | No baseline P/Q fields or implementation duty; same-codeword rule remains at profile boundary. |
 | U29 | Strict pre-publication verification/currentization | C2 | **deferred optional profile** | Full scan does not prove historical continuity. |
@@ -211,7 +229,11 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | U33 | Mediated standalone read/write sessions | C1, C2 | **deferred optional profile** | Future profile needs starting basis, absent-role, crash, integrity, custody, and rejoin semantics. |
 | U34 | Production degraded writes | C4 | **deferred; baseline prohibited** | Current complete-assignment and read-only degraded semantics continue to block the positive feature. |
 | U35 | Live macOS bridge | C8 | **evidence-only gap, not selected dependency** | Current regular-file fixture/trace claim remains narrow; no portable semantic change follows. |
-| U36 | Offline-rebuild record capacity, retirement, and lifetime exhaustion | C4, C5 | **ownership-or-scope-unresolved** | R6; accepted direction is no hidden lifetime allowance: configured capacity bounds correctness-relevant records. The exact retirement point after verification, prepared topology, durable commit/publication, restart reconciliation, and selected claim dependencies remains open. Separate from R4/U12 generic job composition and U15 positive retention/GC policy; preserve A14/U14 within existing scope, A15 evidence ordering, A16 operation ownership, and A17 resource bounds. Bead `dwv-ee6`. |
+| U36 | Offline-rebuild record capacity, retirement, and lifetime exhaustion | C4, C5 | **ownership-or-scope-unresolved; not OpenSpec-ready** | R6–R7; accepted direction is no hidden lifetime allowance: configured capacity bounds correctness-relevant records. Current authority does not bind rebuild identity to prepared topology/committed publication, define block/cancel/rollback outcomes, or close claim-material handoff. `dwv-ee6` closed the initial campaign result; `dwv-x6y.3.1`–`.3` preserve these prerequisites before `dwv-x6y.3` can define retirement. Separate from R4/U12 and U15; preserve A13–A17. |
+| U37 | Mounted-service trace continuity and renewable diagnostic retention | C1 | **OpenSpec planned; not current authority** | R7; validated change `make-linux-trace-retention-renewable` preserves the current Linux owner ID and defines a fixed 4,096-record terminal-only rolling window, partial-session disclosure, non-gating saturation, and conservative incomplete reservations. Execute `dwv-x6y.1.1` -> `.2` -> `.3`; no durable history or stable-format promise. |
+| U38 | Home-write fence capacity, compacted coverage, and retirement | C1–C5 | **ownership-or-scope-unresolved; not OpenSpec-ready** | R7; the 16,384-fence export limit is implementation evidence, not a lifetime policy. `dwv-x6y.2.1`–`.3` own compacted witness liveness, pre-intent capacity reservation, and session-close supersession. Until exact atomic handoff is canonical, preserve fail-closed capacity and never reuse post-intent or uncertain evidence. |
+| U39 | Finite reusable identity exhaustion and reset domains | All reusable operation identities | **unresolved retained target semantic** | R7; checked exhaustion remains explicit and pre-mutation. `dwv-x6y.4` must reconcile owner-local reset/incarnation rules and stale-reference rejection without widening durable recovery generations or topology epochs into a universal rollover policy. |
+| U40 | Recovery-manifest representability under retained semantic state | C0a–C7 | **deferred dependency** | R7; `dwv-x6y.5` follows U36/U38 liveness. The 16 MiB SQLite profile is adapter conformance: every admitted supported snapshot fits, or admission selects explicit unsupported/migration behavior before dependent mutation. No truncation or silent record retirement. |
 
 ## 7. Independent source-coverage audit
 
@@ -222,13 +244,13 @@ These temporary IDs are burn-down handles, not permanent product identifiers.
 | Executive decision and §§1–3 | Product boundary and all 21 marked invariants map to A01–A21; target authority dimensions map to U01–U20. |
 | §§4–5 layering, ownership, stores, topology, identity | Current review surfaces remain impact-mapped; writer/publication/claim lifecycle is U03, U11, U25. |
 | §6 geometry, coding, basis | Current geometry surfaces remain impact-mapped; basis/currentization/coordination are U04–U08; P/Q is U28. |
-| §7 recovery state and formats | Current recovery/schema surfaces remain impact-mapped; history and stable-format/tool boundaries are U13–U15, U26a–U27. |
-| §§8–9 operations, write, crash, resources | Exact current owners remain review inputs; omitted F2 coordination and checkpoint closure are U07–U08; fairness/shutdown are U10–U11. |
+| §7 recovery state and formats | Current recovery/schema surfaces remain impact-mapped; history and stable-format/tool boundaries are U13–U15, U26a–U27; retained-state representability is U40. |
+| §§8–9 operations, write, crash, resources | Exact current owners remain review inputs; omitted F2 coordination and checkpoint closure are U07–U08; fairness/shutdown are U10–U11; fence capacity and retirement is U38. |
 | §10 lifecycle/startup/rollover | C0a/C2/C3 and U01–U12 cover every consequential transition; strict startup is U29. |
-| §§11–12 integrity and recovery | A10–A14 and U13–U20, U36 cover current, historical, unknown, preservation, repair, rebuild, adoption, and rebuild-record capacity meanings; degraded writes are U34. |
+| §§11–12 integrity and recovery | A10–A14 and U13–U20, U36, U38 cover current, historical, unknown, preservation, repair, rebuild, adoption, and retained recovery-evidence capacity; degraded writes are U34. |
 | §13 namespace, encryption, deployment | Split into U21–U25 so optional encryption cannot swallow baseline deployment and mover/staging can advance independently. |
-| §14 platforms | Current Linux/macOS review surfaces remain impact-mapped; live bridge is U35; platform durability remains evidence-tier bounded. |
-| §15 security, operator, observability | Resource/claim invariants A14, A17, A19 and U01–U02, U15–U16, U36 cover normative semantics; privacy/threat statements remain review inputs, not new behavior owners. |
+| §14 platforms | Current Linux/macOS review surfaces remain impact-mapped; mounted Linux trace continuity is U37; live macOS bridge is U35; platform durability remains evidence-tier bounded. |
+| §15 security, operator, observability | Resource/claim invariants A14, A17, A19 and U01–U02, U15–U16, U36–U40 cover normative and unresolved long-horizon boundaries; privacy/threat statements remain review inputs, not new behavior owners. |
 | §16 verification and tools | A19, A21, U26a–U27, U35 preserve claim gates. Evidence does not create target semantics. |
 | §17 alternatives/future profiles | U28–U34 preserve each positive deferral separately; rejected architectures are non-normative rationale. |
 | §18 relationship/judgments | Explicit v0.8 preservation/change statements were challenged against the backward audit below rather than accepted as self-proof. |
@@ -263,7 +285,7 @@ No row disappears by editing this campaign alone.
 
 1. **Reconcile marked current closure.** Process A01–A21 in these bounded semantic families, recording compact reconciliation anchors: product/portable boundaries; identity/authority/writer; dirty/crash/operation lifecycle; recovery/history/preservation; evidence/format. A row becomes `current-entailed` only after the bounded result proves complete composition.
 2. **Advance target rows by operator capability.** Start with U01/C0a. Later choose only an operator-closed capability from Section 4. Use normal OpenSpec work to settle target meaning; do not preselect requirement IDs or change decomposition here.
-3. **Resolve independent open rows.** Every U01–U36 must reach one permitted terminal disposition: canonicalized target, retained durable deferral, accepted removal, justified non-normative result, or evidence-only result attached to an already owned claim.
+3. **Resolve independent open rows.** Every U01–U40 must reach one permitted terminal disposition: canonicalized target, retained durable deferral, accepted removal, justified non-normative result, or evidence-only result attached to an already owned claim.
 4. **Govern invariants.** Every retained A row must obtain a durable governed home and valid current impact links.
 5. **Re-run transition inheritance.** For every new publication, epoch, basis, recovery, topology, retention, or adoption path, show that current blockers, indeterminate states, preservation duties, operation ownership, and retained claims survive or are explicitly superseded.
 6. **Run a final independent source walk.** Recheck all v0.8 and v0.9 consequential clusters against terminal A/U dispositions and current canonical authority.
@@ -275,7 +297,7 @@ No row disappears by editing this campaign alone.
 Normalization is complete only when all are true:
 
 - every A01–A21 row has settled detailed semantics, complete capability applicability, invariant governance, and no sole-source dependence on v0.8/v0.9;
-- every U01–U36 row has one terminal durable disposition;
+- every U01–U40 row has one terminal durable disposition;
 - every terminal current-semantic conclusion has a still-applicable bounded reconciliation anchor;
 - no umbrella owner restates valid composition and no independent policy remains scattered across composers;
 - no new transition bypasses a current blocker, pending obligation, preservation duty, indeterminate state, lifecycle obligation, or retained claim;
@@ -371,12 +393,13 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 - It does not inspect recovery state and does not depend on C8a/U26a implementation results, U11, production service/operator/frontend private state, recovery databases, implementation feedback, or another open campaign item.
 - Current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills remain separate U26b work; P/Q and stable-format graduation remain U28 and U27.
 
-**Durable planning anchors (target, not current authority):**
+**Durable work anchors (target, not current authority):**
 
 - OpenSpec change `openspec/changes/add-bounded-parity-scrub/` proposes one new independent-parity-verification requirement. The planned identifier is not current authority and is intentionally omitted here until archive.
-- Bead `dwv-ykl` owns the feature; `dwv-ykl.1` is open, unclaimed, and ready; `.2` is evidence blocked by `.1`; `.3` is verification/archive/canonicalization blocked by `.2`. The parent closes last.
-- Focused evidence must cover match/mismatch, incomplete and failed reads, logical zero tails, invalid/unsupported/alias/bounds input, unchanged sources, human/JSON equivalence, deterministic statuses, bounded resources, experimental scope, and dependency isolation.
-- U11 is planned but blocked on `dwv-hg0.4`; C8b neither depends on nor advances it. No product implementation has started for C8b.
+- Bead `dwv-ykl` owns the feature; `.1` remains in progress after the first adversarial review found six implementation defects. `.2` remains blocked by `.1`; `.3` remains blocked by `.2`; the parent closes last.
+- The isolated implementation revision is not integrated or accepted. Required repair covers complete parity-buffer admission accounting, fail-closed non-Unix alias identity, duplicate JSON members, structured argument refusals, non-panicking error reporting, and truthful path causes.
+- Focused evidence must still cover match/mismatch, incomplete and failed reads, logical zero tails, invalid/unsupported/alias/bounds input, unchanged sources, human/JSON equivalence, deterministic statuses, bounded resources, experimental scope, and dependency isolation.
+- U11 is planned but blocked on `dwv-hg0.4`; C8b neither depends on nor advances it.
 
 **Rejected adjacent candidates:** current parity build needs complete-data and output/persistence semantics; export and plan explanation need provenance, claim-lifetime, and recovery-authority semantics; migration and damaged/unknown drills need unresolved transition semantics; C0b, C2, C5, and C7 remain blocked by their recorded history, mutation, coordination, checkpoint, retention, or authorization joins.
 
@@ -423,4 +446,4 @@ cargo xtask docs knowledge context \
   req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission
 ```
 
-All five campaign-repair packets succeeded at this snapshot. C0a and C8a are canonicalized; C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`, and Beads `dwv-bno` -> `.1` -> `.2` -> `.3` are closed. U11 target semantics remain planned but implementation is blocked: `dwv-hg0.4` must reconcile durable writable-session begin/close ownership before `.1`; U03, U08, and U25 are review inputs only. C8b is implementation-ready planning under `add-bounded-parity-scrub`; `dwv-ykl.1` is the only ready child, followed by `.2` and `.3`. Do not start U11, C0b, C2, U26b remainder, migration, recovery, mutation, deployment, or stable-format work from these selections.
+All five campaign-repair packets succeeded at this snapshot. C0a and C8a are canonicalized; C8a is implemented and evidenced under `req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing`, and Beads `dwv-bno` -> `.1` -> `.2` -> `.3` are closed. U11 remains blocked on `dwv-hg0.4`. C8b implementation is isolated and under repair after adversarial review; continue `dwv-ykl.1`, then `.2` and `.3`. R7/U37–U40 and epic `dwv-x6y` preserve long-horizon work: `dwv-x6y.1.1` is the next ready trace implementation; fence and rebuild retirement are not OpenSpec-ready and retain their child prerequisites; identity and manifest work remain tracked. Do not start U11, C0b, C2, U26b remainder, migration, recovery mutation, deployment, or stable-format work from these selections.

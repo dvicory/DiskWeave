@@ -31,7 +31,7 @@ The frontend SHALL publish finite queue, depth, transfer, buffer, operation-slot
 - **WHEN** the trace window contains active or incomplete reservations together with at least one fully terminal record whose operation-resource reconciliation is complete
 - **THEN** only the fully terminal record may be retired and reused; every active or incomplete reservation remains retained and all live operation, tag, buffer, child, durability, recovery, and reconciliation ownership remains intact
 
-#### Scenario: No safe reclaimable trace slot exists
+#### Scenario: The trace bound is exhausted
 
 - **WHEN** the fixed trace capacity is occupied by incomplete reservations, non-terminal operations, or terminal records whose required ownership or reconciliation has not completed
 - **THEN** the frontend returns explicit bounded resource exhaustion before semantic admission or protected mutation and does not evict, truncate, or reinterpret any existing record
