@@ -626,6 +626,27 @@ mod tests {
         }
     }
 
+    fn successful_trace_record(sequence: u64) -> TraceRecord {
+        let kernel = raw(KernelOperation::Write);
+        let translated = translate_request(
+            kernel,
+            8192,
+            TopologyEpoch(3),
+            SubmissionSequence(sequence),
+            1,
+        )
+        .unwrap();
+        TraceRecord {
+            sequence,
+            tag: 0,
+            generation: 1,
+            kernel_submission: kernel,
+            normalized_request: Some(NormalizedTraceRequest::from_translated(translated).unwrap()),
+            semantic_result: TerminalResult::Success,
+            kernel_completion: KernelCompletion::Success { bytes: 4096 },
+        }
+    }
+
     #[test]
     fn translation_is_checked_and_narrow() {
         let translated = translate_request(
@@ -791,6 +812,9 @@ mod tests {
             .unwrap()
             .offset += 512;
         assert!(matches!(divergent.replay(), Err(AdapterError::Conflict(_))));
+        let mut legacy = document.clone();
+        legacy.schema = "dwv.ublk.trace.v2".into();
+        assert!(matches!(legacy.replay(), Err(AdapterError::Unsupported(_))));
         let mut mismatched_tag = document;
         mismatched_tag.records[0].tag = 1;
         assert!(matches!(
@@ -848,6 +872,42 @@ mod tests {
                 .unwrap()
                 .clean
         );
+        assert!(abandoned.mark_reclaimable(reservation).is_err());
+    }
+
+    #[test]
+    fn trace_reuses_only_released_terminal_records() {
+        let mut log = TraceLog::default();
+        let first = log.reserve().unwrap();
+        log.complete(first, successful_trace_record(1)).unwrap();
+        for sequence in 2..=MAX_TRACE_RECORDS as u64 {
+            let reservation = log.reserve().unwrap();
+            log.complete(reservation, successful_trace_record(sequence))
+                .unwrap();
+        }
+        assert!(matches!(log.reserve(), Err(AdapterError::Exhausted(_))));
+
+        log.mark_reclaimable(first).unwrap();
+        let renewed = log.reserve().unwrap();
+        assert!(log.complete(first, successful_trace_record(0)).is_err());
+        log.complete(
+            renewed,
+            successful_trace_record(MAX_TRACE_RECORDS as u64 + 1),
+        )
+        .unwrap();
+        log.mark_reclaimable(renewed).unwrap();
+
+        let document = log.document("fixture".into(), 8192, 3).unwrap();
+        assert_eq!(document.records.len(), MAX_TRACE_RECORDS);
+        assert_eq!(document.records[0].sequence, 2);
+        assert_eq!(
+            document.records.last().unwrap().sequence,
+            MAX_TRACE_RECORDS as u64 + 1
+        );
+        assert_eq!(document.retired_records, 1);
+        let replay = document.replay().unwrap();
+        assert!(!replay.clean);
+        assert!(replay.partial_session);
     }
 
     /// dwv:req req.linux-ublk-frontend.the-initial-linux-publication-profile-is-complete-and-narrow

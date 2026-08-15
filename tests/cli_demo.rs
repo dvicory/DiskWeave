@@ -261,6 +261,8 @@ fn disk_trace_cli_replays_without_fixture_access() {
             maximum_records: MAX_TRACE_RECORDS,
         },
         exhausted_records: 0,
+        retired_records: 0,
+        retired_records_saturated: false,
         records: vec![dwv_frontend_ublk::TraceRecord {
             sequence: 1,
             tag: 0,

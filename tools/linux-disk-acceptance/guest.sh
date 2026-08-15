@@ -174,16 +174,18 @@ second_trace_digest=$(sha256sum "$scratch/dwv-trace-second.json" | cut -d' ' -f1
 jq -e \
   --arg digest "$(jq -r .fixture_digest "$scratch/dwv-serve-first.json")" \
   --argjson count "$(jq -r .trace_count "$scratch/dwv-serve-first.json")" \
-  '.schema == "dwv.ublk.trace.v2" and .fixture_digest == $digest and
+  '.schema == "dwv.ublk.trace.v3" and .fixture_digest == $digest and
    .bounds.queue_depth == 8 and .bounds.maximum_transfer == 131072 and
    .bounds.maximum_records == 4096 and .exhausted_records == 0 and
+   .retired_records == 0 and .retired_records_saturated == false and
    (.records | length) == $count' "$scratch/dwv-trace-first.json" >/dev/null
 jq -e \
   --arg digest "$(jq -r .fixture_digest "$scratch/dwv-serve-second.json")" \
   --argjson count "$(jq -r .trace_count "$scratch/dwv-serve-second.json")" \
-  '.schema == "dwv.ublk.trace.v2" and .fixture_digest == $digest and
+  '.schema == "dwv.ublk.trace.v3" and .fixture_digest == $digest and
    .bounds.queue_depth == 8 and .bounds.maximum_transfer == 131072 and
    .bounds.maximum_records == 4096 and .exhausted_records == 0 and
+   .retired_records == 0 and .retired_records_saturated == false and
    (.records | length) == $count' "$scratch/dwv-trace-second.json" >/dev/null
 [[ $(stat -c %s "$scratch/dwv-trace-first.json") -le 4194304 ]]
 [[ $(stat -c %s "$scratch/dwv-trace-second.json") -le 4194304 ]]
@@ -291,6 +293,8 @@ jq -n \
         fixture_digest: $first_trace[0].fixture_digest,
         bounds: $first_trace[0].bounds,
         exhausted_records: $first_trace[0].exhausted_records,
+        retired_records: $first_trace[0].retired_records,
+        retired_records_saturated: $first_trace[0].retired_records_saturated,
         record_count: ($first_trace[0].records | length),
         replay: $first_trace_replay[0]
       },
@@ -302,6 +306,8 @@ jq -n \
         fixture_digest: $second_trace[0].fixture_digest,
         bounds: $second_trace[0].bounds,
         exhausted_records: $second_trace[0].exhausted_records,
+        retired_records: $second_trace[0].retired_records,
+        retired_records_saturated: $second_trace[0].retired_records_saturated,
         record_count: ($second_trace[0].records | length),
         replay: $second_trace_replay[0]
       }

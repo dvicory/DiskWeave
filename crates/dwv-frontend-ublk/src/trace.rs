@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-pub const TRACE_SCHEMA: &str = "dwv.ublk.trace.v2";
+pub const TRACE_SCHEMA: &str = "dwv.ublk.trace.v3";
 pub const MAX_TRACE_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -131,7 +131,12 @@ pub struct TraceDocument {
     pub capacity: u64,
     pub topology_epoch: u64,
     pub bounds: TraceBounds,
+    /// Number of reservations refused because no slot was safely available.
     pub exhausted_records: u64,
+    /// Number of completed records retired from the retained window.
+    pub retired_records: u64,
+    /// True once the retired-record count reached its representational bound.
+    pub retired_records_saturated: bool,
     pub records: Vec<TraceRecord>,
 }
 
@@ -140,6 +145,7 @@ pub struct TraceReplaySummary {
     pub schema: String,
     pub record_count: usize,
     pub clean: bool,
+    pub partial_session: bool,
 }
 
 impl TraceDocument {
@@ -166,6 +172,11 @@ impl TraceDocument {
         if self.schema != TRACE_SCHEMA {
             return Err(AdapterError::Unsupported("frontend trace schema"));
         }
+        if self.retired_records_saturated && self.retired_records != u64::MAX {
+            return Err(AdapterError::Invalid(
+                "frontend trace retired-record accounting is invalid",
+            ));
+        }
         if self.fixture_digest.is_empty()
             || self.records.len() > self.bounds.maximum_records
             || self.bounds.maximum_records > MAX_TRACE_RECORDS
@@ -176,8 +187,9 @@ impl TraceDocument {
         {
             return Err(AdapterError::Invalid("frontend trace bounds or identity"));
         }
+        let partial_session = self.retired_records > 0 || self.retired_records_saturated;
         let mut previous = 0;
-        let mut clean = self.exhausted_records == 0;
+        let mut clean = self.exhausted_records == 0 && !partial_session;
         for record in &self.records {
             if record.sequence <= previous
                 || usize::from(record.tag) >= self.bounds.queue_depth
@@ -244,6 +256,7 @@ impl TraceDocument {
             schema: self.schema.clone(),
             record_count: self.records.len(),
             clean,
+            partial_session,
         })
     }
 }
@@ -260,23 +273,86 @@ pub fn replay_trace_file(path: &Path) -> Result<TraceReplaySummary, AdapterError
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TraceReservation(usize);
+pub struct TraceReservation {
+    index: usize,
+    generation: u64,
+}
 
-#[derive(Default)]
+#[derive(Clone, Debug)]
+enum TraceSlot {
+    Available,
+    Reserved {
+        generation: u64,
+    },
+    Terminal {
+        generation: u64,
+        record: TraceRecord,
+        reclaimable: bool,
+    },
+}
+
 pub struct TraceLog {
-    records: Vec<Option<TraceRecord>>,
+    records: Vec<TraceSlot>,
     exhausted_records: u64,
+    retired_records: u64,
+    retired_records_saturated: bool,
+}
+
+impl Default for TraceLog {
+    fn default() -> Self {
+        Self {
+            records: vec![TraceSlot::Available; MAX_TRACE_RECORDS],
+            exhausted_records: 0,
+            retired_records: 0,
+            retired_records_saturated: false,
+        }
+    }
 }
 
 impl TraceLog {
     pub fn reserve(&mut self) -> Result<TraceReservation, AdapterError> {
-        if self.records.len() == MAX_TRACE_RECORDS {
+        let index = self
+            .records
+            .iter()
+            .position(|slot| matches!(slot, TraceSlot::Available))
+            .or_else(|| {
+                self.records
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, slot)| match slot {
+                        TraceSlot::Terminal {
+                            record,
+                            reclaimable: true,
+                            ..
+                        } => Some((index, record.sequence)),
+                        _ => None,
+                    })
+                    .min_by_key(|(_, sequence)| *sequence)
+                    .map(|(index, _)| index)
+            });
+        let Some(index) = index else {
             self.exhausted_records = self.exhausted_records.saturating_add(1);
-            return Err(AdapterError::Exhausted("trace record bound reached"));
+            return Err(AdapterError::Exhausted(
+                "no safely reclaimable trace record",
+            ));
+        };
+        let generation = match &self.records[index] {
+            TraceSlot::Available => 1,
+            TraceSlot::Terminal { generation, .. } => generation.checked_add(1).ok_or(
+                AdapterError::Exhausted("trace reservation generation exhausted"),
+            )?,
+            TraceSlot::Reserved { .. } => {
+                return Err(AdapterError::Conflict(
+                    "trace reservation selected an active slot".into(),
+                ));
+            }
+        };
+        if matches!(self.records[index], TraceSlot::Terminal { .. }) {
+            self.retired_records = self.retired_records.saturating_add(1);
+            self.retired_records_saturated = self.retired_records == u64::MAX;
         }
-        let reservation = TraceReservation(self.records.len());
-        self.records.push(None);
-        Ok(reservation)
+        self.records[index] = TraceSlot::Reserved { generation };
+        Ok(TraceReservation { index, generation })
     }
 
     pub fn complete(
@@ -286,15 +362,62 @@ impl TraceLog {
     ) -> Result<(), AdapterError> {
         let slot = self
             .records
-            .get_mut(reservation.0)
+            .get_mut(reservation.index)
             .ok_or(AdapterError::Invalid("unknown trace reservation"))?;
-        if slot.is_some() {
-            return Err(AdapterError::Conflict(
-                "trace reservation already completed".into(),
-            ));
+        match slot {
+            TraceSlot::Reserved { generation } if *generation == reservation.generation => {
+                *slot = TraceSlot::Terminal {
+                    generation: reservation.generation,
+                    record,
+                    reclaimable: false,
+                };
+                Ok(())
+            }
+            TraceSlot::Reserved { .. } => Err(AdapterError::Conflict(
+                "stale trace reservation completion".into(),
+            )),
+            TraceSlot::Available | TraceSlot::Terminal { .. } => Err(AdapterError::Conflict(
+                "trace reservation is not incomplete".into(),
+            )),
         }
-        *slot = Some(record);
-        Ok(())
+    }
+
+    /// Marks a terminal record reclaimable after its operation owner releases resources.
+    ///
+    /// Abandoned records stay non-reclaimable because their terminal ownership has not
+    /// been reconciled.
+    pub fn mark_reclaimable(&mut self, reservation: TraceReservation) -> Result<(), AdapterError> {
+        let slot = self
+            .records
+            .get_mut(reservation.index)
+            .ok_or(AdapterError::Invalid("unknown trace reservation"))?;
+        match slot {
+            TraceSlot::Terminal {
+                generation,
+                record,
+                reclaimable,
+            } if *generation == reservation.generation => {
+                if matches!(record.kernel_completion, KernelCompletion::Abandoned) {
+                    return Err(AdapterError::Conflict(
+                        "abandoned trace reservation is not reclaimable".into(),
+                    ));
+                }
+                if *reclaimable {
+                    return Err(AdapterError::Conflict(
+                        "trace reservation is already reclaimable".into(),
+                    ));
+                }
+                *reclaimable = true;
+                Ok(())
+            }
+            TraceSlot::Terminal { .. } => {
+                Err(AdapterError::Conflict("stale trace reclamation".into()))
+            }
+            TraceSlot::Reserved { .. } => Err(AdapterError::Conflict(
+                "incomplete trace reservation is not reclaimable".into(),
+            )),
+            TraceSlot::Available => Err(AdapterError::Conflict("unknown trace reservation".into())),
+        }
     }
 
     pub fn document(
@@ -303,16 +426,18 @@ impl TraceLog {
         capacity: u64,
         topology_epoch: u64,
     ) -> Result<TraceDocument, AdapterError> {
-        let mut records = self
-            .records
-            .iter()
-            .cloned()
-            .collect::<Option<Vec<_>>>()
-            .ok_or_else(|| {
-                AdapterError::ReconciliationRequired(
-                    "frontend trace contains an incomplete reservation".into(),
-                )
-            })?;
+        let mut records = Vec::new();
+        for slot in &self.records {
+            match slot {
+                TraceSlot::Available => {}
+                TraceSlot::Reserved { .. } => {
+                    return Err(AdapterError::ReconciliationRequired(
+                        "frontend trace contains an incomplete reservation".into(),
+                    ));
+                }
+                TraceSlot::Terminal { record, .. } => records.push(record.clone()),
+            }
+        }
         records.sort_unstable_by_key(|record| record.sequence);
         Ok(TraceDocument {
             schema: TRACE_SCHEMA.into(),
@@ -325,6 +450,8 @@ impl TraceLog {
                 maximum_records: MAX_TRACE_RECORDS,
             },
             exhausted_records: self.exhausted_records,
+            retired_records: self.retired_records,
+            retired_records_saturated: self.retired_records_saturated,
             records,
         })
     }

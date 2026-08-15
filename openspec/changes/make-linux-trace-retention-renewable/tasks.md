@@ -1,11 +1,11 @@
 ## 1. Implementation
 
-- [ ] 1.1 Replace append-only trace reservation with a fixed-capacity renewable slot collection, choosing the smallest ring/deque-like or equivalent representation that preserves original sequence order and explicit available, incomplete, terminal-retained, and reclaimable eligibility states.
-- [ ] 1.2 Wire reservation and retirement into the Linux admission path so every request reserves before semantic admission or protected mutation, the oldest safely reclaimable terminal record is the only reusable record, and no-safe-slot refusal leaves existing records and owners untouched.
-- [ ] 1.3 Close the terminal-evidence/resource-release ordering race: make trace-slot reclaimability occur only after operation-slot, tag, buffer, child, durability, recovery, and reconciliation owners permit reclamation, while preserving stale and duplicate generation checks and abandonment semantics.
-- [ ] 1.4 Update bounded export and replay to retain original non-contiguous sequence values, accept a retained window whose first sequence is greater than one, disclose retired prefixes as partial-session evidence, and keep incomplete reservations reconciliation-required.
-- [ ] 1.5 Separate retired-record accounting from refusal outcomes, make the retired count saturating with an explicit saturation state that never gates ordinary service, and explicitly migrate or refuse ambiguous experimental trace-schema versions without promising compatibility.
-- [ ] 1.6 Preserve conservative shutdown and crash handling: never synthesize terminal evidence or reuse an incomplete reservation, and keep the change limited to the existing Linux frontend without durable trace segments, full history, or generic retention infrastructure.
+- [x] 1.1 Replace append-only trace reservation with a fixed-capacity renewable slot collection, choosing the smallest ring/deque-like or equivalent representation that preserves original sequence order and explicit available, incomplete, terminal-retained, and reclaimable eligibility states.
+- [x] 1.2 Wire reservation and retirement into the Linux admission path so every request reserves before semantic admission or protected mutation, the oldest safely reclaimable terminal record is the only reusable record, and no-safe-slot refusal leaves existing records and owners untouched.
+- [x] 1.3 Close the terminal-evidence/resource-release ordering race: make trace-slot reclaimability occur only after operation-slot, tag, buffer, child, durability, recovery, and reconciliation owners permit reclamation, while preserving stale and duplicate generation checks and abandonment semantics.
+- [x] 1.4 Update bounded export and replay to retain original non-contiguous sequence values, accept a retained window whose first sequence is greater than one, disclose retired prefixes as partial-session evidence, and keep incomplete reservations reconciliation-required.
+- [x] 1.5 Separate retired-record accounting from refusal outcomes, make the retired count saturating with an explicit saturation state that never gates ordinary service, and explicitly migrate or refuse ambiguous experimental trace-schema versions without promising compatibility.
+- [x] 1.6 Preserve conservative shutdown and crash handling: never synthesize terminal evidence or reuse an incomplete reservation, and keep the change limited to the existing Linux frontend without durable trace segments, full history, or generic retention infrastructure.
 
 ## 2. Focused Evidence
 

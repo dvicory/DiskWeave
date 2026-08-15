@@ -637,8 +637,14 @@ where
                     .complete(token)
                     .map_err(|_| UblkError::OtherError(-libc::EIO))?;
             }
+            // Trace retention is diagnostic only; release its slot after the operation/tag
+            // owner completes so a terminal record cannot race live-resource reuse.
+            trace
+                .lock()
+                .map_err(|_| UblkError::OtherError(-libc::EIO))?
+                .mark_reclaimable(reservation)
+                .map_err(|_| UblkError::OtherError(-libc::EIO))?;
         }
-        submit?;
     }
 }
 
