@@ -5,8 +5,9 @@ This capability defines the smallest experimental operator boundary needed to ru
 ## Requirements
 ### Requirement: The demo CLI has a versioned observable contract
 <!-- dwv:req req.macos-demo-cli.the-demo-cli-has-a-versioned-observable-contract -->
+<!-- dwv:requires req.architecture-contract.operator-result-projections-preserve-consequential-meaning -->
 
-The demo SHALL expose a `dwv` entrypoint with a documented command surface for fixture initialization, status, inspection, verification, rebuild planning, rebuild execution, and the bounded end-to-end demo workflow. Every command SHALL identify its command name and contract version in machine-readable output. Human-readable output SHALL describe the same semantic result rather than exposing a separate truth source.
+The demo SHALL expose a `dwv` entrypoint with a documented command surface for fixture initialization, status, inspection, verification, rebuild planning, rebuild execution, and the bounded end-to-end demo workflow. Every command SHALL identify its command name and contract version in machine-readable output. Human-readable output SHALL preserve command identity, outcome, and bounded diagnostics required by the applicable command contract.
 
 #### Scenario: A supported command succeeds
 

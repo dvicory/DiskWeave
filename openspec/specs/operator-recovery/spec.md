@@ -43,6 +43,7 @@ Production operator commands SHALL accept one bounded versioned declarative arra
 <!-- dwv:requires req.anchorless-topology-identity.identity-evidence-is-assessed-from-multiple-observations -->
 <!-- dwv:requires req.parity-verification-repair.exhaustive-verification-is-a-read-only-full-scan -->
 <!-- dwv:requires req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred -->
+<!-- dwv:requires req.architecture-contract.operator-result-projections-preserve-consequential-meaning -->
 
 The production status, members, scrub, and damage commands SHALL use current read-only identity observations, recovery inspection, and verification evidence without creating, initializing, migrating, or mutating recovery state or payload. The shared semantic result SHALL report lifecycle, access, member reconciliation, recovery classification, checksum state, parity state, verification completeness, damage disposition, remaining redundancy, publication state, and next action as separate fields.
 
@@ -98,8 +99,8 @@ A degraded, post-gap, or recovery-needed array that is inspected successfully SH
 
 #### Scenario: Human and structured renderings are requested
 
-- **WHEN** the same semantic result is rendered for a human or as versioned structured output
-- **THEN** both renderings preserve the same outcome, lineage, custody, role-local basis coverage, causal dimensions, counts, bounded findings, non-authorization statement, and next action while process status is mapped deterministically from the outcome
+- **WHEN** the same semantic result is rendered in human and versioned structured modes
+- **THEN** human and structured results each preserve the outcome, lineage, custody, role-local basis coverage, causal dimensions, counts, bounded findings, non-authorization statement, and next action while process status is mapped deterministically from the outcome
 
 ### Requirement: Recovery preview is read-only and apply re-establishes authority
 <!-- dwv:req req.operator-recovery.recovery-preview-is-read-only-and-apply-re-establishes-authority -->
@@ -137,13 +138,14 @@ Production recovery preview SHALL report the current metadata-loss disposition, 
 
 ### Requirement: Production commands share one semantic result boundary
 <!-- dwv:req req.operator-recovery.production-commands-share-one-semantic-result-boundary -->
+<!-- dwv:requires req.architecture-contract.operator-result-projections-preserve-consequential-meaning -->
 
 After a production command has parsed and entered operator semantics, success, semantic refusal, blocked or unavailable state, unsupported capability, reconciliation-required uncertainty, and operational failure SHALL all be represented by the same versioned semantic result contract. Human and structured renderings SHALL preserve the same command, outcome, reason code, reason, and available multidimensional assessment. Usage and input-shape errors MAY remain parser diagnostics outside that contract.
 
 #### Scenario: A semantic start refusal is rendered
 
 - **WHEN** start reaches operator semantics but a current admission prerequisite is unavailable
-- **THEN** human and structured modes render the shared result with the same refusal or blockage outcome and deterministic process status rather than substituting an unrelated error envelope
+- **THEN** the shared result reports the refusal or blockage outcome and maps process status deterministically without substituting an unrelated error envelope
 
 #### Scenario: A frontend capability is unsupported
 

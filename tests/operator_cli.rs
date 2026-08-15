@@ -1,4 +1,5 @@
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -75,6 +76,100 @@ fn failure(output: Output, code: i32) -> Value {
         String::from_utf8_lossy(&output.stderr)
     );
     serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn assert_human_projection_preserves_consequential_fields(human: &str, json: &Value) {
+    let mut lines = human.lines();
+    let mut fields = BTreeMap::new();
+    let (schema_key, schema_value) = lines
+        .next()
+        .expect("human operator result should start with schema")
+        .split_once(": ")
+        .expect("human schema line should contain a value");
+    assert_eq!(schema_key, "schema");
+    fields.insert(schema_key, schema_value);
+
+    let (command, reason) = lines
+        .next()
+        .expect("human operator result should contain command and reason")
+        .split_once(": ")
+        .expect("human command line should contain a reason");
+    assert_eq!(command, json["command"].as_str().unwrap());
+    assert_eq!(reason, json["reason"].as_str().unwrap());
+
+    for (key, value) in lines.filter_map(|line| line.split_once(": ")) {
+        fields.insert(key, value);
+    }
+    for (human_key, json_key) in [
+        ("schema", "schema"),
+        ("kind", "kind"),
+        ("reason-code", "reason_code"),
+        ("state", "lifecycle"),
+        ("access", "access"),
+        ("start", "start"),
+        ("parity", "parity"),
+        ("damage", "damage"),
+        ("redundancy", "redundancy"),
+        ("next", "next_action"),
+        ("authority-blocker", "blocker"),
+    ] {
+        let expected = if json_key == "blocker" {
+            json["authority"][json_key].as_str().unwrap()
+        } else {
+            json[json_key].as_str().unwrap()
+        };
+        assert_eq!(fields[human_key], expected, "{human_key} changed");
+    }
+
+    let expected_outcome = match json["outcome"].as_str().unwrap() {
+        "success" => "Success",
+        "usage" => "Usage",
+        "refused" => "Refused",
+        "blocked" => "Blocked",
+        "not-supported" => "NotSupported",
+        "operation-failed" => "OperationFailed",
+        "reconciliation-required" => "ReconciliationRequired",
+        outcome => panic!("unrecognized operator outcome {outcome}"),
+    };
+    assert_eq!(fields["outcome"], expected_outcome);
+    assert_eq!(
+        fields["authorization"],
+        json["authority"]["authorization"].as_str().unwrap()
+    );
+    let display_label = |value: &str| match value {
+        "accepted" => "Accepted",
+        "ambiguous" => "Ambiguous",
+        "unproved" => "Unproved",
+        "continuity-proved" => "ContinuityProved",
+        "gap-observed" => "GapObserved",
+        "continuity-unproved" => "ContinuityUnproved",
+        value => panic!("unrecognized authority disposition {value}"),
+    };
+    assert!(
+        fields["lineage"].starts_with(display_label(
+            json["authority"]["lineage"]["disposition"]
+                .as_str()
+                .unwrap()
+        ))
+    );
+    assert!(
+        fields["custody"].starts_with(display_label(
+            json["authority"]["custody"]["disposition"]
+                .as_str()
+                .unwrap()
+        ))
+    );
+    for (human_key, json_key) in [
+        ("checksums", "checksum"),
+        ("publication", "publication"),
+        ("recovery", "recovery"),
+    ] {
+        assert_eq!(
+            serde_json::from_str::<Value>(fields[human_key]).unwrap(),
+            json[json_key],
+            "{human_key} changed"
+        );
+    }
 }
 
 #[test]
@@ -218,6 +313,29 @@ fn observation_commands_are_read_only_and_keep_state_dimensions_separate() {
     assert_eq!(missing["start"], "recovery-required");
     assert!(!recovery.exists());
     fs::write(recovery, recovery_bytes).unwrap();
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn human_and_structured_results_preserve_consequential_fields() {
+    let root = fixture();
+
+    let observed = success(run(&root, "status", &[]));
+    let observed_human = run_human(&root, "status", &[]);
+    assert!(observed_human.status.success());
+    assert_human_projection_preserves_consequential_fields(
+        &String::from_utf8(observed_human.stdout).unwrap(),
+        &observed,
+    );
+
+    let refused = failure(run(&root, "start", &[]), 5);
+    let refused_human = run_human(&root, "start", &[]);
+    assert_eq!(refused_human.status.code(), Some(5));
+    assert_human_projection_preserves_consequential_fields(
+        &String::from_utf8(refused_human.stdout).unwrap(),
+        &refused,
+    );
 
     fs::remove_dir_all(root).unwrap();
 }
