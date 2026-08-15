@@ -9,7 +9,7 @@
 
 | Item | Observed value |
 |---|---|
-| Repository working copy | `18b3a512` before this campaign edit; parent `55469c47` |
+| Repository working copy | Current jj working copy; revision identity is session-local and not semantic authority |
 | Active architecture | `arch.diskweave.v0.8`, `docs/architecture/diskweave-architecture-roadmap-v0.8.md` |
 | Active source SHA-256 | `9bb42d1b857491d5fe4d1425e07d563312adfe112cb7b1368c38508c12cf3522` |
 | Settled target input | `arch.diskweave.v0.9`, content-final non-authoritative candidate |
@@ -332,7 +332,7 @@ The gate is **not satisfied**. Source exclusion is premature while A and U rows 
 - Implementation: `src/operator.rs` and `src/cli.rs`; structured result cut over to `dwv.operator.v2`.
 - Evidence: `src/operator.rs` operator unit tests and `tests/operator_cli.rs`; `cargo test -p diskweave --bin dwv operator::tests` and `cargo test -p diskweave --test operator_cli` passed. Knowledge readiness, docs check, and docs build passed with zero diagnostics.
 - Beads `dwv-roy.1`, `.2`, and `.3` are complete. C0a is canonicalized; these anchors authorize no C0b, C2, recovery-state mutation, publication, write, repair, or historical-recovery work.
-- The retained Linux acceptance artifact still predates the `dwv.operator.v2` cutover; the active runner now asserts v2, and Bead `dwv-cfh` tracks one fresh bounded run to refresh the artifact. Historical M9 `dwv.operator.v1` evidence remains explicitly historical and is not rewritten.
+- The retained Linux acceptance artifact was refreshed on 2026-08-14 from the active runner and now carries `dwv.operator.v2`; its exact input and output digests are recorded in `docs/verification/linux-ublk-ext4-acceptance.md`. Bead `dwv-cfh` is complete. Historical M9 `dwv.operator.v1` evidence remains explicitly historical and is not rewritten.
 
 ### 9.2 C8a — Inspect recovery state independently without mutation
 

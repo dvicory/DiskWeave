@@ -1,6 +1,6 @@
 {
   "schema": "dwv.ublk.trace.v2",
-  "fixture_digest": "9c5fdc38a73677a49b985d48d6d362318da00c287e82ca5ec921fc292771f6dd",
+  "fixture_digest": "e8d8b83526c7dc3594be13609104e75c43e571679df4632be1a72edd942364e3",
   "capacity": 16777216,
   "topology_epoch": 1,
   "bounds": {
@@ -12,14 +12,14 @@
   "records": [
     {
       "sequence": 1,
-      "tag": 6,
+      "tag": 4,
       "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 0,
         "start_sector": 0,
         "sectors": 8,
-        "tag": 6
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 1,
@@ -46,7 +46,7 @@
         "operation": "read",
         "offset": 0,
         "length": 4096,
-        "buffer_index": 6,
+        "buffer_index": 4,
         "buffer_generation": 1,
         "submission_sequence": 1,
         "preflush": false,
@@ -61,14 +61,14 @@
     },
     {
       "sequence": 2,
-      "tag": 7,
+      "tag": 5,
       "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 0,
         "start_sector": 8,
         "sectors": 8,
-        "tag": 7
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 2,
@@ -95,7 +95,7 @@
         "operation": "read",
         "offset": 4096,
         "length": 4096,
-        "buffer_index": 7,
+        "buffer_index": 5,
         "buffer_generation": 1,
         "submission_sequence": 2,
         "preflush": false,
@@ -110,14 +110,14 @@
     },
     {
       "sequence": 3,
-      "tag": 6,
+      "tag": 4,
       "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 0,
         "start_sector": 24,
         "sectors": 8,
-        "tag": 6
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 3,
@@ -144,7 +144,7 @@
         "operation": "read",
         "offset": 12288,
         "length": 4096,
-        "buffer_index": 6,
+        "buffer_index": 4,
         "buffer_generation": 2,
         "submission_sequence": 3,
         "preflush": false,
@@ -159,14 +159,14 @@
     },
     {
       "sequence": 4,
-      "tag": 7,
+      "tag": 5,
       "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32640,
         "sectors": 8,
-        "tag": 7
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 4,
@@ -193,7 +193,7 @@
         "operation": "read",
         "offset": 16711680,
         "length": 4096,
-        "buffer_index": 7,
+        "buffer_index": 5,
         "buffer_generation": 2,
         "submission_sequence": 4,
         "preflush": false,
@@ -208,14 +208,14 @@
     },
     {
       "sequence": 5,
-      "tag": 6,
+      "tag": 4,
       "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32752,
         "sectors": 8,
-        "tag": 6
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 5,
@@ -242,7 +242,7 @@
         "operation": "read",
         "offset": 16769024,
         "length": 4096,
-        "buffer_index": 6,
+        "buffer_index": 4,
         "buffer_generation": 3,
         "submission_sequence": 5,
         "preflush": false,
@@ -257,14 +257,14 @@
     },
     {
       "sequence": 6,
-      "tag": 7,
+      "tag": 5,
       "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32760,
         "sectors": 8,
-        "tag": 7
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 6,
@@ -291,7 +291,7 @@
         "operation": "read",
         "offset": 16773120,
         "length": 4096,
-        "buffer_index": 7,
+        "buffer_index": 5,
         "buffer_generation": 3,
         "submission_sequence": 6,
         "preflush": false,
@@ -306,14 +306,14 @@
     },
     {
       "sequence": 7,
-      "tag": 6,
-      "generation": 4,
+      "tag": 2,
+      "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32504,
         "sectors": 8,
-        "tag": 6
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 7,
@@ -340,8 +340,8 @@
         "operation": "read",
         "offset": 16642048,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 4,
+        "buffer_index": 2,
+        "buffer_generation": 1,
         "submission_sequence": 7,
         "preflush": false,
         "fence_domain": 1,
@@ -355,14 +355,14 @@
     },
     {
       "sequence": 8,
-      "tag": 7,
-      "generation": 4,
+      "tag": 3,
+      "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32704,
         "sectors": 8,
-        "tag": 7
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 8,
@@ -389,8 +389,8 @@
         "operation": "read",
         "offset": 16744448,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 4,
+        "buffer_index": 3,
+        "buffer_generation": 1,
         "submission_sequence": 8,
         "preflush": false,
         "fence_domain": 1,
@@ -404,14 +404,14 @@
     },
     {
       "sequence": 9,
-      "tag": 6,
-      "generation": 5,
+      "tag": 2,
+      "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32512,
         "sectors": 8,
-        "tag": 6
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 9,
@@ -438,8 +438,8 @@
         "operation": "read",
         "offset": 16646144,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 5,
+        "buffer_index": 2,
+        "buffer_generation": 2,
         "submission_sequence": 9,
         "preflush": false,
         "fence_domain": 1,
@@ -453,14 +453,14 @@
     },
     {
       "sequence": 10,
-      "tag": 7,
-      "generation": 5,
+      "tag": 3,
+      "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32368,
         "sectors": 8,
-        "tag": 7
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 10,
@@ -487,8 +487,8 @@
         "operation": "read",
         "offset": 16572416,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 5,
+        "buffer_index": 3,
+        "buffer_generation": 2,
         "submission_sequence": 10,
         "preflush": false,
         "fence_domain": 1,
@@ -502,14 +502,14 @@
     },
     {
       "sequence": 11,
-      "tag": 0,
-      "generation": 1,
+      "tag": 2,
+      "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32176,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 11,
@@ -536,8 +536,8 @@
         "operation": "read",
         "offset": 16474112,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 1,
+        "buffer_index": 2,
+        "buffer_generation": 3,
         "submission_sequence": 11,
         "preflush": false,
         "fence_domain": 1,
@@ -551,14 +551,14 @@
     },
     {
       "sequence": 12,
-      "tag": 1,
-      "generation": 1,
+      "tag": 4,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32088,
         "sectors": 8,
-        "tag": 1
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 12,
@@ -585,8 +585,8 @@
         "operation": "read",
         "offset": 16429056,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 1,
+        "buffer_index": 4,
+        "buffer_generation": 4,
         "submission_sequence": 12,
         "preflush": false,
         "fence_domain": 1,
@@ -600,14 +600,14 @@
     },
     {
       "sequence": 13,
-      "tag": 0,
-      "generation": 2,
+      "tag": 5,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32032,
         "sectors": 8,
-        "tag": 0
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 13,
@@ -634,8 +634,8 @@
         "operation": "read",
         "offset": 16400384,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 2,
+        "buffer_index": 5,
+        "buffer_generation": 4,
         "submission_sequence": 13,
         "preflush": false,
         "fence_domain": 1,
@@ -649,14 +649,14 @@
     },
     {
       "sequence": 14,
-      "tag": 1,
-      "generation": 2,
+      "tag": 4,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 31856,
         "sectors": 8,
-        "tag": 1
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 14,
@@ -683,8 +683,8 @@
         "operation": "read",
         "offset": 16310272,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 2,
+        "buffer_index": 4,
+        "buffer_generation": 5,
         "submission_sequence": 14,
         "preflush": false,
         "fence_domain": 1,
@@ -698,14 +698,14 @@
     },
     {
       "sequence": 15,
-      "tag": 0,
-      "generation": 3,
+      "tag": 5,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 31792,
         "sectors": 8,
-        "tag": 0
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 15,
@@ -732,8 +732,8 @@
         "operation": "read",
         "offset": 16277504,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 3,
+        "buffer_index": 5,
+        "buffer_generation": 5,
         "submission_sequence": 15,
         "preflush": false,
         "fence_domain": 1,
@@ -747,14 +747,14 @@
     },
     {
       "sequence": 16,
-      "tag": 1,
-      "generation": 3,
+      "tag": 4,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 31776,
         "sectors": 8,
-        "tag": 1
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 16,
@@ -781,8 +781,8 @@
         "operation": "read",
         "offset": 16269312,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 3,
+        "buffer_index": 4,
+        "buffer_generation": 6,
         "submission_sequence": 16,
         "preflush": false,
         "fence_domain": 1,
@@ -796,14 +796,14 @@
     },
     {
       "sequence": 17,
-      "tag": 0,
-      "generation": 4,
+      "tag": 5,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 31816,
         "sectors": 8,
-        "tag": 0
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 17,
@@ -830,8 +830,8 @@
         "operation": "read",
         "offset": 16289792,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 4,
+        "buffer_index": 5,
+        "buffer_generation": 6,
         "submission_sequence": 17,
         "preflush": false,
         "fence_domain": 1,
@@ -845,14 +845,14 @@
     },
     {
       "sequence": 18,
-      "tag": 1,
-      "generation": 4,
+      "tag": 4,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 29680,
         "sectors": 8,
-        "tag": 1
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 18,
@@ -879,8 +879,8 @@
         "operation": "read",
         "offset": 15196160,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 4,
+        "buffer_index": 4,
+        "buffer_generation": 7,
         "submission_sequence": 18,
         "preflush": false,
         "fence_domain": 1,
@@ -894,14 +894,14 @@
     },
     {
       "sequence": 19,
-      "tag": 0,
-      "generation": 5,
+      "tag": 5,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 4096,
         "sectors": 8,
-        "tag": 0
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 19,
@@ -928,8 +928,8 @@
         "operation": "read",
         "offset": 2097152,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 5,
+        "buffer_index": 5,
+        "buffer_generation": 7,
         "submission_sequence": 19,
         "preflush": false,
         "fence_domain": 1,
@@ -943,14 +943,14 @@
     },
     {
       "sequence": 20,
-      "tag": 1,
-      "generation": 5,
+      "tag": 3,
+      "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 30720,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 20,
@@ -977,8 +977,8 @@
         "operation": "read",
         "offset": 15728640,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 5,
+        "buffer_index": 3,
+        "buffer_generation": 3,
         "submission_sequence": 20,
         "preflush": false,
         "fence_domain": 1,
@@ -992,14 +992,14 @@
     },
     {
       "sequence": 21,
-      "tag": 0,
-      "generation": 6,
+      "tag": 2,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 32,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 21,
@@ -1026,8 +1026,8 @@
         "operation": "read",
         "offset": 16384,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 6,
+        "buffer_index": 2,
+        "buffer_generation": 4,
         "submission_sequence": 21,
         "preflush": false,
         "fence_domain": 1,
@@ -1041,14 +1041,14 @@
     },
     {
       "sequence": 22,
-      "tag": 1,
-      "generation": 6,
+      "tag": 3,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 64,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 22,
@@ -1075,8 +1075,8 @@
         "operation": "read",
         "offset": 32768,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 6,
+        "buffer_index": 3,
+        "buffer_generation": 4,
         "submission_sequence": 22,
         "preflush": false,
         "fence_domain": 1,
@@ -1090,14 +1090,14 @@
     },
     {
       "sequence": 23,
-      "tag": 0,
-      "generation": 7,
+      "tag": 2,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 128,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 23,
@@ -1124,8 +1124,8 @@
         "operation": "read",
         "offset": 65536,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 7,
+        "buffer_index": 2,
+        "buffer_generation": 5,
         "submission_sequence": 23,
         "preflush": false,
         "fence_domain": 1,
@@ -1139,14 +1139,14 @@
     },
     {
       "sequence": 24,
-      "tag": 1,
-      "generation": 7,
+      "tag": 3,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 256,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 24,
@@ -1173,8 +1173,8 @@
         "operation": "read",
         "offset": 131072,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 7,
+        "buffer_index": 3,
+        "buffer_generation": 5,
         "submission_sequence": 24,
         "preflush": false,
         "fence_domain": 1,
@@ -1188,14 +1188,14 @@
     },
     {
       "sequence": 25,
-      "tag": 0,
-      "generation": 8,
+      "tag": 2,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 512,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 25,
@@ -1222,8 +1222,8 @@
         "operation": "read",
         "offset": 262144,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 8,
+        "buffer_index": 2,
+        "buffer_generation": 6,
         "submission_sequence": 25,
         "preflush": false,
         "fence_domain": 1,
@@ -1237,14 +1237,14 @@
     },
     {
       "sequence": 26,
-      "tag": 1,
-      "generation": 8,
+      "tag": 3,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 1024,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 26,
@@ -1271,8 +1271,8 @@
         "operation": "read",
         "offset": 524288,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 8,
+        "buffer_index": 3,
+        "buffer_generation": 6,
         "submission_sequence": 26,
         "preflush": false,
         "fence_domain": 1,
@@ -1286,14 +1286,14 @@
     },
     {
       "sequence": 27,
-      "tag": 0,
-      "generation": 9,
+      "tag": 2,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 2048,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 27,
@@ -1320,8 +1320,8 @@
         "operation": "read",
         "offset": 1048576,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 9,
+        "buffer_index": 2,
+        "buffer_generation": 7,
         "submission_sequence": 27,
         "preflush": false,
         "fence_domain": 1,
@@ -1335,14 +1335,14 @@
     },
     {
       "sequence": 28,
-      "tag": 1,
-      "generation": 9,
+      "tag": 3,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 8192,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 28,
@@ -1369,8 +1369,8 @@
         "operation": "read",
         "offset": 4194304,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 9,
+        "buffer_index": 3,
+        "buffer_generation": 7,
         "submission_sequence": 28,
         "preflush": false,
         "fence_domain": 1,
@@ -1384,14 +1384,14 @@
     },
     {
       "sequence": 29,
-      "tag": 0,
-      "generation": 10,
+      "tag": 2,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 56,
         "sectors": 8,
-        "tag": 0
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 29,
@@ -1418,8 +1418,8 @@
         "operation": "read",
         "offset": 28672,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 10,
+        "buffer_index": 2,
+        "buffer_generation": 8,
         "submission_sequence": 29,
         "preflush": false,
         "fence_domain": 1,
@@ -1433,14 +1433,14 @@
     },
     {
       "sequence": 30,
-      "tag": 1,
-      "generation": 10,
+      "tag": 3,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 120,
         "sectors": 8,
-        "tag": 1
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 30,
@@ -1467,8 +1467,8 @@
         "operation": "read",
         "offset": 61440,
         "length": 4096,
-        "buffer_index": 1,
-        "buffer_generation": 10,
+        "buffer_index": 3,
+        "buffer_generation": 8,
         "submission_sequence": 30,
         "preflush": false,
         "fence_domain": 1,
@@ -1482,14 +1482,14 @@
     },
     {
       "sequence": 31,
-      "tag": 0,
-      "generation": 11,
+      "tag": 4,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 16,
         "sectors": 8,
-        "tag": 0
+        "tag": 4
       },
       "normalized_request": {
         "request_id": 31,
@@ -1516,8 +1516,8 @@
         "operation": "read",
         "offset": 8192,
         "length": 4096,
-        "buffer_index": 0,
-        "buffer_generation": 11,
+        "buffer_index": 4,
+        "buffer_generation": 8,
         "submission_sequence": 31,
         "preflush": false,
         "fence_domain": 1,
@@ -1531,14 +1531,14 @@
     },
     {
       "sequence": 32,
-      "tag": 1,
-      "generation": 11,
+      "tag": 5,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 40,
         "sectors": 16,
-        "tag": 1
+        "tag": 5
       },
       "normalized_request": {
         "request_id": 32,
@@ -1565,8 +1565,8 @@
         "operation": "read",
         "offset": 20480,
         "length": 8192,
-        "buffer_index": 1,
-        "buffer_generation": 11,
+        "buffer_index": 5,
+        "buffer_generation": 8,
         "submission_sequence": 32,
         "preflush": false,
         "fence_domain": 1,
@@ -1580,14 +1580,14 @@
     },
     {
       "sequence": 33,
-      "tag": 2,
+      "tag": 6,
       "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 72,
         "sectors": 48,
-        "tag": 2
+        "tag": 6
       },
       "normalized_request": {
         "request_id": 33,
@@ -1614,7 +1614,7 @@
         "operation": "read",
         "offset": 36864,
         "length": 24576,
-        "buffer_index": 2,
+        "buffer_index": 6,
         "buffer_generation": 1,
         "submission_sequence": 33,
         "preflush": false,
@@ -1629,14 +1629,14 @@
     },
     {
       "sequence": 34,
-      "tag": 3,
+      "tag": 0,
       "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 136,
         "sectors": 120,
-        "tag": 3
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 34,
@@ -1663,7 +1663,7 @@
         "operation": "read",
         "offset": 69632,
         "length": 61440,
-        "buffer_index": 3,
+        "buffer_index": 0,
         "buffer_generation": 1,
         "submission_sequence": 34,
         "preflush": false,
@@ -1678,14 +1678,14 @@
     },
     {
       "sequence": 35,
-      "tag": 4,
+      "tag": 1,
       "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 264,
         "sectors": 8,
-        "tag": 4
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 35,
@@ -1712,7 +1712,7 @@
         "operation": "read",
         "offset": 135168,
         "length": 4096,
-        "buffer_index": 4,
+        "buffer_index": 1,
         "buffer_generation": 1,
         "submission_sequence": 35,
         "preflush": false,
@@ -1727,14 +1727,14 @@
     },
     {
       "sequence": 36,
-      "tag": 5,
-      "generation": 1,
+      "tag": 0,
+      "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 272,
         "sectors": 240,
-        "tag": 5
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 36,
@@ -1761,8 +1761,8 @@
         "operation": "read",
         "offset": 139264,
         "length": 122880,
-        "buffer_index": 5,
-        "buffer_generation": 1,
+        "buffer_index": 0,
+        "buffer_generation": 2,
         "submission_sequence": 36,
         "preflush": false,
         "fence_domain": 1,
@@ -1776,14 +1776,14 @@
     },
     {
       "sequence": 37,
-      "tag": 6,
-      "generation": 6,
+      "tag": 1,
+      "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 2,
         "sectors": 2,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 37,
@@ -1810,8 +1810,8 @@
         "operation": "read",
         "offset": 1024,
         "length": 1024,
-        "buffer_index": 6,
-        "buffer_generation": 6,
+        "buffer_index": 1,
+        "buffer_generation": 2,
         "submission_sequence": 37,
         "preflush": false,
         "fence_domain": 1,
@@ -1825,14 +1825,14 @@
     },
     {
       "sequence": 38,
-      "tag": 7,
-      "generation": 6,
+      "tag": 0,
+      "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 0,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 38,
@@ -1859,8 +1859,8 @@
         "operation": "read",
         "offset": 0,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 6,
+        "buffer_index": 0,
+        "buffer_generation": 3,
         "submission_sequence": 38,
         "preflush": false,
         "fence_domain": 1,
@@ -1874,14 +1874,14 @@
     },
     {
       "sequence": 39,
-      "tag": 6,
-      "generation": 7,
+      "tag": 1,
+      "generation": 3,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 8,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 39,
@@ -1908,8 +1908,8 @@
         "operation": "read",
         "offset": 4096,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 7,
+        "buffer_index": 1,
+        "buffer_generation": 3,
         "submission_sequence": 39,
         "preflush": false,
         "fence_domain": 1,
@@ -1923,14 +1923,14 @@
     },
     {
       "sequence": 40,
-      "tag": 7,
-      "generation": 7,
+      "tag": 2,
+      "generation": 9,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 280,
         "sectors": 8,
-        "tag": 7
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 40,
@@ -1957,8 +1957,8 @@
         "operation": "read",
         "offset": 143360,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 7,
+        "buffer_index": 2,
+        "buffer_generation": 9,
         "submission_sequence": 40,
         "preflush": false,
         "fence_domain": 1,
@@ -1972,14 +1972,14 @@
     },
     {
       "sequence": 41,
-      "tag": 6,
-      "generation": 8,
+      "tag": 3,
+      "generation": 9,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10328,
         "sectors": 8,
-        "tag": 6
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 41,
@@ -2006,8 +2006,8 @@
         "operation": "read",
         "offset": 5287936,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 8,
+        "buffer_index": 3,
+        "buffer_generation": 9,
         "submission_sequence": 41,
         "preflush": false,
         "fence_domain": 1,
@@ -2021,14 +2021,14 @@
     },
     {
       "sequence": 42,
-      "tag": 7,
-      "generation": 8,
+      "tag": 2,
+      "generation": 10,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10336,
         "sectors": 8,
-        "tag": 7
+        "tag": 2
       },
       "normalized_request": {
         "request_id": 42,
@@ -2055,8 +2055,8 @@
         "operation": "read",
         "offset": 5292032,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 8,
+        "buffer_index": 2,
+        "buffer_generation": 10,
         "submission_sequence": 42,
         "preflush": false,
         "fence_domain": 1,
@@ -2070,14 +2070,14 @@
     },
     {
       "sequence": 43,
-      "tag": 6,
-      "generation": 9,
+      "tag": 3,
+      "generation": 10,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10344,
         "sectors": 8,
-        "tag": 6
+        "tag": 3
       },
       "normalized_request": {
         "request_id": 43,
@@ -2104,8 +2104,8 @@
         "operation": "read",
         "offset": 5296128,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 9,
+        "buffer_index": 3,
+        "buffer_generation": 10,
         "submission_sequence": 43,
         "preflush": false,
         "fence_domain": 1,
@@ -2119,14 +2119,14 @@
     },
     {
       "sequence": 44,
-      "tag": 7,
-      "generation": 9,
+      "tag": 0,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10352,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 44,
@@ -2153,8 +2153,8 @@
         "operation": "read",
         "offset": 5300224,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 9,
+        "buffer_index": 0,
+        "buffer_generation": 4,
         "submission_sequence": 44,
         "preflush": false,
         "fence_domain": 1,
@@ -2168,14 +2168,14 @@
     },
     {
       "sequence": 45,
-      "tag": 6,
-      "generation": 10,
+      "tag": 1,
+      "generation": 4,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10360,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 45,
@@ -2202,8 +2202,8 @@
         "operation": "read",
         "offset": 5304320,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 10,
+        "buffer_index": 1,
+        "buffer_generation": 4,
         "submission_sequence": 45,
         "preflush": false,
         "fence_domain": 1,
@@ -2217,14 +2217,14 @@
     },
     {
       "sequence": 46,
-      "tag": 7,
-      "generation": 10,
+      "tag": 0,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10368,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 46,
@@ -2251,8 +2251,8 @@
         "operation": "read",
         "offset": 5308416,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 10,
+        "buffer_index": 0,
+        "buffer_generation": 5,
         "submission_sequence": 46,
         "preflush": false,
         "fence_domain": 1,
@@ -2266,14 +2266,14 @@
     },
     {
       "sequence": 47,
-      "tag": 6,
-      "generation": 11,
+      "tag": 1,
+      "generation": 5,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10376,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 47,
@@ -2300,8 +2300,8 @@
         "operation": "read",
         "offset": 5312512,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 11,
+        "buffer_index": 1,
+        "buffer_generation": 5,
         "submission_sequence": 47,
         "preflush": false,
         "fence_domain": 1,
@@ -2315,14 +2315,14 @@
     },
     {
       "sequence": 48,
-      "tag": 7,
-      "generation": 11,
+      "tag": 0,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10384,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 48,
@@ -2349,8 +2349,8 @@
         "operation": "read",
         "offset": 5316608,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 11,
+        "buffer_index": 0,
+        "buffer_generation": 6,
         "submission_sequence": 48,
         "preflush": false,
         "fence_domain": 1,
@@ -2364,14 +2364,14 @@
     },
     {
       "sequence": 49,
-      "tag": 6,
-      "generation": 12,
+      "tag": 1,
+      "generation": 6,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10392,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 49,
@@ -2398,8 +2398,8 @@
         "operation": "read",
         "offset": 5320704,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 12,
+        "buffer_index": 1,
+        "buffer_generation": 6,
         "submission_sequence": 49,
         "preflush": false,
         "fence_domain": 1,
@@ -2413,14 +2413,14 @@
     },
     {
       "sequence": 50,
-      "tag": 7,
-      "generation": 12,
+      "tag": 0,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10400,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 50,
@@ -2447,8 +2447,8 @@
         "operation": "read",
         "offset": 5324800,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 12,
+        "buffer_index": 0,
+        "buffer_generation": 7,
         "submission_sequence": 50,
         "preflush": false,
         "fence_domain": 1,
@@ -2462,14 +2462,14 @@
     },
     {
       "sequence": 51,
-      "tag": 6,
-      "generation": 13,
+      "tag": 1,
+      "generation": 7,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10408,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 51,
@@ -2496,8 +2496,8 @@
         "operation": "read",
         "offset": 5328896,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 13,
+        "buffer_index": 1,
+        "buffer_generation": 7,
         "submission_sequence": 51,
         "preflush": false,
         "fence_domain": 1,
@@ -2511,14 +2511,14 @@
     },
     {
       "sequence": 52,
-      "tag": 7,
-      "generation": 13,
+      "tag": 0,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10416,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 52,
@@ -2545,8 +2545,8 @@
         "operation": "read",
         "offset": 5332992,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 13,
+        "buffer_index": 0,
+        "buffer_generation": 8,
         "submission_sequence": 52,
         "preflush": false,
         "fence_domain": 1,
@@ -2560,14 +2560,14 @@
     },
     {
       "sequence": 53,
-      "tag": 6,
-      "generation": 14,
+      "tag": 1,
+      "generation": 8,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10424,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 53,
@@ -2594,8 +2594,8 @@
         "operation": "read",
         "offset": 5337088,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 14,
+        "buffer_index": 1,
+        "buffer_generation": 8,
         "submission_sequence": 53,
         "preflush": false,
         "fence_domain": 1,
@@ -2609,14 +2609,14 @@
     },
     {
       "sequence": 54,
-      "tag": 7,
-      "generation": 14,
+      "tag": 0,
+      "generation": 9,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10432,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 54,
@@ -2643,8 +2643,8 @@
         "operation": "read",
         "offset": 5341184,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 14,
+        "buffer_index": 0,
+        "buffer_generation": 9,
         "submission_sequence": 54,
         "preflush": false,
         "fence_domain": 1,
@@ -2658,14 +2658,14 @@
     },
     {
       "sequence": 55,
-      "tag": 6,
-      "generation": 15,
+      "tag": 1,
+      "generation": 9,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10440,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 55,
@@ -2692,8 +2692,8 @@
         "operation": "read",
         "offset": 5345280,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 15,
+        "buffer_index": 1,
+        "buffer_generation": 9,
         "submission_sequence": 55,
         "preflush": false,
         "fence_domain": 1,
@@ -2707,14 +2707,14 @@
     },
     {
       "sequence": 56,
-      "tag": 7,
-      "generation": 15,
+      "tag": 0,
+      "generation": 10,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10448,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 56,
@@ -2741,8 +2741,8 @@
         "operation": "read",
         "offset": 5349376,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 15,
+        "buffer_index": 0,
+        "buffer_generation": 10,
         "submission_sequence": 56,
         "preflush": false,
         "fence_domain": 1,
@@ -2756,14 +2756,14 @@
     },
     {
       "sequence": 57,
-      "tag": 6,
-      "generation": 16,
+      "tag": 1,
+      "generation": 10,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10456,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 57,
@@ -2790,8 +2790,8 @@
         "operation": "read",
         "offset": 5353472,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 16,
+        "buffer_index": 1,
+        "buffer_generation": 10,
         "submission_sequence": 57,
         "preflush": false,
         "fence_domain": 1,
@@ -2805,14 +2805,14 @@
     },
     {
       "sequence": 58,
-      "tag": 7,
-      "generation": 16,
+      "tag": 0,
+      "generation": 11,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10464,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 58,
@@ -2839,8 +2839,8 @@
         "operation": "read",
         "offset": 5357568,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 16,
+        "buffer_index": 0,
+        "buffer_generation": 11,
         "submission_sequence": 58,
         "preflush": false,
         "fence_domain": 1,
@@ -2854,14 +2854,14 @@
     },
     {
       "sequence": 59,
-      "tag": 6,
-      "generation": 17,
+      "tag": 1,
+      "generation": 11,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10472,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 59,
@@ -2888,8 +2888,8 @@
         "operation": "read",
         "offset": 5361664,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 17,
+        "buffer_index": 1,
+        "buffer_generation": 11,
         "submission_sequence": 59,
         "preflush": false,
         "fence_domain": 1,
@@ -2903,14 +2903,14 @@
     },
     {
       "sequence": 60,
-      "tag": 7,
-      "generation": 17,
+      "tag": 0,
+      "generation": 12,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10480,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 60,
@@ -2937,8 +2937,8 @@
         "operation": "read",
         "offset": 5365760,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 17,
+        "buffer_index": 0,
+        "buffer_generation": 12,
         "submission_sequence": 60,
         "preflush": false,
         "fence_domain": 1,
@@ -2952,14 +2952,14 @@
     },
     {
       "sequence": 61,
-      "tag": 6,
-      "generation": 18,
+      "tag": 1,
+      "generation": 12,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10488,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 61,
@@ -2986,8 +2986,8 @@
         "operation": "read",
         "offset": 5369856,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 18,
+        "buffer_index": 1,
+        "buffer_generation": 12,
         "submission_sequence": 61,
         "preflush": false,
         "fence_domain": 1,
@@ -3001,14 +3001,14 @@
     },
     {
       "sequence": 62,
-      "tag": 7,
-      "generation": 18,
+      "tag": 0,
+      "generation": 13,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10496,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 62,
@@ -3035,8 +3035,8 @@
         "operation": "read",
         "offset": 5373952,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 18,
+        "buffer_index": 0,
+        "buffer_generation": 13,
         "submission_sequence": 62,
         "preflush": false,
         "fence_domain": 1,
@@ -3050,14 +3050,14 @@
     },
     {
       "sequence": 63,
-      "tag": 6,
-      "generation": 19,
+      "tag": 1,
+      "generation": 13,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10504,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 63,
@@ -3084,8 +3084,8 @@
         "operation": "read",
         "offset": 5378048,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 19,
+        "buffer_index": 1,
+        "buffer_generation": 13,
         "submission_sequence": 63,
         "preflush": false,
         "fence_domain": 1,
@@ -3099,14 +3099,14 @@
     },
     {
       "sequence": 64,
-      "tag": 7,
-      "generation": 19,
+      "tag": 0,
+      "generation": 14,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10512,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 64,
@@ -3133,8 +3133,8 @@
         "operation": "read",
         "offset": 5382144,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 19,
+        "buffer_index": 0,
+        "buffer_generation": 14,
         "submission_sequence": 64,
         "preflush": false,
         "fence_domain": 1,
@@ -3148,14 +3148,14 @@
     },
     {
       "sequence": 65,
-      "tag": 6,
-      "generation": 20,
+      "tag": 1,
+      "generation": 14,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10520,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 65,
@@ -3182,8 +3182,8 @@
         "operation": "read",
         "offset": 5386240,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 20,
+        "buffer_index": 1,
+        "buffer_generation": 14,
         "submission_sequence": 65,
         "preflush": false,
         "fence_domain": 1,
@@ -3197,14 +3197,14 @@
     },
     {
       "sequence": 66,
-      "tag": 7,
-      "generation": 20,
+      "tag": 0,
+      "generation": 15,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10528,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 66,
@@ -3231,8 +3231,8 @@
         "operation": "read",
         "offset": 5390336,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 20,
+        "buffer_index": 0,
+        "buffer_generation": 15,
         "submission_sequence": 66,
         "preflush": false,
         "fence_domain": 1,
@@ -3246,14 +3246,14 @@
     },
     {
       "sequence": 67,
-      "tag": 6,
-      "generation": 21,
+      "tag": 1,
+      "generation": 15,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10536,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 67,
@@ -3280,8 +3280,8 @@
         "operation": "read",
         "offset": 5394432,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 21,
+        "buffer_index": 1,
+        "buffer_generation": 15,
         "submission_sequence": 67,
         "preflush": false,
         "fence_domain": 1,
@@ -3295,14 +3295,14 @@
     },
     {
       "sequence": 68,
-      "tag": 7,
-      "generation": 21,
+      "tag": 0,
+      "generation": 16,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10544,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 68,
@@ -3329,8 +3329,8 @@
         "operation": "read",
         "offset": 5398528,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 21,
+        "buffer_index": 0,
+        "buffer_generation": 16,
         "submission_sequence": 68,
         "preflush": false,
         "fence_domain": 1,
@@ -3344,14 +3344,14 @@
     },
     {
       "sequence": 69,
-      "tag": 6,
-      "generation": 22,
+      "tag": 1,
+      "generation": 16,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10552,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 69,
@@ -3378,8 +3378,8 @@
         "operation": "read",
         "offset": 5402624,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 22,
+        "buffer_index": 1,
+        "buffer_generation": 16,
         "submission_sequence": 69,
         "preflush": false,
         "fence_domain": 1,
@@ -3393,14 +3393,14 @@
     },
     {
       "sequence": 70,
-      "tag": 7,
-      "generation": 22,
+      "tag": 0,
+      "generation": 17,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10560,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 70,
@@ -3427,8 +3427,8 @@
         "operation": "read",
         "offset": 5406720,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 22,
+        "buffer_index": 0,
+        "buffer_generation": 17,
         "submission_sequence": 70,
         "preflush": false,
         "fence_domain": 1,
@@ -3442,14 +3442,14 @@
     },
     {
       "sequence": 71,
-      "tag": 6,
-      "generation": 23,
+      "tag": 1,
+      "generation": 17,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10568,
         "sectors": 8,
-        "tag": 6
+        "tag": 1
       },
       "normalized_request": {
         "request_id": 71,
@@ -3476,8 +3476,8 @@
         "operation": "read",
         "offset": 5410816,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 23,
+        "buffer_index": 1,
+        "buffer_generation": 17,
         "submission_sequence": 71,
         "preflush": false,
         "fence_domain": 1,
@@ -3491,14 +3491,14 @@
     },
     {
       "sequence": 72,
-      "tag": 7,
-      "generation": 23,
+      "tag": 0,
+      "generation": 18,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 10576,
         "sectors": 8,
-        "tag": 7
+        "tag": 0
       },
       "normalized_request": {
         "request_id": 72,
@@ -3525,8 +3525,8 @@
         "operation": "read",
         "offset": 5414912,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 23,
+        "buffer_index": 0,
+        "buffer_generation": 18,
         "submission_sequence": 72,
         "preflush": false,
         "fence_domain": 1,
@@ -3540,14 +3540,14 @@
     },
     {
       "sequence": 73,
-      "tag": 6,
-      "generation": 24,
+      "tag": 7,
+      "generation": 1,
       "kernel_submission": {
         "operation": "read",
         "flags": 2048,
         "start_sector": 32,
         "sectors": 8,
-        "tag": 6
+        "tag": 7
       },
       "normalized_request": {
         "request_id": 73,
@@ -3574,8 +3574,8 @@
         "operation": "read",
         "offset": 16384,
         "length": 4096,
-        "buffer_index": 6,
-        "buffer_generation": 24,
+        "buffer_index": 7,
+        "buffer_generation": 1,
         "submission_sequence": 73,
         "preflush": false,
         "fence_domain": 1,
@@ -3589,14 +3589,14 @@
     },
     {
       "sequence": 74,
-      "tag": 7,
-      "generation": 24,
+      "tag": 6,
+      "generation": 2,
       "kernel_submission": {
         "operation": "read",
         "flags": 1792,
         "start_sector": 14680,
         "sectors": 8,
-        "tag": 7
+        "tag": 6
       },
       "normalized_request": {
         "request_id": 74,
@@ -3623,8 +3623,8 @@
         "operation": "read",
         "offset": 7516160,
         "length": 4096,
-        "buffer_index": 7,
-        "buffer_generation": 24,
+        "buffer_index": 6,
+        "buffer_generation": 2,
         "submission_sequence": 74,
         "preflush": false,
         "fence_domain": 1,

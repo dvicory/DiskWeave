@@ -6,22 +6,23 @@ This record proves a disposable one-data/one-parity file-backed fixture can be e
 
 ## Evidence run
 
-Run on 2026-08-11 with `tools/linux-disk-acceptance/run.sh` through the prepared reusable Lima runner:
+Run on 2026-08-14 with `tools/linux-disk-acceptance/run.sh` through the prepared reusable Lima runner:
 
-- Exact final execution-archive SHA-256: `afa56d9bccf183c0f2e33b0f6e308654017685ffe3f7ee6646e46c0de82af37c`.
+- Exact final execution-archive SHA-256: `b8f4ed0311bbe783b00882759ab2891f9d1262142f509696a712a087159300f2`.
 - `run.sh` archived repository root `.` with `tar -C` before guest startup and before copying new evidence back. It excluded `.git`, `.jj`, `.omp`, `target`, and `tools/macos-bridge-probe/.build`; every other present working-tree path was included.
 - The runner staged generated evidence and traces in a host `mktemp` directory, enforced the warm bound, and promoted them only after the bound passed. The archive digest identifies the exact guest input rather than the later tree containing refreshed evidence and prose; gzip headers also make separate compressed snapshots differ.
 - Runner instance: `dwv-linux-acceptance`. Guest: Ubuntu 26.04 arm64 image, kernel `7.0.0-28-generic`, real `/dev/ublkb0` endpoint.
-- Host and guest workspaces, the fixture, mountpoint, and scratch files came from `mktemp`. The runner derived repository and Lima configuration paths from its script location. Invoking the absolute script from `/tmp` with a relative output path completed successfully.
-- Cold preparation completed in 83 seconds, including a 57-second first release build; its live platform phase completed in 23 seconds. The final prepared invocation completed in 26 seconds, including a 24-second live platform phase.
+- Host and guest workspaces, the fixture, mountpoint, and scratch files came from `mktemp`. The runner derived repository and Lima configuration paths from its script location.
+- The prepared invocation completed in 24 seconds, including a 23-second live platform phase.
 - The 16 MiB fixture retained ext4 journaling; `mkfs.ext4` created a 1,024-block journal.
-- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json` (10,749 bytes, SHA-256 `c6024af2a2d6924b7b0fc32af26842d6ca32cf1ded020af7265f4d184ee85cdf`).
-- Before production start, the acceptance deliberately changed fixture-local array identity while leaving the admitted `array.json` unchanged. The production `dwv start --array ... --json` path re-observed two recognized members, passed admitted array and publication identity to the frontend without reopening fixture authority, reported `reason_code: frontend-published`, `lifecycle: online`, `access: read-write`, and `publication.status: published` for `/dev/ublkb0`, then remained attached until signal-driven clean shutdown.
-- Retained live traces: `verification/linux-ublk-trace-first.json` (272,306 bytes, 277 records, SHA-256 `77a61aa7079747046d5a4f02ffe73d56d6df5d1f4b18154c39786da0a9078fa7`) and `verification/linux-ublk-trace-second.json` (72,636 bytes, 74 records, SHA-256 `708b6b731e42b2f0a2587fe7d27a1abbdbc6e3e80cd6cf358a7ad5122cf51e7c`).
+- Machine-readable evidence: `verification/linux-ublk-ext4-acceptance.json` (11,747 bytes, SHA-256 `27acc32f8c78e1c6dab96d3ced9d39f6daa4511a85fa4510faad818faac3ba42`).
+- Before production start, the acceptance deliberately changed fixture-local array identity while leaving the admitted `array.json` unchanged. The production `dwv start --array ... --json` path re-observed two recognized members, passed admitted array and publication identity to the frontend without reopening fixture authority, reported `dwv.operator.v2`, `reason_code: frontend-published`, `lifecycle: online`, `access: read-write`, and `publication.status: published` for `/dev/ublkb0`, then remained attached until signal-driven clean shutdown.
+- The retained production result also reports accepted lineage, continuity-unproved custody, not-yet-interpretable parity basis, and an explicit non-authorization statement; these observations do not authorize C0b or C2 behavior.
+- Retained live traces: `verification/linux-ublk-trace-first.json` (273,287 bytes, 278 records, SHA-256 `e6582b4d79bea2aecffa32a2fd9117e33f36aa9a16d1ddf1fe7ade06a3e6bf91`) and `verification/linux-ublk-trace-second.json` (72,606 bytes, 74 records, SHA-256 `0c4de5dd717dc69699a5b6249a96c133263016f999b8e1af23cbf8295f5023fe`).
 - Both traces use `dwv.ublk.trace.v2`, record queue depth 8, maximum transfer 131,072 bytes, maximum 4,096 records, no exhaustion, and clean replay through the current root `dwv demo disk trace-replay`.
 - Workload: mkfs.ext4, mount, create, fsync, overwrite, rename, directory sync, read, delete, unmount, clean shutdown, restart, and read-only remount.
 - Durable file content SHA-256 before and after restart: `d4ad659dcd887413e31f0b6d272b2b353d29734c3cba9f1cb9b74ab45865f4d7`.
-- Data and parity payload SHA-256 after shutdown: `c574095223c6293beb3fd031e400216943851ce9030745b91d80179773f3f7e4`; byte equality passed.
+- Data and parity payload SHA-256 after shutdown: `357613671821bb61d6e2bbbe03bce787bc281176be2c529a1a4aae2800d3b7ac`; byte equality passed.
 - The ordinary data backing file mounted directly as read-only ext4 after service shutdown and exposed the same content.
 - Both workload ublk runs ended in lifecycle state `stopped` only after drain, checkpoint, endpoint-removal, and trace-replay checks passed.
 
