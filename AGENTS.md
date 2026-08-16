@@ -2,27 +2,31 @@ DiskWeave is correctness-first storage software. Prefer simple, explicit designs
 
 Write technical prose using ISO 24495-1 and Zinsser's principles of simplicity and economy. Preserve DiskWeave terminology and correctness-relevant semantics.
 
-Current `openspec/specs/*/spec.md` files own canonical product behavior. A reviewed active OpenSpec change defines the target for work within that change. Implement and verify the change before syncing it into canonical specs. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
+Current `openspec/specs/*/spec.md` files own current product behavior. Active OpenSpec changes contain proposed target behavior. When work is being executed through a change, its delta specs define the target contract for that work and its tasks record implementation progress. Current specs remain canonical until the completed, verified change is synced. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
 
 Keep semantic ownership explicit and nonduplicative. One independently meaningful product decision should have one canonical OpenSpec owner; broader propositions may be completely determined by composition of independently owned decisions without an umbrella requirement. Use semantic reconciliation when ownership, composition, contradiction, or completeness is consequential or unclear.
 
-Executable specifications and models may provide stronger precision or verification for bounded protocols. Under the current knowledge architecture they are not canonical product authority. If a bounded executable transition owner would materially reduce duplicated normative prose, treat that as a candidate semantic/knowledge-system change that must be adopted deliberately through current authority rather than by convention.
+Executable specifications and models can provide distinct formal precision or verification for bounded protocols. They do not override OpenSpec semantics.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
 
 Persistent formats and schemas may change to satisfy current canonical semantics. Do not preserve an obsolete format merely for compatibility or silently reinterpret persisted state. Define needed migration, rejection, or reset behavior and update affected readers, writers, recovery paths, fixtures, and tests.
 
-Proceed on reversible implementation choices. Human approval is required for destructive or irreversible changes, operator-visible recovery behavior changes, or changes to an existing compatibility guarantee. Surface choices that materially affect architecture or correctness semantics.
+Proceed autonomously on reversible choices. Require human judgment only when a decision would alter an established architecture or correctness invariant, or materially change a significant operator-facing contract such as recovery authority, data-preservation behavior, or an existing compatibility guarantee. Represent such decisions as Beads human gates. If it is unclear whether an invariant or contract already exists, determine the current semantics first; uncertainty alone is not a human gate.
 
 Keep correctness-boundary effects, ownership, durability, and state transitions explicit and testable. Prefer typed effects and deterministic interpreters where useful, but do not introduce a general effect-system framework unless it clearly improves the design without obscuring DiskWeave-specific I/O, durability, cancellation, or ownership semantics. Design critical state machines and I/O/recovery seams so failures, interleavings, and crash points can be exercised deterministically. Do not assume cancellation means rollback, I/O completion means durability, or dropping an async operation means the underlying I/O did not occur.
 
-## Local agent work
+## Shared work and local agent state
 
-`work/` is a Git-ignored symlink to persistent local agent state for evidence, experiments, handoffs, and useful intermediate work that does not belong in DiskWeave. Nothing there is semantic authority.
+DiskWeave uses Beads (`bd`) for shared work, status, dependencies, and human gates.
 
-Use `jj workspace` inside `work/workspaces/` for isolated or parallel repository changes. Launch implementation agents from the workspace they own. Do not create independent jj or Git repositories inside DiskWeave workspaces.
+If Beads workflow context is not already available in the current session, or after context loss or compaction, run `bd prime` and follow its current guidance. Do not rerun it unnecessarily when that context is already loaded.
 
-DiskWeave uses Beads (`bd`) for shared executable work. Beads belongs to the DiskWeave repository, not `work/`. OpenSpec owns required product semantics; Beads records execution state and dependencies only. Use `bd prime` for workflow guidance and `bd where` to verify the shared tracker before changing work from a jj workspace.
+Beads track work; they do not define product behavior. Required product semantics belong in OpenSpec.
+
+Use isolated jj workspaces for parallel or delegated repository changes. Do not create independent jj or Git repositories inside DiskWeave workspaces.
+
+If the environment provides guidance for managing local agent workspace state, load and follow it when non-authoritative development state should survive the current session, support a handoff, or be shared across agents. Project obligations must not depend on agent-local state.
 
 ## Code and comments
 
