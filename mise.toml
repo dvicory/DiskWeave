@@ -6,3 +6,4 @@ uv = "0.11.29"
 "pipx:sphinx" = { version = "9.1.0", uvx_args = "--with myst-parser==5.1.0 --with sphinx-needs==8.3.0 --with sphinx-codelinks==1.4.0" }
 "pipx:sphinx-autobuild" = { version = "2025.8.25", uvx_args = "--with sphinx==9.1.0 --with myst-parser==5.1.0 --with sphinx-needs==8.3.0 --with sphinx-codelinks==1.4.0" }
 "aqua:gastownhall/beads" = "latest"
+"npm:@informalsystems/quint" = "latest"
