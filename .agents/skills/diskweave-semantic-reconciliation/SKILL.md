@@ -1,820 +1,246 @@
 ---
 name: diskweave-semantic-reconciliation
-description: Audit and repair semantic drift across DiskWeave canonical OpenSpecs. Use when requirements or scenarios overlap, conflict, duplicate policy, depend on historical knowledge, disagree with implementation/evidence, or when preparing/reviewing cross-capability semantic work. Reconstruct one canonical owner per semantic rule, distinguish legitimate refinement from duplicate ownership, identify shadow architecture, and repair drift through bounded OpenSpec changes.
+description: Determine and repair DiskWeave semantic ownership when current requirements overlap, compose, conflict, leave consequential behavior underdetermined, or interact with changed architecture, implementation, evidence, or candidate executable specifications. Use bounded review by default and seek the minimum nonduplicative durable ownership shape.
 ---
 
 # DiskWeave semantic reconciliation
 
-Use this skill to review and repair **semantic drift**.
+Use this skill when the repository can locate relevant semantic material but human reasoning is required to determine what it actually means and who owns it.
 
-<!-- dwv:req req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path -->
-This is the reasoning layer above DiskWeave's deterministic knowledge checks.
+Semantic reconciliation answers:
 
-Deterministic tooling can establish facts such as:
+> What are the independently meaningful semantic decisions in this bounded question, what does the current canonical system require, who owns each decision, and what minimum repair is needed?
 
-* which requirements exist;
-* which requirement fingerprints changed;
-* which requirements require or refine another requirement;
-* which implementation/evidence artifacts link to a requirement;
-* which references are invalid;
-* which dependents require re-review;
-* which historical or removed identifiers leak into current artifacts.
-
-It cannot determine whether two English requirements actually own the same semantic rule.
-
-That judgment is the purpose of this skill.
+Deterministic knowledge tooling discovers facts and review scope. It does not issue semantic-consistency verdicts.
 
 ## Core invariant
 
-DiskWeave should converge toward:
+DiskWeave should converge toward unambiguous, nonduplicative semantic authority.
 
-> **One detailed operational semantic policy has one canonical owning requirement.**
+Under the current knowledge architecture, each independently meaningful product decision has one canonical OpenSpec owner. A broader proposition may be completely entailed by composition of several independently owned decisions without needing an umbrella requirement.
 
-Cross-cutting constitutional, security, and evidence requirements may constrain multiple detailed owners without becoming duplicate operational owners. They must remain high-level and must not independently define a competing operational predicate, authority decision, or state transition.
+Non-owning semantics may:
 
-Other requirements may:
+- require an independently owned decision;
+- refine it with an additional local constraint;
+- compose several owned decisions;
+- map an external mechanism into it;
+- constrain it at a constitutional, security, or evidence boundary;
+- provide verification or evidence for it.
 
-* require that fact;
-* refine it with a narrower local constraint;
-* compose it with other owned facts;
-* map an external interface to it;
-* provide evidence for it.
+They must not independently redefine the same decision.
 
-Refiners, composers, and adapters must not independently redefine the same detailed operational policy. Cross-cutting constraints may restrict that policy only at their own constitutional, security, or evidence boundary.
+The objective is unambiguous semantic authority, not minimum file count or minimum prose.
 
-Do not mistake repetition for harmlessness merely because current wording happens to agree.
+## Executable specifications
 
-Do not mistake any textual overlap for duplication merely because two requirements mention the same event or state.
+Executable specifications may be especially useful when correctness depends on reachable state, ordering, crash/recovery points, interleavings, or global invariants.
 
-The objective is **unambiguous semantic ownership**, not minimum file count or minimum prose.
+A useful boundary is:
 
-# Source roles
+> Domain semantics define what facts mean. An executable protocol can define what transitions are legal once those facts are supplied.
 
-Use these source roles. They are not a precedence stack in which non-canonical material may override a current canonical requirement.
+For example, a canonical OpenSpec owner may define what constitutes sufficient fence authority while an executable model checks that checkpoint cannot be reached without that predicate.
 
-1. Current `openspec/specs/*/spec.md` files own current required product behavior.
-2. Active OpenSpec changes contain proposed or in-flight semantics. They may explicitly propose changes to current requirements but do not become current authority until incorporated into the canonical specification set.
-3. The active architecture roadmap guides future architecture, architectural coherence, dependency ordering, validation strategy, and roadmap work. It does not silently override current canonical requirements.
-4. Current implementation, tests, fixtures, manifests, and executable evidence show actual behavior, assumptions, and falsifying evidence. They may reveal nonconformance or missing architecture but do not silently rewrite current requirements.
-5. ADRs, archived changes, prior architecture revisions, verification history, milestones, handoffs, and other planning artifacts are historical evidence or rationale.
+Under the **current** DiskWeave knowledge contract, an executable model is verification/design evidence rather than canonical product authority. Do not silently treat it as normative merely because it is more precise.
 
-Implementation and history do not silently resolve a contradiction between current canonical requirements.
+If reconciliation finds that a bounded executable transition relation would be the minimum nonduplicative owner and would allow materially duplicated prose semantics to be removed, record that as a candidate semantic/knowledge-system change. Adopting that ownership shape requires a deliberate canonical change to the current authority model first.
 
-When the active roadmap disagrees with current canonical requirements, preserve the disagreement and determine whether it represents deliberate refinement, accidental architectural loss, an unresolved architectural change, or obsolete roadmap intent.
+Do not introduce executable modeling merely because behavior can be modeled.
 
-If two current canonical requirements materially conflict and repository evidence does not establish a semantics-preserving ownership repair, isolate the conflict rather than selecting whichever agrees with implementation, history, or roadmap prose.
+## Authority
 
-# Modes
+Begin with current canonical OpenSpecs and the repository's explicitly governed constitutional constraints.
 
-Choose one mode explicitly at the beginning of the review.
+A reviewed active OpenSpec change may deliberately propose changed target semantics within its scope but is not silently current authority until the normal authority transition completes.
 
-## Bounded reconciliation
+Architecture guides architectural coherence and target direction within its authority boundary. It does not silently override current product semantics.
 
-Use for:
+Implementation, tests, models, fixtures, and evidence may expose nonconformance, missing semantics, hidden assumptions, or overly strong claims. They do not silently resolve contradictions or manufacture product authority.
 
-* a proposed requirement change;
-* a changed requirement fingerprint;
-* a suspected ownership conflict;
-* a cross-capability implementation change;
-* an implementation/evidence discrepancy;
-* a specific requirement cluster.
+ADRs, archives, milestones, Beads, prior architecture, verification history, and conversation context are rationale, work state, or archaeology rather than current semantic authority.
 
-Start with the named requirement and its transitive semantic owner/dependent closure.
+When current canonical sources materially conflict, preserve the conflict until it is deliberately repaired.
 
-Do not inspect unrelated capabilities unless the bounded review discovers a dependency into them.
+## Scope
 
-## Full semantic audit
+Use bounded reconciliation by default.
 
-Use when:
+Start from the named semantic question and retrieve the current canonical context needed to understand its owners, prerequisites, refinements, and affected dependents using `diskweave-knowledge`.
 
-* explicitly asked to reconcile or audit the canonical specification system;
-* preparing a major architecture revision;
-* substantial cross-cutting semantic work has completed;
-* repeated drift has appeared across unrelated capabilities;
-* ownership structure has materially changed;
-* deterministic checks reveal widespread stale dependents.
+Broaden only when the semantic dependency itself requires it.
 
-Review all current canonical requirements as one system.
+A whole-system audit is the same reasoning applied across all relevant connected semantic clusters. Do not turn a bounded question into a general audit merely because the repository is large.
 
-Do not convert a bounded task into a full audit merely because more files exist.
+## Understand the complete semantic question
 
-# Before reasoning
+Reason about complete consequential behavior rather than comparing similar sentences.
 
-Run the repository's deterministic knowledge gates first.
+As relevant, understand:
 
-At minimum:
+- subject or resource;
+- preconditions and admission;
+- authority or evidence consulted;
+- allowed action or decision;
+- ordering or state transition;
+- success meaning;
+- refusal, failure, and uncertainty behavior;
+- crash/restart/recovery behavior;
+- preservation and lifecycle consequences;
+- persistent or externally observable interpretation;
+- permitted claims and explicit non-claims.
 
-```bash
-cargo xtask docs knowledge readiness
-```
+Do not require a fixed worksheet when ordinary reasoning is sufficient.
 
-For a bounded initial scope, retrieve one complete packet:
+Success-path agreement is not enough when consequential failure or uncertainty behavior differs.
 
-```bash
-cargo xtask docs knowledge context <requirement-id>...
-```
+## Determine the ownership shape
 
-A successful packet supplies the complete canonical units for its selected requirements, transitive prerequisites, and direct dependents. Reason from those units without rereading canonical specs merely to reconstruct semantic context already present in the packet or adding `inspect` or `ownership` retrieval for the same need. Open the located canonical source normally when the task requires editing or source-level inspection. If a bound failure returns `suggested_requests`, run every request in that complete set; an empty set means the required semantic scope cannot be split without omission.
+For each independently meaningful decision, determine the smallest natural durable owner under current repository authority.
 
-Use `knowledge inspect <requirement-id>` alone for exact local-unit lookup, `knowledge ownership <requirement-id>` alone for direct owner/refiner/dependent troubleshooting, and `knowledge affected <requirement-id>` after an owner or relationship changes. For a deliberate full semantic-component audit, use `cargo xtask docs knowledge audit-context <requirement-id>`. Never combine overlapping `inspect`, `ownership`, and `context` calls for one need or choose packet fields, depth, direction, or closure policy.
+Healthy shapes commonly include:
 
-At a revision boundary, inspect deterministic impact information before deciding what requires semantic review.
+- one owner plus a narrower refinement;
+- composition of independently owned decisions;
+- adapter or platform conformance to portable semantics;
+- cross-cutting constitutional, security, or evidence constraints;
+- a canonical domain predicate consumed by a separate executable verification model.
 
-If a required command is unavailable or fails, record that fact. Do not pretend its result.
+Semantic defects commonly include:
 
-Do not mark reviewed fingerprints resolved before completing the semantic review.
+- duplicate ownership of one actual policy;
+- contradictory canonical behavior;
+- consequential underdetermination or a missing owner;
+- historical or implementation authority leakage;
+- implementation nonconformance;
+- consequential shadow semantics outside canonical authority.
 
-# Step 1 — Establish the canonical semantic closure
+These are reasoning categories, not a required output taxonomy.
 
-Start only from current canonical specs.
+### Composition versus distributed ownership
 
-When typed `requires`/`refines` relationships are unavailable, infer the needed closure from current canonical requirement text and ownership evidence; use those relationships when they exist.
+Do not create an umbrella owner merely because a useful proposition is derived from several requirements.
 
-For the candidate requirement:
+If A, B, and C are independently owned decisions and their valid composition completely entails P, P needs no additional owner.
 
-1. identify its stable requirement ID;
-2. identify explicit `requires` relationships;
-3. identify explicit `refines` relationships;
-4. identify inbound dependents;
-5. identify requirements governing the same state, resource, authority decision, or lifecycle boundary;
-6. identify terminology whose definition is imported from another capability.
+But if P adds its own ordering, authority choice, refusal rule, transition, lifecycle rule, or other independent semantic decision, that added policy needs an owner.
 
-Build only enough closure to understand the semantic decision.
+### State-machine boundary
 
-Do not begin with architecture history or implementation.
+A protocol model may precisely represent legal transitions without owning every domain predicate consumed by those transitions.
 
-The first question is:
+Do not move a predicate into an executable model merely because the model branches on it.
 
-> What does the current canonical system claim?
+Do not maintain the same exact transition semantics normatively in several prose owners and then add a model as another copy. Under current authority, the model remains evidence; if making it normative would remove meaningful duplication, surface the required authority change explicitly.
 
-# Step 2 — Normalize each consequential requirement into a semantic claim card
+## Challenge material ambiguity
 
-For reasoning only, normalize every relevant requirement into this shape:
+Use these questions when ownership or completeness is consequential or unclear.
 
-```text
-Requirement ID:
-Capability:
+### Material-divergence test
 
-Subject/resource:
-Preconditions:
-Authority or evidence consulted:
-Decision or allowed action:
-State transition:
-Success postcondition:
-Failure/uncertainty behavior:
-Resource/lifecycle consequence:
-Externally observable consequence:
-Explicit non-claims:
-Local refinement, if any:
-```
+> Could two implementations satisfy the current canonical semantics yet behave materially differently on this question?
 
-Do not persist claim cards as a registry.
+If yes, determine whether the difference is legitimate delegated choice or consequential underdetermination/conflict.
 
-They are temporary reasoning artifacts.
+### Deletion test
 
-Ignore stylistic wording differences.
-
-Compare the semantic fields.
-
-Two requirements that use very different prose may own the same semantic fact.
-
-Two requirements that use nearly identical words may govern different states.
-
-# Step 3 — Perform the two-conforming-implementations test
-
-For every ambiguous pair or cluster ask:
-
-> Could two independent implementations satisfy these requirements as written and still behave materially differently?
-
-If no, the overlap may be harmless or a valid refinement.
-
-If yes, determine why:
-
-* duplicate ownership with divergent wording;
-* undefined term;
-* conflicting precondition;
-* conflicting authority source;
-* different failure/uncertainty behavior;
-* different state transition;
-* missing ordering;
-* missing lifecycle consequence;
-* missing canonical owner.
-
-Do not call wording drift a correctness problem unless it permits materially different behavior.
-
-# Step 4 — Classify the relationship
-
-Classify every consequential overlap as exactly one of:
-
-## Canonical owner + valid refinement
-
-One requirement owns the complete policy.
-
-Another requirement adds only a narrower constraint relevant to its capability.
-
-Example shape:
-
-```text
-owner:
-  mutation requires durable invalidation
-
-refinement:
-  this transaction machine may emit HOME_WRITE
-  only after the owner's invalidation predicate succeeds
-```
-
-This is healthy.
-
-## Canonical owner + composition
-
-A higher-level capability combines multiple independently owned policies.
-
-It must describe orchestration without redefining those policies.
-
-Example:
-
-```text
-healthy service:
-  requires request semantics
-  requires dirty intent
-  requires recovery commit
-  requires XOR update
-  requires store completion
-```
-
-The composer does not define what each prerequisite means.
-
-## Canonical owner + adapter conformance
-
-A platform or storage adapter translates an external mechanism into an existing canonical semantic contract.
-
-The adapter owns:
-
-* translation;
-* rejection of unmappable input;
-* resource binding;
-* adapter-local lifecycle;
-* conformance evidence.
-
-It does not redefine the portable policy.
-
-## Constitutional constraint + detailed owner
-
-A cross-cutting architecture/security/evidence requirement can constrain detailed capabilities without becoming duplicate ownership.
-
-Do not delete a useful constitution merely because lower-level requirements instantiate it.
-
-## Drift-prone duplicate ownership
-
-Two or more requirements independently specify materially the same:
-
-* invariant;
-* authority decision;
-* state transition;
-* ordering predicate;
-* lifecycle rule;
-* durability condition;
-* repair authorization;
-* failure rule.
-
-Even if wording currently agrees, this is drift that should be repaired.
-
-## Confirmed contradiction
-
-Two canonical requirements permit or require incompatible outcomes for the same semantic situation.
-
-Do not hide this behind cross-references.
-
-## Missing canonical behavior
-
-Correct implementation depends on a consequential rule absent from all current canonical requirements.
-
-Inspect non-canonical sources only after confirming the absence.
-
-## Historical-authority leakage
-
-A current requirement depends on:
-
-* an OS/change number;
-* milestone or old planning identifier;
-* architecture section number;
-* named historical gate or phase;
-* ADR;
-* archived proposal;
-* implementation symbol;
-* conversation context
-
-to determine current behavior.
-
-## Implementation nonconformance
-
-Canonical semantics are sufficiently clear but code does something else.
-
-Repair implementation, tests, or evidence. Do not change the spec to make the bug conform.
-
-## Shadow architecture
-
-Implementation, tests, evidence, or rationale contain a consequential persistent rule that has no canonical owner.
-
-Only classify behavior as shadow architecture when it affects:
-
-* correctness;
-* integrity;
-* durability;
-* recovery;
-* authority;
-* lifecycle/ownership;
-* portability;
-* compatibility;
-* security;
-* persistent interpretation;
-* externally observable behavior;
-* dependency direction.
-
-Do not promote ordinary implementation choices.
-
-## No semantic problem
-
-Record this when an apparent overlap is intentionally valid.
-
-This prevents future agents from repeatedly reopening the same question.
-
-# Step 5 — Choose the canonical owner
-
-When duplicate ownership exists, choose one owner.
-
-Use these tests.
-
-## Direct-subject test
-
-Prefer the capability whose durable subject is the policy itself.
-
-Example:
-
-* dirty-region transition → dirty/integrity capability;
-* recovery generation/fence authority → recovery-state capability;
-* exact store persistence evidence → store-operation capability;
-* request meaning → normalized request capability;
-* topology identity → topology/identity capability.
-
-## Lowest-policy test
-
-Prefer the lowest-level reusable semantic policy that can be consumed without knowing its callers.
-
-A service composition should not own a rule reusable by multiple services.
-
-An adapter should not own portable semantics.
-
-## Durable-vs-incidental test
-
-Prefer durable product behavior over:
-
-* experiment procedure;
-* evidence procedure;
-* implementation sequence;
-* temporary architecture gate;
-* roadmap work item;
-* historical change.
-
-## State-machine boundary test
-
-A state-machine requirement owns **when its own actions/states transition**.
-
-It does not automatically own the domain predicate consumed by that transition.
-
-For example:
-
-```text
-transaction machine:
-  owns when HOME_WRITE may be emitted
-
-dirty protocol:
-  owns what durable invalidation means
-```
-
-Do not collapse those into one owner.
-
-## Evidence boundary test
-
-Evidence requirements can constrain what may be claimed.
-
-They cannot create product authorization merely because evidence exists.
-
-## Adapter boundary test
-
-Frontend/backend adapters own translation and local resource behavior.
-
-They cannot create alternate portable identity, durability, recovery, or authority semantics.
-
-# Step 6 — Check failure and uncertainty first
-
-Semantic drift often hides outside the successful path.
-
-For each apparent owner/refinement relationship compare:
-
-* validation failure;
-* partial mutation;
-* ambiguous evidence;
-* lost acknowledgement;
-* stale generation;
-* topology mismatch;
-* crash;
-* restart;
-* abandonment;
-* resource release;
-* retry;
-* reconciliation;
-* evidence unavailable;
-* conflicting evidence.
-
-Two requirements that agree on success but disagree on uncertainty are not coherent refinements.
-
-Do not complete an ownership review by checking only successful scenarios.
-
-# Step 7 — Inspect scenarios separately from requirement prose
-
-After identifying the likely owner, inspect every scenario in the cluster.
-
-A scenario belongs with the owner when it tests the generic policy.
-
-A scenario belongs with a refiner when it tests the **additional local constraint**.
-
-A scenario belongs with a composer when it tests the interaction between independently owned contracts.
-
-A scenario belongs with an adapter when it tests translation/conformance.
-
-Delete or move a scenario when its only purpose is to restate another owner's generic behavior.
-
-Do not retain duplicate generic scenarios merely because they provide extra prose coverage.
-
-A single executable test may provide evidence for multiple requirements. That does not mean multiple requirements should own the tested semantic rule.
-
-# Step 8 — Only now inspect implementation and evidence
-
-Once the current canonical model is understood, inspect:
-
-* Rust types and behavior;
-* tests;
-* fixtures;
-* traces;
-* verification manifests;
-* retained evidence;
-* scripts;
-* CLI behavior;
-* deployment assumptions.
-
-Ask:
-
-1. Does implementation conform to the chosen canonical owner?
-2. Does implementation contain an alternate hidden authority?
-3. Are tests encoding a rule absent from current specs?
-4. Does evidence claim more than the canonical rule permits?
-5. Does implementation rely on vector order, type shape, path, enum value, process behavior, or another accidental mechanism as semantic authority?
-6. Does a supposed implementation detail affect persistent interpretation or externally observable outcomes?
-
-Do not change canonical semantics simply because implementation already behaves differently.
-
-# Step 9 — Use the active roadmap for coherence; use historical sources for archaeology
-
-After understanding the current canonical model and inspecting implementation/evidence, inspect the active architecture roadmap.
-
-Use the active roadmap to ask:
-
-* Does the current canonical system still form the intended architecture?
-* Has an architectural invariant or dependency direction been accidentally lost?
-* Is current divergence a deliberate refinement, an unresolved architectural change, or obsolete roadmap intent?
-* Does the proposed ownership repair preserve the intended future dependency structure?
-* Does the repair accidentally make a temporary implementation shape permanent architecture?
-
-The active roadmap guides this coherence analysis and future direction. It does not silently override current canonical requirements.
-
-Then inspect historical sources as needed:
-
-* ADRs;
-* archived changes;
-* prior architecture revisions;
-* milestone and handoff material;
-* historical verification.
-
-Use historical sources to ask:
-
-* Why was the present boundary chosen?
-* Was an important contract present previously and later lost?
-* Is duplicate ownership residue from implementation sequencing or an earlier experiment?
-* Did experimental or temporary behavior accidentally become permanent?
-* What evidence or rationale supports a proposed semantics-preserving repair?
-
-Historical material may explain intent and support a proposed canonical repair.
-
-Neither historical material nor the active roadmap silently resolves a contradiction between current canonical requirements.
-
-# Step 10 — Decide the minimum repair
-
-For every finding choose one disposition.
-
-## Preserve
-
-No semantic ownership problem exists.
-
-Make no normative edit.
-
-## Reference owner
-
-The local requirement needs the owner's policy but adds no semantic constraint of its own in that area.
-
-Remove duplicated policy wording and use the canonical relationship.
-
-## Refine owner
-
-Retain only the local additional constraint.
-
-The owner remains complete without the refiner.
-
-The refiner must be understandable as:
-
-> canonical owner **plus this additional local condition**
-
-## Relocate ownership with semantics preserved
-
-Move the detailed policy to the better canonical owner.
-
-Rewrite consumers as references/refinements.
-
-Preserve stable requirement IDs when their materially owned semantics remain the same.
-
-## Split semantic responsibilities
-
-A requirement currently owns two independent policies.
-
-Separate them only when they have different natural owners or independent lifecycle/evidence.
-
-Do not split for prose length.
-
-## Merge requirements
-
-Merge only when two requirements have no meaningful independent semantic responsibility after ownership analysis.
-
-Do not merge merely because they interact frequently.
-
-## Delete obsolete requirement
-
-Delete a requirement that describes:
-
-* completed experiment procedure;
-* historical implementation sequence;
-* obsolete compatibility;
-* completed correction program;
-* behavior no longer part of the product.
-
-Preserve historical rationale outside current canonical semantics when useful.
-
-## Add missing canonical behavior
-
-Add a requirement only for consequential shadow architecture that should be durable product behavior.
-
-Do not canonicalize convenience implementation choices.
-
-## Fix implementation
-
-When current semantics are correct and implementation violates them, change implementation rather than weakening the requirement.
-
-# Step 11 — Classify every normative edit
-
-Use exactly one classification:
-
-* **clarification/no semantic change**
-* **ownership relocation with semantics preserved**
-* **semantic narrowing**
-* **semantic broadening**
-* **semantic correction/change**
-* **requirement deletion because behavior is obsolete**
-
-For every changed requirement ID answer:
-
-1. Does the stable ID still describe materially the same obligation?
-2. If yes, preserve it.
-3. If no, retire it and create a new ID.
-4. Which current references/evidence move?
-5. What interpretation or compatibility consequence follows?
-
-Do not preserve an ID merely to avoid migration.
-
-Do not create a new ID merely because wording moved.
-
-# Step 12 — Repair through OpenSpec
-
-If the task authorizes repair, make normative repairs through a bounded OpenSpec change.
-
-Follow the repository's OpenSpec identifier policy.
-
-Do not use a roadmap `OS-###` identity for semantic drift repair unless the repair is itself the corresponding roadmap work.
-
-The change proposal/design must contain a semantic-ownership reconciliation table for affected clusters:
-
-```text
-Current requirements:
-Semantic rule:
-Selected owner:
-Other requirements:
-  - requires
-  - refines
-  - composition only
-  - delete
-Contradiction resolved:
-Semantic edit classification:
-Stable-ID consequence:
-Scenario migration:
-Implementation/evidence migration:
-Verification:
-```
-
-This table is change-local review material.
-
-Do not create a permanent duplicate semantic registry.
-
-# Step 13 — Re-review dependent requirements
-
-When the semantic fingerprint of an owner changes:
-
-1. enumerate every `requires` and `refines` dependent;
-2. inspect each dependent against the new owner semantics;
-3. explicitly record one of:
-
-   * still valid;
-   * wording update required;
-   * local scenario update required;
-   * implementation/evidence update required;
-   * dependency no longer valid;
-4. resolve reviewed-state fingerprints individually with concrete reasons.
-
-Never bulk-accept all dependents because the build passes.
-
-A changed owner is exactly when semantic drift is most likely to propagate.
-
-# Step 14 — Perform the ownership challenge
-
-Before declaring the repair complete, challenge every affected semantic rule with these questions.
-
-## Single-owner test
-
-Can you point to exactly one current requirement that completely defines the policy?
-
-## Deletion test
-
-If every refiner/composer/adapter requirement disappeared, would the underlying policy still be completely defined by its owner?
+> If the non-owning descriptions disappeared, would each independently meaningful semantic decision still be completely defined by its owner?
 
 If not, important semantics remain scattered.
 
-## Duplicate-predicate test
+For a candidate executable owner, ask the analogous future-state question: would adopting it allow materially duplicated normative transition prose to disappear? If not, the model is probably verification evidence rather than a better semantic owner.
 
-Does another requirement independently state the same precondition + authority decision + transition + postcondition?
+### Failure/uncertainty challenge
 
-If yes, consolidation is incomplete.
+> Do the apparent owners agree on consequential refusal, uncertainty, recovery, abandonment, preservation, and lifecycle behavior, not only successful execution?
 
-## Two-implementation test
+Only examine dimensions that matter to the bounded question.
 
-Could two conforming implementations choose materially different behavior because requirements disagree or leave a gap?
+### Fresh-agent test
 
-If yes, reconciliation is incomplete.
+> Can a capable fresh agent identify the rule and its authority without implementation, historical artifacts, campaign state, or conversation context?
 
-## Failure-path test
+If not, the semantic system still depends on a hidden second authority.
 
-Does the owner define conservative behavior for relevant failure and uncertainty states?
+## Inspect implementation and evidence after current semantics
 
-## Scenario-locality test
+Once current canonical meaning is understood, inspect implementation, tests, models, and evidence as needed.
 
-Does every non-owner scenario test a real local refinement, composition, or adapter mapping rather than generic owner behavior?
+Use them to ask:
 
-## Historical-independence test
+- Does implementation conform?
+- Is there a consequential rule implemented but not canonically owned?
+- Do tests encode a shadow policy?
+- Does a model expose a missing transition decision or duplicated prose policy?
+- Does evidence claim more than the semantic contract permits?
+- Is an accidental mechanism being treated as authority?
 
-Could a new implementation agent understand the current rule after deleting every archived change, ADR, milestone, handoff, and conversation?
+Do not weaken or rewrite clear current semantics merely to match implementation.
 
-## Implementation-authority test
+Use architecture after current semantics are established to evaluate intended coherence and target direction. Use history only when rationale or provenance materially helps distinguish a semantics-preserving repair from an unintended change.
 
-Is any current behavior still authorized only because a Rust type, enum, vector order, file path, or existing test happens to encode it?
+## Choose the minimum repair
 
-If yes, inspect for shadow architecture or nonconformance.
+Make the smallest durable repair that removes ambiguity or duplicate authority while preserving intended semantics.
 
-# False positives to reject
+Possible outcomes include:
 
-Do not “repair” these merely because wording overlaps.
+- no semantic problem; make no normative edit;
+- leave valid composition alone;
+- remove duplicated prose and reference the actual owner;
+- reduce a requirement to its genuine local refinement;
+- relocate ownership while preserving semantic identity when appropriate;
+- split genuinely independent decisions;
+- merge artifacts that no longer have independent semantic responsibility;
+- add genuinely missing consequential behavior;
+- deliberately change or retire obsolete behavior;
+- fix implementation rather than changing correct semantics;
+- recommend a bounded executable transition owner as a future authority-model change when it would materially reduce semantic duplication.
 
-## Constitution and refinement
+Do not choose split, merge, relocation, new identity, or executable ownership before understanding the semantic shape.
 
-A constitutional invariant plus detailed capability implementation is intentional when the constitution remains high-level.
+Use the repository's normal OpenSpec workflow for normative edits. This skill does not prescribe proposal structure, `design.md`, task decomposition, or artifact mechanics.
 
-## Same event, different states
+## Preserve semantic identity deliberately
 
-Two capabilities may react to the same crash, flush, repair, or topology event while owning different state transitions.
+When semantics move or wording changes, distinguish semantic identity from textual location.
 
-## Shared evidence
+Preserve a stable `req.*` identity when it still denotes materially the same durable obligation.
 
-One executable test or trace can support several independent requirements.
+Do not preserve an identity merely to avoid migration when the obligation has materially changed. Do not create a new identity merely because prose moved between artifacts or because a model now provides additional verification evidence.
 
-Shared evidence is not duplicate semantics.
+If DiskWeave later deliberately adopts executable semantic ownership, its identity and relationship model must be defined by that canonical change rather than invented locally by reconciliation.
 
-## Adapter scenarios
+## Review affected dependents
 
-An adapter may repeat an external stimulus such as flush or discard in order to verify exact translation.
+When an owned semantic decision changes, re-review affected refiners, composers, adapters, claims, implementation links, and evidence through the repository's normal affected/dependent workflow.
 
-It should not repeat the portable policy being translated.
+Do not bulk-assume dependents remain valid because tests pass.
 
-## Composition ordering
+A semantics-preserving relocation may require less downstream change than a semantic correction, but that conclusion should be explicit.
 
-A composer may state that A must complete before B without redefining either A or B.
+## Completion
 
-## Explanatory prose
+A bounded reconciliation is complete when:
 
-Non-normative explanation may restate a rule for readers.
+1. each independently meaningful decision in scope has an identifiable canonical owner under current authority, or the remaining ambiguity is explicitly unresolved;
+2. valid refinement, composition, adapter, constitutional, and verification-model boundaries do not independently redefine owned decisions;
+3. two conforming implementations cannot materially disagree because of an unintended gap or contradiction in the reviewed semantics;
+4. consequential failure and uncertainty behavior is either determined or explicitly unresolved;
+5. normative repairs use the minimum durable ownership shape and remove meaningful duplication;
+6. affected dependents have been reviewed when owned semantics changed;
+7. current meaning does not depend on implementation, models, historical artifacts, campaign state, or conversation context as hidden authority;
+8. verification and evidence claims remain within what they actually establish.
 
-Do not confuse explanatory repetition with a second canonical owner.
+A successful result may be "no change needed."
 
-# Required review output
+Do not create semantic work merely to demonstrate that reconciliation was performed.
 
-For a bounded review, report only consequential findings.
+## Quality test
 
-For a full audit, produce a temporary ledger:
+A good reconciliation lets a fresh agent answer:
 
-| Finding | Requirements | Classification | Canonical owner | Drift | Semantic effect | Exact repair | Evidence |
-| ------- | ------------ | -------------- | --------------- | ----- | --------------- | ------------ | -------- |
+> What are the actual semantic decisions here, who owns each one, how do other capabilities refine, compose, map, constrain, or verify them, what happens under consequential uncertainty, and what—if anything—must change?
 
-Use stable finding IDs when the review will feed implementation work.
-
-Also record confirmed non-problems when doing so prevents repeated future re-litigation.
-
-Do not persist this ledger as a parallel requirements database.
-
-# Verification after repair
-
-Run the deterministic gates appropriate to the changed repository.
-
-At minimum:
-
-```bash
-cargo xtask docs knowledge readiness
-cargo xtask docs check
-```
-
-Also run:
-
-```bash
-cargo xtask docs build
-cargo xtask docs clean-room
-```
-
-when current semantic links, maintained documentation, or generated relationship views changed.
-
-Run OpenSpec validation and the focused product tests/proofs/evidence for every changed semantic contract.
-
-When relationship tooling exists, verify:
-
-* no unknown relation target;
-* no self-edge;
-* no duplicate edge;
-* no hard dependency cycle;
-* no relation to a retired/non-current requirement;
-* every changed owner has all dependents explicitly reviewed.
-
-A green deterministic gate does **not** prove semantic coherence.
-
-Finish by repeating the ownership challenge in Step 14 against the final source state.
-
-# Completion standard
-
-Semantic reconciliation is complete only when:
-
-* every affected semantic fact has one identifiable canonical owner;
-* refiners state only their local additional constraints;
-* composers orchestrate rather than redefine;
-* adapters map rather than invent portable semantics;
-* generic duplicate scenarios have been removed or moved;
-* confirmed contradictions have been resolved explicitly;
-* missing consequential behavior has a canonical owner or an explicit blocking decision;
-* implementation/evidence does not silently substitute for canonical authority;
-* historical artifacts are not required to understand current behavior;
-* changed owner fingerprints have caused explicit dependent review;
-* stable requirement IDs accurately reflect semantic identity;
-* deterministic gates pass;
-* remaining semantic uncertainty is stated explicitly.
-
-# Forbidden shortcuts
-
-* Do not merge capability files merely because their requirements interact.
-* Do not preserve duplicate policy wording “for clarity.”
-* Do not add a cross-reference while leaving both requirements as independent owners.
-* Do not choose implementation as truth when canonical requirements disagree.
-* Do not use architecture history as a silent override.
-* Do not create policy IDs, ownership registries, manual backlinks, semantic databases, or generalized graph infrastructure.
-* Do not bulk-resolve reviewed requirement fingerprints.
-* Do not use passing tests as proof that duplicate canonical semantics are coherent.
-* Do not canonicalize ordinary implementation choices.
-* Do not treat every wording difference as semantic drift.
-* Do not perform unrelated cleanup while repairing an ownership cluster.
-
----
-
-The desired end state is not fewer specifications.
-
-The desired end state is:
-
-> **many well-bounded capabilities, one owner for each semantic decision, explicit composition between them, and no hidden second source of authority.**
+If the answer requires reproducing a large reconciliation report or remembering the process that discovered the result, durable semantic ownership is still too dependent on the review itself.

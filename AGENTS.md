@@ -2,7 +2,11 @@ DiskWeave is correctness-first storage software. Prefer simple, explicit designs
 
 Write technical prose using ISO 24495-1 and Zinsser's principles of simplicity and economy. Preserve DiskWeave terminology and correctness-relevant semantics.
 
-Current `openspec/specs/*/spec.md` files own canonical product behavior. A reviewed active OpenSpec change defines the target for work within that change. Implement and verify the change before syncing it into canonical specs. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity.
+Current `openspec/specs/*/spec.md` files own canonical product behavior. A reviewed active OpenSpec change defines the target for work within that change. Implement and verify the change before syncing it into canonical specs. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
+
+Keep semantic ownership explicit and nonduplicative. One independently meaningful product decision should have one canonical OpenSpec owner; broader propositions may be completely determined by composition of independently owned decisions without an umbrella requirement. Use semantic reconciliation when ownership, composition, contradiction, or completeness is consequential or unclear.
+
+Executable specifications and models may provide stronger precision or verification for bounded protocols. Under the current knowledge architecture they are not canonical product authority. If a bounded executable transition owner would materially reduce duplicated normative prose, treat that as a candidate semantic/knowledge-system change that must be adopted deliberately through current authority rather than by convention.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
 

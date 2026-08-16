@@ -1,222 +1,142 @@
 ---
 name: diskweave-milestone-planning
-description: Turn DiskWeave discovery, accepted decisions, and repository evidence into an autonomous milestone execution contract. Use when drafting or refining docs/milestones/m*.md for handoff to a repository-aware implementation agent. Preserve outcomes, consequential decisions, horizontal work packages, acceptance evidence, non-goals, validation boundaries, and delegated choices while leaving OpenSpec change decomposition and reversible implementation structure to the implementation agent.
+description: Produce a DiskWeave milestone as an autonomous execution contract for a capable repository-aware implementation agent. Preserve outcomes, accepted decisions, dependencies, correctness boundaries, acceptance evidence, and delegated choices without turning the milestone into semantic authority or task-level implementation instructions.
 ---
 
 # DiskWeave milestone planning
 
-Produce DiskWeave milestone plans as **autonomous execution contracts** for capable repository-aware implementation agents.
+Write a milestone as an **autonomous execution contract** for a capable repository-aware implementation agent.
 
-The milestone sits between high-level product/architecture discovery and repository-local OpenSpec planning. It should preserve decisions and acceptance boundaries that the implementation agent must not have to rediscover, while leaving current semantic ownership, OpenSpec change structure, and reversible implementation choices to the repository-aware agent.
+A milestone should give the agent enough product context, accepted decisions, sequencing, constraints, acceptance evidence, and review boundaries to work autonomously without repeatedly asking what was intended.
 
-Optimize for **autonomous runway with low authority duplication**, not minimum document length.
-
-Use as much detail as the milestone's architectural and correctness risk requires. A long milestone is acceptable when its detail prevents consequential mistakes, repeated user decisions, or ambiguous completion. Length that merely repeats the same semantic rule in several sections is not.
-
-## Inputs
-
-Use the available discovery discussions, accepted user decisions, prior milestone patterns, current repository evidence, canonical OpenSpecs, active architecture roadmap, and relevant ADRs.
-
-Treat discovery material as evidence to distill, not text to preserve wholesale.
-
-When reviewing discovery, distinguish:
-
-* accepted product or architecture decisions;
-* current repository dependencies that materially constrain the milestone;
-* unresolved questions that must remain visible;
-* candidate implementation approaches that should remain delegated;
-* ideas deliberately deferred or rejected.
-
-Do not silently promote tentative discovery ideas into milestone requirements.
-
-Repository observations that are likely to become stale should appear only when they establish a dependency or explain an accepted planning decision. Phrase such observations as starting evidence the implementation agent should verify against current reality.
-
-## Authority
+Optimize for useful autonomous runway, not document length.
 
 Milestones are planning artifacts, not semantic authority.
 
-Current canonical `openspec/specs/*/spec.md` requirements own current required product behavior. The active architecture roadmap guides future architecture and sequencing without silently overriding current specs.
+## Own at milestone level
 
-If milestone discovery identifies an apparent semantic gap, conflict, or intended behavior change, state the desired milestone-level invariant and require repository reconciliation through OpenSpec. Do not preallocate canonical ownership merely because planning suggests where it probably belongs.
+A milestone should establish, when consequential:
 
-Historical changes, discovery documents, implementation details, and the milestone itself do not silently override current canonical semantics.
+- the useful user-visible or system-level outcome;
+- why the work belongs together;
+- important starting assumptions and dependencies;
+- accepted product or architecture decisions that should not be casually reopened;
+- scope and meaningful non-goals;
+- dependency-ordered slices or work packages;
+- the useful new fact each slice should make DiskWeave able to claim;
+- acceptance evidence for that fact;
+- important refusal, uncertainty, recovery, preservation, and failure behavior;
+- consequential correctness or architecture review boundaries;
+- end-to-end interactions that prove the slices form a coherent result;
+- final completion conditions;
+- non-obvious shortcuts that could satisfy local checks while violating the intended result;
+- important engineering choices intentionally left to the implementation agent.
 
-## What the milestone owns
+Prefer slices that establish meaningful capability or evidence over infrastructure-only phases.
 
-A milestone should establish enough of the following to let an implementation agent work autonomously for an extended period:
+## Respect semantic authority
 
-* the useful user-visible or system-level outcome;
-* why the work forms one coherent milestone rather than unrelated features;
-* consequential starting dependencies;
-* accepted product and architecture decisions that should not be reopened casually;
-* included scope and explicit non-goals;
-* important refusal, uncertainty, recovery, failure, and claim-boundary behavior;
-* dependency-ordered horizontal work packages;
-* the useful new system claim delivered by each work package;
-* acceptance evidence sufficient to prove each work package;
-* consequential validation or review boundaries;
-* end-to-end stories that prove interaction between work packages;
-* non-obvious forbidden shortcuts that could appear locally reasonable while violating the milestone;
-* engineering choices intentionally delegated to the implementation agent;
-* final cross-package completion criteria.
+Current canonical OpenSpecs define current required product behavior. A reviewed active OpenSpec change may define the target within its scope. Architecture supplies architectural direction within its declared authority boundary.
 
-Prefer work packages that cross enough layers to produce meaningful capability. Avoid infrastructure-only phases when the infrastructure can instead be built inside the first package that needs it.
+The milestone may preserve accepted decisions and identify semantic questions or target outcomes, but it does not silently create canonical behavior.
 
-### Cohesion and external gates
+Implementation, tests, models, and evidence do not manufacture missing semantics.
 
-Every work package must be necessary to one integrated milestone completion claim. Test this by asking whether the package could be deferred while the milestone's central claim remained honestly complete. Execution dependencies and end-to-end interactions are strong evidence of cohesion, but a shared audit theme, defect class, or discovery source is not sufficient by itself.
+When milestone work encounters consequential overlap, ambiguity, contradiction, target-versus-current uncertainty, or a question about semantic ownership, the implementation agent should use the repository's semantic-reconciliation process rather than treating milestone prose as the answer.
 
-An external-review gate does not justify including independent blocked work. If an unresolved product, semantic, or architecture choice can be deferred without invalidating the integrated milestone claim, record it separately rather than making the autonomous milestone depend on that decision.
+Under the current knowledge architecture, do not preassign executable specifications as canonical product owners. A milestone may call for formal modeling or verification evidence when it provides distinct correctness value. If the work reveals a strong case for bounded executable semantic ownership, treat the authority change as a separate canonical semantic decision.
 
-## Work-package format
-
-Each substantial work package should normally contain:
-
-### Useful new claim
-
-State what DiskWeave may truthfully claim after this package that it could not claim before.
-
-Prefer an operator-visible or externally meaningful system capability.
-
-### Scope
-
-Describe the semantic and product boundaries that must be crossed to establish the claim.
-
-Specify necessary behavior and dependencies without prescribing ordinary implementation structure.
-
-### Acceptance evidence
-
-Give concrete scenarios sufficient to prove the new claim and its important fail-closed alternatives.
-
-Acceptance criteria should distinguish what is proven from what remains unknown, unsupported, blocked, refused, failed, or uncertain.
-
-Prefer observable outcomes and forbidden outcomes over implementation checklists.
-
-### Validation gate
-
-Identify any consequential correctness or architecture boundary crossed by the package.
-
-A validation gate means the implementation agent must reconcile the result with current semantic ownership, run the applicable evidence, and resolve material contradictions before depending on the new claim.
-
-A validation gate is **not automatically a user stop**. The agent should continue autonomously when the current repository, specifications, evidence, and milestone decisions resolve the gate.
-
-Label a gate **External review required** only when the milestone intentionally requires the user or planning reviewer to approve a consequential unresolved choice before proceeding.
-
-## Delegate to OpenSpec and the implementation agent
+## Delegate reversible structure
 
 Do not normally pre-author:
 
-* the number or names of OpenSpec changes;
-* the mapping between work packages and OpenSpec changes;
-* exact `req.*` IDs;
-* speculative canonical owner/refiner arrangements;
-* whether a particular change needs `design.md`;
-* the contents or outline of `design.md`;
-* exact task decomposition;
-* exact Rust types, modules, crates, files, or APIs;
-* reversible parser, library, serialization, storage-layout, concurrency, or process-structure choices;
-* detailed repository procedures already owned by `AGENTS.md`, OpenSpec, or repository-local skills.
+- the number or names of OpenSpec changes;
+- speculative `req.*` identities;
+- exact canonical ownership edits;
+- whether a particular change requires `design.md`;
+- the contents or outline of `design.md`;
+- exact Bead decomposition or dependency graph;
+- prose task lists duplicating Beads;
+- exact Rust types, modules, crates, or files;
+- reversible library or implementation choices;
+- repository procedures already owned by `AGENTS.md`, OpenSpec, knowledge, normalization, reconciliation, or other repo-local skills.
 
-The implementation agent should inspect current repository state and use OpenSpec to choose the smallest coherent change or changes needed to make meaningful progress toward the milestone.
+State the outcome and constraints. Let the repository-aware agent inspect the current tree and choose the minimum coherent semantic and implementation structure.
 
-A work package may require multiple OpenSpec changes. One OpenSpec change may satisfy parts of multiple work packages. Do not make them correspond merely for organizational neatness.
+Prescribe an exact artifact or change boundary only when that boundary is itself part of an accepted architecture, migration, compatibility, or correctness contract.
 
-Prescribe an OpenSpec/change boundary only when the boundary itself is an accepted consequential architecture, migration, compatibility, or semantic decision.
+## Work-package test
 
-Do not require `design.md`. Allow OpenSpec's current schema and the actual change to determine whether design rationale is warranted.
+A work package should answer:
 
-## Preserve consequential decisions, not implementation guesses
+> What useful new fact can DiskWeave safely claim after this work, what semantic authority supports that claim, what evidence establishes it, and what still fails closed when the required proof is absent?
+
+Use dependency ordering when one claim genuinely relies on another.
+
+Do not create phases merely to separate ordinary engineering disciplines.
+
+A work package may include investigation when a consequential semantic or evidence question must be resolved before implementation can safely proceed.
+
+Do not turn open engineering choices into fake product decisions.
+
+## Detail test
 
 Include detail when removing it would likely cause a capable agent to:
 
-* implement the wrong product behavior;
-* cross a correctness or semantic-authority boundary;
-* miss a hard dependency;
-* broaden a claim beyond its evidence;
-* collapse meaningful failure or uncertainty distinctions;
-* take an attractive but architecturally harmful shortcut;
-* reopen a product or architecture decision the user already made;
-* repeatedly require user decisions;
-* or be unable to tell whether a work package is complete.
+- implement the wrong product behavior;
+- cross an authority or correctness boundary;
+- miss a real dependency or inherited obligation;
+- broaden a claim beyond its evidence;
+- take an attractive but architecturally harmful shortcut;
+- lose important refusal, uncertainty, recovery, preservation, or lifecycle behavior;
+- repeatedly require a product decision that is already settled;
+- or be unable to tell whether the work package is complete.
 
 Omit detail when it:
 
-* tells a capable agent how to perform ordinary engineering;
-* duplicates repository/OpenSpec workflow instructions;
-* restates canonical requirements without adding milestone-level consequence;
-* records current implementation trivia that the agent can reliably rediscover;
-* prematurely chooses among reasonable implementations;
-* predicts requirement IDs or source-code structure;
-* or exists only to make each section independently self-contained.
+- explains ordinary engineering;
+- repeats repository procedures;
+- inventories facts the agent can reliably rediscover;
+- duplicates canonical semantics;
+- predicts exact OpenSpec, model, Bead, or implementation structure unnecessarily;
+- or merely makes each section independently complete.
 
 ## Economy and single ownership
 
-Within the milestone, give each decision, constraint, and acceptance condition **one primary home**.
+Give each milestone decision, constraint, and acceptance condition one primary home.
 
-Do not restate the same rule in background, semantic discussion, operator contract, work-package acceptance, evidence strategy, forbidden shortcuts, end-to-end stories, and final DoD merely to make every section complete.
+Do not repeat the same rule across goals, work packages, end-to-end stories, completion criteria, and forbidden shortcuts.
 
-Use these ownership rules:
+Detailed acceptance belongs with the work package that proves it.
 
-* settled cross-cutting product/architecture decisions belong in the settled-decisions section;
-* detailed package behavior and acceptance belong with the work package that proves it;
-* end-to-end stories test interactions between packages rather than restating package acceptance;
-* evidence guidance states unusual claim/evidence boundaries rather than repeating every required test;
-* forbidden shortcuts contain only non-obvious attractive failures not already obvious from acceptance;
-* final completion criteria contain only facts that must be simultaneously true across the integrated milestone.
+Final milestone completion should contain only cross-package and integration conditions.
 
-Reference an earlier rule when necessary instead of rewriting it.
+End-to-end stories should exercise interactions between work packages rather than restating individual acceptance.
 
-## OpenSpec handoff quality
+Forbidden shortcuts should contain only plausible failures not already made clear by nearby outcomes or acceptance.
 
-The completed milestone must be useful as direct planning input to a repository-aware implementation agent.
+Do not inventory requirement IDs, implementation symbols, or repository state a capable agent can reliably retrieve unless the exact identity is necessary to preserve a decision or dependency.
 
-It should tell that agent **what outcome and boundaries must survive OpenSpec decomposition**, while leaving the agent free to discover from current repository state:
+## Review gates
 
-* which canonical requirements already own the semantics;
-* which requirements actually need modification;
-* whether new ownership is necessary;
-* how many coherent changes are appropriate;
-* whether each change needs design rationale;
-* and how implementation tasks should be structured.
+Call for explicit review when a mistake could invalidate a major correctness, durability, recovery, authority, compatibility, or architecture claim.
 
-Do not include a duplicate `/opsx:*` workflow tutorial in the milestone.
+A review gate should state what must be established before proceeding, not prescribe a ceremonial report format.
 
-## Evidence and claims
+Do not require human approval for ordinary reversible engineering.
 
-Match evidence to the claim being made.
+When a review can be resolved mechanically or by an existing semantic/verification workflow, use that workflow rather than inventing a milestone-specific process.
 
-Keep important distinctions explicit when relevant, including:
+## Completion
 
-* deterministic/model evidence versus adapter evidence;
-* process/reopen evidence versus physical durability evidence;
-* portable semantic admission versus platform publication;
-* observation versus mutation;
-* current evidence versus stale historical evidence;
-* definite failure versus uncertain consequential outcome.
+A milestone is complete when:
 
-Do not let a convenient test mechanism silently broaden the milestone's claim.
+- its intended useful system outcome exists;
+- its cross-package dependencies and interactions are satisfied;
+- required semantic changes are owned through normal repository authority;
+- evidence supports the claims actually made;
+- important failure/refusal/uncertainty behavior remains conservative;
+- unresolved work outside the milestone is explicit and does not invalidate the completed claim;
+- planning prose is not required to understand current product behavior.
 
-## Final compression pass
-
-After drafting the milestone, perform a dedicated compression review before returning it.
-
-For every paragraph, ask:
-
-1. Does this preserve a decision, dependency, claim boundary, autonomous acceptance criterion, or delegated freedom?
-2. Is this information already stated elsewhere?
-3. Could a repository-aware frontier model safely rediscover it?
-4. Does it belong in OpenSpec rather than the milestone?
-
-Delete or consolidate text when the first answer is no, when the second is yes without a new purpose, or when the latter questions show that the detail belongs downstream.
-
-Do **not** achieve compression by weakening work-package acceptance, removing important refusal behavior, or replacing precise correctness conditions with vague summaries.
-
-Spend words primarily on consequential decisions and work-package acceptance.
-
-## Final quality test
-
-The milestone should let the implementation agent answer throughout execution:
-
-> What useful new fact can DiskWeave safely claim after this work package, which current semantic owner supports that claim, what evidence proves it, and what still fails closed when the required proof is absent?
-
-The final document should provide enough context for long-running autonomous execution while leaving OpenSpec and implementation structure to the repository-aware agent wherever those choices remain reversible.
+A milestone should leave a capable implementation agent knowing what outcome matters and how to recognize success, while leaving reversible semantic artifact structure, Bead decomposition, formal-model structure, and implementation engineering to the workflows that already own them.
