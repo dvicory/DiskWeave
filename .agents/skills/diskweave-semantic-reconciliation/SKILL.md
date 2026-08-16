@@ -126,7 +126,7 @@ When repair is needed, prefer the smallest change that leaves one clear owner fo
 
 Do not choose split, merge, relocation, or a new identity before understanding the behavior being owned.
 
-Use the repository's normal OpenSpec workflow for normative edits. Do not invent proposal structure, task decomposition, or `design.md` content here.
+Route normative product changes through the normal OpenSpec change workflow; do not make the repair by editing canonical specs directly. Canonical specs change only when that workflow completes and syncs. Keep repairs to current semantics distinct from new target behavior. Let the OpenSpec workflow determine its proposal, design, and task artifacts.
 
 When editing OpenSpec, write the product rule directly. Keep conditions that affect authority, durability, ordering, refusal, uncertainty, recovery, preservation, or claims explicit. Do not leave reconciliation commentary in canonical requirement prose.
 
@@ -142,7 +142,7 @@ Do not assume dependents remain valid merely because tests pass.
 
 A bounded reconciliation is complete when:
 
-- each independently meaningful decision in scope has an identifiable canonical owner, or the remaining ambiguity is explicit;
+- each current decision in scope has an identifiable owner or explicit defect, and any target change remains visibly target until its normal authority transition completes;
 - valid refinement and composition do not independently redefine owned decisions;
 - two conforming implementations cannot materially disagree because of an unintended gap or contradiction;
 - consequential failure and uncertainty behavior is determined or explicitly unresolved;
