@@ -31,6 +31,8 @@ A delegated model defines the exact bounded semantics named by its OpenSpec owne
 
 Prefer delegation when a model can replace duplicated prose with a clearer exact transition or invariant definition. Do not move product interpretation, compatibility policy, operator meaning, or claim boundaries into a model merely because they can be encoded there.
 
+Keep delegated semantics distinct from finite verification instances, exploration bounds, and other evidence-only configuration.
+
 Creating, changing, or removing delegated semantics is a semantic change. Keep current and proposed model semantics distinct through the normal OpenSpec authority transition.
 
 If a non-authoritative model and current semantics disagree, reconcile the product contract first, then bring the model or implementation into conformance as appropriate.
@@ -125,6 +127,7 @@ When repair is needed, prefer the smallest change that leaves one clear owner fo
 - adding genuinely missing behavior;
 - deliberately changing or retiring obsolete behavior;
 - fixing implementation rather than changing correct semantics.
+- After an ownership change, re-test each affected requirement for independent semantic responsibility. A requirement whose remaining proposition is completely determined by other owners or delegated semantics should not survive only as a restatement or stable-ID shell.
 
 Do not choose split, merge, relocation, or a new identity before understanding the behavior being owned.
 
