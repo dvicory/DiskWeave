@@ -126,7 +126,7 @@ When repair is needed, prefer the smallest change that leaves one clear owner fo
 
 Do not choose split, merge, relocation, or a new identity before understanding the behavior being owned.
 
-Route normative product changes through the normal OpenSpec change workflow; do not make the repair by editing canonical specs directly. Canonical specs change only when that workflow completes and syncs. Keep repairs to current semantics distinct from new target behavior. Let the OpenSpec workflow determine its proposal, design, and task artifacts.
+Any normative semantic repair — including correcting or removing current canonical behavior—belongs in an OpenSpec change. Start or update that change with the appropriate OpenSpec skill. Do not edit canonical specs as the repair itself; canonical specs change through the OpenSpec sync workflow. Keep explicit whether the work repairs current semantics or defines new target behavior. The OpenSpec workflow owns its proposal, design, task, sync, and archive mechanics.
 
 When editing OpenSpec, write the product rule directly. Keep conditions that affect authority, durability, ordering, refusal, uncertainty, recovery, preservation, or claims explicit. Do not leave reconciliation commentary in canonical requirement prose.
 

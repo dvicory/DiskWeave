@@ -79,11 +79,11 @@ For a selected capability:
 2. identify the relevant architecture meaning, entry paths, and inherited obligations;
 3. reconcile current semantics where they matter;
 4. resolve genuine product or constitutional ambiguity through the normal semantic workflow;
-5. establish the minimum coherent target semantics through the normal semantic-change workflow;
+5. hand any resulting product-semantic change to the normal OpenSpec change workflow;
 6. recheck the useful outcome and inherited obligations against that target;
 7. update only the temporary normalization state needed to resume safely.
 
-Target semantics remain target until that workflow completes its authority transition. Normalization does not make them current by editing canonical specs directly.
+An active OpenSpec change is a valid outcome for a normalization slice. It can carry the repair or target for that scope while current specs remain current authority until the change is completed and synced.
 
 Do not preselect requirement split/merge, new owner, existing-owner evolution, or exact change boundaries before the semantic shape is understood.
 
