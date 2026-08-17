@@ -1,12 +1,12 @@
 ---
 name: diskweave-knowledge
-description: Use before changing DiskWeave product code, canonical OpenSpecs, verification evidence, or maintained documentation. Load relevant requirement context and use readiness at change boundaries.
+description: Use before changing DiskWeave product code, canonical OpenSpecs, delegated canonical models, verification evidence, or maintained documentation. Load relevant requirement context and use readiness at change boundaries.
 ---
 
 # DiskWeave knowledge workflow
 <!-- dwv:req req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path -->
 
-Use this skill for product code, canonical OpenSpecs, verification evidence, or maintained documentation.
+Use this skill for product code, canonical OpenSpecs, delegated canonical models, verification evidence, or maintained documentation.
 
 ## Before editing
 
@@ -28,7 +28,8 @@ Use this skill for product code, canonical OpenSpecs, verification evidence, or 
 
 ## Editing rules
 
-- OpenSpecs own intended behavior. Rust markers, evidence, and prose link to requirements; they do not redefine them.
+- OpenSpec requirements own intended behavior; explicitly delegated models may define their bounded exact semantics. Rust markers, evidence, and prose link to requirements; they do not redefine them.
+- Changes to delegated canonical semantics must be treated as semantic changes to their owning requirement and included in normal affected/dependent review.
 - Put `/// dwv:req <requirement-id>` only on a Rust item that genuinely owns or represents that semantic boundary. Do not tag every helper.
 - Keep user-facing prose causal and audience-specific. Preserve requirement modality and explicit non-claims.
 - For a Human Guide chapter, read its `docs/curriculum.toml` entry first. Draft or review the `[[entries.sections]]` briefs in order: use the proposed heading, satisfy every `must_answer` from the linked current sources, and preserve every section `non_claims`. The briefs guide Markdown; they do not override canonical requirements.

@@ -2,11 +2,7 @@ DiskWeave is correctness-first storage software. Prefer simple, explicit designs
 
 Write technical prose using ISO 24495-1 and Zinsser's principles of simplicity and economy. Preserve DiskWeave terminology and correctness-relevant semantics.
 
-Current `openspec/specs/*/spec.md` files own current product behavior. Active OpenSpec changes contain proposed target behavior. When work is being executed through a change, its delta specs define the target contract for that work and its tasks record implementation progress. Current specs remain canonical until the completed, verified change is synced. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
-
-Keep semantic ownership explicit and nonduplicative. One independently meaningful product decision should have one canonical OpenSpec owner; broader propositions may be completely determined by composition of independently owned decisions without an umbrella requirement. Use semantic reconciliation when ownership, composition, contradiction, or completeness is consequential or unclear.
-
-Executable specifications and models can provide distinct formal precision or verification for bounded protocols. They do not override OpenSpec semantics.
+Current `openspec/specs/*/spec.md` requirements own current product behavior. A current requirement may explicitly delegate a bounded part of its exact semantics to an executable model; only that delegated surface is model authority. Active OpenSpec changes contain proposed target behavior. When work is being executed through a change, its delta specs define the target contract for that work and its tasks record implementation progress. Current requirements and their delegated semantics remain canonical until the completed, verified change is synced. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, non-delegated models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
 
 Preserve the portable semantic core. Keep platform-specific mechanisms behind explicit seams.
 

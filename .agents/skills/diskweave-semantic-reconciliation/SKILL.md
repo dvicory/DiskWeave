@@ -1,6 +1,6 @@
 ---
 name: diskweave-semantic-reconciliation
-description: Determine and repair DiskWeave semantic ownership when current requirements overlap, compose, conflict, or leave consequential behavior underdetermined. Use bounded review by default and make the smallest durable semantic repair.
+description: Determine and repair DiskWeave semantic ownership when requirements overlap, compose, conflict, leave consequential behavior underdetermined, or may benefit from delegated executable semantics. Use bounded review by default and make the smallest durable semantic repair.
 ---
 
 # DiskWeave semantic reconciliation
@@ -17,7 +17,7 @@ Use the repository's knowledge tooling for deterministic context, relationships,
 
 ## One decision, one owner
 
-Under the current repository authority model, each independently meaningful product decision should have one canonical OpenSpec owner.
+Each independently meaningful product decision should have one canonical OpenSpec owner. That owner may define the decision directly or explicitly delegate a bounded part of its exact semantics to a canonical executable model.
 
 Other requirements may refine that decision, compose it with independently owned decisions, map a platform mechanism into it, or constrain it at an architecture, security, or evidence boundary. They should not independently redefine the same policy.
 
@@ -27,11 +27,13 @@ A broader proposition may be completely determined by several independently owne
 
 Executable specifications and models can make bounded state, ordering, crash/recovery behavior, interleavings, and invariants precise.
 
-Under the current repository authority model, OpenSpec owns product semantics. Models remain verification or evidence unless that authority is deliberately changed. Do not delete or weaken canonical OpenSpec ownership merely because a model is more precise.
+A delegated model defines the exact bounded semantics named by its OpenSpec owner. The requirement retains ownership, meaning, assumptions, scope, and product-facing boundaries. Other models are not semantic authority.
 
-When an executable representation would materially simplify a bounded semantic-ownership problem, surface that authority question explicitly; do not settle it by implication in either direction.
+Prefer delegation when a model can replace duplicated prose with a clearer exact transition or invariant definition. Do not move product interpretation, compatibility policy, operator meaning, or claim boundaries into a model merely because they can be encoded there.
 
-If a model and canonical semantics disagree, reconcile the product contract first, then bring the model or implementation into conformance as appropriate.
+Creating, changing, or removing delegated semantics is a semantic change. Keep current and proposed model semantics distinct through the normal OpenSpec authority transition.
+
+If a non-authoritative model and current semantics disagree, reconcile the product contract first, then bring the model or implementation into conformance as appropriate.
 
 ## Bound the question
 
@@ -128,7 +130,7 @@ Do not choose split, merge, relocation, or a new identity before understanding t
 
 Any normative semantic repair — including correcting or removing current canonical behavior—belongs in an OpenSpec change. Start or update that change with the appropriate OpenSpec skill. Do not edit canonical specs as the repair itself; canonical specs change through the OpenSpec sync workflow. Keep explicit whether the work repairs current semantics or defines new target behavior. The OpenSpec workflow owns its proposal, design, task, sync, and archive mechanics.
 
-When editing OpenSpec, write the product rule directly. Keep conditions that affect authority, durability, ordering, refusal, uncertainty, recovery, preservation, or claims explicit. Do not leave reconciliation commentary in canonical requirement prose.
+When editing OpenSpec, write the product meaning directly. If exact bounded semantics are delegated to a model, make that delegation explicit instead of repeating the model in prose. Keep conditions that affect authority, durability, ordering, refusal, uncertainty, recovery, preservation, or claims explicit. Do not leave reconciliation commentary in canonical requirement prose.
 
 ## Preserve identities and review dependents
 
@@ -148,7 +150,7 @@ A bounded reconciliation is complete when:
 - consequential failure and uncertainty behavior is determined or explicitly unresolved;
 - any repair uses the minimum durable ownership shape and removes meaningful duplication;
 - affected dependents have been reviewed when owned semantics changed;
-- current meaning does not depend on implementation, models, history, campaign state, or conversation context as hidden authority;
+- current meaning does not depend on implementation, non-delegated models, history, campaign state, or conversation context as hidden authority;
 - verification and evidence claims remain within what they establish.
 
 A successful reconciliation may conclude that no change is needed.
