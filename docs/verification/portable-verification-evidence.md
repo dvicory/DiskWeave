@@ -10,26 +10,61 @@ disposable fixture, commands, outputs, and claim boundary.
 
 ## VE-002 focused evidence
 
-Source: `verification/tla/RecoveryProtocol.tla`
-Configuration: `verification/tla/RecoveryProtocol.cfg`
+Date: 2026-08-17
+
+Source: `verification/quint/RecoveryProtocol.qnt`
+
+Authority status: the `RecoveryProtocol` module is the current canonical
+authority for the bounded VE-002 reference transaction/recovery relation.
+The separate `RecoveryProtocolAnalysis` module binds the finite evidence
+instance and its runs are verification evidence, not semantic authority.
+The archived `replace-ve002-tla-with-quint` and
+`reconcile-ve002-quint-ownership` changes established this boundary. Quint
+does not own typed evidence, topology, persistence, operation-slot lifetime,
+frontend delivery, or production recovery authority.
 
 Commands:
 
 ```text
-mise exec -- java -cp /tmp/dwv-tla2tools-1.7.4.jar pcal.trans verification/tla/RecoveryProtocol.tla
-mise exec -- java -cp /tmp/dwv-tla2tools-1.7.4.jar tlc2.TLC -config verification/tla/RecoveryProtocol.cfg verification/tla/RecoveryProtocol.tla
-tla verification/tla/RecoveryProtocol.tla --config verification/tla/RecoveryProtocol.cfg --json
+quint typecheck verification/quint/RecoveryProtocol.qnt
+quint test verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis
+quint run verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis \
+  --max-steps 12 \
+  --invariants TypeInvariant \
+  --invariants NoFalseClean \
+  --invariants MutationRequiresIntent \
+  --invariants UncertaintyIsVisible \
+  --invariants DurableWorkIsOwned \
+  --invariants TerminalRequiresEvidence \
+  --invariants FenceAndCheckpointCoverage \
+  --witnesses beginReachable \
+  --witnesses durableIntentReachable \
+  --witnesses mutationReachable \
+  --witnesses uncertainIntentReachable \
+  --witnesses uncertainHomeReachable \
+  --witnesses reconciliationReachable \
+  --witnesses terminalReachable \
+  --max-samples 10000 --seed 22082026
 ```
 
 Observed:
 
-- PlusCal translation completed with no parse errors.
-- TLC: no error; 82 states generated, 53 distinct states, complete depth 9;
-  all six invariants passed.
-- `tla-rs`/`tla-checker` 0.6.11: `status: ok`, 53 states explored, 81
-  transitions, maximum depth 9.
-- A temporary home-write guard mutation was rejected by both checkers with
-  `MutationRequiresIntent` at depth 2.
+- Typecheck and the bounded-assumption test passed.
+- The sampled run found no invariant violation across 10,000 traces.
+- Witnesses were reached in 10,000/10,000 begin traces, 8,600/10,000
+  durable-intent traces, 7,401/10,000 mutation traces, 4,876/10,000
+  uncertain-intent traces, 5,964/10,000 uncertain-home traces, 9,667/10,000
+  reconciliation-handoff traces, and 7/10,000 terminal traces.
+- Same-seed ITF traces were byte-identical after generated timestamps and
+  per-trace metadata were removed.
+- A disposable copy with the `mutate` durable-intent guard removed was
+  rejected by `MutationRequiresIntent`. The mutant is not retained.
+
+The Quint evidence is bounded to `MaxDepth = 8`, two affected regions, and
+two stores. It does not claim exhaustive model checking, Rust implementation
+correctness, exact region/checksum mapping, typed fence admissibility,
+topology, persistence-engine behavior, operation-slot lifetime, frontend
+behavior, physical durability, or unbounded recovery progress.
 
 ## VE-001 focused evidence
 

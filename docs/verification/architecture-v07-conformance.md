@@ -21,7 +21,7 @@ portable claim.
 | Generated operation/fault/crash schedules | CONFORMANT (seeded bounded evidence) | `verification/corpus/simulator-schedule-seeds.txt` plus retained parity, topology, envelope, and trace corpora; `dwv-sim`, `dwv-codec`, `dwv-core`, `dwv-format`, and `dwv-trace` tests replay or reject deterministically | Bounded corpus only; sustained coverage-guided campaigns remain additive |
 | Normalized semantic reproducer | CONFORMANT | OS-024 trace model, bounded parser, migration/limit tests, CLI export/render/replay, and baseline trace evidence | Preserve producer-specific witnesses if future tools find them |
 | Bounded verification of high-consequence pure components | CONFORMANT (finite bounded domains) | `dwv-core`, `dwv-service`, and `dwv-codec` exhaustive finite-domain tests; decision and bounds in `docs/adr/ve-001-bounded-arithmetic.md` | Evidence covers declared bounds only; no arbitrary-width formal proof |
-| Independent abstract recovery protocol | CONFORMANT (finite safety/reachability) | PlusCal source, generated translation, TLC run, `tla-rs` cross-check, and seeded mutation detection in `docs/adr/ve-002-independent-recovery-model.md` | Bounds and omitted facts remain explicit; no application-wide proof |
+| Independent abstract recovery protocol | CONFORMANT (finite safety/reachability) | Canonical Quint source and bounded analysis in `verification/quint/RecoveryProtocol.qnt`, with authority and bounds recorded in `docs/adr/ve-002-independent-recovery-model.md` | Bounds and omitted facts remain explicit; no application-wide proof |
 | Broad concurrency schedule exploration | NOT YET APPLICABLE | Slot lifecycle has deterministic transition tests, but no real concurrent executor/job/shutdown graph exists and no current product claim depends on one | VE-003 after executor/job/shutdown code exists; do not add a runtime for the checker |
 | Production-adjacent deterministic filesystem/io_uring simulation | NOT YET APPLICABLE | No Linux-oriented executor or io_uring seam exists in the portable product | VE-004/OS-031 dependency-gated; `dwv-sim` remains authoritative |
 | Capability-oriented APIs | CONFORMANT | `dwv-core`, `dwv-store`, file-store capability reports, persistence evidence, and explicit unsupported results avoid ambient OS assumptions | Physical capability certification remains outside the claim |
@@ -44,8 +44,8 @@ platform gates, not reasons to weaken the portable claim.
 ## Evidence-layer status
 
 - **Portable evidence:** VE-001 finite-domain arithmetic/range/parity
-  harnesses, VE-002 independent recovery-model checks, and the bounded VE-005
-  seed corpora are implemented and recorded.
+  harnesses, the VE-002 bounded Quint recovery-model checks, and the bounded
+  VE-005 seed corpora are implemented and recorded.
 - **VE-005 bounded corpus:** deterministic trace seeds, parser mutations,
   simulator operation/fault schedules, parity reconstruction, topology
   candidate validation, and envelope mutations are recorded in

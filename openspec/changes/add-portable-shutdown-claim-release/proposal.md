@@ -7,7 +7,7 @@ DiskWeave's current canonical shutdown behavior is complete for the Linux fronte
 - Add one portable shutdown contract to the existing `healthy-portable-io` semantic owner.
 - Require shutdown to stop new admission, quiesce frontends and namespace writers, drain or durably hand off admitted work, reconcile indeterminate completions where possible, obtain only owner-approved checkpoint/close evidence, withdraw exported endpoints, and release claims only after writable aliases cannot remain.
 - Define conservative outcomes: a clean shutdown is reported only after every required step and exact fence evidence succeeds; failure or reconciliation-required state never receives a clean-close claim, and forced shutdown preserves dirty or indeterminate state.
-- Keep frontend abandonment, operation-slot lifetime, transaction outcomes, dirty/restart consequences, store watermarks, and recovery fence admissibility owned by their current requirements; the new requirement composes them without redefining them.
+- Keep lifecycle, operation-slot, dirty/restart, store-watermark, and recovery-fence ownership with their current requirements; use the delegated reference-trace requirement for exact transaction states, outcomes, ordering, and release sequencing without redefining that machine.
 - Narrow the Linux frontend requirement to a platform refinement that maps OS descriptor claims, ublk endpoint ownership, cleanup, and process-death behavior onto the portable shutdown owner rather than creating a second generic shutdown policy.
 - Leave startup/publication admission, deployment/mount ordering, post-gap currentization, recovery-state mutation, retention, historical recovery, and the independent recovery-inspection change out of scope.
 

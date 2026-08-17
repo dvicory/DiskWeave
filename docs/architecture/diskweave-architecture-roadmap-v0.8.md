@@ -2928,7 +2928,14 @@ Do not attempt application-wide verification, async/concurrency proof through Ka
 
 Maintain one deliberately small primary model for VP-003 through VP-008.
 
-**Provisional preference:** PlusCal-authored TLA+ checked with TLC, because an independently expressed model reduces the chance of reproducing the same Rust implementation error. **Alternative:** Stateright when Rust-native state exploration, counterexample ergonomics, maintainability, and CI integration provide greater practical assurance while remaining independent from production transitions/types.
+**Current VE-002 decision:** use the parameterized Quint model in
+`verification/quint/RecoveryProtocol.qnt` as the one primary executable
+authority for the bounded abstract transaction/recovery relation. Its
+independent source/action relation makes nondeterministic loss, explicit
+reconciliation, safety, reachability, counterexample mutation, and witness
+coverage visible in one small model. The former PlusCal/TLA+/TLC and Rust
+checker are historical provenance; Stateright remains an unselected
+alternative, not a second model.
 
 The comparison considers:
 
@@ -3281,7 +3288,7 @@ These changes attach at dependency-ready points and do not automatically block u
 | **D-023** | `dwv-sim` remains the domain simulator; general deterministic I/O runtimes only complement it. |
 | **D-024** | Normalized semantic traces are the common portable regression artifact; producer witnesses remain tool-scoped and retained. |
 | **D-025** | Verification tools may not force a general runtime/effect system, transaction rewrite, CLI redesign, or format change. |
-| **D-026** | The primary abstract model is independent of production Rust, records bounds/fairness, and translates counterexamples to simulator scenarios; PlusCal/TLA+/TLC is the provisional first choice. |
+| **D-026** | The primary abstract model is independent of production Rust, records bounds/fairness, and translates counterexamples to simulator scenarios; the VE-002 Quint canary is the current model authority and one maintained model is required. |
 | **D-027** | Persistence durability and logical protection policy are distinct; current `BlockRequest` carries only durability semantics. |
 | **D-028** | Physical stores are role-neutral; logical roles and coding positions are topology bindings. |
 | **D-029** | Codec primitives consume explicit profiles/positions/shards and are independent of topology, stores, and placement. |
@@ -3305,7 +3312,7 @@ These changes attach at dependency-ready points and do not automatically block u
 | **P-007** | FSKit-first macOS raw-file bridge | frontend contract; macFUSE/other alternative |
 | **P-008** | mergerfs initial namespace | separately replaceable namespace plane |
 | **P-009** | Module-level substrate/protocol separation | split crates only when dependency evidence justifies it |
-| **P-010** | PlusCal/TLA+/TLC primary abstract model | Stateright comparison and one-model maintenance rule |
+| **P-010** | Parameterized Quint model for the bounded abstract transaction/recovery relation | one-model maintenance, seeded mutation failure, deterministic traces, witness coverage, and explicit non-claims |
 
 ## 24.3 Validation decisions
 
@@ -3894,7 +3901,7 @@ The architecture uses the following families of primary references and tools as 
 - Apple FSKit, DiskImages, and virtualization disk-image documentation for macOS bridge feasibility;
 - SQLite documentation for journal, synchronization, WAL, migration, and storage-contract semantics;
 - `procmachines` documentation/source for procedural Sans-I/O state machines;
-- TLA+/PlusCal/TLC and Stateright documentation for independent abstract model checking;
+- Quint documentation and CLI for the independent abstract model; former TLA+/PlusCal/TLC and Stateright material is historical or alternative guidance only;
 - Kani for bounded Rust verification;
 - Shuttle and Loom for distinct concurrency schedule-exploration scopes;
 - Turmoil for deterministic filesystem and simulated-I/O experiments;

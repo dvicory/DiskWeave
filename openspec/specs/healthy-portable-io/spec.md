@@ -95,15 +95,16 @@ A read SHALL validate the normalized byte range, split it at required boundaries
 <!-- dwv:requires req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic -->
 <!-- dwv:requires req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent -->
 <!-- dwv:requires req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions -->
+<!-- dwv:requires req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent -->
 <!-- dwv:requires req.xor-reference-model.incremental-updates-and-full-recomputation-are-equivalent -->
 <!-- dwv:requires req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence -->
 
-A protected write SHALL compose the canonical checked dirty-region mapping, durable invalidation owner, atomic recovery transaction, reference transaction actions, single-XOR computation, and exact-range store operations. This requirement owns service orchestration only. It SHALL preserve each owner's result and SHALL emit no protected member mutation before the durable-intent owner succeeds.
+A protected write SHALL compose the canonical checked dirty-region mapping, durable invalidation owner, atomic recovery transaction, delegated reference-transaction relation, single-XOR computation, and exact-range store operations. This requirement owns service orchestration only. It SHALL preserve each owner's result, emit no protected member mutation before the durable-intent owner succeeds, and SHALL not reinterpret the delegated reference relation or the non-delegated owner predicates.
 
 #### Scenario: Partial write requires read-modify-write
 
 - **WHEN** a write covers part of a parity extent
-- **THEN** the service composes the required old data and parity reads, reference-equivalent XOR update, and exact writes after the durable-intent owner succeeds
+- **THEN** the service composes the required old data and parity reads, reference-equivalent XOR update, and exact writes under the delegated transaction relation and after the durable-intent owner succeeds
 
 #### Scenario: Full overwrite is aligned
 
@@ -132,7 +133,7 @@ The service SHALL preserve normalized durability intent and compose accepted sto
 <!-- dwv:req req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety -->
 <!-- dwv:requires req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics -->
 <!-- dwv:requires req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
-<!-- dwv:requires req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative -->
+<!-- dwv:requires req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent -->
 <!-- dwv:requires req.dirty-integrity-invalidation.failures-and-restart-are-conservative -->
 
 The service SHALL compose frontend delivery interest, operation-slot lifetime, transaction outcome, and durable dirty/restart consequences without redefining them. It SHALL keep admitted work and resources under their owners until terminal reconciliation, preserve every conservative failure result, and never blindly retry an uncertain non-idempotent write.
@@ -161,3 +162,4 @@ Data and parity member files SHALL contain no required DiskWeave metadata. Loss 
 
 - **WHEN** a proposed backing path is also an active exported endpoint
 - **THEN** the service rejects the configuration before opening competing access
+

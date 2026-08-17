@@ -61,7 +61,8 @@ These are compact results, not persisted claim cards.
 
 - `req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity`
 - `req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed`
-- `req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation`
+- `req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions`
+- `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent`
 - the returned write, transaction, recovery, store, and XOR closure
 
 **Result:** Current canonical semantics require a range-acquisition action and correct parity orchestration, but they do not define the conflict domain of that authority. They do not state that writes to different data members at corresponding offsets conflict through the same parity address. v0.8 §11.6 and v0.9 §8.6 agree on the missing rule. This is an **unresolved retained target semantic** and a possible current semantic gap, but current debt is not positively established: current requirements do not promise concurrent write progress, and the current service serializes through one mutable service path while supplying a synthetic range token. Implementation shape is not durable authority.
@@ -108,7 +109,7 @@ Two conforming implementations could otherwise choose per-member versus coded-ra
 
 - Bounded-resource owners: `req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission` and `req.store-operation-contracts.resource-admission-and-identity-remain-bounded-and-explicit`.
 - Rebuild progress, verification, and promotion: `req.recovery-state-semantics.offline-rebuild-progress-is-durable-semantic-authority`, `req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target`, `req.degraded-read-offline-rebuild.rebuild-resumes-and-completes-only-after-full-verification`, `req.degraded-read-offline-rebuild.replacement-promotion-preserves-logical-identity`, `req.anchorless-topology-identity.topology-transition-plans-bind-source-target-and-recovery`, and `req.anchorless-topology-identity.topology-transitions-are-staged-and-recoverable`.
-- Recovery uncertainty and ownership: `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`, `req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent`, `req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred`, `req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative`, and `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations`.
+- Recovery uncertainty and ownership: `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`, `req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent`, `req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred`, `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent`, and `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations`.
 - Disposable control history: `req.file-backed-stores.disposable-control-sqlite-state-is-separate-from-recovery-authority`.
 - Their deterministic prerequisite and direct-dependent closure.
 
@@ -437,7 +438,8 @@ cargo xtask docs knowledge context \
 cargo xtask docs knowledge context \
   req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity \
   req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed \
-  req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation
+  req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions \
+  req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent
 
 cargo xtask docs knowledge context \
   req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence \

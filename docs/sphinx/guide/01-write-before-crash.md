@@ -74,5 +74,5 @@ physical power loss.
 :filter: "type == 'req' and capability in ['volatile-media-simulator', 'dirty-integrity-invalidation', 'explicit-transaction-machine']"
 ```
 
-**Provenance:** `req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred`; `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation`; `req.dirty-integrity-invalidation.failures-and-restart-are-conservative`; `req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation`; `req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects`; scenario `scenario.basic-write`.
+**Provenance:** `req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred`; `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation`; `req.dirty-integrity-invalidation.failures-and-restart-are-conservative`; `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent`; `req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects`; scenario `scenario.basic-write`.
 

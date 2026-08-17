@@ -34,8 +34,16 @@ Live negative cases failed closed for second-owner acquisition, cleanup against 
 - `cargo test -p dwv-frontend-ublk`: 13 passed across two suites, including the deterministic undersized-fixture and missing-recovery-authority checks moved out of the guest workflow.
 - `cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected`: passed outside the timed guest workflow.
 - `cargo test --test cli_demo`: covers portable trace replay, malformed trace refusal, oversized trace refusal, lifecycle confirmation, and source-preserving replay.
-- TLC 2.19 on `verification/tla/RecoveryProtocol.tla`: 234 states generated, 125 distinct states, complete depth 9, all configured invariants passed. The model composes durable dirty intent, data/parity mutation, per-store fences, recovery checkpointing, clean publication, and crash/restart handoff.
+- The current VE-002 bounded recovery-model evidence is recorded in
+  `docs/verification/portable-verification-evidence.md` and is independent
+  of this Linux acceptance run; it does not broaden the Linux claim.
 - Kani 0.67.0 `dirty_region_mapping_covers_every_intersection_once`: 0 of 584 checks failed, 7 unreachable.
 - Kani 0.67.0 `fence_coverage_requires_every_store_region_and_incarnation`: 0 of 893 checks failed, 6 unreachable.
 
-The deterministic recovery model exercises crash cuts before durable intent and after intent, protected mutation, fence, and checkpoint. The before-intent mutant is retained as a regression requiring `ReconciliationRequired`; clean publication is permitted only after durable intent, complete protected mutation, complete store-fence coverage, and recovery checkpoint evidence. Trace replay is validation-only: it rechecks adapter translation and completion mapping without opening a fixture, backend, or device, mutating payload bytes, or claiming application consumption or physical durability.
+The current Quint recovery model exercises crash/loss cuts before and after
+durable intent, protected mutation, fence, and checkpoint, with explicit
+uncertainty and reconciliation. Its disposable durable-intent mutation was
+rejected by `MutationRequiresIntent` and was not retained. Trace replay remains
+validation-only: it rechecks adapter translation and completion mapping
+without opening a fixture, backend, or device, mutating payload bytes, or
+claiming application consumption or physical durability.

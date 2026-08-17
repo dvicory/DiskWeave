@@ -62,7 +62,7 @@ The change-local reconciliation is:
 |---|---|---|
 | `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics` | Requires; preserve | Supplies quiescence, loss, and abandonment meaning; no shutdown policy relocation. |
 | `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations` | Requires; preserve | Retains admitted resources until terminal/reconciliation state. |
-| `req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative` | Requires; preserve | Keeps transaction uncertainty and release ordering conservative. |
+| `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent` | Requires; preserve | Supplies the canonical bounded transaction relation and normalized comparison boundary; exact states, outcomes, ordering, and release sequencing remain in Quint. |
 | `req.dirty-integrity-invalidation.failures-and-restart-are-conservative` | Requires; preserve | Keeps dirty/indeterminate consequences after incomplete stop. |
 | `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` and `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence` | Requires; preserve | Continue to decide whether clean/checkpoint claims are admissible. |
 | `req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority` | Refine | Linux keeps endpoint/descriptor/platform rules; portable ordering becomes the single generic policy owner. |

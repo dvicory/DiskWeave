@@ -1,104 +1,147 @@
-# ADR: VE-002 independent recovery-protocol model
+# ADR: VE-002 delegated Quint recovery-protocol model
 
 - **Status:** Accepted for the portable evidence lane
-- **Date:** 2026-08-08
-- **Model source:** PlusCal embedded in `verification/tla/RecoveryProtocol.tla`
-- **Reference checker:** official TLC 2.19 from `tla2tools.jar` 1.7.4
-- **Rust checker:** `tla-checker` 0.6.11 (`tla-rs`)
+- **Date:** 2026-08-17
+- **Model source:** `verification/quint/RecoveryProtocol.qnt`
+- **Reference checker:** Quint 0.32.0 with its Rust simulation backend
 
 ## Decision
 
-Use `verification/tla/RecoveryProtocol.tla` as the first independent abstract
-model of the dirty/integrity/recovery protocol. Its PlusCal algorithm is the
-source; the generated `BEGIN TRANSLATION` block is checked by a checker and
-must be regenerated with the official translator after source changes. The
-checked configuration is `verification/tla/RecoveryProtocol.cfg`.
+Use `verification/quint/RecoveryProtocol.qnt` as the sole current VE-002
+model authority. The parameterized `RecoveryProtocol` module is the
+canonical protocol source. `RecoveryProtocolAnalysis` binds that relation to
+the finite VE-002 evidence instance and provides assumptions, witnesses, and
+runs.
 
-The repository pins the Java major version through `mise.toml`:
+The delegated authority is the parameterized state, action, transition, and
+invariant relation. The VE-002 evidence instance uses one represented write
+obligation, `Regions = {"data", "parity"}`, `Stores = {"data", "parity"}`, and
+`MaxDepth = 8`. Those values bound the verification evidence only; they are
+not product cardinality limits, protocol alternatives, or exhaustive proof
+of arbitrary-width instances.
 
-```toml
-java = "temurin-21"
-```
+The model does not define exact region mapping, checksum extent semantics,
+topology identity, typed fence admissibility, store persistence, adapter
+commit observations, operation-slot lifetime, frontend delivery, or
+production recovery authority. Those decisions remain owned by their current
+requirements.
 
-The local TLC evidence run used Temurin 21.0.12 and official `tla2tools.jar`
-1.7.4 (SHA-1 `bee4a54f3ee3d4afc347c3240ec2d9e93b075104`). The jar is not
-committed; it is a tool input, not a DiskWeave runtime dependency.
+This is an authority transition, not a retroactive rewrite. The archived
+`replace-ve002-tla-with-quint` and `reconcile-ve002-quint-ownership` changes
+established Quint as the current model authority. The retired TLA files remain
+historical provenance, not a second current authority.
 
-`cargo install tla-checker --version 0.6.11 --locked` provides a Java-free
-Rust checker for the same TLA+ source and config. It is recorded as a
-cross-check, not as a second production model or a replacement semantic
-implementation.
+## Why Quint
+
+The old PlusCal model was independent, but it advanced an unknown home effect
+to durable through an implicit recovery step and did not represent an
+uncertain intent commit separately from a rejected one. The Quint model makes
+both uncertainty boundaries explicit and requires an explicit reconciliation
+action before a clean or terminal state can be reached.
+
+## Model scope and invariants
+
+The parameterized protocol relation represents one admitted write obligation.
+Its state vocabulary includes:
+
+- pending, durable, and unknown invalidation intent;
+- unmodified, volatile, durable, and unknown home effects;
+- clean, dirty, and indeterminate recovery;
+- unowned, in-flight, handoff, and terminal ownership;
+- parameterized affected-region and store sets, fence coverage, checkpoint
+  coverage, abandonment, process loss, and explicit reconciliation.
+
+It checks the seven VE-002 invariants:
+
+- `TypeInvariant`;
+- `NoFalseClean`;
+- `MutationRequiresIntent`;
+- `UncertaintyIsVisible`;
+- `DurableWorkIsOwned`;
+- `TerminalRequiresEvidence`;
+- `FenceAndCheckpointCoverage`.
+
+The analysis binds `MaxDepth = 8`, `Regions = {"data", "parity"}`, and
+`Stores = {"data", "parity"}`. Its sampled runs are finite executable
+evidence, not exhaustive model checking and not proof of the Rust
+implementation, real I/O, a persistence engine, or unbounded recovery
+progress.
 
 ## Checker comparison
 
 | Option | Independence from DiskWeave | Evidence fit | Decision |
 |---|---|---|---|
-| Official TLC 2.19 | High: separate TLA+ notation and mature JVM checker | Safety, reachability, explicit crash boundaries, and qualified liveness | Reference checker |
-| **`tla-rs` / `tla-checker` 0.6.11** | High model independence: it parses the same TLA+ source in a separate Rust implementation; lower tool maturity than TLC | Finite safety/reachability, JSON counterexample traces, bounded exploration | **Use as the Java-free Rust cross-check** |
-| Stateright 0.31 | Medium: Rust model-only types can avoid production coupling, but it requires a second Rust model | Safety and reachability; cyclic `eventually` behavior is not sufficient for a liveness gate | Keep as a future alternative, not needed for this slice |
-| Rust custom BFS/`proptest` explorer | Low to medium: checker and model errors share the Rust environment | Useful smoke/property evidence, not a replacement for an independent TLA+ source | Not selected |
+| **Quint 0.32.0** | High: model-only Quint source and separate simulator | Bounded safety, reachability, explicit uncertainty, deterministic traces, mutation checks | **Current VE-002 authority** |
+| Official TLC | High: mature separate checker for TLA+ | Historical bounded safety and reachability | Retired with the source model |
+| `tla-rs` / `tla-checker` 0.6.11 | High checker independence, same retired TLA+ source | Historical finite cross-check | Retired with the source model |
+| Stateright 0.31 | Medium: separate Rust model required | Safety and reachability | Not selected; no second model |
 
-`tla-rs` is not a Rust translation of PlusCal. It is a Rust implementation
-of a TLA+ checker, so the model remains independently expressed from the
-production Rust code while the checker can run without Java. Official TLC
-remains the reference until longer-term compatibility and maintenance evidence
-justifies changing that status.
-
-## Model scope and invariants
-
-The model has one bounded write obligation and enumerates intent, home-media,
-recovery, and ownership states. It checks:
-
-- clean state requires either no outstanding work or terminal evidence;
-- home mutation requires durable intent/integrity invalidation;
-- uncertainty remains visible and cannot become clean or terminal silently;
-- durable work remains owned by an in-flight, handoff, or terminal obligation;
-- terminal state requires durable home evidence, invalidation, and clean recovery.
-
-Bounds are `MaxDepth = 8`, one region, one home mutation, and no payload bytes,
-concurrent slots, topology changes, filesystem behavior, SQLite pages, runtime
-scheduling, or physical durability. The result is finite safety/reachability
-evidence for this abstraction, not proof of the Rust implementation, real I/O,
-or unbounded recovery progress.
+Quint is a verification model, not a Rust translation of production
+transitions. The model remains independent from DiskWeave implementation
+types and runtime code.
 
 ## Reproducible evidence
 
 ```text
-mise install java
-mise exec -- java -cp /path/to/tla2tools.jar pcal.trans \
-  verification/tla/RecoveryProtocol.tla
-mise exec -- java -cp /path/to/tla2tools.jar tlc2.TLC \
-  -config verification/tla/RecoveryProtocol.cfg \
-  verification/tla/RecoveryProtocol.tla
-
-cargo install tla-checker --version 0.6.11 --locked
-tla verification/tla/RecoveryProtocol.tla \
-  --config verification/tla/RecoveryProtocol.cfg --json
+quint typecheck verification/quint/RecoveryProtocol.qnt
+quint test verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis
+quint run verification/quint/RecoveryProtocol.qnt \
+  --main RecoveryProtocolAnalysis \
+  --max-steps 12 \
+  --invariants TypeInvariant \
+  --invariants NoFalseClean \
+  --invariants MutationRequiresIntent \
+  --invariants UncertaintyIsVisible \
+  --invariants DurableWorkIsOwned \
+  --invariants TerminalRequiresEvidence \
+  --invariants FenceAndCheckpointCoverage \
+  --witnesses beginReachable \
+  --witnesses durableIntentReachable \
+  --witnesses mutationReachable \
+  --witnesses uncertainIntentReachable \
+  --witnesses uncertainHomeReachable \
+  --witnesses reconciliationReachable \
+  --witnesses terminalReachable \
+  --max-samples 10000 \
+  --seed 22082026
 ```
 
-The TLC run on 2026-08-08 completed with no errors: 82 states generated, 53
-distinct states, complete depth 9, and all six invariants passed.
+## Observed evidence
 
-The `tla-rs` run independently completed with `status: ok`, 53 states
-explored, 81 transitions, and maximum depth 9.
+On 2026-08-17, typecheck and the bounded-assumption test passed. The sampled
+run found no invariant violation across 10,000 traces. Witness coverage was:
+begin 100.00%, durable intent 86.00%, mutation 74.01%, uncertain intent
+48.76%, uncertain home 59.64%, reconciliation handoff 96.67%, and terminal
+ownership 0.07% (7 traces). The terminal witness's low rate is expected from
+the guarded path; its non-zero reachability is the required result.
 
-A temporary seeded mutation removed the durable-intent guard from the home
-write transition. Both TLC and `tla-rs` rejected it with
-`MutationRequiresIntent` at depth 2. The mutant was kept outside the
-repository; no bad model is part of the production or evidence source.
+Two runs with the same seed produced byte-identical normalized ITF traces
+after removing generated timestamps. A disposable copy with the
+`mutate` durable-intent guard removed was rejected by
+`MutationRequiresIntent`. The mutant is not retained.
 
-## Consequences
+## Lessons and next campaign
 
-This closes the current VE-002 evidence gap without adding a Rust model crate,
-runtime dependency, or production representation. Counterexamples, if later
-found, must be translated into `dwv-sim` schedules and retained as normalized
-regression artifacts. The next portable evidence item is VE-001 bounded
-arithmetic verification; VE-003 remains gated on real concurrent executor/job
-and shutdown code.
+The canary showed that delegated authority is useful only when the boundary
+names the exact state and actions. It exposed a real modeling defect rather
+than merely translating syntax: intent-commit uncertainty and home-effect
+uncertainty need different explicit reconciliation states. It also showed that
+sampled simulation needs witnesses for rare terminal paths; a green invariant
+run alone would not establish that checkpoint and terminal ownership are
+reachable.
+
+The highest-value next application is **U11: portable shutdown, endpoint
+withdrawal, and claim-release ordering**, after its existing implementation
+readiness gate is resolved. A small Quint model should own only the bounded
+ordering and conservative outcomes for admission closure, quiescence, drain
+or handoff, exact checkpoint/close-session evidence, endpoint withdrawal, and
+claim release. It should leave recovery authority, operation-slot lifetime,
+frontend-specific endpoint ownership, and operator result vocabulary with
+their current owners. VE-003 remains the follow-on choice once the executor,
+job, and shutdown concurrency seam exists.
 
 References:
 
-- [TLA+ releases](https://github.com/tlaplus/tlaplus/releases)
-- [`tla-rs` repository](https://github.com/fabracht/tla-rs)
-- [`tla-checker` documentation](https://docs.rs/tla-checker/0.6.11/)
-- [Stateright 0.31 documentation](https://docs.rs/stateright/0.31.0/)
+- [Quint](https://github.com/informalsystems/quint)
+- `openspec/specs/explicit-transaction-machine/spec.md`
+- `docs/architecture/normalization/diskweave-v0.9-campaign.md` (U11)

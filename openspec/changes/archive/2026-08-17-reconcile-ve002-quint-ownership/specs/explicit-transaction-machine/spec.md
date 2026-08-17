@@ -1,8 +1,28 @@
-# explicit-transaction-machine Specification
+## REMOVED Requirements
 
-## Purpose
-This capability provides an auditable reference state machine that orders protected home-media actions around durable recovery intent, fences, checkpoints, abandonment, and crash reconciliation.
-## Requirements
+### Requirement: Durable intent precedes every protected home mutation
+<!-- dwv:req req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation -->
+
+**Reason:** The exact protected-mutation guard and blocked outcome are delegated to the canonical `RecoveryProtocol` module in `verification/quint/RecoveryProtocol.qnt`. Durable dirty/integrity invalidation and recovery requirements retain the independent product predicates.
+
+**Migration:** Remove references to this ID. Use `req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation`, `req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent`, and the retained reference-trace requirement where the exact delegated relation is relevant.
+
+### Requirement: Clean and checkpoint claims require fence evidence
+<!-- dwv:req req.explicit-transaction-machine.clean-and-checkpoint-claims-require-fence-evidence -->
+
+**Reason:** Exact fence, checkpoint, clear, terminal, and range-release ordering is delegated to the canonical `RecoveryProtocol` module. Store, recovery-state, dirty/integrity, and healthy-service requirements retain independent evidence and clean-claim admissibility.
+
+**Migration:** Remove references to this ID. Use `req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence`, `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence`, `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence`, and the applicable healthy-service composition requirement.
+
+### Requirement: Failure, abandonment, and crash states are conservative
+<!-- dwv:req req.explicit-transaction-machine.failure-abandonment-and-crash-states-are-conservative -->
+
+**Reason:** Exact uncertainty, handoff, terminal, and abandonment outcomes are delegated to the canonical `RecoveryProtocol` module. Lifecycle, operation-slot, dirty/restart, and healthy-service requirements retain independent custody, lifetime, and conservative-failure behavior.
+
+**Migration:** Remove references to this ID. Use `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics`, `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations`, `req.dirty-integrity-invalidation.failures-and-restart-are-conservative`, and `req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety`.
+
+## MODIFIED Requirements
+
 ### Requirement: Transactions emit normalized semantic actions
 <!-- dwv:req req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions -->
 
@@ -12,6 +32,7 @@ The reference machine SHALL expose the semantic action vocabulary for range acqu
 
 - **WHEN** a caller starts a protected write with affected regions and integrity extents
 - **THEN** the normalized trace represents the request with the semantic action vocabulary and supplied semantic evidence without exposing backend runtime types
+
 
 #### Scenario: Backend fanout is used
 
@@ -47,4 +68,3 @@ The reference machine SHALL emit versioned normalized action traces with stable 
 
 - **WHEN** VE-002 evidence reports the two-region, two-store, `MaxDepth = 8` analysis instance
 - **THEN** the report treats those values as reproducible verification scope rather than a product cardinality limit or an unbounded protocol proof
-

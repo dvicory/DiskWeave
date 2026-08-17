@@ -21,7 +21,7 @@ requirements = [
   "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
   "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
   "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
-  "req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
   "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"
 ]
 scenarios = ["scenario.basic-write"]
@@ -41,7 +41,7 @@ focus = "Walk dirty intent, data/parity mutation, completion, fence, and clean c
 must_answer = ["What must be durable before protected mutation?", "Which event permits a later clean claim?"]
 requirements = [
   "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
-  "req.explicit-transaction-machine.durable-intent-precedes-every-protected-home-mutation"
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
 ]
 scenarios = ["scenario.basic-write"]
 non_claims = ["Ordering alone does not certify a platform's physical flush behavior."]
