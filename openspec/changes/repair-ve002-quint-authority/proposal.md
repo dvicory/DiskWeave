@@ -1,6 +1,6 @@
 ## Why
 
-The completed VE-002 canary moved the bounded reference relation to Quint, but the canonical model still has authority gaps: it can begin a new obligation directly from an unreleased terminal state, and abandonment after a volatile home effect can classify a partial mutation as durably complete. The model also leaves invalid or repeated transition handling implicit while the knowledge contract does not state that a changed delegated source requires owner and dependent review. Repair these boundaries before applying the canary's recommended U11 campaign.
+The completed VE-002 canary moved the bounded reference relation to Quint, but the proposed target relation still has authority gaps: it can begin a new obligation directly from an unreleased terminal state, and abandonment after a volatile home effect can classify a partial mutation as durably complete. The target also leaves invalid or repeated transition handling implicit while the knowledge contract does not state that a changed marked delegated source requires owner and dependent review. Repair these boundaries before applying the canary's recommended U11 campaign.
 
 ## What Changes
 

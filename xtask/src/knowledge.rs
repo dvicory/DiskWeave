@@ -2009,15 +2009,13 @@ pub(super) fn affected(
             .difference(&current_ids)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let delegated_source = is_delegated_source_path(&relative);
-        let review_required = (delegated_source
-            && (!current_ids.is_empty() || !old_ids.is_empty()))
+        let quint_source = is_quint_source_path(&relative);
+        let review_required = (quint_source && !current_ids.is_empty())
             || (baseline.available && !removed.is_empty());
-        let classification = if delegated_source && (!current_ids.is_empty() || !old_ids.is_empty())
-        {
+        let classification = if baseline.available && !removed.is_empty() {
+            "current_requirement_relationship_removed_or_reassigned"
+        } else if quint_source && !current_ids.is_empty() {
             "delegated_canonical_source_changed"
-        } else if baseline.available && !removed.is_empty() {
-            "requirement_relationship_removed_or_reassigned"
         } else if baseline.available && !added.is_empty() {
             "requirement_relationship_added_context_only"
         } else if baseline.available {
@@ -2398,8 +2396,9 @@ impl BaselineIds {
     }
 }
 
-fn is_delegated_source_path(path: &str) -> bool {
-    path.starts_with("models/quint/") && path.ends_with(".qnt")
+fn is_quint_source_path(path: &str) -> bool {
+    (path.starts_with("models/quint/") || path.starts_with("verification/quint/"))
+        && path.ends_with(".qnt")
 }
 
 fn is_impact_candidate(path: &str) -> bool {
@@ -2410,8 +2409,9 @@ fn is_impact_candidate(path: &str) -> bool {
             || path == "verification/manifest.toml"
             || path == "docs/curriculum.toml"
             || (path.starts_with("docs/sphinx/") && path.ends_with(".md"))
-            || (path.starts_with("models/quint/") && path.ends_with(".qnt")))
+            || is_quint_source_path(path))
 }
+
 fn baseline_ids(app: &App, relative: &str) -> Result<BaselineIds, AppError> {
     let Some(provider) = RevisionControl::detect(&app.root) else {
         return Ok(BaselineIds::unavailable());
@@ -2599,7 +2599,25 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
             .cloned()
             .collect::<BTreeSet<_>>();
         added_relationships += added.len();
-        if is_delegated_source_path(&relative) && !delegated_ids.is_empty() {
+        let quint_source = is_quint_source_path(&relative);
+        if baseline.available && !removed_current.is_empty() {
+            review_ids.extend(delegated_ids.iter().cloned());
+            next_actions.insert(format!(
+                "cargo xtask docs knowledge affected --path {relative}"
+            ));
+            entries.push(json!({
+                "path": relative,
+                "classification": "current_requirement_relationship_removed_or_reassigned",
+                "review_required": true,
+                "requirement_ids": delegated_ids,
+                "current_ids": current_ids,
+                "previous_ids": baseline.ids,
+                "added_ids": added,
+                "removed_current_ids": removed_current,
+                "removed_noncurrent_ids": removed_noncurrent,
+                "baseline": baseline.source
+            }));
+        } else if quint_source && !current_ids.is_empty() {
             review_ids.extend(delegated_ids.iter().cloned());
             next_actions.insert(format!(
                 "cargo xtask docs knowledge affected --path {relative}"
@@ -2611,20 +2629,6 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
                 "requirement_ids": delegated_ids,
                 "current_ids": current_ids,
                 "previous_ids": baseline.ids,
-                "added_ids": added,
-                "removed_current_ids": removed_current,
-                "removed_noncurrent_ids": removed_noncurrent,
-                "baseline": baseline.source
-            }));
-        } else if baseline.available && !removed_current.is_empty() {
-            review_ids.extend(removed_current.iter().cloned());
-            next_actions.insert(format!(
-                "cargo xtask docs knowledge affected --path {relative}"
-            ));
-            entries.push(json!({
-                "path": relative,
-                "classification": "current_requirement_relationship_removed_or_reassigned",
-                "review_required": true,
                 "added_ids": added,
                 "removed_current_ids": removed_current,
                 "removed_noncurrent_ids": removed_noncurrent,
@@ -3398,6 +3402,7 @@ fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
         ("crates", true, "rs"),
         ("xtask", true, "rs"),
         ("models/quint", false, "qnt"),
+        ("verification/quint", false, "qnt"),
     ] {
         let path = app.root.join(directory);
         if path.exists() {
@@ -3482,7 +3487,7 @@ fn scan_file(
         }
         let kind = if rust {
             "rust"
-        } else if is_delegated_source_path(&relative) {
+        } else if is_quint_source_path(&relative) {
             "delegated"
         } else if relative == "verification/manifest.toml" {
             "verification"
@@ -4705,7 +4710,7 @@ mod tests {
             requirement("The system SHALL remain stable."),
         )
         .unwrap();
-        let path = root.join("models/quint/RecoveryProtocol.qnt");
+        let path = root.join("verification/quint/RecoveryProtocol.qnt");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(
             &path,
@@ -4713,10 +4718,12 @@ mod tests {
         )
         .unwrap();
 
-        assert!(is_impact_candidate("models/quint/RecoveryProtocol.qnt"));
+        assert!(is_impact_candidate(
+            "verification/quint/RecoveryProtocol.qnt"
+        ));
         assert_eq!(
             relationship_ids(
-                "models/quint/RecoveryProtocol.qnt",
+                "verification/quint/RecoveryProtocol.qnt",
                 &fs::read_to_string(&path).unwrap()
             ),
             BTreeSet::from(["req.cap.one".to_owned()])
@@ -4724,7 +4731,7 @@ mod tests {
         let references = scan_references(&app).unwrap();
         let delegated = references
             .iter()
-            .filter(|reference| reference.path == "models/quint/RecoveryProtocol.qnt")
+            .filter(|reference| reference.path == "verification/quint/RecoveryProtocol.qnt")
             .collect::<Vec<_>>();
         assert_eq!(delegated.len(), 1);
         assert_eq!(delegated[0].kind, "delegated");
@@ -4769,6 +4776,118 @@ mod tests {
             "delegated_canonical_source_changed"
         );
         assert_eq!(entry["review_required"], true);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unmarked_quint_path_has_no_owner() {
+        let (root, app) = fixture("unmarked-quint");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        let path = root.join("models/quint/Unmarked.qnt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, "val modelRevision: int = 1\nreq.cap.one\n").unwrap();
+
+        assert!(is_impact_candidate("models/quint/Unmarked.qnt"));
+        assert!(
+            relationship_ids(
+                "models/quint/Unmarked.qnt",
+                &fs::read_to_string(&path).unwrap()
+            )
+            .is_empty()
+        );
+        assert!(
+            !scan_references(&app)
+                .unwrap()
+                .iter()
+                .any(|reference| reference.path == "models/quint/Unmarked.qnt")
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn quint_marker_removal_is_a_relationship_reassignment() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (root, app) = fixture("quint-marker-removal");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        write_reviewed(&root, &objects(&app).unwrap());
+        let path = root.join("verification/quint/RecoveryProtocol.qnt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "// dwv:req req.cap.one\nval modelRevision: int = 1\n",
+        )
+        .unwrap();
+        commit_git_fixture(&root);
+        fs::write(&path, "val modelRevision: int = 2\n").unwrap();
+
+        let result = change_impact(&app, Some("HEAD")).unwrap();
+        let entry = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == "verification/quint/RecoveryProtocol.qnt")
+            .unwrap();
+        assert_eq!(
+            entry["classification"],
+            "current_requirement_relationship_removed_or_reassigned"
+        );
+        assert_eq!(entry["review_required"], true);
+        assert_eq!(entry["requirement_ids"], json!(["req.cap.one"]));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn marked_quint_change_propagates_to_dependents() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (root, app) = fixture("quint-dependent-impact");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            specification(&[
+                (
+                    "req.cap.one",
+                    &[] as &[(&str, &str)],
+                    "The owner SHALL remain stable.",
+                ),
+                (
+                    "req.cap.two",
+                    &[("requires", "req.cap.one")],
+                    "The dependent SHALL preserve the owner boundary.",
+                ),
+            ]),
+        )
+        .unwrap();
+        write_reviewed(&root, &objects(&app).unwrap());
+        let path = root.join("models/quint/RecoveryProtocol.qnt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "// dwv:req req.cap.one\nval modelRevision: int = 1\n",
+        )
+        .unwrap();
+        commit_git_fixture(&root);
+        fs::write(
+            &path,
+            "// dwv:req req.cap.one\nval modelRevision: int = 2\n",
+        )
+        .unwrap();
+
+        let result = change_impact(&app, Some("HEAD")).unwrap();
+        assert_eq!(
+            result["review_requirement_ids"],
+            json!(["req.cap.one", "req.cap.two"])
+        );
         fs::remove_dir_all(root).unwrap();
     }
 

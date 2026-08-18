@@ -70,6 +70,8 @@ struct ModelState {
     home: Home,
     #[serde(rename = "homeObservation")]
     home_observation: HomeObservation,
+    #[serde(rename = "homeReconciled")]
+    home_reconciled: bool,
     recovery: Recovery,
     obligation: Obligation,
     invalidated: bool,
@@ -87,6 +89,7 @@ struct BridgeState {
     intent_observation: IntentObservation,
     home: Home,
     home_observation: HomeObservation,
+    home_reconciled: bool,
     recovery: Recovery,
     obligation: Obligation,
     invalidated: bool,
@@ -102,6 +105,7 @@ impl From<ModelState> for BridgeState {
             intent_observation: state.intent_observation,
             home: state.home,
             home_observation: state.home_observation,
+            home_reconciled: state.home_reconciled,
             recovery: state.recovery,
             obligation: state.obligation,
             invalidated: state.invalidated,
@@ -117,6 +121,7 @@ impl BridgeState {
         Self {
             intent: Intent::NoIntent,
             intent_observation: IntentObservation::IntentCommitUnknown,
+            home_reconciled: false,
             home: Home::HomeUnmodified,
             home_observation: HomeObservation::HomeEffectUnknown,
             recovery: Recovery::RecoveryClean,
@@ -135,7 +140,7 @@ impl BridgeState {
         }
     }
 
-    fn from_machine(machine: &TransactionMachine) -> Self {
+    fn from_machine(machine: &TransactionMachine, home_reconciled: bool) -> Self {
         let stage = machine.stage();
         let (intent, intent_observation) = match stage {
             Stage::AcquireRange => (Intent::NoIntent, IntentObservation::IntentCommitUnknown),
@@ -177,6 +182,7 @@ impl BridgeState {
             intent_observation,
             home,
             home_observation,
+            home_reconciled,
             recovery,
             obligation,
             invalidated: machine.state().intent_durable,
@@ -195,7 +201,7 @@ impl State<BridgeDriver> for BridgeState {
             driver
                 .machine
                 .as_ref()
-                .map(Self::from_machine)
+                .map(|machine| Self::from_machine(machine, driver.home_reconciled))
                 .unwrap_or_else(Self::initial)
         })
     }
@@ -209,6 +215,7 @@ impl State<BridgeDriver> for BridgeState {
 struct BridgeDriver {
     machine: Option<TransactionMachine>,
     released: bool,
+    home_reconciled: bool,
 }
 
 impl Driver for BridgeDriver {
@@ -228,11 +235,8 @@ impl Driver for BridgeDriver {
             acceptIntent => self.accept_intent()?,
             mutate => self.mutate()?,
             makeHomeDurable => self.make_home_durable()?,
-            fence => self.fence()?,
             checkpoint => self.checkpoint()?,
             release => self.release()?,
-            loseHome => self.lose_home()?,
-            reconcileHome => self.reconcile_home()?,
         })
     }
 }
@@ -241,13 +245,14 @@ impl BridgeDriver {
     fn init(&mut self) {
         self.machine = None;
         self.released = false;
+        self.home_reconciled = false;
     }
-
     fn begin(&mut self) -> Result {
         let mut machine = TransactionMachine::new(plan())?;
         machine.apply(ActionResult::RangeAcquired(RangeGuardToken(1)))?;
         self.machine = Some(machine);
         self.released = false;
+        self.home_reconciled = false;
         Ok(())
     }
 
@@ -259,11 +264,15 @@ impl BridgeDriver {
         Ok(())
     }
     fn mutate(&mut self) -> Result {
-        let machine = self.machine_mut()?;
-        if machine.stage() == Stage::ReadSet {
+        let stage = self.machine_mut()?.stage();
+        if stage == Stage::ReadSet {
+            let machine = self.machine_mut()?;
             machine.apply(ActionResult::ReadSetComplete(SemanticIoResult::complete()))?;
             machine.apply(ActionResult::ParityComputed(ComputationResult::complete()))?;
             machine.apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))?;
+        }
+        if stage == Stage::ReconciliationRequired {
+            self.home_reconciled = false;
         }
         Ok(())
     }
@@ -271,10 +280,7 @@ impl BridgeDriver {
     fn make_home_durable(&mut self) -> Result {
         self.machine_mut()?
             .apply(ActionResult::FlushSetComplete(durable_fence()))?;
-        Ok(())
-    }
-
-    fn fence(&mut self) -> Result {
+        self.home_reconciled = true;
         Ok(())
     }
 
@@ -294,15 +300,6 @@ impl BridgeDriver {
             "dwv-transaction-ref accepted a stale release result"
         );
         self.released = true;
-        Ok(())
-    }
-
-    fn lose_home(&mut self) -> Result {
-        self.machine_mut()?.daemon_crash()?;
-        Ok(())
-    }
-
-    fn reconcile_home(&mut self) -> Result {
         Ok(())
     }
 

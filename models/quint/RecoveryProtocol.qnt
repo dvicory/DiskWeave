@@ -1,9 +1,9 @@
 // -*- mode: Bluespec; -*-
 /**
  * VE-002 bounded recovery protocol model.
- *
- * The model is model-only. It defines one admitted write obligation. Explicit
- * release ends that represented lifecycle; reuse is outside this relation.
+ * The model is model-only. It defines one active admitted write obligation at
+ * a time. Explicit release permits sequential range reuse within the
+ * represented relation.
  * Exact region mapping, typed fence evidence, topology, persistence, resource
  * lifetime, and production recovery authority remain owned by their current
  * OpenSpec requirements.
@@ -31,6 +31,7 @@ module RecoveryProtocol {
     intentObservation: IntentObservation,
     home: HomeState,
     homeObservation: HomeObservation,
+    homeReconciled: bool,
     recovery: RecoveryState,
     obligation: ObligationState,
     invalidated: bool,
@@ -57,6 +58,7 @@ module RecoveryProtocol {
     intentObservation: observation,
     home: HomeUnmodified,
     homeObservation: HomeEffectUnknown,
+    homeReconciled: false,
     recovery: RecoveryClean,
     obligation: Aborted,
     invalidated: false,
@@ -68,13 +70,14 @@ module RecoveryProtocol {
     terminalPendingRelease: true,
     rangeReleased: false,
   }
-
+  
   action init: bool = all {
     state' = {
       intent: NoIntent,
       intentObservation: IntentCommitUnknown,
       home: HomeUnmodified,
       homeObservation: HomeEffectUnknown,
+      homeReconciled: false,
       recovery: RecoveryClean,
       obligation: Unowned,
       invalidated: false,
@@ -87,7 +90,6 @@ module RecoveryProtocol {
       rangeReleased: false,
     },
   }
-
   action begin: bool = all {
     state.obligation == Unowned,
     state' = {
@@ -96,6 +98,7 @@ module RecoveryProtocol {
       intentObservation: IntentCommitUnknown,
       home: HomeUnmodified,
       homeObservation: HomeEffectUnknown,
+      homeReconciled: false,
       recovery: RecoveryDirty,
       obligation: InFlight,
       invalidated: false,
@@ -130,27 +133,22 @@ module RecoveryProtocol {
     },
   }
 
-  action reconcileIntent: bool = {
-    nondet observation = Set(
-      IntentCommitRejected,
-      IntentCommitDurable,
-    ).oneOf()
-    all {
-      state.intent == IntentUnknown,
-      state.home == HomeUnmodified,
-      state.mutated == Set(),
-      state' = if (observation == IntentCommitRejected)
-        abortedUnreleased(state, observation)
-      else
-        {
-          ...state,
-          intent: IntentDurable,
-          intentObservation: observation,
-          recovery: RecoveryDirty,
-          obligation: Handoff,
-          invalidated: true,
-        },
-    }
+  action reconcileIntent(observation: IntentObservation): bool = all {
+    observation == IntentCommitRejected or observation == IntentCommitDurable,
+    state.intent == IntentUnknown,
+    state.home == HomeUnmodified,
+    state.mutated == Set(),
+    state' = if (observation == IntentCommitRejected)
+      abortedUnreleased(state, observation)
+    else
+      {
+        ...state,
+        intent: IntentDurable,
+        intentObservation: observation,
+        recovery: RecoveryDirty,
+        obligation: Handoff,
+        invalidated: true,
+      },
   }
 
   action mutate: bool = {
@@ -162,6 +160,7 @@ module RecoveryProtocol {
       state' = {
         ...state,
         home: if (state.home == HomeUnknown) HomeUnknown else HomeVolatile,
+        homeReconciled: if (state.home == HomeUnknown) false else state.homeReconciled,
         recovery: if (state.home == HomeUnknown)
           RecoveryIndeterminate
         else
@@ -176,19 +175,16 @@ module RecoveryProtocol {
     }
   }
 
-  action reconcileMutation: bool = {
-    nondet region = state.attempted.exclude(state.mutated).oneOf()
-    all {
-      state.intent == IntentDurable,
-      state.home == HomeUnknown,
-      state.recovery == RecoveryIndeterminate,
-      state.obligation == Handoff,
-      state.mutated != state.attempted,
-      state' = {
-        ...state,
-        mutated: state.mutated.union(Set(region)),
-      },
-    }
+  action reconcileMutation: bool = all {
+    state.intent == IntentDurable,
+    state.home == HomeUnknown,
+    state.recovery == RecoveryIndeterminate,
+    state.obligation == Handoff,
+    state.mutated != state.attempted,
+    state' = {
+      ...state,
+      mutated: state.attempted,
+    },
   }
 
   action makeHomeDurable: bool = all {
@@ -201,6 +197,7 @@ module RecoveryProtocol {
       ...state,
       home: HomeDurable,
       homeObservation: HomeEffectDurable,
+      homeReconciled: true,
     },
   }
 
@@ -241,11 +238,11 @@ module RecoveryProtocol {
     state.terminalPendingRelease,
     state.obligation == Terminal or state.obligation == Aborted,
     state' = {
-      ...state,
       intent: NoIntent,
       intentObservation: IntentCommitUnknown,
       home: HomeUnmodified,
       homeObservation: HomeEffectUnknown,
+      homeReconciled: false,
       recovery: RecoveryClean,
       obligation: Unowned,
       invalidated: false,
@@ -266,6 +263,7 @@ module RecoveryProtocol {
       ...state,
       home: HomeUnknown,
       homeObservation: HomeEffectIndeterminate,
+      homeReconciled: false,
       recovery: RecoveryIndeterminate,
       obligation: Handoff,
       attempted: state.attempted.union(state.mutated),
@@ -273,39 +271,49 @@ module RecoveryProtocol {
     },
   }
 
-  action reconcileHome: bool = {
-    nondet observation = Set(
-      HomeEffectIndeterminate,
-      HomeEffectDurable,
-    ).filter(effect =>
-      state.mutated == Regions or effect == HomeEffectIndeterminate
-    ).oneOf()
-    all {
-      state.intent == IntentDurable,
-      state.home == HomeUnknown,
-      state.recovery == RecoveryIndeterminate,
-      state.obligation == Handoff,
-      state' = if (observation == HomeEffectDurable)
-        {
-          ...state,
-          home: HomeDurable,
-          homeObservation: observation,
-          recovery: RecoveryDirty,
-          obligation: Handoff,
-        }
-      else
-        {
-          ...state,
-          home: HomeUnknown,
-          homeObservation: observation,
-          recovery: RecoveryIndeterminate,
-          obligation: Handoff,
-        },
-    }
+  action reconcileHomeIndeterminate: bool = all {
+    state.intent == IntentDurable,
+    state.home == HomeUnknown,
+    state.recovery == RecoveryIndeterminate,
+    state.obligation == Handoff,
+    (
+      state.homeObservation != HomeEffectIndeterminate
+      or not(state.homeReconciled)
+    ),
+    state' = {
+      ...state,
+      home: HomeUnknown,
+      homeObservation: HomeEffectIndeterminate,
+      homeReconciled: true,
+      recovery: RecoveryIndeterminate,
+      obligation: Handoff,
+    },
   }
 
+  action reconcileHomeDurable: bool = all {
+    state.intent == IntentDurable,
+    state.home == HomeUnknown,
+    state.recovery == RecoveryIndeterminate,
+    state.obligation == Handoff,
+    state.attempted == Regions,
+    state.mutated == Regions,
+    (
+      state.homeObservation != HomeEffectDurable
+      or not(state.homeReconciled)
+    ),
+    state' = {
+      ...state,
+      home: HomeDurable,
+      homeObservation: HomeEffectDurable,
+      homeReconciled: true,
+      recovery: RecoveryDirty,
+      obligation: Handoff,
+    },
+  }
+
+
   action abandon: bool = all {
-    active(state),
+    state.obligation == InFlight,
     state' = if (state.intent == IntentPending and state.home == HomeUnmodified)
       {
         ...state,
@@ -322,8 +330,14 @@ module RecoveryProtocol {
           HomeEffectIndeterminate
         else
           state.homeObservation,
+        homeReconciled: if (state.home == HomeVolatile)
+          false
+        else
+          state.homeReconciled,
         recovery: if (
-          state.intent == IntentUnknown or state.home == HomeUnknown
+          state.intent == IntentUnknown
+          or state.home == HomeUnknown
+          or state.home == HomeVolatile
         ) RecoveryIndeterminate else RecoveryDirty,
         obligation: Handoff,
         attempted: if (state.home == HomeVolatile)
@@ -338,7 +352,8 @@ module RecoveryProtocol {
     begin,
     acceptIntent,
     loseIntent,
-    reconcileIntent,
+    reconcileIntent(IntentCommitRejected),
+    reconcileIntent(IntentCommitDurable),
     mutate,
     reconcileMutation,
     makeHomeDurable,
@@ -346,7 +361,8 @@ module RecoveryProtocol {
     checkpoint,
     release,
     loseHome,
-    reconcileHome,
+    reconcileHomeIndeterminate,
+    reconcileHomeDurable,
     abandon,
   }
 
@@ -412,6 +428,13 @@ module RecoveryProtocol {
       and state.obligation != Terminal
       and state.obligation != Aborted
     )
+
+  val UncertaintyIsOwned: bool =
+    (
+      state.intent == IntentUnknown
+      or state.home == HomeUnknown
+      or state.recovery == RecoveryIndeterminate
+    ) implies state.obligation != Unowned
 
   val DurableWorkIsOwned: bool =
     (

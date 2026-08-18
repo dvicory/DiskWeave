@@ -2,30 +2,32 @@
 
 - **Status:** Accepted for the portable evidence lane
 - **Date:** 2026-08-17
-- **Model source:** `models/quint/RecoveryProtocol.qnt`
+- **Current model source (last synced):** `verification/quint/RecoveryProtocol.qnt`
+- **Proposed repair source:** `models/quint/RecoveryProtocol.qnt`
 - **Reference checker:** Quint 0.32.0 with its Rust simulation backend
 - **Tool pin:** `mise.toml` pins `@informalsystems/quint` at `0.32.0`
 
 ## Decision
 
-At the last synced revision, `models/quint/RecoveryProtocol.qnt` is the
-sole current VE-002 model authority. The active
-`repair-ve002-quint-authority` edits to that source are a proposed extension
-until normal OpenSpec verification and sync; they do not currentize their
-changed semantics in this working revision. The parameterized
-`RecoveryProtocol` module is the canonical protocol source. The finite
-`RecoveryProtocolAnalysis` module is maintained separately at
-`verification/quint/RecoveryProtocolAnalysis.qnt`; it binds that relation to
-the finite VE-002 evidence instance and provides assumptions, witnesses, and
-runs.
+At the last synced revision, `verification/quint/RecoveryProtocol.qnt` is the
+sole current model authority for the bounded VE-002 reference relation. The
+active `repair-ve002-quint-authority` change relocates and repairs that
+relation at `models/quint/RecoveryProtocol.qnt`; its changed semantics remain
+proposed until normal OpenSpec verification and sync. The parameterized
+`RecoveryProtocol` module is the canonical protocol source. The active target's
+finite `RecoveryProtocolAnalysis` module is maintained separately at
+`verification/quint/RecoveryProtocolAnalysis.qnt`; it binds that target
+relation to the finite VE-002 evidence instance and provides assumptions,
+witnesses, and runs.
 
 At that synced boundary, the delegated authority is the parameterized state,
 action, transition, and invariant relation. The VE-002 evidence instance uses
 one represented write obligation, `Regions = {"data", "parity"}`,
-`Stores = {"data", "parity"}`, and
-`MaxDepth = 8`. Those values bound the verification evidence only; they are
-not product cardinality limits, protocol alternatives, or exhaustive proof
-of arbitrary-width instances.
+`Stores = {"data", "parity"}`, and `MaxDepth = 8`. Those values bound the
+historical verification evidence only; they are not product cardinality
+limits, protocol alternatives, or exhaustive proof of arbitrary-width
+instances.
+
 
 The model does not define exact region mapping, checksum extent semantics,
 topology identity, typed fence admissibility, store persistence, adapter
@@ -35,8 +37,9 @@ requirements.
 
 This is an authority transition, not a retroactive rewrite. The archived
 `replace-ve002-tla-with-quint` and `reconcile-ve002-quint-ownership` changes
-established Quint as the current model authority. The retired TLA files remain
-historical provenance, not a second current authority.
+established Quint as the current model authority. The retired TLA source's
+recorded evidence and archived change artifacts remain historical provenance,
+not a second current authority.
 
 ## Why Quint
 
@@ -70,11 +73,26 @@ It checks the nine VE-002 invariants:
 - `DurableHomeRequiresCoverage`;
 - `FenceAndCheckpointCoverage`.
 
-The analysis binds `MaxDepth = 8`, `Regions = {"data", "parity"}`, and
-`Stores = {"data", "parity"}`. Its sampled runs are finite executable
-evidence, not exhaustive model checking and not proof of the Rust
-implementation, real I/O, a persistence engine, or unbounded recovery
-progress.
+The active repair target adds `UncertaintyIsOwned` to this set. Its target
+model therefore checks ten invariants:
+
+- `TypeInvariant`;
+- `NoFalseClean`;
+- `MutationRequiresIntent`;
+- `UncertaintyIsVisible`;
+- `UncertaintyIsOwned`;
+- `DurableWorkIsOwned`;
+- `TerminalRequiresRelease`;
+- `TerminalRequiresEvidence`;
+- `DurableHomeRequiresCoverage`;
+- `FenceAndCheckpointCoverage`.
+
+The historical VE-002 instance bound model `MaxDepth = 8`. The active target
+analysis binds `Regions = {"data", "parity"}` and
+`Stores = {"data", "parity"}` and uses checker `--max-steps 12`. These are
+finite executable evidence bounds, not exhaustive model checking and not
+proof of the Rust implementation, real I/O, a persistence engine, or
+unbounded recovery progress.
 
 ## Checker comparison
 
@@ -136,24 +154,32 @@ mutant was not retained.
 ## Active repair target (proposed until sync)
 
 The active `repair-ve002-quint-authority` change repairs the delegated
-relation without changing current OpenSpec authority until its normal
-verification and sync. Its target adds explicit range-held and
-range-release state, permits a new `begin` after release, gives
-pre-mutation intent rejection an owned aborted outcome, guards terminal
-reuse before release, and requires complete represented mutation coverage
-before a durable home result. It also makes invalid, repeated, and
-out-of-order action handling partial rather than silently transitioning.
+relation at the proposed `models/quint/RecoveryProtocol.qnt` path without
+changing current OpenSpec authority until its normal verification and sync.
+Its target adds explicit range-held and range-release state, permits a new
+`begin` after release, gives pre-mutation intent rejection an owned aborted
+outcome, guards terminal reuse before release, and requires complete
+represented mutation coverage before a durable home result. It also makes
+invalid, repeated, and out-of-order action handling partial rather than
+silently transitioning.
 
 Target evidence includes direct release/reuse, terminal-begin rejection, and
 partial-home tests; bounded witnesses for aborted, released, resumed-mutation,
-and durable-home-coverage states; bounded Apalache verification; and two
-seeded Quint Connect projections through `dwv-transaction-ref`. These checks
-are evidence for the active change, not a second semantic owner and not an
-exhaustive proof. The Connect driver covers only the mapped lifecycle fields:
-Rust batches reads, parity, and writes, while Quint separates abstract
-region mutation; abstract fence and home-reconciliation observations have no
-independent Rust action in the driver. Typed fence, watermark, generation,
-topology, and result-class evidence remains Rust-owned.
+reconciliation-mutation, and durable-home-coverage states; bounded Quint
+verification at checker depth 12; and two seeded Quint Connect runs of one
+observable mapped lifecycle through `dwv-transaction-ref`. These checks are
+evidence for the active change, not a second semantic owner and not an
+exhaustive proof. The target checks the ten invariants listed above. The
+sampled Quint run and Connect executions retain their own CLI step bounds;
+neither is a `MaxDepth` product parameter.
+
+The Connect driver covers only the mapped lifecycle fields: Rust batches
+reads, parity, and writes, while Quint separates one mapped abstract region
+mutation. The projection excludes abstract fence and home-reconciliation
+transitions whose concrete evidence is owned elsewhere. Released-range reuse
+is covered by the direct Quint `releasePermitsReuseTest` and the driver's
+stale-release rejection, not by the Connect lifecycle itself. Typed fence,
+watermark, generation, topology, and result-class evidence remains Rust-owned.
 
 ## Lessons and next campaign
 

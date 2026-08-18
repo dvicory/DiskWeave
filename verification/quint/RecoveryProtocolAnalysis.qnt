@@ -37,22 +37,29 @@ module RecoveryProtocolAnalysis {
     and not(state.rangeHeld)
   val resumedMutationReachable: bool =
     state.home == HomeUnknown
-    and state.attempted != Set()
+    and state.mutated != Set()
     and state.mutated != Regions
   val reconciledMutationReachable: bool =
     state.home == HomeUnknown
-    and state.mutated != Set()
-    and state.mutated != Regions
-  val durableHomeCoverage: bool =
-    state.home == HomeDurable implies (
-      state.attempted == Regions and state.mutated == Regions
-    )
+    and state.attempted == Regions
+    and state.mutated == Regions
+  val durableHomeReachable: bool =
+    state.home == HomeDurable
+    and state.attempted == Regions
+    and state.mutated == Regions
+
+
+
   run terminalReleaseRequiredTest =
     init
       .then(begin)
       .then(acceptIntent)
       .then(2.reps(i => mutate))
       .then(makeHomeDurable)
+      .expect(
+        durableHomeReachable
+        and state.recovery == RecoveryDirty
+      )
       .then(2.reps(i => fence))
       .then(checkpoint)
       .then(release)
@@ -71,7 +78,8 @@ module RecoveryProtocolAnalysis {
       .then(2.reps(i => fence))
       .then(checkpoint)
       .then(begin.fail())
-  run releaseEndsLifecycleTest =
+
+  run releasePermitsReuseTest =
     init
       .then(begin)
       .then(acceptIntent)
@@ -87,18 +95,85 @@ module RecoveryProtocolAnalysis {
         and not(state.rangeReleased)
       )
 
+  run rejectedIntentReleaseTest =
+    init
+      .then(begin)
+      .then(loseIntent)
+      .then(reconcileIntent(IntentCommitRejected))
+      .expect(
+        state.obligation == Aborted
+        and state.rangeHeld
+        and state.terminalPendingRelease
+      )
+      .then(release)
+      .expect(
+        state.obligation == Unowned
+        and state.rangeReleased
+        and not(state.rangeHeld)
+      )
+
+  run volatileAbandonmentContinuationTest =
+    init
+      .then(begin)
+      .then(acceptIntent)
+      .then(mutate)
+      .then(abandon)
+      .expect(
+        state.home == HomeUnknown
+        and state.recovery == RecoveryIndeterminate
+        and state.obligation == Handoff
+        and state.attempted != Set()
+        and state.mutated == Set()
+      )
+      .then(reconcileMutation)
+      .then(mutate)
+      .then(reconcileMutation)
+      .expect(
+        state.home == HomeUnknown
+        and state.attempted == Regions
+        and state.mutated == Regions
+      )
+      .then(reconcileHomeDurable)
+      .expect(
+        state.home == HomeDurable
+        and state.recovery == RecoveryDirty
+      )
+      .then(2.reps(i => fence))
+      .then(checkpoint)
+      .then(release)
+      .expect(state.obligation == Unowned and state.rangeReleased)
+
   run partialHomeCannotBeDurableTest =
     init
       .then(begin)
       .then(acceptIntent)
       .then(mutate)
       .then(loseHome)
-      .then(reconcileHome)
+      .then(reconcileHomeIndeterminate)
       .then(mutate)
       .expect(
         state.home == HomeUnknown
         and state.attempted == Regions
         and state.mutated != Regions
       )
-      .then(makeHomeDurable.fail())
+      .then(reconcileHomeDurable.fail())
+
+
+
+  run repeatedAbandonBlockedTest =
+    init
+      .then(begin)
+      .then(acceptIntent)
+      .then(mutate)
+      .then(abandon)
+      .then(abandon.fail())
+
+  run repeatedHomeReconciliationBlockedTest =
+    init
+      .then(begin)
+      .then(acceptIntent)
+      .then(mutate)
+      .then(loseHome)
+      .then(reconcileHomeIndeterminate)
+      .then(reconcileHomeIndeterminate.fail())
 }

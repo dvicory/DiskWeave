@@ -75,10 +75,10 @@ non_claims = [
 [[evidence]]
 id = "evidence.ve-002-quint-recovery-model"
 path = "docs/verification/portable-verification-evidence.md"
-claim = "The VE-002 record provides bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, fence, checkpoint, crash/loss, abandonment, reconciliation, and mutation boundaries."
+claim = "The historical VE-002 canary records bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, fence, checkpoint, crash/loss, abandonment, reconciliation, and mutation boundaries."
 tier = "portable-bounded-model"
 fault_model = ["uncertain intent commit", "uncertain home effect", "process loss", "abandonment", "missing durable intent", "missing fence coverage", "seeded guard mutation"]
-scope = ["one admitted write obligation", "two affected regions", "two stores", "MaxDepth 8", "sampled Quint invariants and witnesses"]
+scope = ["one admitted write obligation", "two affected regions", "two stores", "model MaxDepth 8", "CLI --max-steps 12", "sampled Quint invariants and witnesses"]
 requirements = [
   "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
 ]
@@ -103,11 +103,10 @@ fault_model = [
 ]
 scope = [
   "one admitted write obligation",
-  "two affected regions",
-  "two stores",
-  "MaxDepth 8",
+  "two affected regions and two stores for the finite analysis instance",
+  "bounded checker depth 12",
   "sampled Quint invariants and witnesses",
-  "bounded Quint Connect projection",
+  "two-seed Quint Connect projection of one mapped normal lifecycle",
   "disposable negative mutations",
 ]
 requirements = [

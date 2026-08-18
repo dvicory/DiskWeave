@@ -288,8 +288,8 @@ The project is trying to earn trust through several independent checks:
 - bounded exhaustive tests for parity, reconstruction, geometry, and range
   arithmetic;
 - Kani checks over small, bounded parts of the Rust implementation;
-- a bounded PlusCal/TLA+ model of recovery ordering, checked independently of
-  the Rust code;
+- a bounded model-only Quint relation for recovery ordering, checked
+  independently of the Rust code;
 - deterministic simulation of short and torn writes, uncertain completion,
   crashes, controller resets, power loss, and corruption;
 - replayable traces and minimized regression cases;
