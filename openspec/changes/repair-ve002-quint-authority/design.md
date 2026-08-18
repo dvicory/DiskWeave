@@ -10,9 +10,9 @@ The knowledge scanner already recognizes marked `models/quint/*.qnt` files as de
 
 - Make the delegated Quint relation complete for explicit ownership release, terminal and aborted outcomes, invalid/repeated transition behavior, and conservative home uncertainty.
 - Keep the model parameterized and model-only. Preserve the distinction between the canonical source and finite analysis assumptions.
-- Produce bounded positive, uncertainty, terminal-release, and negative/mutation evidence with deterministic reruns.
+- Produce bounded positive, uncertainty, terminal-release/reuse, and negative/mutation evidence with deterministic reruns.
 - Make delegated-source path changes participate in bounded knowledge impact and dependent review.
-- Record the Rust seam assessment without introducing a fragile model-to-production adapter.
+- Record the Rust seam assessment with two seeded Quint Connect projections, without introducing a fragile model-to-production adapter.
 - Keep the repair active and proposed until verification; preserve historical source and archive records.
 
 **Non-Goals:**
@@ -24,7 +24,7 @@ The knowledge scanner already recognizes marked `models/quint/*.qnt` files as de
 
 ## Decisions
 
-1. **Represent release explicitly.** Add range-held and terminal-pending-release state to the canonical model. `begin` is enabled only for an unowned obligation. Successful checkpoint and pre-mutation intent rejection create owned terminal/aborted states; `release` is the only transition that returns ownership to `Unowned`. This matches the existing Rust action vocabulary and prevents terminal state from being silently overwritten.
+1. **Represent release explicitly.** Add range-held and terminal-pending-release state to the canonical model. `begin` is enabled only for an unowned obligation. Successful checkpoint and pre-mutation intent rejection create owned terminal/aborted states; `release` is the only transition that returns ownership to `Unowned`, after which a new `begin` may acquire the released range. This matches the existing Rust action vocabulary and prevents terminal state from being silently overwritten.
 
 2. **Use partial-transition semantics for invalid results.** Do not add a second error-model state machine. The Quint `step` relation contains only enabled actions; an invalid, repeated, or out-of-order action has no successor. State invariants and a disposable guard mutation make the absence of terminal-release and intent-order transitions observable without duplicating Rust error classes.
 
@@ -32,9 +32,9 @@ The knowledge scanner already recognizes marked `models/quint/*.qnt` files as de
 
 4. **Keep uncertainty explicit and owned.** Unknown intent and home effects remain non-clean and owned by handoff/reconciliation states. Rejected intent becomes an owned pre-mutation-aborted state until release; durable intent remains dirty until complete home mutation, fence coverage, checkpoint, and release. The model does not decide how a concrete adapter proves prior/proposed persistence facts.
 
-5. **Separate canonical relation from evidence.** The analysis module gains witnesses for release and volatile-abandonment continuation but retains finite sets and depth as evidence metadata only. The evidence record reports sampled and bounded checks, mutation counterexamples, and non-claims; it does not promote analysis values to protocol semantics.
+5. **Separate canonical relation from evidence.** The analysis module gains witnesses for release/reuse and volatile-abandonment continuation but retains finite sets and depth as evidence metadata only. The evidence record reports sampled and bounded checks, mutation counterexamples, and non-claims; it does not promote analysis values to protocol semantics.
 
-6. **Assess, do not force, Rust conformance.** Compare the model's semantic phases and outcomes with the Rust machine's public action/result seam. Because the model mutates one abstract region at a time while Rust batches exact reads, parity computation, writes, watermarks, and typed fence evidence, record the mismatch and retain independent focused Rust tests instead of adding a translation layer.
+6. **Assess, do not force, Rust conformance.** Compare the model's semantic phases and outcomes with the Rust machine's public action/result seam. A bounded Quint Connect driver projects the shared lifecycle and runs normal and uncertain seeded paths through `dwv-transaction-ref`; it intentionally omits private layout and non-delegated evidence. Because the model mutates one abstract region at a time while Rust batches exact reads, parity computation, writes, watermarks, and typed fence evidence, record the mismatch and retain independent focused Rust tests instead of adding a general translation layer.
 
 7. **Make delegated-source review contractual.** Extend the change-boundary requirement and focused scanner tests so a changed marked delegated source produces `delegated_canonical_source_changed`, reviews marked current owners, and propagates review through the requirement dependent closure. A model filename, historical artifact, or run output cannot create an owner.
 
@@ -48,7 +48,7 @@ The knowledge scanner already recognizes marked `models/quint/*.qnt` files as de
 ## Migration Plan
 
 1. Keep the active change delta and target artifacts separate from current OpenSpec semantics.
-2. Update the canonical Quint model and finite analysis, then run typecheck, bounded tests, seeded simulations, deterministic replay, and disposable negative mutations.
+2. Update the canonical Quint model and finite analysis, then run typecheck, bounded Apalache verification, bounded tests, seeded simulations, deterministic replay, disposable negative mutations, and the two seeded Quint Connect projections.
 3. Review the Rust transaction seam and update the ADR, evidence log, manifest, maintained roadmap, and knowledge contract with exact claim boundaries.
 4. Run focused Rust tests, knowledge scanner tests, strict OpenSpec validation, docs readiness/check/build, and affected dependent review.
 5. Leave the change unsynced and unarchived for the next authority-transition step. Canonical sync and archive are intentionally outside this repair execution.

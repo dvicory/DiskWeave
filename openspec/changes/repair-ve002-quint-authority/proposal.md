@@ -7,9 +7,9 @@ The completed VE-002 canary moved the bounded reference relation to Quint, but t
 - Complete the canonical `RecoveryProtocol` relation with explicit range ownership and release, an aborted pre-mutation outcome, and a guard that prevents a new begin until the prior terminal or aborted outcome releases its range.
 - Make volatile-home abandonment and home reconciliation preserve incomplete mutation coverage; permit durable home resolution only when all affected regions are represented.
 - Make invalid, repeated, and out-of-order actions partial relation attempts with no state transition, and add invariants and mutation checks for terminal release and conservative uncertainty.
-- Extend the finite analysis with witnesses for release, volatile abandonment, resumed mutation, and terminal-release ordering while keeping all region, store, and depth values evidence-only.
-- Add bounded negative/mutation evidence and deterministic rerun evidence for the repaired transferred semantics.
-- Record the exact mismatch between the abstract Quint relation and the Rust transaction seam; do not claim a conformance bridge where action granularity and result evidence differ.
+- Extend the finite analysis with witnesses for release, released-range reuse, volatile abandonment, resumed mutation, and terminal-release ordering while keeping all region, store, and depth values evidence-only.
+- Add bounded Quint verification, negative/mutation evidence, deterministic rerun evidence, and two seeded Quint Connect projections for the repaired transferred semantics.
+- Record the exact mismatch between the abstract Quint relation and the Rust transaction seam; the Connect checks cover only the mapped state/action subset and do not claim a general conformance bridge.
 - Make delegated canonical model changes a first-class knowledge change-boundary input that triggers review of the marked owner and its dependent closure.
 - Update the active authority delta, ADR, portable evidence log, verification manifest, and maintained roadmap references while leaving historical TLA+ and archived change records unchanged.
 

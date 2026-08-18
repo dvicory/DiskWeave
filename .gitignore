@@ -4,6 +4,9 @@
 # Rust build artifacts
 /target/
 **/target/
+ 
+# Apalache/Quint verifier intermediates
+/_apalache-out/
 
 # Python runtime artifacts
 __pycache__/

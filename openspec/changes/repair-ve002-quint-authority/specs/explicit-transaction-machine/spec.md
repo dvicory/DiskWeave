@@ -35,6 +35,11 @@ The reference machine SHALL emit versioned normalized action traces with stable 
 - **WHEN** a begin action is attempted while the prior obligation is terminal or pre-mutation-aborted but its range has not been released
 - **THEN** the delegated relation exposes no begin transition and preserves the owned terminal state
 
+#### Scenario: A released range starts another obligation
+
+- **WHEN** the prior terminal or pre-mutation-aborted obligation has completed its explicit release action
+- **THEN** a subsequent begin transition may acquire the released range and clears the prior release marker
+
 #### Scenario: A result is repeated or out of order
 
 - **WHEN** an action result does not match the currently pending semantic action or repeats an already consumed result

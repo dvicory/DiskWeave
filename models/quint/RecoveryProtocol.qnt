@@ -2,10 +2,11 @@
 /**
  * VE-002 bounded recovery protocol model.
  *
- * The model is model-only. It defines one admitted write obligation over two
- * affected regions and two stores. Exact region mapping, typed fence evidence,
- * topology, persistence, resource lifetime, and production recovery authority
- * remain owned by their current OpenSpec requirements.
+ * The model is model-only. It defines one admitted write obligation. Explicit
+ * release ends that represented lifecycle; reuse is outside this relation.
+ * Exact region mapping, typed fence evidence, topology, persistence, resource
+ * lifetime, and production recovery authority remain owned by their current
+ * OpenSpec requirements.
  */
 // dwv:req req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent
 module RecoveryProtocol {
@@ -34,6 +35,7 @@ module RecoveryProtocol {
     obligation: ObligationState,
     invalidated: bool,
     mutated: Set[str],
+    attempted: Set[str],
     fenced: Set[str],
     checkpointed: Set[str],
     rangeHeld: bool,
@@ -59,6 +61,7 @@ module RecoveryProtocol {
     obligation: Aborted,
     invalidated: false,
     mutated: Set(),
+    attempted: Set(),
     fenced: Set(),
     checkpointed: Set(),
     rangeHeld: true,
@@ -76,6 +79,7 @@ module RecoveryProtocol {
       obligation: Unowned,
       invalidated: false,
       mutated: Set(),
+      attempted: Set(),
       fenced: Set(),
       checkpointed: Set(),
       rangeHeld: false,
@@ -95,6 +99,7 @@ module RecoveryProtocol {
       recovery: RecoveryDirty,
       obligation: InFlight,
       invalidated: false,
+      attempted: Set(),
       mutated: Set(),
       fenced: Set(),
       checkpointed: Set(),
@@ -149,14 +154,38 @@ module RecoveryProtocol {
   }
 
   action mutate: bool = {
-    nondet region = Regions.exclude(state.mutated).oneOf()
+    nondet region = Regions.exclude(state.attempted).oneOf()
     all {
       active(state),
       state.intent == IntentDurable,
-      state.mutated != Regions,
+      state.attempted != Regions,
       state' = {
         ...state,
-        home: HomeVolatile,
+        home: if (state.home == HomeUnknown) HomeUnknown else HomeVolatile,
+        recovery: if (state.home == HomeUnknown)
+          RecoveryIndeterminate
+        else
+          state.recovery,
+        obligation: if (state.home == HomeUnknown) Handoff else state.obligation,
+        attempted: state.attempted.union(Set(region)),
+        mutated: if (state.home == HomeUnknown)
+          state.mutated
+        else
+          state.mutated.union(Set(region)),
+      },
+    }
+  }
+
+  action reconcileMutation: bool = {
+    nondet region = state.attempted.exclude(state.mutated).oneOf()
+    all {
+      state.intent == IntentDurable,
+      state.home == HomeUnknown,
+      state.recovery == RecoveryIndeterminate,
+      state.obligation == Handoff,
+      state.mutated != state.attempted,
+      state' = {
+        ...state,
         mutated: state.mutated.union(Set(region)),
       },
     }
@@ -166,6 +195,7 @@ module RecoveryProtocol {
     active(state),
     state.intent == IntentDurable,
     state.home == HomeVolatile,
+    state.attempted == Regions,
     state.mutated == Regions,
     state' = {
       ...state,
@@ -220,6 +250,7 @@ module RecoveryProtocol {
       obligation: Unowned,
       invalidated: false,
       mutated: Set(),
+      attempted: Set(),
       fenced: Set(),
       checkpointed: Set(),
       rangeHeld: false,
@@ -237,6 +268,8 @@ module RecoveryProtocol {
       homeObservation: HomeEffectIndeterminate,
       recovery: RecoveryIndeterminate,
       obligation: Handoff,
+      attempted: state.attempted.union(state.mutated),
+      mutated: Set(),
     },
   }
 
@@ -293,6 +326,11 @@ module RecoveryProtocol {
           state.intent == IntentUnknown or state.home == HomeUnknown
         ) RecoveryIndeterminate else RecoveryDirty,
         obligation: Handoff,
+        attempted: if (state.home == HomeVolatile)
+          state.attempted.union(state.mutated)
+        else
+          state.attempted,
+        mutated: if (state.home == HomeVolatile) Set() else state.mutated,
       },
   }
 
@@ -302,6 +340,7 @@ module RecoveryProtocol {
     loseIntent,
     reconcileIntent,
     mutate,
+    reconcileMutation,
     makeHomeDurable,
     fence,
     checkpoint,
@@ -312,7 +351,9 @@ module RecoveryProtocol {
   }
 
   val TypeInvariant: bool =
-    state.mutated.subseteq(Regions)
+    state.attempted.subseteq(Regions)
+    and state.mutated.subseteq(Regions)
+    and state.mutated.subseteq(state.attempted)
     and state.fenced.subseteq(Stores)
     and state.checkpointed.subseteq(Regions)
     and (
@@ -333,7 +374,9 @@ module RecoveryProtocol {
     )
 
   val DurableHomeRequiresCoverage: bool =
-    state.home == HomeDurable implies state.mutated == Regions
+    state.home == HomeDurable implies (
+      state.attempted == Regions and state.mutated == Regions
+    )
   val NoFalseClean: bool =
     (state.recovery == RecoveryClean) implies (
       (
@@ -350,11 +393,14 @@ module RecoveryProtocol {
         )
       )
       and (state.obligation == Terminal implies state.checkpointed == Regions)
-      and (state.obligation == Aborted implies state.mutated == Set())
+      and (
+        state.obligation == Aborted
+        implies state.attempted == Set() and state.mutated == Set()
+      )
     )
 
   val MutationRequiresIntent: bool =
-    state.mutated != Set() implies state.intent == IntentDurable
+    state.attempted != Set() implies state.intent == IntentDurable
 
   val UncertaintyIsVisible: bool =
     (
@@ -380,6 +426,7 @@ module RecoveryProtocol {
       and state.intent == IntentDurable
       and state.invalidated
       and state.home == HomeDurable
+      and state.attempted == Regions
       and state.mutated == Regions
       and state.fenced == Stores
       and state.checkpointed == Regions

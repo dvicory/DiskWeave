@@ -8,17 +8,19 @@ The pre-remediation portable workflow is recorded in
 [`portable-demo-baseline.md`](portable-demo-baseline.md), including the
 disposable fixture, commands, outputs, and claim boundary.
 
-## VE-002 focused evidence
+## VE-002 focused evidence (historical pre-repair canary)
 
 Date: 2026-08-17
 
 Source model: `models/quint/RecoveryProtocol.qnt`
 
-Authority status: the `RecoveryProtocol` module is the current canonical
-authority for the bounded VE-002 reference transaction/recovery relation.
-The separate `RecoveryProtocolAnalysis` module at
-`verification/quint/RecoveryProtocolAnalysis.qnt` binds the finite evidence
-instance and its runs are verification evidence, not semantic authority.
+Authority status: the already-synced `RecoveryProtocol` surface is the
+current canonical authority for the bounded VE-002 reference
+transaction/recovery relation. The active repair below extends that relation
+as a proposed target only; it does not change current OpenSpec authority until
+normal verification and sync. The separate `RecoveryProtocolAnalysis` module
+at `verification/quint/RecoveryProtocolAnalysis.qnt` binds finite evidence
+instances and its runs are verification evidence, not semantic authority.
 The archived `replace-ve002-tla-with-quint` and
 `reconcile-ve002-quint-ownership` changes established this boundary. Quint
 does not own typed evidence, topology, persistence, operation-slot lifetime,
@@ -77,19 +79,27 @@ Active change: `repair-ve002-quint-authority`
 
 This section records target evidence for the active repair. It does not
 change the current OpenSpec authority until the change is verified and
-synced. The baseline VE-002 record above remains the current evidence
-record.
+synced. The pre-repair record above is retained as historical canary
+evidence; the claims below describe the proposed target.
 
-The target relation adds explicit range ownership and release, a
-pre-mutation aborted outcome, a terminal-begin guard, invalid/repeated
-transition absence, and conservative home reconciliation. The finite
-analysis adds terminal-release, aborted-release, resumed-mutation, and
-partial-home witnesses. Regions, stores, and depth remain evidence bounds.
+The target relation adds explicit range ownership and release, permits a new
+`begin` after release, gives pre-mutation rejection an aborted outcome,
+blocks terminal reuse before release, preserves invalid/repeated transition
+absence, and requires complete represented mutation coverage before durable
+home reconciliation. The finite analysis adds release/reuse,
+aborted-release, volatile-abandonment, continuation, and terminal-release
+witnesses. Regions, stores, and depth remain evidence bounds.
 
 Commands:
 
 ```text
 quint typecheck models/quint/RecoveryProtocol.qnt
+quint typecheck verification/quint/RecoveryProtocolAnalysis.qnt
+quint typecheck verification/quint/RecoveryProtocolConnect.qnt
+quint verify verification/quint/RecoveryProtocolAnalysis.qnt \
+  --main RecoveryProtocolAnalysis \
+  --max-steps 8 \
+  --invariants TypeInvariant,NoFalseClean,MutationRequiresIntent,UncertaintyIsVisible,DurableWorkIsOwned,TerminalRequiresRelease,TerminalRequiresEvidence,DurableHomeRequiresCoverage,FenceAndCheckpointCoverage
 quint test verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
@@ -118,42 +128,57 @@ quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --witnesses releasedReachable \
   --witnesses resumedMutationReachable \
   --witnesses durableHomeCoverage
+cargo test -p dwv-transaction-ref --lib
+cargo test -p dwv-transaction-ref --test quint_connect -- --nocapture
 ```
 
 Observed:
 
-- Typecheck passed. `boundedAssumptionsTest`,
-  `terminalReleaseRequiredTest`, `terminalBeginBlockedTest`, and
-  `partialHomeCannotBeDurableTest` passed; the three stateful tests each
-  passed 10,000 randomized test cases.
+- All three Quint sources typechecked. `quint verify` found no invariant
+  violation at `MaxDepth = 8`.
+- The Quint analysis reported five passing tests:
+  `boundedAssumptionsTest` passed once, and
+  `terminalReleaseRequiredTest`, `terminalBeginBlockedTest`,
+  `releaseEndsLifecycleTest`, and `partialHomeCannotBeDurableTest` each
+  passed 10,000 randomized cases. `releaseEndsLifecycleTest` verifies that
+  release permits the next `begin`.
 - The sampled run found no invariant violation across 10,000 traces.
-- Witnesses were reached in 10,000/10,000 begin traces, 9,149/10,000
-  durable-intent traces, 8,616/10,000 mutation traces, 6,756/10,000
-  uncertain-intent traces, 7,921/10,000 uncertain-home traces,
-  9,998/10,000 reconciliation-handoff traces, 209/10,000 terminal and
-  terminal-pending-release traces, 3,342/10,000 aborted traces,
-  3,458/10,000 released traces, 8,616/10,000 resumed-mutation traces,
-  and 10,000/10,000 durable-home-coverage traces.
-- Same-seed ITF traces had identical normalized state content after
-  generated metadata were removed.
+- Witnesses were reached in 10,000/10,000 begin traces, 9,169/10,000
+  durable-intent traces, 8,619/10,000 mutation traces, 6,739/10,000
+  uncertain-intent traces, 7,931/10,000 uncertain-home traces,
+  9,997/10,000 reconciliation-handoff traces, 73/10,000 terminal and
+  terminal-pending-release traces, 3,344/10,000 aborted traces,
+  3,392/10,000 released traces, 7,931/10,000 resumed-mutation traces, and
+  10,000/10,000 durable-home-coverage traces.
+- Two same-seed ITF runs produced identical normalized state content after
+  generated metadata were removed; each trace contained 13 states.
 - A disposable copy with the terminal-begin guard removed failed
   `terminalBeginBlockedTest` with `QNT511`; a disposable copy with the
   partial-home durable-outcome guard removed failed
   `partialHomeCannotBeDurableTest` with `QNT508`; and a disposable copy
   admitting durable intent without the pending-intent guard violated
   `NoFalseClean` and `DurableWorkIsOwned`. No mutants are retained.
-- The Rust transaction seam remains independently tested. The model's
-  one-region abstract mutation and explicit release relation do not map
-  one-to-one to Rust's batched reads, parity computation, writes,
-  watermarks, typed fence evidence, and result classes; no conformance
-  bridge is claimed.
+- The focused Rust transaction-machine library suite passed 17 tests. Two
+  Quint Connect tests passed with seeds `22082026` and `1`, covering normal
+  completion and uncertain-home reconciliation. The driver projects only
+  intent/observation, home, recovery, obligation, invalidation, range
+  ownership, terminal-pending-release, and release-marker state.
+- The Connect projection is intentionally bounded, not a conformance bridge.
+  Quint `mutate` advances one abstract region while Rust `mutate` batches
+  read completion, parity computation, and write completion. Quint `fence`
+  and `reconcileHome` are abstract observations with no independent Rust
+  action in this driver; Rust's typed flush, checkpoint, crash, and
+  reconciliation stages carry those effects. Rust also exposes typed fence,
+  watermark, generation, topology, and result-class evidence that the model
+  does not represent. Exact region sets, attempted/mutated coverage,
+  private stage layout, and backend identity are not compared.
 
 The target evidence remains bounded to `MaxDepth = 8`, two affected
-regions, two stores, and sampled execution. It does not claim exhaustive
-arbitrary-width model checking, Rust implementation correctness, exact
-region/checksum mapping, typed fence admissibility, topology, persistence,
-operation-slot lifetime, frontend behavior, physical durability, or
-unbounded recovery progress.
+regions, two stores, sampled execution, and the two mapped Connect paths. It
+does not claim exhaustive arbitrary-width model checking, Rust
+implementation correctness, exact region/checksum mapping, typed fence
+admissibility, topology, persistence, operation-slot lifetime, frontend
+behavior, physical durability, or unbounded recovery progress.
 
 ## VE-001 focused evidence
 

@@ -2939,11 +2939,12 @@ alternative, not a second model.
 
 The active `repair-ve002-quint-authority` change proposes a bounded repair
 of this relation: terminal ownership remains held until explicit release,
-pre-mutation intent rejection has an owned aborted outcome, and durable
-home reconciliation requires complete represented mutation coverage. Its
-finite evidence and delegated-source review behavior remain target
-evidence until the change is verified and synced; they do not currentize
-the requirements or authorize a second model.
+released ranges can begin a new obligation, pre-mutation intent rejection has
+an owned aborted outcome, and durable home reconciliation requires complete
+represented mutation coverage. Its finite evidence, two-seed Quint Connect
+projection of the mapped Rust lifecycle, and delegated-source review behavior
+remain target evidence until the change is verified and synced; they do not
+currentize the requirements or authorize a second model.
 
 The comparison considers:
 

@@ -8,16 +8,21 @@
 
 ## Decision
 
-Use `models/quint/RecoveryProtocol.qnt` as the sole current VE-002
-model authority. The parameterized `RecoveryProtocol` module is the
-canonical protocol source. The finite `RecoveryProtocolAnalysis` module
-is maintained separately at `verification/quint/RecoveryProtocolAnalysis.qnt`;
-it binds that relation to the finite VE-002 evidence instance and provides
-assumptions, witnesses, and runs.
+At the last synced revision, `models/quint/RecoveryProtocol.qnt` is the
+sole current VE-002 model authority. The active
+`repair-ve002-quint-authority` edits to that source are a proposed extension
+until normal OpenSpec verification and sync; they do not currentize their
+changed semantics in this working revision. The parameterized
+`RecoveryProtocol` module is the canonical protocol source. The finite
+`RecoveryProtocolAnalysis` module is maintained separately at
+`verification/quint/RecoveryProtocolAnalysis.qnt`; it binds that relation to
+the finite VE-002 evidence instance and provides assumptions, witnesses, and
+runs.
 
-The delegated authority is the parameterized state, action, transition, and
-invariant relation. The VE-002 evidence instance uses one represented write
-obligation, `Regions = {"data", "parity"}`, `Stores = {"data", "parity"}`, and
+At that synced boundary, the delegated authority is the parameterized state,
+action, transition, and invariant relation. The VE-002 evidence instance uses
+one represented write obligation, `Regions = {"data", "parity"}`,
+`Stores = {"data", "parity"}`, and
 `MaxDepth = 8`. Those values bound the verification evidence only; they are
 not product cardinality limits, protocol alternatives, or exhaustive proof
 of arbitrary-width instances.
@@ -53,14 +58,16 @@ Its state vocabulary includes:
 - parameterized affected-region and store sets, fence coverage, checkpoint
   coverage, abandonment, process loss, and explicit reconciliation.
 
-It checks the seven VE-002 invariants:
+It checks the nine VE-002 invariants:
 
 - `TypeInvariant`;
 - `NoFalseClean`;
 - `MutationRequiresIntent`;
 - `UncertaintyIsVisible`;
 - `DurableWorkIsOwned`;
+- `TerminalRequiresRelease`;
 - `TerminalRequiresEvidence`;
+- `DurableHomeRequiresCoverage`;
 - `FenceAndCheckpointCoverage`.
 
 The analysis binds `MaxDepth = 8`, `Regions = {"data", "parity"}`, and
@@ -82,7 +89,11 @@ Quint is a verification model, not a Rust translation of production
 transitions. The model remains independent from DiskWeave implementation
 types and runtime code.
 
-## Reproducible evidence
+## Historical canary evidence (pre-repair)
+
+The following command record and observations were captured before the active
+`repair-ve002-quint-authority` change. They preserve the first Quint canary's
+evidence and are not a current reproduction against the repaired working tree.
 
 ```text
 quint typecheck models/quint/RecoveryProtocol.qnt
@@ -108,49 +119,60 @@ quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --seed 22082026
 ```
 
-## Observed evidence
-
-On 2026-08-17, typecheck and the bounded-assumption test passed. The sampled
-run found no invariant violation across 10,000 traces. Witness coverage was:
-begin 100.00%, durable intent 95.09%, mutation 90.70%, uncertain intent
-67.05%, uncertain home 84.17%, reconciliation handoff 99.98%, and terminal
-ownership 1.96% (196 traces). The terminal witness's low rate is expected from
-the guarded path; its non-zero reachability is the required result.
+On 2026-08-17, the historical typecheck and bounded-assumption test passed.
+The sampled run found no invariant violation across 10,000 traces. Witness
+coverage was: begin 100.00%, durable intent 95.09%, mutation 90.70%,
+uncertain intent 67.05%, uncertain home 84.17%, reconciliation handoff
+99.98%, and terminal ownership 1.96% (196 traces). The terminal witness's
+low rate was expected from the guarded path; its non-zero reachability was
+the required result.
 
 Two runs with the same seed produced byte-identical normalized ITF traces
-after removing generated timestamps. A disposable copy with the
-`mutate` durable-intent guard removed was rejected by
-`MutationRequiresIntent`. The mutant is not retained.
+after removing generated timestamps. A disposable copy with the `mutate`
+durable-intent guard removed was rejected by `MutationRequiresIntent`. The
+mutant was not retained.
 
 
 ## Active repair target (proposed until sync)
 
 The active `repair-ve002-quint-authority` change repairs the delegated
-relation without changing the current authority until its normal OpenSpec
-sync. Its target adds explicit range-held and range-release state, an
-aborted pre-mutation outcome, a guard against beginning from an unreleased
-terminal outcome, and conservative home reconciliation that requires full
-represented mutation coverage before a durable home result. It also makes
-the invalid/repeated action surface partial rather than silently
-transitioning.
+relation without changing current OpenSpec authority until its normal
+verification and sync. Its target adds explicit range-held and
+range-release state, permits a new `begin` after release, gives
+pre-mutation intent rejection an owned aborted outcome, guards terminal
+reuse before release, and requires complete represented mutation coverage
+before a durable home result. It also makes invalid, repeated, and
+out-of-order action handling partial rather than silently transitioning.
 
-Target evidence adds direct release, terminal-begin rejection, and
-partial-home tests, plus bounded witnesses for aborted, released, and
-resumed-mutation states. These checks are evidence for the active change,
-not a second semantic owner and not an exhaustive proof. The Rust
-transaction seam remains independent: its batched action/result granularity
-and typed fence evidence do not form a one-to-one conformance mapping to the
-abstract Quint relation.
+Target evidence includes direct release/reuse, terminal-begin rejection, and
+partial-home tests; bounded witnesses for aborted, released, resumed-mutation,
+and durable-home-coverage states; bounded Apalache verification; and two
+seeded Quint Connect projections through `dwv-transaction-ref`. These checks
+are evidence for the active change, not a second semantic owner and not an
+exhaustive proof. The Connect driver covers only the mapped lifecycle fields:
+Rust batches reads, parity, and writes, while Quint separates abstract
+region mutation; abstract fence and home-reconciliation observations have no
+independent Rust action in the driver. Typed fence, watermark, generation,
+topology, and result-class evidence remains Rust-owned.
 
 ## Lessons and next campaign
 
 The canary showed that delegated authority is useful only when the boundary
-names the exact state and actions. It exposed a real modeling defect rather
+names the exact state and actions. It exposed real modeling defects rather
 than merely translating syntax: intent-commit uncertainty and home-effect
-uncertainty need different explicit reconciliation states. It also showed that
-sampled simulation needs witnesses for rare terminal paths; a green invariant
-run alone would not establish that checkpoint and terminal ownership are
+uncertainty need different explicit reconciliation states; terminal ownership
+must survive until release; and a released range must be reusable without
+silently replacing an unreleased obligation. It also showed that sampled
+simulation needs witnesses for rare terminal paths; a green invariant run
+alone would not establish that checkpoint and terminal ownership are
 reachable.
+
+The bounded Connect spike taught a second boundary lesson. A useful test can
+replay a small shared lifecycle through the Rust reference machine without
+turning the model into a Rust mirror. The exact projection must be named:
+Rust's batched action/result and typed evidence seam is not a one-to-one
+implementation of the abstract Quint relation. The test is therefore
+conformance evidence for the mapped subset, not implementation proof.
 
 The highest-value next application is **U11: portable shutdown, endpoint
 withdrawal, and claim-release ordering**, after its existing implementation

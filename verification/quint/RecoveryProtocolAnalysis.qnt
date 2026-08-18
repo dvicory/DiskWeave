@@ -17,7 +17,8 @@ module RecoveryProtocolAnalysis {
 
   val beginReachable: bool = state.obligation == InFlight
   val durableIntentReachable: bool = state.intent == IntentDurable
-  val mutationReachable: bool = state.mutated != Set()
+  val mutationReachable: bool =
+    state.mutated != Set() or state.attempted != Set()
   val uncertainIntentReachable: bool = state.intent == IntentUnknown
   val uncertainHomeReachable: bool = state.home == HomeUnknown
   val reconciliationReachable: bool = state.obligation == Handoff
@@ -35,11 +36,17 @@ module RecoveryProtocolAnalysis {
     and state.rangeReleased
     and not(state.rangeHeld)
   val resumedMutationReachable: bool =
-    state.home == HomeVolatile
+    state.home == HomeUnknown
+    and state.attempted != Set()
+    and state.mutated != Regions
+  val reconciledMutationReachable: bool =
+    state.home == HomeUnknown
     and state.mutated != Set()
     and state.mutated != Regions
   val durableHomeCoverage: bool =
-    state.home == HomeDurable implies state.mutated == Regions
+    state.home == HomeDurable implies (
+      state.attempted == Regions and state.mutated == Regions
+    )
   run terminalReleaseRequiredTest =
     init
       .then(begin)
@@ -64,6 +71,21 @@ module RecoveryProtocolAnalysis {
       .then(2.reps(i => fence))
       .then(checkpoint)
       .then(begin.fail())
+  run releaseEndsLifecycleTest =
+    init
+      .then(begin)
+      .then(acceptIntent)
+      .then(2.reps(i => mutate))
+      .then(makeHomeDurable)
+      .then(2.reps(i => fence))
+      .then(checkpoint)
+      .then(release)
+      .then(begin)
+      .expect(
+        state.obligation == InFlight
+        and state.rangeHeld
+        and not(state.rangeReleased)
+      )
 
   run partialHomeCannotBeDurableTest =
     init
@@ -72,8 +94,10 @@ module RecoveryProtocolAnalysis {
       .then(mutate)
       .then(loseHome)
       .then(reconcileHome)
+      .then(mutate)
       .expect(
         state.home == HomeUnknown
+        and state.attempted == Regions
         and state.mutated != Regions
       )
       .then(makeHomeDurable.fail())

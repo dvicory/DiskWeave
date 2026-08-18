@@ -90,14 +90,16 @@ non_claims = [
 [[evidence]]
 id = "evidence.ve-002-quint-authority-repair"
 path = "docs/verification/portable-verification-evidence.md"
-claim = "The active VE-002 repair records bounded executable evidence for explicit range release, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, and delegated-source review boundaries."
+claim = "The active VE-002 repair records bounded executable evidence for explicit range release and reuse, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, delegated-source review boundaries, and a two-seed Quint Connect projection of the mapped Rust lifecycle."
 tier = "portable-bounded-model"
 fault_model = [
   "terminal begin before release",
   "missing range release",
+  "released-range reuse",
   "volatile home with incomplete mutation coverage",
   "repeated or out-of-order result",
   "delegated-source review omission",
+  "model-to-Rust lifecycle mismatch",
 ]
 scope = [
   "one admitted write obligation",
@@ -105,6 +107,7 @@ scope = [
   "two stores",
   "MaxDepth 8",
   "sampled Quint invariants and witnesses",
+  "bounded Quint Connect projection",
   "disposable negative mutations",
 ]
 requirements = [

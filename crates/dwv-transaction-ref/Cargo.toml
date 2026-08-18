@@ -12,6 +12,10 @@ dwv-recovery = { path = "../dwv-recovery" }
 dwv-store = { path = "../dwv-store" }
 
 [dev-dependencies]
+quint-connect = "0.1.2"
+itf = "0.4"
+serde = { version = "1", features = ["derive"] }
+anyhow = "1"
 dwv-sim = { path = "../dwv-sim" }
 
 [lints.rust]
