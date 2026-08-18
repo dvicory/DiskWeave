@@ -78,7 +78,7 @@ path = "docs/verification/portable-verification-evidence.md"
 claim = "The historical VE-002 canary records bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, fence, checkpoint, crash/loss, abandonment, reconciliation, and mutation boundaries."
 tier = "portable-bounded-model"
 fault_model = ["uncertain intent commit", "uncertain home effect", "process loss", "abandonment", "missing durable intent", "missing fence coverage", "seeded guard mutation"]
-scope = ["one admitted write obligation", "two affected regions", "two stores", "model MaxDepth 8", "CLI --max-steps 12", "sampled Quint invariants and witnesses"]
+scope = ["single modeled write obligation", "two affected regions", "two stores", "model MaxDepth 8", "CLI --max-steps 12", "sampled Quint invariants and witnesses"]
 requirements = [
   "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
 ]
@@ -90,7 +90,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.ve-002-quint-authority-repair"
 path = "docs/verification/portable-verification-evidence.md"
-claim = "The active VE-002 repair records bounded executable evidence for explicit range release and reuse, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, delegated-source review boundaries, and a two-seed Quint Connect projection of the mapped Rust lifecycle."
+claim = "The VE-002 delegated Quint authority records bounded executable evidence for explicit range release and reuse, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, delegated-source review boundaries, and two seeded Quint Connect traces that each cover release followed by a new begin and second mapped lifecycle."
 tier = "portable-bounded-model"
 fault_model = [
   "terminal begin before release",
@@ -102,11 +102,11 @@ fault_model = [
   "model-to-Rust lifecycle mismatch",
 ]
 scope = [
-  "one admitted write obligation",
+  "one active write obligation at a time with sequential range reuse",
   "two affected regions and two stores for the finite analysis instance",
   "bounded checker depth 12",
   "sampled Quint invariants and witnesses",
-  "two-seed Quint Connect projection of one mapped normal lifecycle",
+  "two seeded Quint Connect traces, each covering release followed by a new begin and second mapped lifecycle",
   "disposable negative mutations",
 ]
 requirements = [
@@ -114,7 +114,7 @@ requirements = [
   "req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded",
 ]
 non_claims = [
-  "This is proposed evidence for an unsynced OpenSpec change, not a replacement for current requirements.",
+  "This is bounded evidence for the current delegated model, not a replacement for the current requirements that own non-delegated decisions.",
   "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, typed fence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
 ]
 

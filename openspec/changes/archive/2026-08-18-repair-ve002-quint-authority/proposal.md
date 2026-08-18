@@ -11,7 +11,7 @@ The completed VE-002 canary moved the bounded reference relation to Quint, but t
 - Add bounded Quint verification, negative/mutation evidence, deterministic rerun evidence, and two seeded Quint Connect projections for the repaired transferred semantics.
 - Record the exact mismatch between the abstract Quint relation and the Rust transaction seam; the Connect checks cover only the mapped state/action subset and do not claim a general conformance bridge.
 - Make delegated canonical model changes a first-class knowledge change-boundary input that triggers review of the marked owner and its dependent closure.
-- Update the active authority delta, ADR, portable evidence log, verification manifest, and maintained roadmap references while leaving historical TLA+ and archived change records unchanged.
+- Prepare the source-path transition so the synced delegation names only `models/quint/RecoveryProtocol.qnt`, removes the old verification-path source and relationship, and updates maintained current references atomically at sync while leaving historical TLA+ and archived change records unchanged.
 
 ## Capabilities
 

@@ -14,8 +14,8 @@
 ## 3. Evidence and Connect assessment
 
 - [x] 3.1 Run Quint typecheck, bounded Quint verification, bounded assumptions, seeded simulations, release/reuse/uncertainty witnesses, and deterministic same-seed replay.
-- [x] 3.2 Run disposable terminal-begin, durable-home-coverage, and intent-order mutations and retain only their observed failure summaries, not mutant files.
-- [x] 3.3 Run focused Rust transaction-machine tests plus two seeded Quint Connect runs of one observable normal lifecycle through release; keep direct Quint and Rust checks for reuse, duplicate/out-of-order results, abandonment, crash, and uncertainty, and record the exact model-to-Rust granularity mismatch instead of adding a general bridge.
+- [x] 3.2 Run disposable terminal-begin and durable-home-coverage mutations and retain only their observed failure summaries, not mutant files.
+- [x] 3.3 Run focused Rust transaction-machine tests plus two seeded Quint Connect runs; each retained trace covers a normal lifecycle through release followed by a new begin and second lifecycle. Keep direct Quint and Rust checks for duplicate/out-of-order results, abandonment, crash, and uncertainty, and record the exact model-to-Rust granularity mismatch instead of adding a general bridge.
 - [x] 3.4 Update the VE-002 ADR, portable evidence log, verification manifest, and maintained architecture roadmap with repaired claims, bounds, evidence, and non-claims.
 
 ## 4. Boundary verification

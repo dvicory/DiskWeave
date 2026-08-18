@@ -12,7 +12,7 @@ The knowledge scanner SHALL recognize marked delegated `.qnt` sources by their s
 - Produce bounded positive, uncertainty, terminal-release/reuse, and negative/mutation evidence with deterministic reruns.
 - Make delegated-source path changes participate in bounded knowledge impact and dependent review.
 - Record the Rust seam assessment with two seeded Quint Connect projections, without introducing a fragile model-to-production adapter.
-- Keep the repair active and proposed until verification; preserve historical source and archive records.
+- Keep the repair active and proposed until verification; remove the old verification-path delegated source from the active tree, while preserving historical source records and archive artifacts.
 
 **Non-Goals:**
 
@@ -33,7 +33,7 @@ The knowledge scanner SHALL recognize marked delegated `.qnt` sources by their s
 
 5. **Separate canonical relation from evidence.** The analysis module gains direct scenarios for release/reuse, rejected intent release, volatile-abandonment continuation, repeated-action rejection, and durable-home reachability. It retains finite sets and depth as evidence metadata only. The evidence record reports sampled and bounded checks, mutation counterexamples, deterministic replay, and non-claims; it does not promote analysis values to protocol semantics.
 
-6. **Assess, do not force, Rust conformance.** Compare the model's semantic phases and outcomes with the Rust machine's public action/result seam. A bounded Quint Connect driver projects only the observable normal lifecycle through release using one mapped region and no abstract stores; reuse is covered by direct Quint and Rust checks rather than by Connect. It intentionally excludes abstract fence and home-reconciliation transitions whose concrete evidence is owned elsewhere. Because the model mutates one abstract region at a time while Rust batches exact reads, parity computation, writes, watermarks, and typed fence evidence, record the mismatch and retain independent focused Rust tests instead of adding a general translation layer.
+6. **Assess, do not force, Rust conformance.** Compare the model's semantic phases and outcomes with the Rust machine's public action/result seam. A bounded Quint Connect driver projects one mapped region and no abstract stores. The two retained seeded traces each complete a normal lifecycle through `release` and then execute a new `begin`, so release-followed-by-reuse is observable in this evidence. The projection intentionally excludes abstract fence and home-reconciliation transitions whose concrete evidence is owned elsewhere. Because the model mutates one abstract region at a time while Rust batches exact reads, parity computation, writes, watermarks, and typed fence evidence, record the mismatch and retain independent focused Rust tests instead of adding a general translation layer.
 
 7. **Make delegated-source review contractual.** Extend the change-boundary requirement and focused scanner tests so a changed marked delegated source produces `delegated_canonical_source_changed`, reviews marked current owners, and propagates review through the requirement dependent closure. Removing a prior marker is a removed or reassigned relationship; an unmarked model path is context only. A filename, historical artifact, or run output cannot create an owner.
 
@@ -47,8 +47,9 @@ The knowledge scanner SHALL recognize marked delegated `.qnt` sources by their s
 ## Migration Plan
 
 1. Keep the active change delta and target artifacts separate from current OpenSpec semantics.
-2. Update the target Quint model and finite analysis, then run typecheck, bounded Quint verification, bounded tests, seeded simulations, deterministic replay, disposable negative mutations, and the two seeded Quint Connect projections.
-3. Review the Rust transaction seam and update the ADR, evidence log, manifest, maintained roadmap, and knowledge contract with exact claim boundaries.
+2. Update the target Quint model and finite analysis, then run typecheck, the exact bounded Quint verification command, bounded tests, seeded simulations, deterministic ITF replay, disposable negative mutations, and the two seeded Quint Connect projections.
+3. Review the Rust transaction seam and update the target ADR/evidence claims, manifest, and knowledge contract with exact claim boundaries.
 4. Run focused Rust tests, knowledge scanner tests, strict OpenSpec validation, docs readiness/check/build, and affected dependent review.
-5. Leave the change unsynced and unarchived for the next authority-transition step. Canonical sync and archive are intentionally outside this repair execution.
-6. Rollback is deletion/reversion of the active repair edits; no payload, runtime, or persistent-state migration is required.
+5. Remove the old verification-path delegated source and relationship from the active tree. Keep last-synced current-versus-target wording in current references and active artifacts until the normal sync updates those references atomically.
+6. Leave the change unsynced and unarchived for the next authority-transition step. Canonical sync and archive are intentionally outside this repair execution.
+7. Rollback is deletion/reversion of the active repair edits; no payload, runtime, or persistent-state migration is required.

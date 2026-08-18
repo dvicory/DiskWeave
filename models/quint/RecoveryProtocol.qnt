@@ -1,8 +1,8 @@
 // -*- mode: Bluespec; -*-
 /**
  * VE-002 bounded recovery protocol model.
- * The model is model-only. It defines one active admitted write obligation at
- * a time. Explicit release permits sequential range reuse within the
+ * The model is model-only. It defines one active write obligation at a
+ * time. Explicit release permits sequential range reuse within the
  * represented relation.
  * Exact region mapping, typed fence evidence, topology, persistence, resource
  * lifetime, and production recovery authority remain owned by their current

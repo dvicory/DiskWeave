@@ -3,7 +3,7 @@
 ### Requirement: Transactions emit normalized semantic actions
 <!-- dwv:req req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions -->
 
-The reference machine SHALL expose the semantic action vocabulary for range acquisition, durable dirty/integrity invalidation intent, reads, parity computation, writes, flush/fence, checkpoint/clear, and range release. Actions SHALL contain semantic ranges, generations, identities, and evidence rather than backend child-operation or runtime types. The normalized vocabulary and the ordering of finer actions not represented by the delegated relation remain owned by this requirement and applicable current requirements. The delegated canonical `RecoveryProtocol` module SHALL define only the exact parameterized state, abstract actions, transition guards, outcomes, and release relation it declares.
+The reference machine SHALL expose the semantic action vocabulary for range acquisition, durable dirty/integrity invalidation intent, reads, parity computation, writes, flush/fence, checkpoint/clear, and range release. Actions SHALL contain semantic ranges, generations, identities, and evidence rather than backend child-operation or runtime types. The normalized action vocabulary and any ordering of finer actions not represented by the delegated relation remain owned by this requirement and applicable current requirements. The delegated canonical `RecoveryProtocol` module SHALL define only the exact parameterized state, abstract actions, transition guards, outcomes, and release relation it declares.
 
 #### Scenario: A write transaction starts
 
@@ -57,8 +57,8 @@ The reference machine SHALL emit versioned normalized action traces with stable 
 
 #### Scenario: Uncertainty is reconciled
 
-- **WHEN** an unknown intent or home effect receives an explicit rejected, indeterminate, or durable reconciliation observation
-- **THEN** the relation reaches only the corresponding conservative state; clean and terminal outcomes remain unavailable unless their delegated evidence predicates hold
+- **WHEN** an unknown intent receives `IntentCommitRejected` or `IntentCommitDurable`, or an unknown home effect receives `HomeEffectIndeterminate` or `HomeEffectDurable`
+- **THEN** the relation applies only that domain's observation vocabulary and conservative state; clean and terminal outcomes remain unavailable unless their delegated evidence predicates hold
 
 #### Scenario: An invalid transition is attempted
 

@@ -2929,24 +2929,22 @@ Do not attempt application-wide verification, async/concurrency proof through Ka
 Maintain one deliberately small primary model for VP-003 through VP-008.
 
 **Current VE-002 decision:** use the parameterized Quint model in
-`verification/quint/RecoveryProtocol.qnt` as the one current executable
-authority for the bounded abstract transaction/recovery relation. Its
+`models/quint/RecoveryProtocol.qnt` as the current executable authority for
+the bounded abstract transaction/recovery relation. It admits one active write
+obligation at a time; explicit release permits sequential range reuse. Its
 independent source/action relation makes nondeterministic loss, explicit
 reconciliation, safety, reachability, counterexample mutation, and witness
 coverage visible in one small model. The former PlusCal/TLA+/TLC and Rust
 checker are historical provenance; Stateright remains an unselected
 alternative, not a second model.
 
-The active `repair-ve002-quint-authority` change proposes relocating and
-repairing this relation at `models/quint/RecoveryProtocol.qnt`: terminal
-ownership remains held until explicit release, released ranges can begin a
-new obligation, pre-mutation intent rejection has an owned aborted outcome,
-durable home reconciliation requires complete represented mutation coverage,
-uncertainty remains owned, and invalid, repeated, or out-of-order actions do
-not silently mutate state. Its finite evidence, two-seed Quint Connect
-projection of the mapped Rust lifecycle, and delegated-source review behavior
-remain target evidence until the change is verified and synced; they do not
-currentize the requirements or authorize a second model.
+The model holds terminal ownership until explicit release, permits a new
+obligation after release, gives pre-mutation intent rejection an owned aborted
+outcome, requires complete represented mutation coverage before durable-home
+reconciliation, keeps uncertainty owned, and leaves invalid, repeated, or
+out-of-order actions without state mutation. Its finite evidence, two-seed
+Quint Connect projection of the mapped Rust lifecycle, and delegated-source
+review behavior are bounded evidence; they do not authorize a second model.
 
 The comparison considers:
 

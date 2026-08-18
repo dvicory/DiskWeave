@@ -14,17 +14,17 @@ Date: 2026-08-17
 
 Historical canary source: `models/quint/RecoveryProtocol.qnt`
 
-Authority status: the last-synced current `RecoveryProtocol` source is
-`verification/quint/RecoveryProtocol.qnt`. The historical canary below
-exercised the then-proposed `models/quint` relocation; the active repair
-further changes that target and remains proposed until normal verification and
-sync. The separate `RecoveryProtocolAnalysis` module at
-`verification/quint/RecoveryProtocolAnalysis.qnt` binds finite target evidence
-and its runs are verification evidence, not semantic authority. The archived
+Authority status: the current `RecoveryProtocol` source is
+`models/quint/RecoveryProtocol.qnt`. The historical canary below records the
+first Quint model exercise; the current authority is the repaired relation
+described in the evidence section below. The separate
+`RecoveryProtocolAnalysis` module at
+`verification/quint/RecoveryProtocolAnalysis.qnt` binds finite evidence and
+its runs are verification evidence, not semantic authority. The archived
 `replace-ve002-tla-with-quint` and `reconcile-ve002-quint-ownership` changes
-established the current Quint boundary. Quint does not own typed evidence,
-topology, persistence, operation-slot lifetime, frontend delivery, or
-production recovery authority.
+remain historical provenance. Quint does not own typed evidence, topology,
+persistence, operation-slot lifetime, frontend delivery, or production
+recovery authority.
 
 Toolchain: `mise.toml` pins `@informalsystems/quint` at `0.32.0`.
 
@@ -72,25 +72,22 @@ region/checksum mapping, typed fence admissibility, topology,
 persistence-engine behavior, operation-slot lifetime, frontend behavior,
 physical durability, or unbounded recovery progress.
 
-## VE-002 authority repair (proposed)
+## VE-002 delegated Quint authority evidence
 
 Date: 2026-08-17
 
-Active change: `repair-ve002-quint-authority`
+This section records current evidence for the delegated relation. The
+pre-repair record above remains historical canary evidence; the claims below
+describe the current model and its bounded verification.
 
-This section records target evidence for the active repair. It does not
-change the current OpenSpec authority until the change is verified and
-synced. The pre-repair record above is retained as historical canary
-evidence; the claims below describe the proposed target.
-
-The target relation adds explicit range ownership and release, permits a new
+The current relation adds explicit range ownership and release, permits a new
 `begin` after release, gives pre-mutation rejection an aborted outcome,
 blocks terminal reuse before release, and rejects invalid, repeated, and
 out-of-order transitions without mutating state. It requires complete
-represented mutation coverage before durable-home reconciliation. Reconciliation
-acknowledgements are explicit so repeated observations have no self-loop;
-mutation clears a prior indeterminate-home acknowledgement. The finite
-analysis adds release/reuse, aborted-release, volatile-abandonment,
+represented mutation coverage before durable-home reconciliation.
+Reconciliation acknowledgements are explicit so repeated observations have no
+self-loop; mutation clears a prior indeterminate-home acknowledgement. The
+finite analysis adds release/reuse, aborted-release, volatile-abandonment,
 continuation, repeated-action, terminal-release, durable-home-coverage, and
 partial-home witnesses. Regions, stores, and execution depths remain evidence
 bounds.
@@ -98,13 +95,17 @@ bounds.
 Commands:
 
 ```text
+quint --version
 quint typecheck models/quint/RecoveryProtocol.qnt
 quint typecheck verification/quint/RecoveryProtocolAnalysis.qnt
 quint typecheck verification/quint/RecoveryProtocolConnect.qnt
 quint verify verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis \
   --max-steps 12 \
-  --invariants TypeInvariant,NoFalseClean,MutationRequiresIntent,UncertaintyIsVisible,UncertaintyIsOwned,DurableWorkIsOwned,TerminalRequiresRelease,TerminalRequiresEvidence,DurableHomeRequiresCoverage,FenceAndCheckpointCoverage
+  --invariants TypeInvariant NoFalseClean MutationRequiresIntent \
+    UncertaintyIsVisible UncertaintyIsOwned DurableWorkIsOwned \
+    TerminalRequiresRelease TerminalRequiresEvidence \
+    DurableHomeRequiresCoverage FenceAndCheckpointCoverage
 quint test verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
@@ -112,63 +113,48 @@ quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --max-steps 12 \
   --max-samples 10000 \
   --seed 22082026 \
-  --invariants TypeInvariant \
-  --invariants NoFalseClean \
-  --invariants MutationRequiresIntent \
-  --invariants UncertaintyIsVisible \
-  --invariants UncertaintyIsOwned \
-  --invariants DurableWorkIsOwned \
-  --invariants TerminalRequiresRelease \
-  --invariants TerminalRequiresEvidence \
-  --invariants DurableHomeRequiresCoverage \
-  --invariants FenceAndCheckpointCoverage \
-  --witnesses beginReachable \
-  --witnesses durableIntentReachable \
-  --witnesses mutationReachable \
-  --witnesses uncertainIntentReachable \
-  --witnesses uncertainHomeReachable \
-  --witnesses reconciliationReachable \
-  --witnesses terminalReachable \
-  --witnesses terminalPendingReleaseReachable \
-  --witnesses abortedReachable \
-  --witnesses releasedReachable \
-  --witnesses resumedMutationReachable \
-  --witnesses reconciledMutationReachable \
-  --witnesses durableHomeReachable
+  --invariants TypeInvariant NoFalseClean MutationRequiresIntent \
+    UncertaintyIsVisible UncertaintyIsOwned DurableWorkIsOwned \
+    TerminalRequiresRelease TerminalRequiresEvidence \
+    DurableHomeRequiresCoverage FenceAndCheckpointCoverage \
+  --witnesses beginReachable durableIntentReachable mutationReachable \
+    uncertainIntentReachable uncertainHomeReachable reconciliationReachable \
+    terminalReachable terminalPendingReleaseReachable abortedReachable \
+    releasedReachable resumedMutationReachable reconciledMutationReachable \
+    durableHomeReachable
 cargo test -p dwv-transaction-ref --lib
 cargo test -p dwv-transaction-ref --test quint_connect -- --nocapture
 ```
-
+ 
 Observed:
-
-- All three Quint sources typechecked. `quint verify` found no invariant
-  violation at bounded depth 12.
-- The Quint analysis reported nine passing tests:
+ 
+- Quint `0.32.0` typechecked all three sources. The exact `quint verify`
+  command above completed with Apalache `0.56.1`, bounded depth 12, and no
+  invariant violation across all ten named invariants.
+- The analysis reported nine passing tests:
   `boundedAssumptionsTest` passed once; `terminalReleaseRequiredTest`,
   `terminalBeginBlockedTest`, `releasePermitsReuseTest`,
   `volatileAbandonmentContinuationTest`, `partialHomeCannotBeDurableTest`,
   `repeatedAbandonBlockedTest`, and `repeatedHomeReconciliationBlockedTest`
   each passed 10,000 randomized cases; `rejectedIntentReleaseTest` passed
-  once. `releasePermitsReuseTest` verifies that release permits the next
-  `begin`.
-- The sampled run found no invariant violation across 10,000 traces.
-- Witnesses were reached in 10,000/10,000 begin traces, 9,620/10,000
+  once.
+- The sampled invariant run found no violation across 10,000 traces.
+  Witnesses were reached in 10,000/10,000 begin traces, 9,620/10,000
   durable-intent and mutation traces, 6,663/10,000 uncertain-intent traces,
   8,709/10,000 uncertain-home traces, 9,999/10,000 reconciliation-handoff
   traces, 740/10,000 terminal and terminal-pending-release traces,
   3,310/10,000 aborted traces, 3,701/10,000 released traces, 2,374/10,000
   resumed-mutation traces, 7,891/10,000 reconciliation-mutation traces, and
-  7,623/10,000 durable-home-coverage traces.
+  7,623/10,000 `durableHomeReachable` traces.
 - A disposable copy with the terminal-begin guard removed failed
-  `terminalBeginBlockedTest` with `QNT511`; a disposable copy with the
+  `terminalBeginBlockedTest` with `QNT511`. A disposable copy with the
   durable-home coverage guard removed failed
   `partialHomeCannotBeDurableTest` with `QNT511`. No mutants are retained.
-- The focused Rust transaction-machine library suite passed 17 tests. Two
-  Quint Connect tests passed with seeds `22082026` and `1`, covering the
-  observable normal lifecycle through release and reuse. The driver projects
-  intent/observation, home/observation/reconciliation, recovery, obligation,
-  invalidation, range ownership, terminal-pending-release, and release-marker
-  state.
+- The two retained Connect traces, seeds `22082026` and `1`, both execute
+  `init`, `begin`, `acceptIntent`, `mutate`, `makeHomeDurable`, `checkpoint`,
+  `release`, then a new `begin` and second lifecycle through `release`.
+  Connect therefore establishes release-followed-by-reuse for this mapped
+  lifecycle, not only completion through the first release.
 - The Connect projection is intentionally bounded, not a conformance bridge.
   Quint `mutate` advances one mapped abstract region while Rust `mutate`
   batches read completion, parity computation, and write completion. The
@@ -176,21 +162,24 @@ Observed:
   abstract `fence` and home-reconciliation transitions whose concrete
   evidence is owned outside this projection. Rust's typed flush, checkpoint,
   crash, reconciliation, fence, watermark, generation, topology, and
-  result-class evidence remains outside the delegated projection. Exact
-  private stage layout, backend identity, and non-delegated evidence are not
-  compared.
-
+  result-class evidence remains outside the delegated projection. Concrete
+  stale-result correlation and generation admissibility remain owned by the
+  applicable current requirements.
+ 
 Reproduction recipes:
-
+ 
 ```text
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --max-steps 12 --max-samples 1 \
-  --seed 22082026 --out /tmp/ve002-replay-a.itf.json --verbosity 0
+  --n-traces 1 --seed 22082026 \
+  --out-itf /tmp/ve002-replay-a-{seq}.itf.json --verbosity 0
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --max-steps 12 --max-samples 1 \
-  --seed 22082026 --out /tmp/ve002-replay-b.itf.json --verbosity 0
-python3 -c 'import json; a=json.load(open("/tmp/ve002-replay-a.itf.json")); b=json.load(open("/tmp/ve002-replay-b.itf.json")); norm=lambda v: ({k:norm(x) for k,x in v.items() if k not in ("meta","timestamp")} if isinstance(v,dict) else [norm(x) for x in v] if isinstance(v,list) else v); assert norm(a["trace"]) == norm(b["trace"]); print(len(a["trace"]))'
-
+  --n-traces 1 --seed 22082026 \
+  --out-itf /tmp/ve002-replay-b-{seq}.itf.json --verbosity 0
+python3 -c 'import json; from pathlib import Path; a=json.loads(Path("/tmp/ve002-replay-a-0.itf.json").read_text()); b=json.loads(Path("/tmp/ve002-replay-b-0.itf.json").read_text()); norm=lambda v: ({k:norm(x) for k,x in v.items() if k not in ("#meta","meta","timestamp")} if isinstance(v,dict) else [norm(x) for x in v] if isinstance(v,list) else v); assert norm(a["states"]) == norm(b["states"]); print(len(a["states"]))'
+ 
+rm -rf /tmp/ve002-mutations
 for case in terminal-begin partial-home; do
   mkdir -p "/tmp/ve002-mutations/$case/models/quint" \
     "/tmp/ve002-mutations/$case/verification/quint"
@@ -199,21 +188,27 @@ for case in terminal-begin partial-home; do
   cp verification/quint/RecoveryProtocolAnalysis.qnt \
     "/tmp/ve002-mutations/$case/verification/quint/RecoveryProtocolAnalysis.qnt"
 done
-python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/terminal-begin/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); s=s.replace("    state.obligation == Unowned,\n", "", 1); p.write_text(s)'
-python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/partial-home/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); needle="    state.mutated == Regions,\n"; i=s.rfind(needle); assert i >= 0; p.write_text(s[:i]+s[i+len(needle):])'
+python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/terminal-begin/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); needle="  action begin: bool = all {\n    state.obligation == Unowned,\n"; assert s.count(needle)==1; p.write_text(s.replace(needle, "  action begin: bool = all {\n", 1))'
+python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/partial-home/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); needle="  action reconcileHomeDurable: bool = all {\n    state.intent == IntentDurable,\n    state.home == HomeUnknown,\n    state.recovery == RecoveryIndeterminate,\n    state.obligation == Handoff,\n    state.attempted == Regions,\n    state.mutated == Regions,\n"; assert s.count(needle)==1; p.write_text(s.replace(needle, needle.replace("    state.mutated == Regions,\n", ""), 1))'
 ! quint test /tmp/ve002-mutations/terminal-begin/verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --match terminalBeginBlockedTest --seed 1
 ! quint test /tmp/ve002-mutations/partial-home/verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --match partialHomeCannotBeDurableTest --seed 1
-rm -rf /tmp/ve002-mutations /tmp/ve002-replay-a.itf.json /tmp/ve002-replay-b.itf.json
+rm -rf /tmp/ve002-mutations /tmp/ve002-replay-a-0.itf.json \
+  /tmp/ve002-replay-b-0.itf.json
 ```
-
+ 
 The terminal-begin and partial-home mutations are expected to fail their
-respective tests with `QNT511`. These are disposable copies only.
-The target evidence remains bounded to depth 12 for the delegated checks, two
+respective tests with `QNT511`. The recipe selects each intended guard by its
+unique action block and asserts that the block occurs exactly once. The trace
+recipe uses Quint's `--out-itf` output, so the retained files are actual ITF;
+the comparison removes generated `#meta` values and compares the 13 state
+records.
+ 
+The current evidence remains bounded to depth 12 for the delegated checks, two
 affected regions and two stores for the finite analysis instance, sampled
-execution, and two Connect seeds of one mapped normal lifecycle. It does not
-claim exhaustive arbitrary-width model checking, Rust implementation
+execution, and two Connect seeds covering release followed by reuse. It does
+not claim exhaustive arbitrary-width model checking, Rust implementation
 correctness, exact region/checksum mapping, typed fence admissibility,
 topology, persistence, operation-slot lifetime, frontend behavior, physical
 durability, or unbounded recovery progress.
