@@ -9,8 +9,6 @@ Use this skill to plan substantial work, including work the user informally call
 
 A milestone is a planning scale, not a repository document type.
 
-Do not create new `docs/milestones/m*.md` files. Existing milestone files are history, not templates.
-
 Use **Beads** for shared work and dependencies. OpenSpec owns product semantics.
 
 If the environment provides guidance for agent-managed local work, load and follow it for scratch work, experiments, handoffs, or continuity that does not belong in Beads. This skill does not prescribe a local-work layout.

@@ -33,8 +33,8 @@ cargo xtask docs serve
 - Reviewed semantic state: `docs/reviewed-requirements.toml`
 - Evidence and executable fixtures: `verification/manifest.toml`, `verification/corpus/`
 - Agent workflow: `.agents/skills/diskweave-knowledge/SKILL.md`
-- Executable milestone plans: `docs/milestones/`
+- Shared execution planning: Beads (`bd ready`, `bd show`)
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 
-Normal discovery excludes active and archived architecture roadmaps, archived changes, rendered output, and historical milestone 5 machinery. Historical material is consulted only for an explicit archaeology task.
+Normal discovery excludes active and archived architecture roadmaps, archived changes, rendered output, and historical planning material. Historical material is consulted only for an explicit archaeology task.
