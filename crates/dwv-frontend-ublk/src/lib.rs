@@ -912,8 +912,11 @@ mod tests {
         assert_eq!(document.records.len(), MAX_TRACE_RECORDS);
         assert_eq!(document.exhausted_records, 1);
         assert_eq!(document.retired_records, 1);
-        let retained_sequences: Vec<_> =
-            document.records.iter().map(|record| record.sequence).collect();
+        let retained_sequences: Vec<_> = document
+            .records
+            .iter()
+            .map(|record| record.sequence)
+            .collect();
         assert_eq!(retained_sequences.first(), Some(&2));
         assert_eq!(retained_sequences.get(1), Some(&3));
         assert_eq!(

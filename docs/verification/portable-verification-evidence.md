@@ -12,23 +12,26 @@ disposable fixture, commands, outputs, and claim boundary.
 
 Date: 2026-08-17
 
-Source: `verification/quint/RecoveryProtocol.qnt`
+Source model: `models/quint/RecoveryProtocol.qnt`
 
 Authority status: the `RecoveryProtocol` module is the current canonical
 authority for the bounded VE-002 reference transaction/recovery relation.
-The separate `RecoveryProtocolAnalysis` module binds the finite evidence
+The separate `RecoveryProtocolAnalysis` module at
+`verification/quint/RecoveryProtocolAnalysis.qnt` binds the finite evidence
 instance and its runs are verification evidence, not semantic authority.
 The archived `replace-ve002-tla-with-quint` and
 `reconcile-ve002-quint-ownership` changes established this boundary. Quint
 does not own typed evidence, topology, persistence, operation-slot lifetime,
 frontend delivery, or production recovery authority.
 
+Toolchain: `mise.toml` pins `@informalsystems/quint` at `0.32.0`.
+
 Commands:
 
 ```text
-quint typecheck verification/quint/RecoveryProtocol.qnt
-quint test verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis
-quint run verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis \
+quint typecheck models/quint/RecoveryProtocol.qnt
+quint test verification/quint/RecoveryProtocolAnalysis.qnt --main RecoveryProtocolAnalysis
+quint run verification/quint/RecoveryProtocolAnalysis.qnt --main RecoveryProtocolAnalysis \
   --max-steps 12 \
   --invariants TypeInvariant \
   --invariants NoFalseClean \
@@ -51,10 +54,10 @@ Observed:
 
 - Typecheck and the bounded-assumption test passed.
 - The sampled run found no invariant violation across 10,000 traces.
-- Witnesses were reached in 10,000/10,000 begin traces, 8,600/10,000
-  durable-intent traces, 7,401/10,000 mutation traces, 4,876/10,000
-  uncertain-intent traces, 5,964/10,000 uncertain-home traces, 9,667/10,000
-  reconciliation-handoff traces, and 7/10,000 terminal traces.
+- Witnesses were reached in 10,000/10,000 begin traces, 9,509/10,000
+  durable-intent traces, 9,070/10,000 mutation traces, 6,705/10,000
+  uncertain-intent traces, 8,417/10,000 uncertain-home traces, 9,998/10,000
+  reconciliation-handoff traces, and 196/10,000 terminal traces.
 - Same-seed ITF traces were byte-identical after generated timestamps and
   per-trace metadata were removed.
 - A disposable copy with the `mutate` durable-intent guard removed was

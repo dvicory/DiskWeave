@@ -2929,7 +2929,7 @@ Do not attempt application-wide verification, async/concurrency proof through Ka
 Maintain one deliberately small primary model for VP-003 through VP-008.
 
 **Current VE-002 decision:** use the parameterized Quint model in
-`verification/quint/RecoveryProtocol.qnt` as the one primary executable
+`models/quint/RecoveryProtocol.qnt` as the one primary executable
 authority for the bounded abstract transaction/recovery relation. Its
 independent source/action relation makes nondeterministic loss, explicit
 reconciliation, safety, reachability, counterexample mutation, and witness

@@ -1562,6 +1562,8 @@ fn packet_references(
     {
         let (relation, destination) = if reference.kind == "rust" {
             ("implements", &mut implementation)
+        } else if reference.kind == "delegated" {
+            ("delegates", &mut implementation)
         } else if reference.kind == "verification" {
             ("verifies", &mut evidence)
         } else if reference.path == "docs/curriculum.toml" {
@@ -2007,8 +2009,14 @@ pub(super) fn affected(
             .difference(&current_ids)
             .cloned()
             .collect::<BTreeSet<_>>();
-        let review_required = baseline.available && !removed.is_empty();
-        let classification = if review_required {
+        let delegated_source = is_delegated_source_path(&relative);
+        let review_required = (delegated_source
+            && (!current_ids.is_empty() || !old_ids.is_empty()))
+            || (baseline.available && !removed.is_empty());
+        let classification = if delegated_source && (!current_ids.is_empty() || !old_ids.is_empty())
+        {
+            "delegated_canonical_source_changed"
+        } else if baseline.available && !removed.is_empty() {
             "requirement_relationship_removed_or_reassigned"
         } else if baseline.available && !added.is_empty() {
             "requirement_relationship_added_context_only"
@@ -2390,6 +2398,10 @@ impl BaselineIds {
     }
 }
 
+fn is_delegated_source_path(path: &str) -> bool {
+    path.starts_with("models/quint/") && path.ends_with(".qnt")
+}
+
 fn is_impact_candidate(path: &str) -> bool {
     !excluded(path)
         && ((path.starts_with("crates/") && path.ends_with(".rs"))
@@ -2397,9 +2409,9 @@ fn is_impact_candidate(path: &str) -> bool {
             || (path.starts_with("openspec/specs/") && path.ends_with("/spec.md"))
             || path == "verification/manifest.toml"
             || path == "docs/curriculum.toml"
-            || (path.starts_with("docs/sphinx/") && path.ends_with(".md")))
+            || (path.starts_with("docs/sphinx/") && path.ends_with(".md"))
+            || (path.starts_with("models/quint/") && path.ends_with(".qnt")))
 }
-
 fn baseline_ids(app: &App, relative: &str) -> Result<BaselineIds, AppError> {
     let Some(provider) = RevisionControl::detect(&app.root) else {
         return Ok(BaselineIds::unavailable());
@@ -2418,10 +2430,20 @@ fn revision_path_absent(stderr: &[u8]) -> bool {
     .any(|message| stderr.contains(message))
 }
 
-fn relationship_ids(relative: &str, text: &str) -> BTreeSet<String> {
+fn relationship_marker(relative: &str, line: &str) -> bool {
     if relative.ends_with(".rs") {
+        line.contains("/// dwv:req ")
+    } else if relative.ends_with(".qnt") {
+        line.contains("// dwv:req ")
+    } else {
+        true
+    }
+}
+
+fn relationship_ids(relative: &str, text: &str) -> BTreeSet<String> {
+    if relative.ends_with(".rs") || relative.ends_with(".qnt") {
         text.lines()
-            .filter(|line| line.contains("/// dwv:req "))
+            .filter(|line| relationship_marker(relative, line))
             .flat_map(extract_ids)
             .collect()
     } else {
@@ -2571,9 +2593,30 @@ pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<V
             .difference(&removed_current)
             .cloned()
             .collect::<BTreeSet<_>>();
+        let delegated_ids = all_ids
+            .iter()
+            .filter(|id| requirement_ids.contains(id.as_str()))
+            .cloned()
+            .collect::<BTreeSet<_>>();
         added_relationships += added.len();
-        let review_required = baseline.available && !removed_current.is_empty();
-        if review_required {
+        if is_delegated_source_path(&relative) && !delegated_ids.is_empty() {
+            review_ids.extend(delegated_ids.iter().cloned());
+            next_actions.insert(format!(
+                "cargo xtask docs knowledge affected --path {relative}"
+            ));
+            entries.push(json!({
+                "path": relative,
+                "classification": "delegated_canonical_source_changed",
+                "review_required": true,
+                "requirement_ids": delegated_ids,
+                "current_ids": current_ids,
+                "previous_ids": baseline.ids,
+                "added_ids": added,
+                "removed_current_ids": removed_current,
+                "removed_noncurrent_ids": removed_noncurrent,
+                "baseline": baseline.source
+            }));
+        } else if baseline.available && !removed_current.is_empty() {
             review_ids.extend(removed_current.iter().cloned());
             next_actions.insert(format!(
                 "cargo xtask docs knowledge affected --path {relative}"
@@ -3350,10 +3393,23 @@ fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
         .into_iter()
         .map(|document| document.source_path)
         .collect::<BTreeSet<_>>();
-    for (directory, rust) in [("docs", false), ("crates", true), ("xtask", true)] {
+    for (directory, rust, extension) in [
+        ("docs", false, "md"),
+        ("crates", true, "rs"),
+        ("xtask", true, "rs"),
+        ("models/quint", false, "qnt"),
+    ] {
         let path = app.root.join(directory);
         if path.exists() {
-            scan_tree(&app.root, &path, rust, app, &architecture_paths, &mut refs)?;
+            scan_tree(
+                &app.root,
+                &path,
+                rust,
+                extension,
+                app,
+                &architecture_paths,
+                &mut refs,
+            )?;
         }
     }
     for relative in ["docs/curriculum.toml", "verification/manifest.toml"] {
@@ -3370,6 +3426,7 @@ fn scan_tree(
     root: &Path,
     path: &Path,
     rust: bool,
+    extension: &str,
     app: &App,
     architecture_paths: &BTreeSet<String>,
     refs: &mut Vec<ScanRef>,
@@ -3388,10 +3445,17 @@ fn scan_tree(
             return Err(AppError::new("reference_symlink", rel(root, &entry.path())));
         }
         if kind.is_dir() {
-            scan_tree(root, &entry.path(), rust, app, architecture_paths, refs)?;
+            scan_tree(
+                root,
+                &entry.path(),
+                rust,
+                extension,
+                app,
+                architecture_paths,
+                refs,
+            )?;
         } else if kind.is_file()
-            && entry.path().extension().and_then(|x| x.to_str())
-                == Some(if rust { "rs" } else { "md" })
+            && entry.path().extension().and_then(|x| x.to_str()) == Some(extension)
         {
             scan_file(root, &entry.path(), rust, app, architecture_paths, refs)?;
         }
@@ -3413,11 +3477,13 @@ fn scan_file(
     }
     let text = read_bounded(path, &relative, app)?;
     for (line, content) in text.lines().enumerate() {
-        if rust && !content.contains("/// dwv:req ") {
+        if !relationship_marker(&relative, content) {
             continue;
         }
         let kind = if rust {
             "rust"
+        } else if is_delegated_source_path(&relative) {
+            "delegated"
         } else if relative == "verification/manifest.toml" {
             "verification"
         } else if relative == "docs/curriculum.toml" {
@@ -4629,6 +4695,81 @@ mod tests {
         .concat();
         let ids = relationship_ids("crates/example.rs", &marker);
         assert_eq!(ids, BTreeSet::from(["req.a.real".to_owned()]));
+    }
+
+    #[test]
+    fn quint_relationships_scan_as_delegated_sources() {
+        let (root, app) = fixture("quint-reference-scan");
+        fs::write(
+            root.join("openspec/specs/cap/spec.md"),
+            requirement("The system SHALL remain stable."),
+        )
+        .unwrap();
+        let path = root.join("models/quint/RecoveryProtocol.qnt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "const Fake: str = \"req.cap.fake\"\n// dwv:req req.cap.one\n",
+        )
+        .unwrap();
+
+        assert!(is_impact_candidate("models/quint/RecoveryProtocol.qnt"));
+        assert_eq!(
+            relationship_ids(
+                "models/quint/RecoveryProtocol.qnt",
+                &fs::read_to_string(&path).unwrap()
+            ),
+            BTreeSet::from(["req.cap.one".to_owned()])
+        );
+        let references = scan_references(&app).unwrap();
+        let delegated = references
+            .iter()
+            .filter(|reference| reference.path == "models/quint/RecoveryProtocol.qnt")
+            .collect::<Vec<_>>();
+        assert_eq!(delegated.len(), 1);
+        assert_eq!(delegated[0].kind, "delegated");
+        assert_eq!(delegated[0].id, "req.cap.one");
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn change_impact_requires_review_for_delegated_model_changes() {
+        if Command::new("git").arg("--version").output().is_err() {
+            return;
+        }
+        let (root, app) = fixture("quint-impact");
+        let spec = root.join("openspec/specs/cap/spec.md");
+        fs::write(&spec, requirement("The system SHALL remain stable.")).unwrap();
+        write_reviewed(&root, &objects(&app).unwrap());
+        let path = root.join("models/quint/RecoveryProtocol.qnt");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            "// dwv:req req.cap.one\nval modelRevision: int = 1\n",
+        )
+        .unwrap();
+        commit_git_fixture(&root);
+        fs::write(
+            &path,
+            "// dwv:req req.cap.one\nval modelRevision: int = 2\n",
+        )
+        .unwrap();
+
+        let result = change_impact(&app, Some("HEAD")).unwrap();
+        assert_eq!(result["review_required"], true);
+        assert_eq!(result["review_requirement_ids"], json!(["req.cap.one"]));
+        let entry = result["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["path"] == "models/quint/RecoveryProtocol.qnt")
+            .unwrap();
+        assert_eq!(
+            entry["classification"],
+            "delegated_canonical_source_changed"
+        );
+        assert_eq!(entry["review_required"], true);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

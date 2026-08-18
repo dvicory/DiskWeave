@@ -2,16 +2,18 @@
 
 - **Status:** Accepted for the portable evidence lane
 - **Date:** 2026-08-17
-- **Model source:** `verification/quint/RecoveryProtocol.qnt`
+- **Model source:** `models/quint/RecoveryProtocol.qnt`
 - **Reference checker:** Quint 0.32.0 with its Rust simulation backend
+- **Tool pin:** `mise.toml` pins `@informalsystems/quint` at `0.32.0`
 
 ## Decision
 
-Use `verification/quint/RecoveryProtocol.qnt` as the sole current VE-002
+Use `models/quint/RecoveryProtocol.qnt` as the sole current VE-002
 model authority. The parameterized `RecoveryProtocol` module is the
-canonical protocol source. `RecoveryProtocolAnalysis` binds that relation to
-the finite VE-002 evidence instance and provides assumptions, witnesses, and
-runs.
+canonical protocol source. The finite `RecoveryProtocolAnalysis` module
+is maintained separately at `verification/quint/RecoveryProtocolAnalysis.qnt`;
+it binds that relation to the finite VE-002 evidence instance and provides
+assumptions, witnesses, and runs.
 
 The delegated authority is the parameterized state, action, transition, and
 invariant relation. The VE-002 evidence instance uses one represented write
@@ -83,9 +85,9 @@ types and runtime code.
 ## Reproducible evidence
 
 ```text
-quint typecheck verification/quint/RecoveryProtocol.qnt
-quint test verification/quint/RecoveryProtocol.qnt --main RecoveryProtocolAnalysis
-quint run verification/quint/RecoveryProtocol.qnt \
+quint typecheck models/quint/RecoveryProtocol.qnt
+quint test verification/quint/RecoveryProtocolAnalysis.qnt --main RecoveryProtocolAnalysis
+quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis \
   --max-steps 12 \
   --invariants TypeInvariant \
@@ -110,9 +112,9 @@ quint run verification/quint/RecoveryProtocol.qnt \
 
 On 2026-08-17, typecheck and the bounded-assumption test passed. The sampled
 run found no invariant violation across 10,000 traces. Witness coverage was:
-begin 100.00%, durable intent 86.00%, mutation 74.01%, uncertain intent
-48.76%, uncertain home 59.64%, reconciliation handoff 96.67%, and terminal
-ownership 0.07% (7 traces). The terminal witness's low rate is expected from
+begin 100.00%, durable intent 95.09%, mutation 90.70%, uncertain intent
+67.05%, uncertain home 84.17%, reconciliation handoff 99.98%, and terminal
+ownership 1.96% (196 traces). The terminal witness's low rate is expected from
 the guarded path; its non-zero reachability is the required result.
 
 Two runs with the same seed produced byte-identical normalized ITF traces

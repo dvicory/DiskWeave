@@ -7,8 +7,8 @@
  * topology, persistence, resource lifetime, and production recovery authority
  * remain owned by their current OpenSpec requirements.
  */
+// dwv:req req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent
 module RecoveryProtocol {
-  const MaxDepth: int
   const Regions: Set[str]
   const Stores: Set[str]
 
@@ -16,121 +16,129 @@ module RecoveryProtocol {
   type HomeState = HomeUnmodified | HomeVolatile | HomeDurable | HomeUnknown
   type RecoveryState = RecoveryClean | RecoveryDirty | RecoveryIndeterminate
   type ObligationState = Unowned | InFlight | Handoff | Terminal
+  type IntentObservation =
+    IntentCommitUnknown
+    | IntentCommitRejected
+    | IntentCommitDurable
+  type HomeObservation =
+    HomeEffectUnknown
+    | HomeEffectIndeterminate
+    | HomeEffectDurable
 
   type ProtocolState = {
     intent: IntentState,
+    intentObservation: IntentObservation,
     home: HomeState,
+    homeObservation: HomeObservation,
     recovery: RecoveryState,
     obligation: ObligationState,
     invalidated: bool,
     mutated: Set[str],
     fenced: Set[str],
     checkpointed: Set[str],
-    steps: int,
   }
 
   var state: ProtocolState
 
-  pure def withinBudget(s: ProtocolState): bool = s.steps < MaxDepth
-
   pure def active(s: ProtocolState): bool =
     s.obligation == InFlight or s.obligation == Handoff
 
-  pure def cleanUnowned(s: ProtocolState): ProtocolState =
-    {
-      ...s,
-      intent: NoIntent,
-      home: HomeUnmodified,
-      recovery: RecoveryClean,
-      obligation: Unowned,
-      invalidated: false,
-      mutated: Set(),
-      fenced: Set(),
-      checkpointed: Set(),
-      steps: s.steps + 1,
-    }
+  pure def cleanUnowned(
+    s: ProtocolState,
+    observation: IntentObservation,
+  ): ProtocolState = {
+    ...s,
+    intent: NoIntent,
+    intentObservation: observation,
+    home: HomeUnmodified,
+    homeObservation: HomeEffectUnknown,
+    recovery: RecoveryClean,
+    obligation: Unowned,
+    invalidated: false,
+    mutated: Set(),
+    fenced: Set(),
+    checkpointed: Set(),
+  }
 
   action init: bool = all {
     state' = {
       intent: NoIntent,
+      intentObservation: IntentCommitUnknown,
       home: HomeUnmodified,
+      homeObservation: HomeEffectUnknown,
       recovery: RecoveryClean,
       obligation: Unowned,
       invalidated: false,
       mutated: Set(),
       fenced: Set(),
       checkpointed: Set(),
-      steps: 0,
     },
   }
 
   action begin: bool = all {
-    withinBudget(state),
     state.obligation == Unowned or state.obligation == Terminal,
     state' = {
       ...state,
       intent: IntentPending,
+      intentObservation: IntentCommitUnknown,
       home: HomeUnmodified,
+      homeObservation: HomeEffectUnknown,
       recovery: RecoveryDirty,
       obligation: InFlight,
       invalidated: false,
       mutated: Set(),
       fenced: Set(),
       checkpointed: Set(),
-      steps: state.steps + 1,
     },
   }
 
   action acceptIntent: bool = all {
-    withinBudget(state),
     state.intent == IntentPending,
     state' = {
       ...state,
       intent: IntentDurable,
+      intentObservation: IntentCommitDurable,
       invalidated: true,
-      steps: state.steps + 1,
     },
   }
 
   action loseIntent: bool = all {
-    withinBudget(state),
     state.intent == IntentPending,
     state' = {
       ...state,
       intent: IntentUnknown,
+      intentObservation: IntentCommitUnknown,
       recovery: RecoveryIndeterminate,
       obligation: Handoff,
-      steps: state.steps + 1,
     },
   }
 
-  action reconcileIntentPrior: bool = all {
-    withinBudget(state),
-    state.intent == IntentUnknown,
-    state.home == HomeUnmodified,
-    state.mutated == Set(),
-    state' = cleanUnowned(state),
-  }
-
-  action reconcileIntentProposed: bool = all {
-    withinBudget(state),
-    state.intent == IntentUnknown,
-    state.home == HomeUnmodified,
-    state.mutated == Set(),
-    state' = {
-      ...state,
-      intent: IntentDurable,
-      recovery: RecoveryDirty,
-      obligation: Handoff,
-      invalidated: true,
-      steps: state.steps + 1,
-    },
+  action reconcileIntent: bool = {
+    nondet observation = Set(
+      IntentCommitRejected,
+      IntentCommitDurable,
+    ).oneOf()
+    all {
+      state.intent == IntentUnknown,
+      state.home == HomeUnmodified,
+      state.mutated == Set(),
+      state' = if (observation == IntentCommitRejected)
+        cleanUnowned(state, observation)
+      else
+        {
+          ...state,
+          intent: IntentDurable,
+          intentObservation: observation,
+          recovery: RecoveryDirty,
+          obligation: Handoff,
+          invalidated: true,
+        },
+    }
   }
 
   action mutate: bool = {
     nondet region = Regions.exclude(state.mutated).oneOf()
     all {
-      withinBudget(state),
       active(state),
       state.intent == IntentDurable,
       state.mutated != Regions,
@@ -138,13 +146,11 @@ module RecoveryProtocol {
         ...state,
         home: HomeVolatile,
         mutated: state.mutated.union(Set(region)),
-        steps: state.steps + 1,
       },
     }
   }
 
   action makeHomeDurable: bool = all {
-    withinBudget(state),
     active(state),
     state.intent == IntentDurable,
     state.home == HomeVolatile,
@@ -152,29 +158,29 @@ module RecoveryProtocol {
     state' = {
       ...state,
       home: HomeDurable,
-      steps: state.steps + 1,
+      homeObservation: HomeEffectDurable,
     },
   }
 
   action fence: bool = {
     nondet store = Stores.exclude(state.fenced).oneOf()
     all {
-      withinBudget(state),
+      active(state),
+      state.intent == IntentDurable,
       state.home == HomeDurable,
       state.fenced != Stores,
       state' = {
         ...state,
         fenced: state.fenced.union(Set(store)),
-        steps: state.steps + 1,
       },
     }
   }
 
   action checkpoint: bool = all {
-    withinBudget(state),
+    active(state),
     state.recovery == RecoveryDirty,
-    state.home == HomeDurable,
     state.intent == IntentDurable,
+    state.home == HomeDurable,
     state.mutated == Regions,
     state.fenced == Stores,
     state' = {
@@ -182,53 +188,73 @@ module RecoveryProtocol {
       recovery: RecoveryClean,
       checkpointed: Regions,
       obligation: Terminal,
-      steps: state.steps + 1,
     },
   }
 
   action loseHome: bool = all {
-    withinBudget(state),
     active(state),
     state.intent == IntentDurable,
     state.home == HomeVolatile or state.home == HomeDurable,
     state' = {
       ...state,
       home: HomeUnknown,
+      homeObservation: HomeEffectIndeterminate,
       recovery: RecoveryIndeterminate,
       obligation: Handoff,
-      steps: state.steps + 1,
     },
   }
 
-  action reconcileHome: bool = all {
-    withinBudget(state),
-    state.intent == IntentDurable,
-    state.home == HomeUnknown,
-    state.recovery == RecoveryIndeterminate,
-    state.obligation == Handoff,
-    state' = {
-      ...state,
-      home: HomeDurable,
-      recovery: RecoveryDirty,
-      obligation: Handoff,
-      steps: state.steps + 1,
-    },
+  action reconcileHome: bool = {
+    nondet observation = Set(
+      HomeEffectIndeterminate,
+      HomeEffectDurable,
+    ).oneOf()
+    all {
+      state.intent == IntentDurable,
+      state.home == HomeUnknown,
+      state.recovery == RecoveryIndeterminate,
+      state.obligation == Handoff,
+      state' = if (observation == HomeEffectDurable)
+        {
+          ...state,
+          home: HomeDurable,
+          homeObservation: observation,
+          recovery: RecoveryDirty,
+          obligation: Handoff,
+        }
+      else
+        {
+          ...state,
+          home: HomeUnknown,
+          homeObservation: observation,
+          recovery: RecoveryIndeterminate,
+          obligation: Handoff,
+        },
+    }
   }
 
   action abandon: bool = all {
-    withinBudget(state),
     active(state),
     state' = if (state.intent == IntentPending and state.home == HomeUnmodified)
-      cleanUnowned(state)
+      {
+        ...state,
+        intent: IntentUnknown,
+        intentObservation: IntentCommitUnknown,
+        recovery: RecoveryIndeterminate,
+        obligation: Handoff,
+      }
     else
       {
         ...state,
         home: if (state.home == HomeVolatile) HomeUnknown else state.home,
+        homeObservation: if (state.home == HomeVolatile)
+          HomeEffectIndeterminate
+        else
+          state.homeObservation,
         recovery: if (
           state.intent == IntentUnknown or state.home == HomeUnknown
         ) RecoveryIndeterminate else RecoveryDirty,
         obligation: Handoff,
-        steps: state.steps + 1,
       },
   }
 
@@ -236,8 +262,7 @@ module RecoveryProtocol {
     begin,
     acceptIntent,
     loseIntent,
-    reconcileIntentPrior,
-    reconcileIntentProposed,
+    reconcileIntent,
     mutate,
     makeHomeDurable,
     fence,
@@ -251,8 +276,6 @@ module RecoveryProtocol {
     state.mutated.subseteq(Regions)
     and state.fenced.subseteq(Stores)
     and state.checkpointed.subseteq(Regions)
-    and state.steps >= 0
-    and state.steps <= MaxDepth
 
   val NoFalseClean: bool =
     (state.recovery == RecoveryClean) implies (
@@ -305,24 +328,3 @@ module RecoveryProtocol {
     and (state.checkpointed != Set() implies state.fenced == Stores)
 }
 
-module RecoveryProtocolAnalysis {
-  import RecoveryProtocol(
-    MaxDepth = 8,
-    Regions = Set("data", "parity"),
-    Stores = Set("data", "parity"),
-  ).*
-
-  run boundedAssumptions = all {
-    MaxDepth == 8,
-    Regions == Set("data", "parity"),
-    Stores == Set("data", "parity"),
-  }
-
-  val beginReachable: bool = state.obligation == InFlight
-  val durableIntentReachable: bool = state.intent == IntentDurable
-  val mutationReachable: bool = state.mutated != Set()
-  val uncertainIntentReachable: bool = state.intent == IntentUnknown
-  val uncertainHomeReachable: bool = state.home == HomeUnknown
-  val reconciliationReachable: bool = state.obligation == Handoff
-  val terminalReachable: bool = state.obligation == Terminal
-}
