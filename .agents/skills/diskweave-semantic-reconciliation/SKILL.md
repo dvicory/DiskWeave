@@ -91,6 +91,12 @@ If yes, determine whether the variation is deliberately delegated or whether the
 
 If not, important semantics remain scattered.
 
+### Transfer
+
+> If semantics move to another owner, does that owner fully define what is being removed here?
+
+If not, the transfer is incomplete. Check the receiving semantics, not just the delegation or relationship edge.
+
 ### Failure and uncertainty
 
 > Do the apparent owners agree on consequential refusal, uncertainty, recovery, abandonment, preservation, and lifecycle behavior?
@@ -126,8 +132,8 @@ When repair is needed, prefer the smallest change that leaves one clear owner fo
 - merging artifacts that no longer have independent semantic responsibility;
 - adding genuinely missing behavior;
 - deliberately changing or retiring obsolete behavior;
-- fixing implementation rather than changing correct semantics.
-- After an ownership change, re-test each affected requirement for independent semantic responsibility. A requirement whose remaining proposition is completely determined by other owners or delegated semantics should not survive only as a restatement or stable-ID shell.
+- fixing implementation rather than changing correct semantics;
+- after an ownership change, re-test each affected requirement for independent semantic responsibility. A requirement whose remaining proposition is completely determined by other owners or delegated semantics should not survive only as a restatement or stable-ID shell.
 
 Do not choose split, merge, relocation, or a new identity before understanding the behavior being owned.
 

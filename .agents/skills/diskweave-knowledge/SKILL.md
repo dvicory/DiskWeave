@@ -28,9 +28,9 @@ Use this skill for product code, canonical OpenSpecs, delegated canonical models
 
 ## Editing rules
 
-- OpenSpec requirements own intended behavior; explicitly delegated models may define their bounded exact semantics. Rust markers, evidence, and prose link to requirements; they do not redefine them.
+- OpenSpec requirements own intended behavior; explicitly delegated models may define their bounded exact semantics. Source markers, evidence, and prose link to requirements; they do not redefine them.
 - Changes to delegated canonical semantics must be treated as semantic changes to their owning requirement and included in normal affected/dependent review.
-- Put `/// dwv:req <requirement-id>` only on a Rust item that genuinely owns or represents that semantic boundary. Do not tag every helper.
+- Use `dwv:req` relationship markers only on implementation source or delegated executable source that genuinely owns or represents that semantic boundary. Rust uses `/// dwv:req <requirement-id>`; other languages need a machine-readable equivalent supported by the knowledge tooling. Do not tag helpers or evidence-only configuration merely because they are nearby.
 - Keep user-facing prose causal and audience-specific. Preserve requirement modality and explicit non-claims.
 - For a Human Guide chapter, read its `docs/curriculum.toml` entry first. Draft or review the `[[entries.sections]]` briefs in order: use the proposed heading, satisfy every `must_answer` from the linked current sources, and preserve every section `non_claims`. The briefs guide Markdown; they do not override canonical requirements.
 - Do not place payload bytes, credentials, private paths, runtime handles, or unbounded source text in markers, evidence, context, or generated objects.
