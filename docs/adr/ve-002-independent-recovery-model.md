@@ -122,6 +122,26 @@ after removing generated timestamps. A disposable copy with the
 `mutate` durable-intent guard removed was rejected by
 `MutationRequiresIntent`. The mutant is not retained.
 
+
+## Active repair target (proposed until sync)
+
+The active `repair-ve002-quint-authority` change repairs the delegated
+relation without changing the current authority until its normal OpenSpec
+sync. Its target adds explicit range-held and range-release state, an
+aborted pre-mutation outcome, a guard against beginning from an unreleased
+terminal outcome, and conservative home reconciliation that requires full
+represented mutation coverage before a durable home result. It also makes
+the invalid/repeated action surface partial rather than silently
+transitioning.
+
+Target evidence adds direct release, terminal-begin rejection, and
+partial-home tests, plus bounded witnesses for aborted, released, and
+resumed-mutation states. These checks are evidence for the active change,
+not a second semantic owner and not an exhaustive proof. The Rust
+transaction seam remains independent: its batched action/result granularity
+and typed fence evidence do not form a one-to-one conformance mapping to the
+abstract Quint relation.
+
 ## Lessons and next campaign
 
 The canary showed that delegated authority is useful only when the boundary

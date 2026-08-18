@@ -1,0 +1,5 @@
+schema: spec-driven
+created: 2026-08-17
+goal: Make the canonical recovery relation complete at its declared surface
+  without letting finite evidence bounds or analysis artifacts own product
+  semantics.

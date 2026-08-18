@@ -88,6 +88,35 @@ non_claims = [
 ]
 
 [[evidence]]
+id = "evidence.ve-002-quint-authority-repair"
+path = "docs/verification/portable-verification-evidence.md"
+claim = "The active VE-002 repair records bounded executable evidence for explicit range release, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, and delegated-source review boundaries."
+tier = "portable-bounded-model"
+fault_model = [
+  "terminal begin before release",
+  "missing range release",
+  "volatile home with incomplete mutation coverage",
+  "repeated or out-of-order result",
+  "delegated-source review omission",
+]
+scope = [
+  "one admitted write obligation",
+  "two affected regions",
+  "two stores",
+  "MaxDepth 8",
+  "sampled Quint invariants and witnesses",
+  "disposable negative mutations",
+]
+requirements = [
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
+  "req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded",
+]
+non_claims = [
+  "This is proposed evidence for an unsynced OpenSpec change, not a replacement for current requirements.",
+  "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, typed fence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
+]
+
+[[evidence]]
 id = "evidence.os-009-transaction-engine-evidence-comparison"
 path = "docs/verification/os-009-transaction-engine-evidence-comparison.md"
 claim = "The transaction comparison records normalized semantic actions and conservative terminal evidence."

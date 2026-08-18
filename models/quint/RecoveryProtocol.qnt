@@ -15,7 +15,7 @@ module RecoveryProtocol {
   type IntentState = NoIntent | IntentPending | IntentDurable | IntentUnknown
   type HomeState = HomeUnmodified | HomeVolatile | HomeDurable | HomeUnknown
   type RecoveryState = RecoveryClean | RecoveryDirty | RecoveryIndeterminate
-  type ObligationState = Unowned | InFlight | Handoff | Terminal
+  type ObligationState = Unowned | InFlight | Handoff | Terminal | Aborted
   type IntentObservation =
     IntentCommitUnknown
     | IntentCommitRejected
@@ -36,6 +36,9 @@ module RecoveryProtocol {
     mutated: Set[str],
     fenced: Set[str],
     checkpointed: Set[str],
+    rangeHeld: bool,
+    terminalPendingRelease: bool,
+    rangeReleased: bool,
   }
 
   var state: ProtocolState
@@ -43,7 +46,7 @@ module RecoveryProtocol {
   pure def active(s: ProtocolState): bool =
     s.obligation == InFlight or s.obligation == Handoff
 
-  pure def cleanUnowned(
+  pure def abortedUnreleased(
     s: ProtocolState,
     observation: IntentObservation,
   ): ProtocolState = {
@@ -53,11 +56,14 @@ module RecoveryProtocol {
     home: HomeUnmodified,
     homeObservation: HomeEffectUnknown,
     recovery: RecoveryClean,
-    obligation: Unowned,
+    obligation: Aborted,
     invalidated: false,
     mutated: Set(),
     fenced: Set(),
     checkpointed: Set(),
+    rangeHeld: true,
+    terminalPendingRelease: true,
+    rangeReleased: false,
   }
 
   action init: bool = all {
@@ -72,11 +78,14 @@ module RecoveryProtocol {
       mutated: Set(),
       fenced: Set(),
       checkpointed: Set(),
+      rangeHeld: false,
+      terminalPendingRelease: false,
+      rangeReleased: false,
     },
   }
 
   action begin: bool = all {
-    state.obligation == Unowned or state.obligation == Terminal,
+    state.obligation == Unowned,
     state' = {
       ...state,
       intent: IntentPending,
@@ -89,6 +98,9 @@ module RecoveryProtocol {
       mutated: Set(),
       fenced: Set(),
       checkpointed: Set(),
+      rangeHeld: true,
+      terminalPendingRelease: false,
+      rangeReleased: false,
     },
   }
 
@@ -123,7 +135,7 @@ module RecoveryProtocol {
       state.home == HomeUnmodified,
       state.mutated == Set(),
       state' = if (observation == IntentCommitRejected)
-        cleanUnowned(state, observation)
+        abortedUnreleased(state, observation)
       else
         {
           ...state,
@@ -188,9 +200,33 @@ module RecoveryProtocol {
       recovery: RecoveryClean,
       checkpointed: Regions,
       obligation: Terminal,
+      rangeHeld: true,
+      terminalPendingRelease: true,
+      rangeReleased: false,
     },
   }
 
+  action release: bool = all {
+    state.rangeHeld,
+    state.terminalPendingRelease,
+    state.obligation == Terminal or state.obligation == Aborted,
+    state' = {
+      ...state,
+      intent: NoIntent,
+      intentObservation: IntentCommitUnknown,
+      home: HomeUnmodified,
+      homeObservation: HomeEffectUnknown,
+      recovery: RecoveryClean,
+      obligation: Unowned,
+      invalidated: false,
+      mutated: Set(),
+      fenced: Set(),
+      checkpointed: Set(),
+      rangeHeld: false,
+      terminalPendingRelease: false,
+      rangeReleased: true,
+    },
+  }
   action loseHome: bool = all {
     active(state),
     state.intent == IntentDurable,
@@ -208,6 +244,8 @@ module RecoveryProtocol {
     nondet observation = Set(
       HomeEffectIndeterminate,
       HomeEffectDurable,
+    ).filter(effect =>
+      state.mutated == Regions or effect == HomeEffectIndeterminate
     ).oneOf()
     all {
       state.intent == IntentDurable,
@@ -267,6 +305,7 @@ module RecoveryProtocol {
     makeHomeDurable,
     fence,
     checkpoint,
+    release,
     loseHome,
     reconcileHome,
     abandon,
@@ -276,10 +315,32 @@ module RecoveryProtocol {
     state.mutated.subseteq(Regions)
     and state.fenced.subseteq(Stores)
     and state.checkpointed.subseteq(Regions)
+    and (
+      (state.obligation == Unowned) implies not(state.rangeHeld)
+    )
+    and (
+      (state.obligation != Unowned) implies state.rangeHeld
+    )
+    and (
+      state.rangeReleased implies (
+        state.obligation == Unowned and not(state.rangeHeld)
+      )
+    )
 
+  val TerminalRequiresRelease: bool =
+    (state.obligation == Terminal or state.obligation == Aborted) implies (
+      state.rangeHeld and state.terminalPendingRelease
+    )
+
+  val DurableHomeRequiresCoverage: bool =
+    state.home == HomeDurable implies state.mutated == Regions
   val NoFalseClean: bool =
     (state.recovery == RecoveryClean) implies (
-      (state.obligation == Unowned or state.obligation == Terminal)
+      (
+        state.obligation == Unowned
+        or state.obligation == Terminal
+        or state.obligation == Aborted
+      )
       and (
         state.intent == NoIntent
         or (
@@ -289,6 +350,7 @@ module RecoveryProtocol {
         )
       )
       and (state.obligation == Terminal implies state.checkpointed == Regions)
+      and (state.obligation == Aborted implies state.mutated == Set())
     )
 
   val MutationRequiresIntent: bool =
@@ -302,6 +364,7 @@ module RecoveryProtocol {
     ) implies (
       state.recovery != RecoveryClean
       and state.obligation != Terminal
+      and state.obligation != Aborted
     )
 
   val DurableWorkIsOwned: bool =
@@ -320,6 +383,9 @@ module RecoveryProtocol {
       and state.mutated == Regions
       and state.fenced == Stores
       and state.checkpointed == Regions
+      and state.rangeHeld
+      and state.terminalPendingRelease
+      and not(state.rangeReleased)
     )
 
   val FenceAndCheckpointCoverage: bool =

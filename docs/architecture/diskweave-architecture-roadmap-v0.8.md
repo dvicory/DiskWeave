@@ -2937,6 +2937,14 @@ coverage visible in one small model. The former PlusCal/TLA+/TLC and Rust
 checker are historical provenance; Stateright remains an unselected
 alternative, not a second model.
 
+The active `repair-ve002-quint-authority` change proposes a bounded repair
+of this relation: terminal ownership remains held until explicit release,
+pre-mutation intent rejection has an owned aborted outcome, and durable
+home reconciliation requires complete represented mutation coverage. Its
+finite evidence and delegated-source review behavior remain target
+evidence until the change is verified and synced; they do not currentize
+the requirements or authorize a second model.
+
 The comparison considers:
 
 - independence from production code and types;

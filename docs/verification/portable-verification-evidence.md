@@ -69,6 +69,92 @@ correctness, exact region/checksum mapping, typed fence admissibility,
 topology, persistence-engine behavior, operation-slot lifetime, frontend
 behavior, physical durability, or unbounded recovery progress.
 
+## VE-002 authority repair (proposed)
+
+Date: 2026-08-17
+
+Active change: `repair-ve002-quint-authority`
+
+This section records target evidence for the active repair. It does not
+change the current OpenSpec authority until the change is verified and
+synced. The baseline VE-002 record above remains the current evidence
+record.
+
+The target relation adds explicit range ownership and release, a
+pre-mutation aborted outcome, a terminal-begin guard, invalid/repeated
+transition absence, and conservative home reconciliation. The finite
+analysis adds terminal-release, aborted-release, resumed-mutation, and
+partial-home witnesses. Regions, stores, and depth remain evidence bounds.
+
+Commands:
+
+```text
+quint typecheck models/quint/RecoveryProtocol.qnt
+quint test verification/quint/RecoveryProtocolAnalysis.qnt \
+  --main RecoveryProtocolAnalysis
+quint run verification/quint/RecoveryProtocolAnalysis.qnt \
+  --main RecoveryProtocolAnalysis \
+  --max-steps 12 \
+  --max-samples 10000 \
+  --seed 22082026 \
+  --invariants TypeInvariant \
+  --invariants NoFalseClean \
+  --invariants MutationRequiresIntent \
+  --invariants UncertaintyIsVisible \
+  --invariants DurableWorkIsOwned \
+  --invariants TerminalRequiresRelease \
+  --invariants TerminalRequiresEvidence \
+  --invariants DurableHomeRequiresCoverage \
+  --invariants FenceAndCheckpointCoverage \
+  --witnesses beginReachable \
+  --witnesses durableIntentReachable \
+  --witnesses mutationReachable \
+  --witnesses uncertainIntentReachable \
+  --witnesses uncertainHomeReachable \
+  --witnesses reconciliationReachable \
+  --witnesses terminalReachable \
+  --witnesses terminalPendingReleaseReachable \
+  --witnesses abortedReachable \
+  --witnesses releasedReachable \
+  --witnesses resumedMutationReachable \
+  --witnesses durableHomeCoverage
+```
+
+Observed:
+
+- Typecheck passed. `boundedAssumptionsTest`,
+  `terminalReleaseRequiredTest`, `terminalBeginBlockedTest`, and
+  `partialHomeCannotBeDurableTest` passed; the three stateful tests each
+  passed 10,000 randomized test cases.
+- The sampled run found no invariant violation across 10,000 traces.
+- Witnesses were reached in 10,000/10,000 begin traces, 9,149/10,000
+  durable-intent traces, 8,616/10,000 mutation traces, 6,756/10,000
+  uncertain-intent traces, 7,921/10,000 uncertain-home traces,
+  9,998/10,000 reconciliation-handoff traces, 209/10,000 terminal and
+  terminal-pending-release traces, 3,342/10,000 aborted traces,
+  3,458/10,000 released traces, 8,616/10,000 resumed-mutation traces,
+  and 10,000/10,000 durable-home-coverage traces.
+- Same-seed ITF traces had identical normalized state content after
+  generated metadata were removed.
+- A disposable copy with the terminal-begin guard removed failed
+  `terminalBeginBlockedTest` with `QNT511`; a disposable copy with the
+  partial-home durable-outcome guard removed failed
+  `partialHomeCannotBeDurableTest` with `QNT508`; and a disposable copy
+  admitting durable intent without the pending-intent guard violated
+  `NoFalseClean` and `DurableWorkIsOwned`. No mutants are retained.
+- The Rust transaction seam remains independently tested. The model's
+  one-region abstract mutation and explicit release relation do not map
+  one-to-one to Rust's batched reads, parity computation, writes,
+  watermarks, typed fence evidence, and result classes; no conformance
+  bridge is claimed.
+
+The target evidence remains bounded to `MaxDepth = 8`, two affected
+regions, two stores, and sampled execution. It does not claim exhaustive
+arbitrary-width model checking, Rust implementation correctness, exact
+region/checksum mapping, typed fence admissibility, topology, persistence,
+operation-slot lifetime, frontend behavior, physical durability, or
+unbounded recovery progress.
+
 ## VE-001 focused evidence
 
 Source tests:
