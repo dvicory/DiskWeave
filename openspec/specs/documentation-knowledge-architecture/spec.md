@@ -9,7 +9,7 @@ Provide a durable, model-independent documentation/context subsystem in which ca
 ### Requirement: Canonical requirements are discovered without a duplicate semantic registry
 <!-- dwv:req req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry -->
 
-The documentation tool SHALL discover every current `openspec/specs/*/spec.md` automatically, extract each `Requirement` as a stable semantic unit, and expose an intrinsic requirement identity that is independent of roadmap nodes, verification identifiers, milestone numbers, historical planning paths, archive paths, line numbers, and generated state. A requirement identity SHALL remain stable when surrounding Markdown is reordered or reformatted, and a changed or missing identity SHALL produce an explicit diagnostic.
+The documentation tool SHALL discover every current `openspec/specs/*/spec.md` automatically, extract each `Requirement` as a stable semantic unit, and expose an intrinsic requirement identity that is independent of roadmap nodes, verification identifiers, numbered planning identifiers, historical source paths, archive paths, line numbers, and generated state. A requirement identity SHALL remain stable when surrounding Markdown is reordered or reformatted, and a changed or missing identity SHALL produce an explicit diagnostic.
 
 #### Scenario: A canonical requirement is added
 - **WHEN** a new correctness-sensitive `Requirement` appears in a current canonical spec without a projection or context disposition
@@ -20,13 +20,13 @@ The documentation tool SHALL discover every current `openspec/specs/*/spec.md` a
 - **THEN** requirement identities and dependent accepted prose remain unchanged.
 
 #### Scenario: A milestone contains requirement-like prose
-- **WHEN** a retained milestone contains headings, normative language, or current requirement identifiers
-- **THEN** canonical extraction ignores the milestone and derives current requirements only from `openspec/specs/*/spec.md`.
+- **WHEN** an explicitly selected historical source outside the current canonical source set contains headings, normative language, or current requirement identifiers
+- **THEN** canonical extraction ignores that record and derives current requirements only from `openspec/specs/*/spec.md`.
 
 ### Requirement: Architecture invariants have stable source-local identity and fingerprints
 <!-- dwv:req req.documentation-knowledge-architecture.architecture-invariants-have-stable-source-local-identity-and-fingerprints -->
 
-An architecture roadmap MAY identify only selected enduring constitutional or cross-cutting units under a heading whose title begins `Invariant:`. The first non-blank line after that heading SHALL be exactly one source-local `<!-- dwv:arch-invariant arch.<identity> -->` marker. The marked unit SHALL end before the next heading of equal or higher level. Architecture invariant identities SHALL be lowercase `arch.*` semantic identities, SHALL be distinct from every architecture document identity and `req.*` identity, and SHALL NOT derive identity from a document revision, section number, path, milestone, OpenSpec change, or generated state. Unmarked architecture prose SHALL remain ordinary roadmap material and SHALL NOT acquire implicit identity.
+An architecture roadmap MAY identify only selected enduring constitutional or cross-cutting units under a heading whose title begins `Invariant:`. The first non-blank line after that heading SHALL be exactly one source-local `<!-- dwv:arch-invariant arch.<identity> -->` marker. The marked unit SHALL end before the next heading of equal or higher level. Architecture invariant identities SHALL be lowercase `arch.*` semantic identities, SHALL be distinct from every architecture document identity and `req.*` identity, and SHALL NOT derive identity from a document revision, section number, path, numbered planning identifier, OpenSpec change, or generated state. Unmarked architecture prose SHALL remain ordinary roadmap material and SHALL NOT acquire implicit identity.
 
 The knowledge system SHALL compute a local semantic fingerprint from the complete normalized marked unit while excluding the identity marker, `constrains` markers, invariant-lineage markers, document metadata, lifecycle, path, and source locator. Markdown wrapping, whitespace, section movement, path movement, and lifecycle promotion SHALL preserve the fingerprint. A normative semantic change SHALL change it. The same enduring contract SHALL retain its invariant identity across revisions even when its source location or surrounding document structure changes. Malformed or duplicate invariant identities within one revision, or duplicate active invariant identities, SHALL fail with explicit bounded diagnostics. The accepted v0.8 roadmap SHALL remain valid without invariant markers.
 
@@ -115,7 +115,7 @@ Candidate comparison SHALL report unchanged, changed, added, and removed invaria
 <!-- dwv:requires req.documentation-knowledge-architecture.architecture-revision-lifecycle-is-explicit-and-isolated -->
 <!-- dwv:requires req.documentation-knowledge-architecture.architecture-constraints-propagate-review-without-owning-product-policy -->
 
-Ordinary `context` and `audit-context` packets SHALL include each complete active invariant unit that directly constrains any requirement in the packet exactly once, together with its identity, fingerprint, active document identity, source locator, and stored constraint edges. `inspect` and `ownership` SHALL expose the derived `constrained_by` identities for their selected current requirement. Current packets SHALL NOT concatenate a whole architecture document or include candidate, superseded, rationale-only, alternative, milestone, or unmarked architecture prose. Architecture-bearing current, candidate, and history packets SHALL enforce the existing source-unit and serialized context bounds and fail closed rather than truncate a required invariant unit.
+Ordinary `context` and `audit-context` packets SHALL include each complete active invariant unit that directly constrains any requirement in the packet exactly once, together with its identity, fingerprint, active document identity, source locator, and stored constraint edges. `inspect` and `ownership` SHALL expose the derived `constrained_by` identities for their selected current requirement. Current packets SHALL NOT concatenate a whole architecture document or include candidate, superseded, rationale-only, alternative, or unmarked architecture prose. Architecture-bearing current, candidate, and history packets SHALL enforce the existing source-unit and serialized context bounds and fail closed rather than truncate a required invariant unit.
 
 A marked invariant MAY declare zero or more source-local `<!-- dwv:arch-supersedes arch.<identity> -->` markers after its identity and relationship markers. The marker SHALL record replacement lineage only: it SHALL NOT assert semantic equivalence, become a requirement prerequisite, contribute to requirement effective fingerprints, or authorize product behavior. Multiple markers on one invariant SHALL represent a merge; the same predecessor named by several successor invariants SHALL represent a split. Lineage targets SHALL name a distinct invariant identity present in another revision of the same architecture series; duplicate, self, unknown, cross-series, or cyclic lineage SHALL fail. Candidate and history results SHALL expose stored `supersedes` and derived `superseded_by` views.
 
@@ -146,21 +146,26 @@ A marked invariant MAY declare zero or more source-local `<!-- dwv:arch-supersed
 ### Requirement: Historical architecture is opt-in only
 <!-- dwv:req req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only -->
 
-The normal source graph, freshness checks, projections, and agent context SHALL exclude `docs/architecture/archive/**`, `docs/milestones/**`, archived changes, and prior architecture revisions. Unmarked prose from the marked active roadmap SHALL remain excluded from those ordinary current-semantic surfaces. Complete explicitly marked active invariant units SHALL be the only roadmap exception and MAY participate in current fingerprints and bounded context solely through the architecture-invariant contracts; they SHALL NOT satisfy current requirement coverage. A history request SHALL include an explicit opt-in and SHALL label the selected material historical; historical or milestone text SHALL never resolve a current requirement conflict.
+The normal source graph, freshness checks, projections, and agent context SHALL exclude `docs/architecture/archive/**`, archived changes, and prior architecture revisions. Unmarked prose from the marked active roadmap SHALL remain excluded from those ordinary current-semantic surfaces. Complete explicitly marked active invariant units SHALL be the only roadmap exception and MAY participate in current fingerprints and bounded context solely through the architecture-invariant contracts; they SHALL NOT satisfy current requirement coverage. A history request SHALL include an explicit opt-in and SHALL label selected historical architecture or archived-change material historical; that material SHALL never resolve a current requirement conflict. The prohibited `docs/milestones/**` path SHALL NOT be treated as a historical source; if it is recreated, knowledge tooling SHALL fail closed with a bounded retired-path diagnostic before the path can contribute to extraction, references, affected-path analysis, readiness, direct knowledge output, or clean-room reconstruction.
 
 #### Scenario: A historical or planning record changes
-- **WHEN** a prior architecture, archived change, or milestone is edited while current canonical sources are unchanged
+- **WHEN** a prior architecture or archived change is edited while current canonical sources are unchanged
 - **THEN** normal extraction, `docs check`, projections, relationship review, and current requirement context remain unchanged.
 
 #### Scenario: An agent requests archaeology
-- **WHEN** a query explicitly requests a historical architecture, archived change, or milestone
+- **WHEN** a query explicitly requests a historical architecture or archived change
 - **THEN** the packet contains only the requested bounded historical material, marks it non-authoritative, and does not use it to satisfy current coverage.
+
+#### Scenario: Retired planning path is recreated
+- **WHEN** `docs/milestones/**` is recreated in the current tree
+- **THEN** knowledge tooling SHALL fail closed with a bounded retired-path diagnostic before the path can contribute to extraction, reference scanning, affected-path analysis, readiness, direct knowledge output, or clean-room reconstruction.
+
 
 ### Requirement: Active roadmap is explicit and non-authoritative
 <!-- dwv:req req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative -->
 <!-- dwv:requires req.documentation-knowledge-architecture.historical-architecture-is-opt-in-only -->
 
-The documentation workflow SHALL deterministically discover exactly one active architecture roadmap from one explicit repository marker and matching lifecycle metadata. The selected roadmap's unmarked prose SHALL remain excluded from ordinary current semantic discovery, projections, freshness checks, and requirement context. Complete explicitly marked active invariant units MAY supply architecture-level constraints to canonical requirements and appear in bounded current context only through the architecture-invariant contracts; they SHALL NOT become detailed product-policy owners, silently override a conflicting current OpenSpec, or satisfy current requirement coverage. A deliberate milestone-planning request MAY select the whole marked roadmap, but the resulting material SHALL be identified as non-authoritative design direction. A detected disagreement between the roadmap and current canonical requirements SHALL be reported for explicit reconciliation and SHALL NOT be resolved by silently preferring either source.
+The documentation workflow SHALL deterministically discover exactly one active architecture roadmap from one explicit repository marker and matching lifecycle metadata. The selected roadmap's unmarked prose SHALL remain excluded from ordinary current semantic discovery, projections, freshness checks, and requirement context. Complete explicitly marked active invariant units MAY supply architecture-level constraints to canonical requirements and appear in bounded current context only through the architecture-invariant contracts; they SHALL NOT become detailed product-policy owners, silently override a conflicting current OpenSpec, or satisfy current requirement coverage. A deliberate roadmap-context request MAY select the whole marked roadmap, but the resulting material SHALL be identified as non-authoritative design direction. A detected disagreement between the roadmap and current canonical requirements SHALL be reported for explicit reconciliation and SHALL NOT be resolved by silently preferring either source.
 
 #### Scenario: Exactly one active roadmap is marked
 - **WHEN** documentation readiness scans the maintained repository
@@ -171,7 +176,7 @@ The documentation workflow SHALL deterministically discover exactly one active a
 - **THEN** documentation readiness fails with the marker count and every marked path rather than choosing a roadmap implicitly.
 
 #### Scenario: Milestone planning deliberately requests roadmap context
-- **WHEN** milestone planning selects the marked active roadmap after inspecting current canonical requirements
+- **WHEN** a caller requests the marked active roadmap after inspecting current canonical requirements
 - **THEN** the whole roadmap is available as non-authoritative direction while its unmarked prose remains outside ordinary requirement coverage and context.
 
 #### Scenario: Current requirements and roadmap direction disagree
@@ -279,7 +284,7 @@ The ordinary context scope SHALL remain directed and SHALL NOT traverse unrelate
 
 Canonical extraction SHALL enforce the source-unit byte bound before projection. `inspect` therefore returns its one complete unit or fails source extraction without also applying the combined context-packet byte bound. Context-bearing packet operations SHALL fail closed when their complete serialized result exceeds the packet byte bound. Bounded reference-category truncation SHALL report omitted counts by selected requirement ID and category. When an oversized multi-ID ordinary context packet fails the bound, the failure SHALL suggest one singleton context request per selected requirement ID only if every complete singleton packet has been proven to fit; those requests MAY repeat canonical units shared by their directed scopes. If any selected singleton packet or the one required audit component is oversized, the result SHALL state that the scope cannot be split without omission.
 
-Source locators SHALL contain the exact current canonical path and requirement line range while line movement remains independent of intrinsic requirement identity and semantic fingerprints. Ordinary current requirement packets SHALL exclude unmarked roadmap prose, every candidate or superseded architecture unit, and milestone prose. They MAY include complete marked active architecture invariant units only when the architecture-invariant contracts select them for a requirement already in the packet. The commands SHALL NOT concatenate whole specifications or architecture documents, retain a revision-diff or ownership registry, infer prose validity or semantic coherence, or rely on generated human prose, historical planning, or milestone text when canonical semantics are available.
+Source locators SHALL contain the exact current canonical path and requirement line range while line movement remains independent of intrinsic requirement identity and semantic fingerprints. Ordinary current requirement packets SHALL exclude unmarked roadmap prose and every candidate or superseded architecture unit. They MAY include complete marked active architecture invariant units only when the architecture-invariant contracts select them for a requirement already in the packet. The commands SHALL NOT concatenate whole specifications or architecture documents, retain a revision-diff or ownership registry, infer prose validity or semantic coherence, or rely on generated human prose or historical source prose when canonical semantics are available.
 
 #### Scenario: One exact canonical unit is inspected
 
@@ -353,8 +358,8 @@ Source locators SHALL contain the exact current canonical path and requirement l
 
 #### Scenario: A milestone references the selected requirement
 
-- **WHEN** a milestone contains a selected requirement ID or matching normative prose
-- **THEN** current inspect, context, ownership, audit-context, affected-path analysis, and review freshness remain unchanged
+- **WHEN** an explicitly selected historical source outside the current input set contains a selected requirement ID or matching normative prose
+- **THEN** current inspect, context, ownership, audit-context, affected-path analysis, and review freshness remain unchanged.
 
 ### Requirement: Agent knowledge workflows use sufficient fixed-purpose retrieval
 <!-- dwv:req req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path -->
@@ -394,17 +399,17 @@ Deterministic checks SHALL validate identity, coverage, stale state, provenance,
 ### Requirement: Reconstruction and historical isolation are inspectable
 <!-- dwv:req req.documentation-knowledge-architecture.reconstruction-and-historical-isolation-are-inspectable -->
 
-The tool SHALL provide a clean-room check that removes regenerable state, generated indexes, candidate and archived architecture roadmaps, milestones, and archived changes from a temporary copy; retains only the selected active architecture roadmap as the source of any explicitly marked current invariant units; reconstructs current projections from permanent current artifacts; and verifies equivalent semantic output. Completion evidence SHALL show that current generation and requirement context do not depend on any prior documentation implementation, candidate or historical planning artifact, milestone, unmarked roadmap prose as semantic input, archived change, or chat history.
+The tool SHALL provide a clean-room check that removes regenerable state, generated indexes, candidate and archived architecture roadmaps, and archived changes from a temporary copy; retains only the selected active architecture roadmap as the source of any explicitly marked current invariant units; reconstructs current projections from permanent current artifacts; and verifies equivalent semantic output. Completion evidence SHALL show that current generation and requirement context do not depend on any prior documentation implementation, candidate or archived source, unmarked roadmap prose as semantic input, or chat history.
 
 #### Scenario: Regenerable and historical state is deleted
-- **WHEN** `target/dwv-docs`, generated projection caches, candidate and archived architecture roadmaps, milestones, and archived changes are absent in a temporary copy that retains only the selected active roadmap
-- **THEN** the documented extraction, planning, build, check, and reconstruction commands recreate current generated state and produce equivalent current facts and accepted pages from canonical requirements and any marked active invariant units.
+- **WHEN** `target/dwv-docs`, generated projection caches, candidate and archived architecture roadmaps, and archived changes are absent in a temporary copy that retains only the selected active roadmap
+- **THEN** the documented extraction, planning, build, check, and reconstruction commands recreate current generated state and produce equivalent current facts and accepted pages from canonical requirements and any marked active architecture invariant units.
 
 ### Requirement: Canonical semantic relationships are colocated and derived
 <!-- dwv:req req.documentation-knowledge-architecture.canonical-semantic-relationships-are-colocated-and-derived -->
 <!-- dwv:requires req.documentation-knowledge-architecture.canonical-requirements-are-discovered-without-a-duplicate-semantic-registry -->
 
-Current canonical requirements SHALL declare a forward `requires` relationship for every consequential independently owned semantic prerequisite needed to interpret or implement the local requirement, and SHALL declare a forward `refines` relationship when the local requirement is a narrower specialization or adapter realization of another requirement's detailed operational policy. Requirements with no such consequential relationship SHALL declare none. `requires` means the source requirement's own semantics depend on an independently owned semantic fact. `refines` means the target requirement owns the same underlying detailed operational policy and the source defines a narrower specialization or adapter realization of that policy. Composition alone SHALL NOT create `refines`; a composer SHALL use `requires` for consequential prerequisites and SHALL NOT restate their predicates. Forward relationship markers in current canonical specifications SHALL be the only authority for requirement prerequisite and refinement edges; roadmap, milestone, handoff, archive, implementation, test, and generated prose SHALL NOT contribute `requires` or `refines` edges. A separately governed active architecture `constrains` edge SHALL remain an architecture-to-requirement review input and SHALL NOT become a requirement prerequisite or refinement edge.
+Current canonical requirements SHALL declare a forward `requires` relationship for every consequential independently owned semantic prerequisite needed to interpret or implement the local requirement, and SHALL declare a forward `refines` relationship when the local requirement is a narrower specialization or adapter realization of another requirement's detailed operational policy. Requirements with no such consequential relationship SHALL declare none. `requires` means the source requirement's own semantics depend on an independently owned semantic fact. `refines` means the target requirement owns the same underlying detailed operational policy and the source defines a narrower specialization or adapter realization of that policy. Composition alone SHALL NOT create `refines`; a composer SHALL use `requires` for consequential prerequisites and SHALL NOT restate their predicates. Forward relationship markers in current canonical specifications SHALL be the only authority for requirement prerequisite and refinement edges; roadmap, handoff, archive, implementation, test, and generated prose SHALL NOT contribute `requires` or `refines` edges. A separately governed active architecture `constrains` edge SHALL remain an architecture-to-requirement review input and SHALL NOT become a requirement prerequisite or refinement edge.
 
 Semantic reconciliation SHALL determine and author the consequential requirement relationships required by the local semantics. Deterministic tooling SHALL validate the authored representation and SHALL NOT infer a missing requirement relationship from arbitrary English prose.
 
@@ -428,7 +433,7 @@ Each requirement SHALL have a local semantic fingerprint that is a formatting-st
 
 #### Scenario: Authored relationships are extracted
 - **WHEN** required forward `requires` or `refines` markers are present and structurally valid in current canonical specifications
-- **THEN** canonical requirement extraction produces stable typed forward edges, derived backlinks, capability aggregation, and owner-before-dependent reading order without consulting roadmap, milestone, handoff, archive, implementation, test, or generated prose.
+- **THEN** canonical requirement extraction produces stable typed forward edges, derived backlinks, capability aggregation, and owner-before-dependent reading order without consulting roadmap, handoff, archive, implementation, test, or generated prose.
 
 #### Scenario: Relationship markers are invalid
 - **WHEN** a requirement relationship target is unknown or non-current, a source targets itself, a pair is duplicated or assigned both kinds, markers are misplaced, or the requirement graph contains a cycle
@@ -436,7 +441,7 @@ Each requirement SHALL have a local semantic fingerprint that is a formatting-st
 
 #### Scenario: An owner changes
 - **WHEN** a requirement's local semantics or outgoing requirement relationships change, or one of its active architecture constraint inputs changes
-- **THEN** its effective semantic/review fingerprint and every transitive requirement dependent effective fingerprint change, while unrelated components remain stable, and readiness fails until every stale requirement is individually reviewed.
+- **THEN** its effective semantic/review fingerprint and every transitive requirement dependent effective fingerprint change, while unrelated requirements remain unchanged, and readiness fails until every stale requirement is individually reviewed.
 
 #### Scenario: Review metadata or formatting changes
 - **WHEN** only Markdown formatting, review outcome, or review reason changes

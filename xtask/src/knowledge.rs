@@ -3899,9 +3899,27 @@ mod tests {
                     Some("arch.diskweave.v0.6")
                 ),
                 ("arch.diskweave.v0.8", "active", Some("arch.diskweave.v0.7")),
+                (
+                    "arch.diskweave.v0.9",
+                    "candidate",
+                    Some("arch.diskweave.v0.9-beta3")
+                ),
+                (
+                    "arch.diskweave.v0.9-beta2",
+                    "superseded",
+                    Some("arch.diskweave.v0.8")
+                ),
+                (
+                    "arch.diskweave.v0.9-beta3",
+                    "superseded",
+                    Some("arch.diskweave.v0.9-beta2")
+                ),
             ]
         );
-        assert!(catalog.invariants.is_empty());
+        assert!(catalog
+            .invariants
+            .iter()
+            .any(|invariant| invariant.document_id == "arch.diskweave.v0.9"));
         let history = architecture_history(&app, "arch.diskweave.v0.7".to_owned()).unwrap();
         assert_eq!(history["authority"], "historical");
         assert_eq!(history["document"]["status"], "superseded");
@@ -3916,9 +3934,9 @@ mod tests {
             .unwrap()
             .as_nanos();
         let copy = std::env::temp_dir().join(format!("dwv-history-isolation-{nonce}"));
-        fs::create_dir_all(copy.join("openspec/specs/cap")).unwrap();
         fs::create_dir_all(copy.join("docs/architecture/archive")).unwrap();
         fs::create_dir_all(copy.join("docs")).unwrap();
+        fs::create_dir_all(copy.join("openspec/specs/cap")).unwrap();
         fs::write(
             copy.join("openspec/specs/cap/spec.md"),
             requirement("The system SHALL remain stable."),
