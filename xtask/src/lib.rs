@@ -286,6 +286,7 @@ const CLEAN_ROOM_INPUTS: [&str; 15] = [
 ];
 
 fn clean_room(app: &App) -> Result<Value, AppError> {
+    knowledge::retired_path_preflight(app)?;
     knowledge::export(app)?;
     let expected = fs::read(app.root.join("target/dwv-docs/knowledge/objects.json"))
         .map_err(|error| AppError::new("clean_room_read_failed", error.to_string()))?;
@@ -336,7 +337,7 @@ fn clean_room(app: &App) -> Result<Value, AppError> {
             "equivalent": true,
             "objects_digest": digest_bytes(&actual),
             "retained": ["selected active architecture roadmap"],
-            "excluded": ["candidate and superseded architecture roadmaps", "archived changes", "milestones", "generated output", "global Python packages"]
+            "excluded": ["candidate and superseded architecture roadmaps", "archived changes", "generated output", "global Python packages"]
         }))
     })();
     let cleanup = fs::remove_dir_all(&root);

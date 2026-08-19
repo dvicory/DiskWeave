@@ -2,7 +2,7 @@ schema: spec-driven
 
 rules:
   proposal:
-    - Use `os-NNN-*` only for the matching `OS-NNN` node in the active architecture roadmap, with exactly one `<!-- dwv:roadmap-node OS-NNN -->` marker; milestone numbers never allocate OpenSpec IDs.
+    - Use `os-NNN-*` only for the matching `OS-NNN` node in the active architecture roadmap, with exactly one `<!-- dwv:roadmap-node OS-NNN -->` marker; numbered planning documents never allocate OpenSpec IDs.
   specs:
     - Preserve stable `req.*` identities when their semantics are unchanged.
     - When adding behavior, prefer one behavior per requirement; do not compress distinct rules into one sentence.

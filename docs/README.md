@@ -37,4 +37,4 @@ cargo xtask docs serve
 - Toolchain pins: `mise.toml`
 - Reconstructible output: `target/dwv-docs/` (ignored)
 
-Normal discovery excludes active and archived architecture roadmaps, archived changes, rendered output, and historical planning material. Historical material is consulted only for an explicit archaeology task.
+Normal discovery excludes active and archived architecture roadmaps, archived changes, rendered output, and historical source material. Historical sources are consulted only for an explicit archaeology task.

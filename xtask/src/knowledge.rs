@@ -26,6 +26,7 @@ const OUTCOMES: [&str; 4] = ["reviewed", "reference-only", "deferred", "supersed
 
 const ACTIVE_ROADMAP_MARKER: &str = "<!-- dwv:active-architecture-roadmap -->";
 const MAX_AUTHORITY_FILE_BYTES: usize = 1024 * 1024;
+const RETIRED_PATH: &str = "docs/milestones";
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub(super) struct RequirementObject {
@@ -165,6 +166,7 @@ pub(super) fn objects(app: &App) -> Result<Vec<RequirementObject>, AppError> {
 }
 
 fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
+    retired_path_preflight(app)?;
     let root = app.root.join("openspec/specs");
     let mut dirs = entries(&root, "spec_discovery_failed")?
         .into_iter()
@@ -308,6 +310,7 @@ fn knowledge_model(app: &App) -> Result<KnowledgeModel, AppError> {
 }
 
 fn architecture_catalog(app: &App) -> Result<ArchitectureCatalog, AppError> {
+    retired_path_preflight(app)?;
     let root = app.root.join("docs/architecture");
     let mut files = Vec::new();
     collect_markdown_files(&app.root, &root, &mut files)?;
@@ -2452,6 +2455,7 @@ fn relationship_ids(relative: &str, text: &str) -> BTreeSet<String> {
 }
 
 fn validate_affected_path(app: &App, relative: &str) -> Result<(), AppError> {
+    reject_retired_path(relative)?;
     if excluded(relative) {
         return Err(AppError::new("affected_path_excluded", relative));
     }
@@ -2482,6 +2486,7 @@ fn enforce_context_bound(app: &App, code: &str, value: &Value) -> Result<(), App
 }
 /// dwv:req req.documentation-knowledge-architecture.change-boundary-impact-is-deterministic-and-bounded
 pub(super) fn change_impact(app: &App, requested_base: Option<&str>) -> Result<Value, AppError> {
+    retired_path_preflight(app)?;
     let Some(provider) = RevisionControl::detect(&app.root) else {
         return Ok(json!({
             "schema": "dwv.knowledge.change-impact.v1",
@@ -2805,14 +2810,66 @@ fn validate_curriculum(app: &App) -> Result<(), AppError> {
     Ok(())
 }
 
+fn is_retired_path(path: &str) -> bool {
+    path == RETIRED_PATH || path.starts_with("docs/milestones/")
+}
+
+fn retired_path_diagnostic(relative: &str) -> Value {
+    let fragment = if relative == RETIRED_PATH {
+        format!("{RETIRED_PATH}/**")
+    } else {
+        relative.to_owned()
+    };
+    json!({
+        "gate": "retired-planning-identifier",
+        "kind": "retired-planning-path",
+        "path": relative,
+        "source": "path",
+        "line": 0,
+        "column": 1,
+        "fragment": fragment,
+        "next_action": "remove docs/milestones/**; use Beads or current product terminology",
+    })
+}
+
+fn retired_path_error(relative: &str) -> AppError {
+    AppError::new(
+        "retired_planning_identifier",
+        "docs/milestones/** is a retired path and is not a current knowledge source",
+    )
+    .details(json!({
+        "schema": PLANNING_SCAN_SCHEMA,
+        "forbidden_project_planning_uses": 1,
+        "ordinary_goal_language_allowed": true,
+        "diagnostics": [retired_path_diagnostic(relative)],
+    }))
+}
+
+fn reject_retired_path(relative: &str) -> Result<(), AppError> {
+    if is_retired_path(relative) {
+        Err(retired_path_error(relative))
+    } else {
+        Ok(())
+    }
+}
+
+pub(super) fn retired_path_preflight(app: &App) -> Result<(), AppError> {
+    match fs::symlink_metadata(app.root.join(RETIRED_PATH)) {
+        Ok(_) => Err(retired_path_error(RETIRED_PATH)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(AppError::new(
+            "retired_path_scan_failed",
+            format!("{RETIRED_PATH}: {error}"),
+        )),
+    }
+}
+
 fn collect_markdown_files(
     root: &Path,
     path: &Path,
     files: &mut Vec<std::path::PathBuf>,
 ) -> Result<(), AppError> {
-    if rel(root, path) == "docs/milestones" {
-        return Ok(());
-    }
+    reject_retired_path(&rel(root, path))?;
     let mut children = entries(path, "roadmap_scan_failed")?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
@@ -2917,6 +2974,7 @@ fn proposal_roadmap_nodes(text: &str) -> Vec<String> {
 
 /// dwv:req req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative
 fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
+    retired_path_preflight(app)?;
     let docs = app.root.join("docs");
     let mut markdown = Vec::new();
     if docs.is_dir() {
@@ -3031,6 +3089,9 @@ fn planning_scan_paths(app: &App) -> Result<Vec<String>, AppError> {
     };
     paths.sort();
     paths.dedup();
+    for relative in &paths {
+        reject_retired_path(relative)?;
+    }
     if paths.len() > app.bounds.max_planning_scan_paths {
         return Err(AppError::new(
             "planning_scan_path_bound_exceeded",
@@ -3049,6 +3110,7 @@ fn collect_planning_scan_paths(
     path: &Path,
     paths: &mut Vec<String>,
 ) -> Result<(), AppError> {
+    reject_retired_path(&rel(root, path))?;
     let mut children = entries(path, "planning_scan_failed")?;
     children.sort_by_key(|entry| entry.file_name());
     for child in children {
@@ -3153,6 +3215,7 @@ fn retired_planning_match(text: &str) -> Option<(&'static str, usize, usize)> {
 }
 
 fn retired_planning_diagnostics(app: &App) -> Result<Vec<Value>, AppError> {
+    retired_path_preflight(app)?;
     let mut diagnostics = Vec::new();
     for relative in planning_scan_paths(app)? {
         if let Some((kind, start, end)) = retired_planning_match(&relative) {
@@ -3164,7 +3227,7 @@ fn retired_planning_diagnostics(app: &App) -> Result<Vec<Value>, AppError> {
                 "line": 0,
                 "column": start + 1,
                 "fragment": &relative[start..end],
-                "next_action": "replace the retired project-planning identity with milestone or functional terminology",
+                "next_action": "remove docs/milestones/**; use Beads or current product terminology",
             }));
         }
         let path = safe_join(&app.root, &relative)?;
@@ -3194,7 +3257,7 @@ fn retired_planning_diagnostics(app: &App) -> Result<Vec<Value>, AppError> {
                     "line": line + 1,
                     "column": start + 1,
                     "fragment": &content[start..end],
-                    "next_action": "replace the retired project-planning identity with milestone or functional terminology",
+                    "next_action": "remove docs/milestones/**; use Beads or current product terminology",
                 }));
             }
         }
@@ -3209,6 +3272,7 @@ fn retired_planning_diagnostics(app: &App) -> Result<Vec<Value>, AppError> {
 }
 
 pub(super) fn planning_nomenclature(app: &App) -> Result<Value, AppError> {
+    retired_path_preflight(app)?;
     let diagnostics = retired_planning_diagnostics(app)?;
     let result = json!({
         "schema": PLANNING_SCAN_SCHEMA,
@@ -3228,6 +3292,7 @@ pub(super) fn planning_nomenclature(app: &App) -> Result<Value, AppError> {
 
 /// dwv:req req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority
 pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
+    retired_path_preflight(app)?;
     validate_roadmap_identifiers(app)?;
     validate_curriculum(app)?;
     let state: ReviewedState = read_toml(&app.root, REVIEWED_PATH)?;
@@ -3391,6 +3456,7 @@ pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Resul
 }
 
 fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
+    retired_path_preflight(app)?;
     let mut refs = Vec::new();
     let architecture_paths = architecture_catalog(app)?
         .documents
@@ -3437,6 +3503,7 @@ fn scan_tree(
     refs: &mut Vec<ScanRef>,
 ) -> Result<(), AppError> {
     let relative = rel(root, path);
+    reject_retired_path(&relative)?;
     if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
@@ -3477,6 +3544,7 @@ fn scan_file(
     refs: &mut Vec<ScanRef>,
 ) -> Result<(), AppError> {
     let relative = rel(root, path);
+    reject_retired_path(&relative)?;
     if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
@@ -3533,7 +3601,6 @@ fn rel(root: &Path, path: &Path) -> String {
 fn excluded(path: &str) -> bool {
     (path.starts_with("docs/architecture/diskweave-architecture-roadmap-v")
         && path.ends_with(".md"))
-        || (path == "docs/milestones" || path.starts_with("docs/milestones/"))
         || path.split('/').any(|part| {
             part.is_empty()
                 || part.starts_with('.')
@@ -3785,6 +3852,23 @@ mod tests {
                 )
             })
             .collect()
+    }
+    fn assert_retired_path_error<T>(result: Result<T, AppError>) {
+        let error = match result {
+            Ok(_) => panic!("expected retired-path error"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "retired_planning_identifier");
+        let details = error.details.expect("retired-path details");
+        let diagnostics = details["diagnostics"]
+            .as_array()
+            .expect("retired-path diagnostics");
+        assert_eq!(diagnostics.len(), 1);
+        assert_eq!(diagnostics[0]["kind"], "retired-planning-path");
+        assert_eq!(
+            diagnostics[0]["next_action"],
+            "remove docs/milestones/**; use Beads or current product terminology"
+        );
     }
 
     #[test]
@@ -4566,7 +4650,7 @@ mod tests {
         }
     }
     #[test]
-    fn references_exclude_history_hidden_and_milestones() {
+    fn references_exclude_history_and_hidden_sources() {
         assert!(excluded("docs/handoffs/old.md"));
         assert!(excluded(
             "docs/architecture/diskweave-architecture-roadmap-v0.8.md"
@@ -4578,112 +4662,48 @@ mod tests {
             "docs/architecture/derived-documentation-system.md"
         ));
         assert!(excluded("target/generated.md"));
-        assert!(excluded("docs/milestones/OS-001.md"));
-        assert!(!excluded("docs/verification/current.md"));
+        assert!(!excluded("docs/milestones/OS-001.md"));
         assert!(!is_impact_candidate("docs/milestones/OS-001.md"));
+        assert!(!excluded("docs/verification/current.md"));
     }
+
     #[test]
-    fn milestone_markdown_cannot_enter_reference_context() {
-        let (root, app) = fixture("milestone-context");
-        fs::write(
-            root.join("openspec/specs/cap/spec.md"),
-            requirement("The system SHALL remain stable."),
-        )
-        .unwrap();
-        fs::create_dir_all(root.join("docs/milestones")).unwrap();
-        let milestone = [
-            "<!-- dwv:req req.cap.one -->\n/// dwv:",
-            "req req.cap.one\nverification req.cap.one\n",
-        ]
-        .concat();
-        fs::write(root.join("docs/milestones/OS-001.md"), milestone).unwrap();
+    fn recreated_retired_path_fails_closed_before_knowledge_consumers() {
+        let (root, app) = fixture("retired-path-boundary");
+        let path = root.join(RETIRED_PATH).join("m11.md");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, [0xff, 0xfe]).unwrap();
 
-        let references = scan_references(&app).unwrap();
-        assert!(
-            references
-                .iter()
-                .all(|reference| !reference.path.starts_with("docs/milestones/"))
-        );
-        write_reviewed(&root, &objects(&app).unwrap());
-        let packet = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
-        assert!(
-            packet["references"]["implementation"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        assert!(
-            packet["references"]["documentation"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn milestone_edits_do_not_change_current_semantic_outputs() {
-        let (root, app) = fixture("milestone-semantic-isolation");
-        fs::write(
-            root.join("openspec/specs/cap/spec.md"),
-            requirement("The system SHALL remain stable."),
-        )
-        .unwrap();
-        write_roadmap(&root);
-        write_reviewed(&root, &objects(&app).unwrap());
-        fs::create_dir_all(root.join("docs/milestones")).unwrap();
-        let path = root.join("docs/milestones/m9.md");
-        fs::write(&path, "# Milestone 9\n\nreq.cap.one\n").unwrap();
-
-        let before_objects = objects(&app).unwrap();
-        let before_references = scan_references(&app).unwrap();
-        let before_context = context(&app, vec!["req.cap.one".to_owned()]).unwrap();
-        let before_ownership = ownership(&app, "req.cap.one".to_owned()).unwrap();
-        let before_readiness = readiness(&app).unwrap();
-
-        fs::write(
-            &path,
-            "# Milestone 9\n\nChanged historical prose for req.cap.one.\n",
-        )
-        .unwrap();
-
-        assert_eq!(objects(&app).unwrap(), before_objects);
-        assert_eq!(scan_references(&app).unwrap(), before_references);
-        assert_eq!(
-            context(&app, vec!["req.cap.one".to_owned()]).unwrap(),
-            before_context
-        );
-        assert_eq!(
-            ownership(&app, "req.cap.one".to_owned()).unwrap(),
-            before_ownership
-        );
-        assert_eq!(readiness(&app).unwrap(), before_readiness);
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn milestone_paths_are_rejected_as_explicit_affected_inputs() {
-        let (root, app) = fixture("milestone-affected");
-        fs::create_dir_all(root.join("docs/milestones")).unwrap();
-        fs::write(root.join("docs/milestones/OS-001.md"), "req.cap.one\n").unwrap();
-        fs::write(
-            root.join(REVIEWED_PATH),
-            toml::to_string(&ReviewedState {
-                schema: REVIEWED_SCHEMA.to_owned(),
-                local_fingerprints: BTreeMap::new(),
-                effective_fingerprints: BTreeMap::new(),
-                outcomes: BTreeMap::new(),
-                reasons: BTreeMap::new(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-
-        let error = affected(
+        assert_retired_path_error(retired_path_preflight(&app));
+        assert_retired_path_error(objects(&app));
+        assert_retired_path_error(export(&app));
+        assert_retired_path_error(inspect(&app, "req.cap.one".to_owned()));
+        assert_retired_path_error(context(&app, vec!["req.cap.one".to_owned()]));
+        assert_retired_path_error(audit_context(&app, "req.cap.one".to_owned()));
+        assert_retired_path_error(ownership(&app, "req.cap.one".to_owned()));
+        assert_retired_path_error(affected(
             &app,
             Vec::new(),
-            vec!["docs/milestones/OS-001.md".to_owned()],
-        )
-        .unwrap_err();
-        assert_eq!(error.code, "affected_path_excluded");
+            vec!["docs/milestones/m11.md".to_owned()],
+        ));
+        assert_retired_path_error(doctor(
+            &app,
+            vec!["docs/milestones/m11.md".to_owned()],
+        ));
+        assert_retired_path_error(change_impact(&app, None));
+        assert_retired_path_error(validate_roadmap_identifiers(&app));
+        assert_retired_path_error(architecture_catalog(&app));
+        assert_retired_path_error(scan_references(&app));
+        assert_retired_path_error(readiness(&app));
+        assert_retired_path_error(planning_nomenclature(&app));
+        assert_retired_path_error(crate::clean_room(&app));
+
+        let mut markdown = Vec::new();
+        assert_retired_path_error(collect_markdown_files(
+            &root,
+            &root.join(RETIRED_PATH),
+            &mut markdown,
+        ));
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
@@ -5812,19 +5832,6 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
 
-    #[test]
-    fn roadmap_validator_ignores_milestone_markers() {
-        let (root, app) = roadmap_fixture("roadmap-milestone-isolation");
-        fs::create_dir_all(root.join("docs/milestones")).unwrap();
-        fs::write(
-            root.join("docs/milestones/m9.md"),
-            "<!-- dwv:active-architecture-roadmap -->\nreq.cap.fake\n",
-        )
-        .unwrap();
-
-        validate_roadmap_identifiers(&app).unwrap();
-        fs::remove_dir_all(root).unwrap();
-    }
 
     #[test]
     fn roadmap_validator_accepts_archived_change_missing_from_roadmap() {

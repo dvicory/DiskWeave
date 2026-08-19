@@ -14,7 +14,7 @@ The numbered files have been removed. The canonical documentation-knowledge requ
 - Make numbered planning retirement explicit in the canonical documentation contract.
 - Remove special knowledge behavior whose only purpose was to treat `docs/milestones/**` as an excluded historical source.
 - Preserve general historical and generated-state isolation.
-- Fail closed if `docs/milestones/**` is recreated, with a diagnostic that directs work to Beads or a functional planning artifact, before any normal knowledge output accepts it.
+- Fail closed if `docs/milestones/**` is recreated, with a diagnostic that directs work to Beads or current product terminology, before any normal knowledge output accepts it.
 - Keep actual maintained historical source classes concrete, opt-in, and non-authoritative; do not invent an abstract current source class such as "retired planning material".
 - Keep architecture-roadmap selection and non-authoritative candidate/history behavior intact.
 
@@ -27,7 +27,7 @@ The numbered files have been removed. The canonical documentation-knowledge requ
 
 ## Decisions
 
-1. **Use one shared retired-path behavior and diagnostic boundary.** Reuse the existing retired-planning classification and diagnostic contract for `docs/milestones/` and its descendants. Prefer a bounded retired-path predicate/preflight that each relevant knowledge consumer invokes before reading or accepting the path; `planning_nomenclature` SHALL use that same boundary. The invariant is one behavior/diagnostic boundary, not one complete repository-scan invocation. Readiness and other consumers SHALL surface the existing `retired_planning_identifier` error with the `retired-planning-path` diagnostic, directing the maintainer to remove the path and use Beads or a functional planning artifact.
+1. **Use one shared retired-path behavior and diagnostic boundary.** Reuse the existing retired-planning classification and diagnostic contract for `docs/milestones/` and its descendants. Prefer a bounded retired-path predicate/preflight that each relevant knowledge consumer invokes before reading or accepting the path; `planning_nomenclature` SHALL use that same boundary. The invariant is one behavior/diagnostic boundary, not one complete repository-scan invocation. Readiness and other consumers SHALL surface the existing `retired_planning_identifier` error with the `retired-planning-path` diagnostic, directing the maintainer to remove the path and use Beads or current product terminology.
 
    The implementation must trace and exercise every current entry point that can collect Markdown, scan references, validate affected paths, calculate readiness, or reconstruct a clean room. None may read, accept, or silently exclude a recreated `docs/milestones/**` path before the fail-closed diagnostic.
 
