@@ -451,3 +451,19 @@ Each requirement SHALL have a local semantic fingerprint that is a formatting-st
 - **WHEN** only Markdown formatting, review outcome, or review reason changes
 - **THEN** local and dependent effective semantic/review fingerprints remain unchanged.
 
+### Requirement: Concepts and Terminology is maintained incrementally
+<!-- dwv:req req.documentation-knowledge-architecture.concepts-and-terminology-is-maintained-incrementally -->
+<!-- dwv:requires req.documentation-knowledge-architecture.provenance-is-claim-and-fragment-level -->
+<!-- dwv:refines req.documentation-knowledge-architecture.preservation-first-updates-are-truly-narrow -->
+
+Concepts and Terminology SHALL be maintained as checked-in explanatory Markdown with provenance to the current semantic owners of each correctness-sensitive entry. A changed owner or relationship SHALL trigger targeted review of affected entries through the existing change-impact and provenance mechanisms. Unaffected entries SHALL remain unchanged rather than being regenerated or rewritten. Concepts and Terminology SHALL explain current semantics and important non-implications without becoming a duplicate semantic registry or semantic authority.
+
+#### Scenario: One concept owner changes
+
+- **WHEN** change-impact identifies a semantic owner change for one Concepts and Terminology entry
+- **THEN** that entry is reviewed against its current sources while unrelated entries remain unchanged
+
+#### Scenario: A concept has conflicting or missing authority
+
+- **WHEN** the current semantic sources do not support one unambiguous explanatory claim
+- **THEN** the entry records the gap or omits the unsupported claim instead of generating an inferred definition

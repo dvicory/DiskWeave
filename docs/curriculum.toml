@@ -259,6 +259,62 @@ scenarios = []
 non_claims = ["Portable file-backed behavior is not Linux, macOS bridge, or hardware certification."]
 
 
+[[entries]]
+id = "guide.concepts-and-terminology"
+title = "Concepts and Terminology"
+path = "guide/05-concepts-and-terminology.md"
+order = 50
+projection = "diskweave_guide"
+audience = "contributor"
+question = "Which DiskWeave concepts must remain distinct, and who owns each decision?"
+starting_knowledge = ["Canonical requirements own product semantics."]
+prerequisites = ["guide.boundary-and-demo"]
+misconceptions = ["Guide prose is semantic authority", "A durable write is recovery CLEAN", "An unknown outcome is a known failure"]
+introduces = ["write-recovery record", "data/parity write", "persistence evidence", "write lifecycle", "range ownership"]
+defers = ["future product concepts without current requirements"]
+requirements = [
+  "req.documentation-knowledge-architecture.concepts-and-terminology-is-maintained-incrementally",
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence"
+]
+scenarios = []
+teaching_devices = ["distinction table", "owner and non-claim ledger"]
+
+[[entries.sections]]
+heading = "Write facts are not one fact"
+focus = "Separate submitted, completed, durable, recovery CLEAN, and released states for one protected write."
+must_answer = ["What does each fact establish?", "Which owner permits the next transition?"]
+requirements = [
+  "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
+]
+scenarios = []
+non_claims = ["The Guide does not define a new write protocol."]
+
+[[entries.sections]]
+heading = "Evidence has scope"
+focus = "Tie persistence evidence to stores, incarnations, ordering, watermarks, ranges, topology, capabilities, and generations."
+must_answer = ["Why is generic durability insufficient?", "What makes evidence current for a claim?"]
+requirements = [
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
+  "req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence"
+]
+scenarios = []
+non_claims = ["A model label or I/O completion does not prove production persistence."]
+
+[[entries.sections]]
+heading = "Ownership continues through uncertainty"
+focus = "Distinguish request lifetime, backend operation lifetime, correctness-obligation lifetime, reconciliation, and explicit range release."
+must_answer = ["Why does abandonment not cancel ownership?", "When may a range be reused?"]
+requirements = [
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
+]
+scenarios = []
+non_claims = ["Reconciliation is not retry, rollback, or proof that an irreversible effect did not occur."]
 
 
 [[entries]]

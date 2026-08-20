@@ -30,11 +30,13 @@ guide/01-write-before-crash
 guide/02-recovery-uncertainty
 guide/03-parity-and-integrity
 guide/04-boundary-and-demo
+guide/05-concepts-and-terminology
 ```
 
-The first three explain the safety model with concrete byte examples. The last
-chapter shows the exact disposable workflow that works today and lists what it
-does not prove.
+The first three explain the safety model with concrete byte examples. The fourth
+shows the exact disposable workflow that works today and lists what it does not
+prove. The final chapter keeps the product's distinct facts, evidence owners,
+and non-claims searchable.
 
 ```{note}
 This Guide is explanatory. Canonical OpenSpecs remain authoritative; each chapter

@@ -1,8 +1,8 @@
 # DiskWeave Guide
 
-The DiskWeave Guide is a four-chapter, event-first curriculum on interrupted
-writes, recovery uncertainty, parity and integrity, and the product and
-evidence boundary.
+The DiskWeave Guide is a five-chapter, event-first curriculum on interrupted
+writes, recovery uncertainty, parity and integrity, the product and evidence
+boundary, and the concepts that must remain distinct.
 
 **Start here:** {doc}`guide-index`.
 
