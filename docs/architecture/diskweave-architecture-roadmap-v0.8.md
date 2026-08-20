@@ -203,7 +203,7 @@ The words **SHALL**, **SHOULD**, and **MAY** express the strength of intended ro
 
 ## 2.5 Tunable policy delegated to agents
 
-Queue/ring counts, operation-slot pools, worker counts, buffer sizes, lock quantum, checkpoint cadence, dirty-memory thresholds, checksum concurrency, scrub/rebuild bandwidth, SQLite cache/busy settings, trace limits, parser limits, and observability retention receive bounded defaults and benchmarks rather than routine user questions.
+Queue/ring counts, operation-slot pools, worker counts, buffer sizes, lock quantum, recovery-CLEAN cadence, dirty-memory thresholds, checksum concurrency, scrub/rebuild bandwidth, SQLite cache/busy settings, trace limits, parser limits, and observability retention receive bounded defaults and benchmarks rather than routine user questions.
 
 ## 2.6 Explicit user/product decisions
 
@@ -415,7 +415,7 @@ Names below are illustrative. Responsibilities and prohibited dependencies are a
 |---|---|---|
 | `dwv-core` | stable IDs, normalized requests, topology snapshots, status/error taxonomy | logical slots and block semantics |
 | `dwv-range` | splitting, global parity-address locks, RMW/reconstruct-write planning | common logical offsets across slots |
-| `dwv-durability` | dirty/fence/checkpoint/session protocol | in-place multi-store parity writes |
+| `dwv-durability` | dirty/persistence-evidence/recovery-CLEAN/session protocol | in-place multi-store parity writes |
 | `dwv-integrity` | checksum profile, generations, validity, scrub/repair evidence | array-wide data/parity checksum targets |
 | `dwv-recovery` | topology, identity assessment, metadata-loss and degraded-read policy | `array.sqlite3` semantic state |
 | `dwv-recovery-sqlite` | SQLite implementation of `RecoveryStateStore` | schema/migrations behind semantic adapter |
@@ -508,7 +508,7 @@ All `unsafe` code, kernel UAPI translation, direct buffer registration, raw desc
 | `CodingPosition` | explicit coefficient/index consumed by codec | topology/profile |
 | `AssignmentId` / generation | one binding of a physical store to a logical role | topology |
 | `TopologyEpoch` | immutable mapping generation captured by work | topology/recovery state |
-| recovery generation | durability/checkpoint generation | recovery state |
+| recovery generation | durability/recovery-CLEAN generation | recovery state |
 | checksum-set generation | identity of one integrity profile/baseline | integrity state |
 
 A physical store is not permanently “slot 3,” “data,” “P,” “Q,” “ext4,” or “encrypted.” A topology snapshot binds a store and payload window to a role for a particular epoch.
@@ -845,7 +845,7 @@ DiskWeave recovery state includes:
 - coding positions and profile;
 - topology and assignment generations;
 - dirty and indeterminate regions;
-- durability/checkpoint generations and active session state;
+- durability/recovery-CLEAN generations and active session state;
 - checksum profiles, generations, validity, and digests;
 - correctness-critical build/rebuild/recovery cursors;
 - future journal/PPL records and checkpoints;
@@ -898,12 +898,12 @@ enum RecoveryMutation {
 The exact grouping and naming are replaceable. These semantic rules are not:
 
 1. **Before dependent data/parity write:** the region's new mutation generation, `DIRTY` state, and every overlapping checksum transition to `STALE` SHALL become durable as one atomic recovery-state decision. A partial commit that exposes only some of those facts is invalid.
-2. **Already-dirty writes:** generation advancement and any newly required integrity invalidation SHALL be durable before the new data/parity write. An older checkpoint cannot clear a newer generation.
+2. **Already-dirty writes:** generation advancement and any newly required integrity invalidation SHALL be durable before the new data/parity write. An older recovery CLEAN commit cannot clear a newer generation.
 3. **Fence recording:** `ObservePersistenceEvidence` may cite only persistence evidence matching the exact physical-store incarnation, capability context, topology epoch, ordering watermark, and mutation generation. Recording a fence does not itself make a region clean.
 4. **Uncertainty:** a lost, timed-out, or otherwise uncertain completion SHALL preserve or strengthen `DIRTY`/`INDETERMINATE` state. Uncertainty is removed only by a defined reconciliation, replay, exhaustive verification, or verified rewrite—not by retrying an optimistic metadata update.
-5. **Checkpoint and clean:** `CommitRecoveryClean` SHALL atomically bind the exact covered region generations to a sufficient set of durable store-fence evidence. It is permitted only after all covered writers are terminal or durably handed to recovery, and compare-and-set predicates SHALL reject a changed topology, assignment, session, or mutation generation.
+5. **Recovery CLEAN:** `CommitRecoveryClean` SHALL atomically bind the exact covered region generations to a sufficient set of scoped persistence evidence. It is permitted only after all covered writers are terminal or durably handed to recovery, and compare-and-set predicates SHALL reject a changed topology, assignment, session, or mutation generation.
 6. **Integrity installation:** `InstallIntegrityDigest` is permitted only when target identity, checksum profile, content generation, and cited target-store durability evidence still match. A successful read or an unrelated flush is insufficient.
-7. **Writable sessions:** `BeginWritableSession` is durable before writable exposure. `CloseWritableSession` is permitted only after the required global checkpoint and evidence set are durable; parity-envelope session transitions follow Section 8.9.
+7. **Writable sessions:** `BeginWritableSession` is durable before writable exposure. `CloseWritableSession` is permitted only after the required global recovery CLEAN and persistence-evidence set are durable; parity-envelope session transitions follow Section 8.9.
 8. **Topology:** `PrepareTopology` is durable before any new mapping is exposed or used for irreversible effects. `CommitTopology` occurs only after required quiescence, verification, and promotion evidence. `Abort` is valid only before irreversible effects; otherwise recovery reconciles the prepared plan explicitly.
 9. **Maintenance, rebuild, and repair:** progress that determines safe resume, source selection, target verification, or promotion SHALL be persisted before releasing the corresponding correctness obligation. Historical progress or UI presentation may remain reconstructible management state.
 10. **Idempotence and conservatism:** mutations carry stable operation/plan IDs and expected generations. Exact replay is idempotent; conflicting replay refuses. `DIRTY`, `INDETERMINATE`, stale integrity, and prepared-but-unresolved topology dominate older optimistic state.
@@ -1026,7 +1026,7 @@ before writable exposure:
 clean shutdown/recovery CLEAN:
     quiesce admitted writes
     durably flush required data and parity stores
-    array.sqlite3 durably records CLOSED(session S, fence proof)
+    array.sqlite3 durably records CLOSED(session S, persistence evidence)
     all required parity envelopes durably record CLOSED_CLEAN(session S)
 ```
 
@@ -1078,7 +1078,7 @@ A semantic export may back up:
 - codec/profile/payload geometry;
 - recovery/checksum generations and profile descriptors;
 - parity-envelope digests/generations;
-- explicit statement of what dynamic dirty/checkpoint state is or is not captured.
+- explicit statement of what dynamic dirty/recovery-CLEAN state is or is not captured.
 
 It is versioned, bounded, documented, and independently readable. It is not a copy of SQLite pages and cannot claim a clean state newer than the durability evidence it contains.
 
@@ -1132,7 +1132,7 @@ enum FlushScope {
         domain: OrderingDomainId,
         through_sequence: u64,
     },
-    WholeArrayCheckpoint,
+    WholeArrayRecoveryClean,
 }
 
 struct OrderingIntent {
@@ -1262,7 +1262,7 @@ enum PersistenceCertainty {
     Uncertain,
 }
 
-struct FenceSet {
+struct PersistenceEvidenceSet {
     topology_epoch: TopologyEpoch,
     expected_recovery_generation: RecoveryGeneration,
     required: Vec<PersistenceEvidence>,
@@ -1276,19 +1276,19 @@ struct StoreCompletion {
 }
 ```
 
-These fields are intended semantic requirements for future architecture, not a frozen Rust layout or an override of current canonical specifications. The store ordering domain is the executor/backend domain whose submissions a fence actually covers; request planning maps frontend ordering requirements into corresponding store watermarks. A backend may return equivalent evidence in another representation, and a recovery checkpoint may persist a bounded reference to the evidence rather than copying an in-memory object. `persistence = None` is the default for an ordinary successful write unless a certified stable-write mechanism proves more.
+These fields are intended semantic requirements for future architecture, not a frozen Rust layout or an override of current canonical specifications. The store ordering domain is the executor/backend domain whose submissions a fence actually covers; request planning maps frontend ordering requirements into corresponding store watermarks. A backend may return equivalent evidence in another representation, and a recovery CLEAN commit may persist a bounded reference to the evidence rather than copying an in-memory object. `persistence = None` is the default for an ordinary successful write unless a certified stable-write mechanism proves more.
 
 Roadmap rules:
 
 1. An ordinary read/write completion proves only its declared completion result. It is not durable evidence unless the operation used a certified stable-write mechanism or is covered by a later proven fence.
 2. Persistence evidence is scoped to one physical-store incarnation and one submitted-through ordering boundary. It cannot prove persistence for another store, a later write, or a replacement object at the same path.
 3. Evidence is meaningful only under the capability snapshot and safety profile that produced it. A cache-mode, backend, capability, assignment, or topology change requires revalidation; evidence from one context cannot silently authorize another.
-4. A successful virtual `FLUSH`, stable/FUA-equivalent completion, recovery checkpoint, region `CLEAN`, checksum `VALID`, and session `CLOSED_CLEAN` SHALL cite or logically derive from a sufficient `FenceSet` for every required effect.
+4. A successful virtual `FLUSH`, stable/FUA-equivalent completion, recovery CLEAN commit, region `CLEAN`, checksum `VALID`, and session `CLOSED_CLEAN` SHALL cite or logically derive from a sufficient `PersistenceEvidenceSet` for every required effect.
 5. Failed or uncertain fence completion cannot be rounded to success or presumed rollback. Affected state remains `DIRTY`/`INDETERMINATE`, and the operation is reconciled or recovered explicitly.
 6. A frontend cannot strengthen backend semantics. It may expose only durability behavior supported by the complete frontend/store/recovery/hardware contract.
-7. The conservative implementation may fence the whole array and record one aggregate checkpoint. More precise per-domain, per-store, or per-region watermarks are compatible optimizations, not permanent format assumptions.
+7. The conservative implementation may fence the whole array and record one aggregate recovery CLEAN. More precise per-domain, per-store, or per-region watermarks are compatible optimizations, not permanent format assumptions.
 
-A `FenceSet` is a proof composition over required stores and watermarks, not a cryptographic certificate unless a later format explicitly defines one. roadmap-item:role-neutral-stores owns the store/capability evidence vocabulary; roadmap-item:dirty-integrity-recovery owns its recovery-protocol use; roadmap-item:healthy-portable-io integrates it into healthy I/O; roadmap-item:linux-flush-fua-probes certifies real Linux/hardware meaning.
+A `PersistenceEvidenceSet` is a proof composition over required stores and watermarks, not a cryptographic certificate unless a later format explicitly defines one. roadmap-item:role-neutral-stores owns the store/capability evidence vocabulary; roadmap-item:dirty-integrity-recovery owns its recovery-protocol use; roadmap-item:healthy-portable-io integrates it into healthy I/O; roadmap-item:linux-flush-fua-probes certifies real Linux/hardware meaning.
 
 ## 9.5 Request planning and decomposition
 
@@ -1431,7 +1431,7 @@ The normalized trace sits after frontend normalization and before request planni
 - initial topology/capability fixture;
 - slot, operation, offset, length, ordering, durability, and sequence;
 - generated data pattern/seed/hash rather than user bytes;
-- semantic actions/results, checkpoints, integrity decisions, refusal, uncertainty, and terminal obligations;
+- semantic actions/results, recovery CLEAN transitions, integrity decisions, refusal, uncertainty, and terminal obligations;
 - injected fault/crash events;
 - expected final data/parity/integrity/recovery/topology state;
 - expected terminal operation/obligation state, including delivery suppression, drain/reconciliation, durable recovery handoff, and any remaining uncertainty;
@@ -1464,7 +1464,7 @@ A persistent dirty record conceptually contains:
 - mutation generation;
 - parity/checksum profile IDs;
 - affected checksum extents and their new stale generations;
-- active/terminal mutation bookkeeping required for checkpoint safety;
+- active/terminal mutation bookkeeping required for recovery-CLEAN safety;
 - highest durable data/parity persistence-evidence fence known for the region;
 - indeterminate or recovery-required evidence.
 
@@ -1475,7 +1475,7 @@ stateDiagram-v2
     WriteRecoveryRecordDurable --> ApplyingDataParityWrites
     ApplyingDataParityWrites --> DirtyAwaitingPersistenceEvidence
     DirtyAwaitingPersistenceEvidence --> PersistenceEvidenceObserved
-    PersistenceEvidenceObserved --> Clean: durable checkpoint/clear
+    PersistenceEvidenceObserved --> Clean: durable recovery CLEAN commit
 
     WriteRecoveryRecordDurable --> RecoveryRequired: crash/restart
     ApplyingDataParityWrites --> RecoveryRequired: crash/restart
@@ -1486,7 +1486,7 @@ stateDiagram-v2
     RecoveryRequired --> Clean: exhaustive verify/recompute + durable clear
 ```
 
-A clean record never wins a conflict with dirty/unknown evidence. Mutation generations prevent an older worker or checkpoint from clearing newer dirtiness.
+A clean record never wins a conflict with dirty/unknown evidence. Mutation generations prevent an older worker or recovery CLEAN commit from clearing newer dirtiness.
 
 ## 10.3 First write to a clean region
 
@@ -1529,7 +1529,7 @@ sequenceDiagram
     P-->>E: child result
     E-->>T: semantic WriteSet result
     T-->>F: ordinary completion only if write-back contract permits
-    Note over T,R: region stays durably dirty until fenced checkpoint
+    Note over T,R: region stays durably dirty until recovery CLEAN
     T->>L: release only after safe terminal state or durable handoff
 ```
 
@@ -1541,7 +1541,7 @@ A later write may avoid a new first-dirty transition only when:
 
 - the durable dirty record covers the region, current topology, and active session;
 - every affected checksum extent is already stale or atomically advanced for the new mutation generation;
-- the writer registers before a checkpoint captures the region;
+- the writer registers before a recovery CLEAN captures the region;
 - range locking prevents mixed parity updates;
 - the mutation generation prevents stale clear;
 - the recovery store has enough evidence to conservatively recover after a crash.
@@ -1552,13 +1552,13 @@ An in-memory dirty cache is an optimization. It cannot substitute for the durabl
 sequenceDiagram
     autonumber
     participant T as Transaction machine
-    participant L as Range/checkpoint coordinator
+    participant L as Range/recovery-CLEAN coordinator
     participant R as RecoveryStateStore
     participant E as Executor
     participant S as Data/parity stores
 
     T->>L: register writer for region and generation G+1
-    L-->>T: guard excludes captured checkpoint
+    L-->>T: guard excludes captured recovery CLEAN
     T->>R: advance mutation generation; ensure affected checksums STALE
     R-->>T: durable coverage evidence
     T->>E: read/compute/write semantic set
@@ -1569,7 +1569,7 @@ sequenceDiagram
     T->>L: unregister after terminal result or durable recovery handoff
 ```
 
-Only the redundant first-dirty transition may be skipped. Generation advancement, integrity invalidation, checkpoint exclusion, resource ownership, and uncertainty handling remain mandatory.
+Only the redundant first-dirty transition may be skipped. Generation advancement, integrity invalidation, recovery-CLEAN exclusion, resource ownership, and uncertainty handling remain mandatory.
 
 ## 10.5 Write planning and media mutation
 
@@ -1577,7 +1577,7 @@ The planner chooses RMW or reconstruct-write. Before writing, all required input
 
 Partial child completion is recorded per store/range. A successful data write plus failed parity write and a successful parity write plus failed data write both remain dirty. DiskWeave does not attempt to claim rollback unless it has a separately proven undo protocol.
 
-## 10.6 Flush, recovery CLEAN, and clean
+## 10.6 Flush, recovery-CLEAN, and clean
 
 ```mermaid
 sequenceDiagram
@@ -1595,9 +1595,9 @@ sequenceDiagram
     C->>E: FlushSet(required stores and watermarks)
     E->>S: durable fences
     S-->>E: fence outcomes
-    E-->>C: FenceSet for exact stores/watermarks
+    E-->>C: PersistenceEvidenceSet for exact stores/watermarks
     alt every required fence proven
-        C->>R: commit recovery CLEAN/clear with expected epoch + generations + FenceSet
+        C->>R: commit recovery CLEAN/clear with expected epoch + generations + PersistenceEvidenceSet
         R-->>C: durable recovery commit
         C-->>F: success
     else failure or uncertainty
@@ -1611,17 +1611,17 @@ Before `CLEAN`:
 ```text
 all covered mutations are terminal or safely reconciled
 required data and parity writes are durably fenced
-FenceSet covers the exact store incarnations and submitted-through watermarks
-recovery CLEAN commit atomically binds that evidence to exact region generations
+PersistenceEvidenceSet covers the exact store incarnations and submitted-through watermarks
+recovery-CLEAN commit atomically binds that evidence to exact region generations
 no unresolved mutation-generation conflict exists
 no topology transition can reinterpret the range
 ```
 
-A successful frontend flush is delivered only after that recovery-state commit is durable. If the data/parity persistence-evidence fence succeeded but the recovery CLEAN commit failed or is uncertain, the bytes may be durable but the region remains dirty/indeterminate. The first implementation may use an array-wide fence. Per-domain/per-store/per-region watermarks are later optimizations only after equivalence evidence.
+A successful frontend flush is delivered only after that recovery-state commit is durable. If the data/parity persistence-evidence fence succeeded but the recovery-CLEAN commit failed or is uncertain, the bytes may be durable but the region remains dirty/indeterminate. The first implementation may use an array-wide fence. Per-domain/per-store/per-region watermarks are later optimizations only after equivalence evidence.
 
 ## 10.7 Stable-before-completion and preflush
 
-A stable/FUA-like request completes only after its affected data and parity operations produce sufficient `PersistenceEvidence` under the active capability context. The region may remain conservatively dirty until a later recovery-state checkpoint; stable frontend completion proves the requested data/parity store boundary, while metadata cleanup and `CLEAN` are separate facts.
+A stable/FUA-like request completes only after its affected data and parity operations produce sufficient `PersistenceEvidence` under the active capability context. The region may remain conservatively dirty until a later recovery CLEAN commit; stable frontend completion proves the requested data/parity store boundary, while metadata cleanup and `CLEAN` are separate facts.
 
 A preflush request first fences all prior covered writes in its ordering domain. It then performs the new write under its own durability intent. Unsupported FUA/preflush is never silently downgraded; the frontend advertises a truthful limit or returns unsupported/error.
 
@@ -1667,7 +1667,7 @@ A watchdog must understand these states and not kill a healthy daemon merely bec
 
 - Failure before durable write-recovery record: reject write; no data/parity write was permitted.
 - Uncertain write-recovery-record commit: do not mutate data/parity stores; require recovery-store reconciliation before service.
-- Failure recording a post-write result or data/parity-fence evidence: data/parity write state may have changed or may already be durable; keep/establish dirty/indeterminate evidence through the safest surviving path and stop writes if authority is unavailable. Never recreate the missing proof from an ordinary completion alone.
+- Failure recording a post-write result or data/parity persistence evidence: data/parity write state may have changed or may already be durable; keep/establish dirty/indeterminate evidence through the safest surviving path and stop writes if authority is unavailable. Never recreate the missing proof from an ordinary completion alone.
 - Recovery DB corruption or loss while serving: stop admitting writes, retain operation resources until terminal or emergency durable handoff, quiesce frontends, and transition to recovery-required.
 - Disk full/ENOSPC in recovery storage is a correctness failure, not a management warning.
 
@@ -1685,7 +1685,7 @@ The simulator interrupts after every meaningful boundary:
 - each input read and child completion permutation;
 - each subset of data/parity writes becoming durable;
 - fence submission/completion/uncertainty;
-- checkpoint/clear commit;
+- recovery CLEAN/clear commit;
 - envelope DIRTY/CLOSED transitions;
 - abandonment, daemon crash, reset, and power loss.
 
@@ -1749,7 +1749,7 @@ The representative comparison covers:
 - frontend abandonment before and after irreversible boundaries;
 - daemon crash and power loss at every suspension point;
 - stale slot-token reuse and exactly-once terminalization;
-- premature clean/checkpoint and skipped integrity invalidation mutations;
+- premature clean/recovery CLEAN and skipped integrity invalidation mutations;
 - allocations, lock operations, CPU/request, latency, memory, and concurrent scaling;
 - dependency/license health, auditability, and replacement/fork cost.
 
@@ -1800,9 +1800,9 @@ Rules:
 - lock quantum is tunable unless a later format explicitly depends on it;
 - foreground work has tested priority/fairness over scrub/rebuild.
 
-## 11.7 Checkpoint concurrency
+## 11.7 Recovery-CLEAN concurrency
 
-A checkpoint captures a precise set of mutation generations or ordering watermarks. A writer either registers before capture and is awaited, or is admitted after capture and remains dirty for a later checkpoint. There is no gap in which a write mutates data/parity media but belongs to neither set.
+A recovery CLEAN captures a precise set of mutation generations or ordering watermarks. A writer either registers before capture and is awaited, or is admitted after capture and remains dirty for a later recovery CLEAN. There is no gap in which a write mutates data/parity media but belongs to neither set.
 
 Checksum revalidation follows the same generation discipline: it captures a content generation and durable fence watermark, computes, then commits only if neither changed.
 
@@ -1979,7 +1979,7 @@ sequenceDiagram
     C-->>U: target verified; separate topology promotion required
 ```
 
-Promotion revalidates the plan ID, source topology epoch, target assignment identity, completed cursor, target `FenceSet`, readback digest/equation evidence, and absence of newer conflicting work. The topology commit and new assignment generation become durable before the replacement is exposed as the stable slot. A crash before that commit leaves a resumable/unpromoted target; it never creates two writable owners of one slot.
+Promotion revalidates the plan ID, source topology epoch, target assignment identity, completed cursor, target `PersistenceEvidenceSet`, readback digest/equation evidence, and absence of newer conflicting work. The topology commit and new assignment generation become durable before the replacement is exposed as the stable slot. A crash before that commit leaves a resumable/unpromoted target; it never creates two writable owners of one slot.
 
 Concurrent foreground writes during rebuild are deferred until an explicit reconciliation protocol exists. The conservative baseline quiesces or restricts service appropriately.
 
@@ -2094,7 +2094,7 @@ struct ChecksumRecord {
     content_generation: u64,
     state: ChecksumState,
     digest: Option<Digest>,
-    durable_fence: Option<FenceReference>, // reference to Section 9.4.1 evidence
+    persistence_evidence: Option<ChecksumPersistenceEvidence>, // reference to Section 9.4.1 evidence
     profile: ChecksumProfileId,
 }
 
@@ -2114,7 +2114,7 @@ enum ChecksumState {
 - no conflicting mutation advanced the generation before the validity commit;
 - profile and target identity still match.
 
-A checksum of bytes only acknowledged into a volatile cache cannot become valid merely because the read returned them. `FenceReference` identifies evidence for the target store incarnation and content watermark; it is not a generic “last flush” timestamp and cannot be borrowed from another target, topology epoch, capability context, or generation.
+A checksum of bytes only acknowledged into a volatile cache cannot become valid merely because the read returned them. `ChecksumPersistenceEvidence` identifies evidence for the target store incarnation and content watermark; it is not a generic “last flush” timestamp and cannot be borrowed from another target, topology epoch, capability context, or generation.
 
 ## 13.4 Invalidation before mutation
 
@@ -2352,7 +2352,7 @@ Key loss is outside parity recovery. Secrets are never stored in parity envelope
 
 Tier, health, locality, and free-space observations may guide namespace placement and maintenance scheduling. They do not change parity semantics or authorize bypassing protection.
 
-A tier transition uses the safe mover flow in Section 14.4. A file is reported protected only after destination data is durably stored, parity/checkpoint semantics cover it, and any required integrity verification succeeds.
+A tier transition uses the safe mover flow in Section 14.4. A file is reported protected only after destination data is durably stored, parity/recovery CLEAN semantics cover it, and any required integrity verification succeeds.
 
 ## 15.3 Declarative configuration versus array truth
 
@@ -2361,7 +2361,7 @@ NixOS or other deployment configuration may specify:
 - expected array UUID and allowed stores/identity constraints;
 - frontend and backend selection;
 - safety profile and allowed read-only degradation;
-- queue, memory, checkpoint, trace, and background QoS caps;
+- queue, memory, recovery-CLEAN, trace, and background QoS caps;
 - certified filesystem/encryption/mount options;
 - mount paths and consumer dependencies;
 - recovery DB, backup, and secret locations.
@@ -2577,7 +2577,7 @@ sequenceDiagram
     U->>A0: format/mount APFS and write files
     U->>A1: format/mount APFS and write files
     U->>A2: format/mount APFS and write files
-    D->>P: parity updates, dirty/integrity checkpoints
+    D->>P: parity updates, dirty/integrity recovery-state transitions
     U->>D: make data1.raw unavailable
     D-->>A1: serve proven-clean reads by reconstruction
     U->>A1: verify files and APFS traversal
@@ -2760,7 +2760,7 @@ Every relevant event includes where applicable:
 Expose:
 
 - dirty/indeterminate range count, bytes, age, and generations;
-- active writer and checkpoint watermarks;
+- active writer and recovery-CLEAN watermarks;
 - recovery DB commit latency/failures and storage capacity;
 - per-store fence latency and uncertainty;
 - persistence-evidence store incarnation, submitted-through watermark, capability snapshot, boundary ID, and certainty;
@@ -2890,7 +2890,7 @@ Use ordinary deterministic tests and `proptest`-style generation for:
 - heterogeneous tails and zero extension;
 - split/coalesce equivalence and ordering preservation;
 - topology replacement/reorder invariance under stable identities;
-- range-lock ordering and generation-safe checkpoint behavior;
+- range-lock ordering and generation-safe recovery-CLEAN behavior;
 - checksum invalidation/fence/validity semantics;
 - identity ambiguity and clone fixtures;
 - pure namespace rule matching and deterministic member selection;
@@ -2956,7 +2956,7 @@ The comparison considers:
 - tooling maintenance, CI, license, and team ergonomics;
 - model drift cost.
 
-The first model covers abstract write-recovery record, integrity invalidation, data/parity write, durable versus uncertain completion, fences, checkpoint/clean, consequential-work ownership, crash, power loss, device loss, and idempotent conservative recovery. It does not mirror Rust fields, SQLite tables, buffer contents, queue internals, or full array scale.
+The first model covers abstract write-recovery record, integrity invalidation, data/parity write, durable versus uncertain completion, persistence evidence, recovery CLEAN, consequential-work ownership, crash, power loss, device loss, and idempotent conservative recovery. It does not mirror Rust fields, SQLite tables, buffer contents, queue internals, or full array scale.
 
 Record finite bounds, omitted facts, symmetry, fairness, and environmental assumptions. Safety and liveness are separate. “Recovery eventually completes” is meaningful only under stated assumptions such as quiesced new writes, terminal device responses, no further faults, and scheduler fairness.
 
@@ -3009,7 +3009,7 @@ Use Shuttle or an equivalent controlled scheduler for larger reproducible interl
 - abandonment, quiescence, shutdown, and draining;
 - foreground/background jobs;
 - device-state and topology publication;
-- checksum workers and checkpoints.
+- checksum workers and recovery-CLEAN captures.
 
 Use Loom only for tiny custom synchronization or atomic lifecycle mechanisms where exhaustive exploration within its modeled semantics is worth maintenance: exactly-once terminalization, stale-token rejection, permit accounting, lock-entry reclamation, or shutdown counters.
 
@@ -3125,7 +3125,7 @@ No Phase 0 format is stable unless its format gate explicitly passes.
 | Roadmap item | Required executable result |
 |---|---|
 | **roadmap-item:dirty-integrity-recovery** | Dirty-region, checksum invalidation, mutation generations, scoped data/parity persistence evidence, guarded recovery `CLEAN`, abandonment, uncertainty, and recovery protocol. |
-| **roadmap-item:checksum-plane** | Data/P/Q checksum targets, profile/generation records, durable-fence validity, asynchronous revalidation, migration, and repair-evidence semantics. |
+| **roadmap-item:checksum-plane** | Data/P/Q checksum targets, profile/generation records, persistence-evidence validity, asynchronous revalidation, migration, and repair-evidence semantics. |
 | **roadmap-item:file-backed-stores** | File-backed data/parity stores, locks, stable identity, sparse/capability characterization, recovery/control DB placement, and injected failures. |
 | **roadmap-item:healthy-portable-io** | End-to-end healthy read/write/flush/reopen through normalized requests, transaction machine, executor, stores, recovery, integrity, and bounded resources. |
 | **roadmap-item:parity-verification-repair** | Exhaustive parity verification, mismatch classification, independent evidence, zero-write matching ranges, and evidence-gated selective candidate generation. |
@@ -3341,7 +3341,7 @@ These changes attach at dependency-ready points and do not automatically block u
 
 ## 24.4 Tunable policy
 
-Queue/ring/shard counts, slot/buffer limits, lock quantum, RMW size, dirty/checkpoint cadence, checksum extent/workers, scrub/rebuild bandwidth, SQLite caches/connections, trace/parser limits, and observability retention are benchmarked defaults rather than product decisions.
+Queue/ring/shard counts, slot/buffer limits, lock quantum, RMW size, dirty/recovery-CLEAN cadence, checksum extent/workers, scrub/rebuild bandwidth, SQLite caches/connections, trace/parser limits, and observability retention are benchmarked defaults rather than product decisions.
 
 ## 24.5 Explicit user/product decisions
 
@@ -3498,7 +3498,7 @@ Use Mermaid when ordering, ownership, retries, crash recovery, or promotion is n
 - bounded queues, slots, buffers, memory, descriptors, retries, and background work;
 - cancellation/drain and shutdown behavior;
 - fairness/starvation assumptions;
-- topology/checkpoint generation races.
+- topology/recovery-CLEAN generation races.
 
 **11. Failure and recovery matrix**
 
@@ -3678,7 +3678,7 @@ These scenarios are product acceptance contracts. Recovery tools present plans a
 6. Restore a valid `array.sqlite3` backup only after proving it matches topology/envelope generations, or create a new recovery DB.
 7. If trusted clean/ownership evidence is insufficient, exhaustively verify parity; matching ranges are not rewritten.
 8. Rebuild checksum baseline where historical evidence is missing.
-9. Establish a new managed session/checkpoint and only then expose writable virtual members.
+9. Establish a new managed session/recovery CLEAN state and only then expose writable virtual members.
 10. Reconstruct `control.sqlite3` from discovery/recovery state; historical UI/SMART data may be absent.
 
 No data payload needs DiskWeave-specific tooling merely to mount it.
@@ -3833,7 +3833,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Backing payload:** Physical/file-backed byte range storing one data or parity image behind a virtual endpoint.
 
-**Checkpoint:** Durable proof that a captured set of mutations has reached required data/parity persistence-evidence fences and recovery state has advanced accordingly.
+**Recovery CLEAN:** Durable proof that a captured set of mutations has reached required data/parity persistence-evidence fences and recovery state has advanced accordingly.
 
 **Clean:** The active protocol proves that durable data, parity, and required recovery evidence satisfy the latest covered generation. It is not a claim of no latent corruption.
 
@@ -3853,7 +3853,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Evidence tier:** Scope of assurance supplied by model, simulator, file-backed, macOS, Linux, or hardware testing.
 
-**Fence set:** Composition of scoped persistence evidence for every store incarnation and ordering watermark required by one flush, checkpoint, clean transition, integrity installation, or promotion.
+**Persistence-evidence set:** Composition of scoped persistence evidence for every store incarnation and ordering watermark required by one flush, recovery CLEAN transition, integrity installation, or promotion.
 
 **Exported endpoint:** Virtual block/file interface presented to a filesystem or OS frontend; never a writable alias of its backing payload.
 
@@ -3867,7 +3867,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Logical slot:** Stable identity for one virtual conventional data-member image.
 
-**Mutation generation:** Monotonic generation preventing stale workers/checkpoints/checksums from authorizing a newer state.
+**Mutation generation:** Monotonic generation preventing stale workers/recovery-CLEAN commits/checksums from authorizing a newer state.
 
 **Normalized trace:** Frontend-neutral semantic sequence used for deterministic replay; not array compatibility truth.
 
@@ -3881,9 +3881,9 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Store incarnation:** One specifically identified and claimed physical/file-backed store instance. Evidence for an earlier incarnation cannot authorize a replacement object at the same path.
 
-**Recovery mutation:** Guarded, idempotent semantic update to correctness-critical recovery state; examples include dirty/integrity/write-recovery record, fence recording, checkpoint/clean, topology preparation, and verified rebuild progress.
+**Recovery mutation:** Guarded, idempotent semantic update to correctness-critical recovery state; examples include dirty/integrity/write-recovery record, persistence-evidence recording, recovery CLEAN, topology preparation, and verified rebuild progress.
 
-**Recovery state:** Correctness-critical topology, dirty, integrity, checkpoint, and maintenance state, provisionally in `array.sqlite3` plus narrow parity envelopes.
+**Recovery state:** Correctness-critical topology, dirty, integrity, recovery CLEAN, and maintenance state, provisionally in `array.sqlite3` plus narrow parity envelopes.
 
 **Rebaseline:** Explicitly establish present selected data as authority and create new parity/integrity evidence, discarding historical certainty.
 
@@ -3930,7 +3930,7 @@ Before implementing or changing a component, answer:
 - Does the codec see only explicit profile/position/shard semantics?
 - Who owns actual buffers, permits, tags, child operations, uncertain completions, and shutdown draining?
 - What is the irreversible boundary and durable recovery handoff?
-- What must be durable before data/parity write and before clean/checkpoint, and which store incarnations/watermarks/capability context does the evidence cover?
+- What must be durable before data/parity write and before recovery CLEAN, and which store incarnations/watermarks/capability context does the evidence cover?
 - What happens on short I/O, EIO, timeout, duplicate/lost completion, disappearance, abandonment, daemon crash, and power loss?
 - What happens when `array.sqlite3` is corrupt/missing/stale or identity/topology evidence conflicts?
 - Does any persistent artifact change? What freezes, how is it bounded/decoded/migrated, and what happens on interrupted migration?

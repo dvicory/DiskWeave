@@ -301,9 +301,9 @@ The project is trying to earn trust through several independent checks:
   prove.
 
 The architecture also applies ideas from database recovery and distributed
-systems: record durable intent before changing data, require durability
-evidence before declaring state clean, and use identities and generations to
-reject stale work.
+systems: make the write-recovery record durable before changing data/parity,
+require persistence evidence before declaring recovery `CLEAN`, and use
+identities and generations to reject stale work.
 
 No one check proves that DiskWeave is safe. Together they make failures easier
 to find, reproduce, and reason about. They are evidence, not a guarantee that
@@ -318,8 +318,8 @@ The demo uses ordinary files in a new temporary directory:
 ```sh
 DWV_DEMO_ROOT="$(mktemp -d /tmp/dwv-demo.XXXXXX)"
 
-cargo run --bin dwv -- demo init --root "$DWV_DEMO_ROOT"
-cargo run --bin dwv -- demo run --root "$DWV_DEMO_ROOT"
+cargo run --bin dwv -- demo file init --root "$DWV_DEMO_ROOT"
+cargo run --bin dwv -- demo file run --root "$DWV_DEMO_ROOT"
 ```
 
 A successful run performs healthy I/O, degraded reading, rebuilding, and final

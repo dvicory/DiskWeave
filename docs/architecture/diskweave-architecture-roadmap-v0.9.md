@@ -202,7 +202,7 @@ DiskWeave distinguishes four persistence classes:
 
 1. **Declarative desired policy.** Expected members, locators, names, and deployment choices help discover and present an array. They are not historical authority.
 2. **Ordinary data payloads.** These contain the user-visible member images and remain directly understandable.
-3. **Correctness-critical recovery state.** This records array and topology lineage, assignments, protection epochs and range basis, dirty and indeterminate state, integrity generations, checkpoints, and maintenance progress. It is operationally authoritative while the array is writable.
+3. **Correctness-critical recovery state.** This records array and topology lineage, assignments, protection epochs and range basis, dirty and indeterminate state, integrity generations, recovery-CLEAN records, and maintenance progress. It is operationally authoritative while the array is writable.
 4. **Reconstructible management state.** UI history, cached discovery, performance observations, and similar control data may be recreated without changing storage truth.
 
 `array.sqlite3` is the provisional implementation of correctness-critical recovery state behind a semantic `RecoveryStateStore` boundary. `control.sqlite3` is reconstructible management state and has no safety authority.
@@ -485,7 +485,7 @@ The architecture has these semantic components:
 
 ### Recovery and integrity authority
 
-- owns topology, assignment, protection-epoch, range-basis, dirty, mutation, checksum, checkpoint, and maintenance state;
+- owns topology, assignment, protection-epoch, range-basis, dirty, mutation, checksum, recovery-CLEAN, and maintenance state;
 - validates generation-bound transitions;
 - refuses optimistic recovery after incomplete or conflicting evidence.
 
@@ -605,7 +605,7 @@ The architecture distinguishes:
 - **TopologyEpoch:** immutable logical membership and coding snapshot generation;
 - **ProtectionEpoch:** one interval whose current-basis claims share an admitted custody and writer-ownership premise;
 - **RangeBasisGeneration:** exact per-range/per-role protection transition generation;
-- **Recovery generation:** recovery-state mutation/checkpoint authority;
+- **Recovery generation:** recovery-state mutation/recovery-CLEAN authority;
 - **Checksum-set and content generations:** integrity profile and target-content identity.
 
 None substitutes for another. Replacing a physical disk retains the logical slot but creates a new assignment. Reordering discovery paths does not change coding positions. Starting a new protection epoch does not by itself create a new array lineage or topology epoch.
@@ -880,7 +880,7 @@ A topology or coding-position change creates new coding semantics. Existing pari
 
 ## 7.1 Recovery-state authority
 
-Correctness-critical recovery state records enough information to decide whether an operation may read, mutate, reconstruct, repair, checkpoint, or promote. Its semantic contents include:
+Correctness-critical recovery state records enough information to decide whether an operation may read, mutate, reconstruct, repair, commit recovery-CLEAN, or promote. Its semantic contents include:
 
 - array UUID and accepted topology epochs;
 - logical slots, parity roles, coding positions, assignments, and payload geometry;
@@ -888,7 +888,7 @@ Correctness-critical recovery state records enough information to decide whether
 - dirty, replay-required, and indeterminate regions;
 - mutation and content generations;
 - checksum profiles, records, validity, and historical generation bindings;
-- writer-session, checkpoint, and durability evidence references;
+- writer-session, recovery-CLEAN, and durability evidence references;
 - topology, repair, rebuild, rollover, scrub, and migration progress;
 - conservative audit records for authority-changing operations.
 
@@ -902,7 +902,7 @@ A recovery-state operation is explicit about:
 - exact ranges and targets affected;
 - state predicates required before mutation;
 - whether the transition must be durable before media mutation;
-- target-specific fence evidence required before clean/current/valid promotion;
+- target-specific persistence evidence required before clean/current/valid promotion;
 - whether stale or duplicate application is rejected or idempotent;
 - the conservative state after uncertain database completion.
 
@@ -930,13 +930,13 @@ A small bounded envelope may improve discovery and disaster recovery without mak
 - **Profile B:** two bounded redundant envelope copies around a simple parity payload; provisional format-experiment comparison baseline;
 - **Profile C:** Profile B plus a coarse dirty-region bitmap; diagnostic until its reduced scan work justifies its additional durability participant and write amplification.
 
-Envelope contents may include bounded format family/version, array and parity-role identity, payload geometry, topology/protection generation summaries, session/checkpoint evidence, compatible/required feature flags, and a checksum over the envelope body. They do not contain the full integrity index or authoritative namespace state.
+Envelope contents may include bounded format family/version, array and parity-role identity, payload geometry, topology/protection generation summaries, session/recovery-CLEAN evidence, compatible/required feature flags, and a checksum over the envelope body. They do not contain the full integrity index or authoritative namespace state.
 
 Profile B remains format-experimental. Two copies improve torn-write assessment; they do not create quorum authority or prove custody continuity. Copy disagreement is resolved only by a deterministic valid-generation rule. Otherwise the envelope is a recovery fault.
 
 ## 7.7 Session certificate and anti-rollback boundary
 
-A clean session certificate proves that the declared managed write protocol reached a named checkpoint under its stated store and durability assumptions. It does not prove:
+A clean session certificate proves that the declared managed write protocol reached a named recovery-CLEAN commit under its stated store and durability assumptions. It does not prove:
 
 - that no later external write occurred;
 - that a stale snapshot was not restored;
@@ -1051,7 +1051,7 @@ Store capabilities describe alignment, transfer limits, flush, FUA, volatile wri
 
 Ordinary I/O completion is not durability. Each store incarnation and ordering domain assigns real monotonic watermarks to accepted writes. Completion reports the assigned watermark; fence evidence reports the greatest accepted watermark actually synchronized, never a guessed, future, sentinel, or cross-store value.
 
-A `PersistenceEvidence` or `FenceSet` is scoped to:
+A `PersistenceEvidence` or `PersistenceEvidenceSet` is scoped to:
 
 - one exact store incarnation;
 - one capability profile and ordering domain;
@@ -1102,7 +1102,7 @@ The transaction machine emits explicit actions such as:
 - read exact store ranges;
 - commit a recovery-state record or transition;
 - write data or parity;
-- obtain target-specific fence evidence;
+- obtain target-specific persistence evidence;
 - verify generation and readback evidence;
 - publish terminal outcome or recovery handoff.
 
@@ -1538,7 +1538,7 @@ A checksum worker:
 2. obtains or verifies the applicable target fence;
 3. reads the target range;
 4. calculates the digest;
-5. commits `Valid` only if topology, assignment, content generation, and fence evidence still match.
+5. commits `Valid` only if topology, assignment, content generation, and persistence evidence still match.
 
 If a foreground mutation races, the commit is rejected and the extent remains stale. The worker does not hold broad parity guards while waiting for unrelated scheduling.
 
@@ -1602,7 +1602,7 @@ Losing the only checksum index loses evidence, not surviving data. With all data
 
 ## 11.12 Checksum-profile migration
 
-A checksum-profile change is explicit and interruptible. DiskWeave creates a new set in `Building`, calculates generation- and fence-bound records while continuing to invalidate every active/building set on mutation, verifies exact required coverage, atomically selects the new set, and retires the old set only under the declared rollback and historical-retention policy. A crash cannot make a partially built set appear complete or resurrect a digest that escaped invalidation.
+A checksum-profile change is explicit and interruptible. DiskWeave creates a new set in `Building`, calculates generation- and persistence-evidence-bound records while continuing to invalidate every active/building set on mutation, verifies exact required coverage, atomically selects the new set, and retires the old set only under the declared rollback and historical-retention policy. A crash cannot make a partially built set appear complete or resurrect a digest that escaped invalidation.
 
 # 12. Read, degraded operation, scrub, repair, rebuild, and salvage
 
@@ -2226,7 +2226,7 @@ Evidence should cover at least these architecture properties:
 
 ## 16.3 Pure, property, and fuzz evidence
 
-Pure and generated evidence covers coding vectors, incremental/full equivalence, tails and zero extension, request split/coalesce equivalence, topology reorder under stable positions, generation-safe checkpointing, identity clones, role permutation, checksum transitions, protection-basis transitions, namespace placement, and recovery classification.
+Pure and generated evidence covers coding vectors, incremental/full equivalence, tails and zero extension, request split/coalesce equivalence, topology reorder under stable positions, generation-safe recovery-CLEAN commits, identity clones, role permutation, checksum transitions, protection-basis transitions, namespace placement, and recovery classification.
 
 Byte fuzzers target envelopes, manifests, trace parsers, migrations, range encodings, and local control messages. Structured generators create valid and invalid operation/fault/crash/topology schedules through the simulator. Fuzz results become minimized deterministic regression fixtures.
 
@@ -2249,7 +2249,7 @@ The primary independent abstract model remains PlusCal/TLA+ checked by TLC, with
 
 - durable write-recovery record and integrity invalidation;
 - data/parity mutation and uncertain completion;
-- fences, checkpoint, and clean/current promotion;
+- fences, recovery-CLEAN commits, and clean/current promotion;
 - operation obligations;
 - crash, power loss, store loss, and conservative recovery;
 - protection-epoch opening and range-basis transitions;
@@ -2489,7 +2489,7 @@ Adopting v0.9 would require coherent review of existing canonical semantics for:
 
 - architecture and portable I/O contracts;
 - topology, identity, recovery-state authority, and metadata loss;
-- dirty/integrity invalidation and checkpoint semantics;
+- dirty/integrity invalidation and recovery-CLEAN semantics;
 - checksum retention and historical evidence;
 - degraded read, parity verification, scrub, repair, rebuild, restore, and salvage;
 - parity-envelope generation summaries;
