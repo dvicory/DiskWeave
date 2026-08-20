@@ -318,8 +318,8 @@ The demo uses ordinary files in a new temporary directory:
 ```sh
 DWV_DEMO_ROOT="$(mktemp -d /tmp/dwv-demo.XXXXXX)"
 
-cargo run --bin dwv -- demo file init --root "$DWV_DEMO_ROOT"
-cargo run --bin dwv -- demo file run --root "$DWV_DEMO_ROOT"
+cargo run --bin dwv -- demo init --root "$DWV_DEMO_ROOT"
+cargo run --bin dwv -- demo run --root "$DWV_DEMO_ROOT"
 ```
 
 A successful run performs healthy I/O, degraded reading, rebuilding, and final
