@@ -637,3 +637,282 @@ Observed:
   implementation-conformance or hardware/durability proof. Abstract
   same-operation generation coexistence tests exact correlation only; it does
   not model physical slot reuse ordering.
+
+
+# CodedRangeClean delegated-model evidence (executed, bounded)
+
+Date: 2026-08-20
+
+Sources:
+
+- `models/quint/CodedRangeClean.qnt`
+- `verification/quint/CodedRangeCleanAnalysis.qnt`
+- `verification/quint/CodedRangeCleanReplay.qnt`
+- `verification/quint/CodedRangeCleanMutants.qnt`
+- `verification/quint/CodedRangeCleanConflictExhaustive.qnt`
+- `verification/quint/CodedRangeCleanCaptureExhaustive.qnt`
+- `verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt`
+- `verification/quint/CodedRangeCleanCompositionExhaustive.qnt`
+- `verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt`
+- `verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt`
+
+Semantic and delegation repairs:
+
+- The canonical relation stores one capture-wide
+  `CaptureSatisfactionObservation` supplied by the CLEAN owner. It does not
+  retain or recompute a generic handoff, per-operation satisfaction map, or
+  separate `CleanEvidence` axis. `DispositionDurableHandoff` alone has no
+  CLEAN meaning.
+- `CaptureCommitUnknown` is the sole stored CLEAN-commit uncertainty phase.
+  `CleanCommitObservation` is an action input; durable and rejected outcomes
+  become `CaptureCleanKnown` and `CaptureRefused`, respectively. Reconciliation
+  is a separate authoritative action.
+- Later-cut outcomes remain orthogonal membership statuses. Later-cut Unknown
+  is distinct from CLEAN-commit Unknown and blocks active later effects. Before
+  durable CLEAN it may reconcile only to a stale/refused boundary or rejection;
+  after durable CLEAN it may reconcile only to a durable-after-CLEAN cut or
+  rejection, preserving `CaptureCleanKnown`.
+- Definitive `CaptureRefused` retains conservative dirty/stale consequences
+  and stops future-admission classification and durable-cut obligations. No
+  retirement/compaction state is modeled because no current or proposed owner
+  requirement establishes one.
+- Exact external `ReleaseAllowed` is the sole coded-removal authority.
+  Capture uncertainty neither supplies nor negates that external fact.
+  `RecoveryProtocol.qnt`, its analysis, and its Connect evidence remain
+  separate and unchanged.
+- `init` is setup rather than an ordinary protocol step; repeated/no-op
+  observations are rejected; nondeterministic identifiers are scoped to
+  consuming actions; redundant stored facts were removed only where the
+  canonical phase/membership or external owner already carries the exact
+  meaning.
+
+The declaration-level projection map in
+`openspec/changes/define-coded-range-clean-coordination/design.md` names every
+remaining model distinction and its future Connect seam or external owner.
+It does not claim a Connect or Rust implementation exists.
+
+Static checks:
+
+```text
+quint typecheck models/quint/CodedRangeClean.qnt
+quint typecheck verification/quint/CodedRangeCleanAnalysis.qnt
+quint typecheck verification/quint/CodedRangeCleanReplay.qnt
+quint typecheck verification/quint/CodedRangeCleanMutants.qnt
+quint typecheck verification/quint/CodedRangeCleanConflictExhaustive.qnt
+quint typecheck verification/quint/CodedRangeCleanCaptureExhaustive.qnt
+quint typecheck verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt
+quint typecheck verification/quint/CodedRangeCleanCompositionExhaustive.qnt
+quint typecheck verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt
+quint typecheck verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt
+=> all ten exited 0 with no output
+```
+
+Deterministic scenarios:
+
+```text
+quint test verification/quint/CodedRangeCleanAnalysis.qnt --main CodedRangeCleanAnalysis \
+  --match '^(boundedAssumptionsTest|disjointClaimsCanCoexist|sameCodedClaimConflicts|nonTransitiveOverlapLeavesDisjointClaimsAvailable|incompleteClaimCannotReachEffect|unadmittedClaimCannotReachEffect|captureMembershipIsIncludedThenLater|includedOperationCanCommitAndClean|missingCleanDecisionCannotClean|cleanOwnerDecisionEnablesClean|rejectedCleanDecisionRefusesCapture|unknownCleanDoesNotNegateExternalRelease|unknownCleanCanReconcileDurably|laterMutationUsesDurableAfterCleanCut|unknownLaterCutAfterDurableCleanReconcilesDurably|unknownLaterCutBeforeDurableCleanBlocksCleanCommit|unknownLaterCutAfterDurableCleanReconcilesRejected|unknownLaterCutAfterDurableCleanCannotReconcileStale|staleLaterCutAfterDurableCleanIsRejected|newerDurableBoundaryStalesOlderClean|resolvingOneCaptureDoesNotDischargeAnother|unknownLaterCutBeforeCleanCannotReconcileAfterClean|rejectedLaterCutRefusesEffect|removalNeedsExactExternalAuthorization|releasedHistoryNeedNotRemainEnumerable|activeHistoryRemainsEnumerable)$' \
+  --max-samples 1 --seed 22082026
+=> 26 passing
+
+quint test verification/quint/CodedRangeCleanConflictExhaustive.qnt \
+  --main CodedRangeCleanConflictExhaustive \
+  --match 'bridgeRefusedWhileBothConflictsHeld|bridgeRefusedUntilUnit0ConflictReleases|nonTransitiveBridgeWaitsForBothConflicts' \
+  --max-samples 1 --seed 22082026
+=> 3 passing
+
+quint test verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt \
+  --main CodedRangeCleanCleanCommitPhaseCut \
+  --match 'durableCommitPhaseCut|rejectedCommitPhaseCut' \
+  --max-samples 1 --seed 22082026
+=> 2 passing
+
+quint test verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt \
+  --main CodedRangeCleanLaterCutPhaseCut \
+  --match 'durableAfterCleanLaterCutPhaseCut|rejectedLaterCutPhaseCut' \
+  --max-samples 1 --seed 22082026
+=> 2 passing
+
+quint test verification/quint/CodedRangeCleanCompositionExhaustive.qnt \
+  --main CodedRangeCleanCompositionExhaustive \
+  --match 'compositionDurablePath|compositionRejectedPath' \
+  --max-samples 1 --seed 22082026
+=> 2 passing
+```
+
+These scenarios cover coded overlap/disjoint coexistence, complete and
+partial admission, exhaustive Included/Later membership, one external
+capture-wide CLEAN decision, definitive refusal, CLEAN-commit durable/
+rejected/unknown paths, independent external release during CLEAN-commit
+Unknown, later-cut durable/rejected/unknown paths, the valid post-CLEAN
+Unknown interval, refusal to commit CLEAN over a pre-existing later-cut
+Unknown, rejection of reconciliation results from the wrong side of durable
+CLEAN, independent obligations across two captures, stale refusal, exact
+removal authorization, and the full composition predicates.
+
+Small exhaustive profiles use the same imported canonical relation. Domains
+and exact completed bounds are:
+
+```text
+quint verify verification/quint/CodedRangeCleanConflictExhaustive.qnt \
+  --main CodedRangeCleanConflictExhaustive --max-steps 3 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 3
+
+quint verify verification/quint/CodedRangeCleanCaptureExhaustive.qnt \
+  --main CodedRangeCleanCaptureExhaustive --max-steps 5 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 5
+
+quint verify verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt \
+  --main CodedRangeCleanUncertaintyExhaustive --max-steps 4 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 4
+
+quint verify verification/quint/CodedRangeCleanCompositionExhaustive.qnt \
+  --main CodedRangeCleanCompositionExhaustive --max-steps 6 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 6
+```
+
+The uncertainty profile also produced direct sampled witness evidence at the
+completed depth:
+
+```text
+quint run verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt \
+  --main CodedRangeCleanUncertaintyExhaustive --max-steps 4 \
+  --max-samples 100000 --seed 22082026 --invariants ProfileInvariants \
+  --witnesses cleanCommitUnknownAtCompletedBoundReachable \
+    laterCutUnknownAtCompletedBoundReachable --verbosity 1
+=> no violation; 100000 traces explored
+=> cleanCommitUnknownAtCompletedBoundReachable: 683 traces
+=> laterCutUnknownAtCompletedBoundReachable: 4221 traces
+```
+
+The conflict profile has three operation identities (`opA`, `opBridge`,
+`opB`), one capture identity, and two coded units. The capture profile has
+two operations, one capture, and one coded unit; its strongest completed
+bound is depth 5. The uncertainty profile has two operations, one capture,
+and one coded unit; both `CleanCommitUnknown` and `LaterCutUnknown` are
+witnessed from canonical `init` at its completed depth 4. That bound does not
+reach every deeper reconciliation prefix, so the explicit phase-cut profiles
+carry that evidence. The composition profile has two operations, one capture,
+and two coded units; its strongest completed bound is depth 6.
+
+The attempted capture depth 7 and composition depth 13 checks timed out
+without a result (300 seconds and 900 seconds, respectively) and are not
+claimed. No deeper bound is claimed.
+
+Phase-cut profiles were checked with their actual `phaseStep` action:
+
+```text
+quint verify verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt \
+  --main CodedRangeCleanCleanCommitPhaseCut --step phaseStep --max-steps 6 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 6
+
+quint verify verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt \
+  --main CodedRangeCleanLaterCutPhaseCut --step phaseStep --max-steps 6 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 6
+```
+
+The later phase-cut depth 10 attempt timed out at 300 seconds and is not
+claimed. Both profiles begin at canonical `init` and establish their modeled
+prefixes; they do not establish external lifecycle preconditions.
+
+Sampled invariant and witness analysis:
+
+```text
+quint run verification/quint/CodedRangeCleanAnalysis.qnt --main CodedRangeCleanAnalysis \
+  --max-steps 24 --max-samples 100000 --seed 22082026 \
+  --invariants AllBoundedInvariants \
+  --witnesses completeClaimAdmissionReachable overlapConflictReachable disjointClaimsCoexistReachable captureIncludedReachable captureLaterReachable captureSatisfactionAcceptedReachable captureSatisfactionRejectedReachable effectPossibleReachable releasedReachable cleanCommitPendingReachable cleanKnownReachable cleanRefusedReachable cleanUnknownReachable cleanReconciledReachable laterCutAfterCleanReachable laterCutStalesCleanReachable laterCutRejectedReachable laterCutUnknownReachable laterCutReconciledRejectedReachable laterCutReconciledAfterCleanReachable conservativeDirtyReachable releasedHistoryOmittedReachable activeHistoryRetainedReachable externalRemovalUnderCleanUnknownReachable \
+  --verbosity 1
+=> no violation; 100000 traces explored
+```
+
+All 24 requested witnesses were non-zero:
+
+| Witness | Count |
+|---|---:|
+| `completeClaimAdmissionReachable` | 100000 |
+| `overlapConflictReachable` | 52834 |
+| `disjointClaimsCoexistReachable` | 25567 |
+| `captureIncludedReachable` | 17014 |
+| `captureLaterReachable` | 27523 |
+| `captureSatisfactionAcceptedReachable` | 45984 |
+| `captureSatisfactionRejectedReachable` | 46010 |
+| `effectPossibleReachable` | 36213 |
+| `releasedReachable` | 99999 |
+| `cleanCommitPendingReachable` | 38839 |
+| `cleanKnownReachable` | 15872 |
+| `cleanRefusedReachable` | 84127 |
+| `cleanUnknownReachable` | 11899 |
+| `cleanReconciledReachable` | 15872 |
+| `laterCutAfterCleanReachable` | 2482 |
+| `laterCutStalesCleanReachable` | 7614 |
+| `laterCutRejectedReachable` | 10230 |
+| `laterCutUnknownReachable` | 6672 |
+| `laterCutReconciledRejectedReachable` | 10230 |
+| `laterCutReconciledAfterCleanReachable` | 2482 |
+| `conservativeDirtyReachable` | 84127 |
+| `releasedHistoryOmittedReachable` | 82986 |
+| `activeHistoryRetainedReachable` | 17014 |
+| `externalRemovalUnderCleanUnknownReachable` | 7396 |
+
+Deterministic replay:
+
+```text
+quint test verification/quint/CodedRangeCleanReplay.qnt --main CodedRangeCleanReplay \
+  --match replaySeededPath --max-samples 1 --seed 22082026
+=> replaySeededPath passed 1 test
+
+quint run verification/quint/CodedRangeCleanReplay.qnt --main CodedRangeCleanReplay \
+  --max-steps 12 --max-samples 1 --n-traces 1 --seed 22082026 \
+  --out-itf /tmp/coded-range-clean-replay-a.itf.json --verbosity 0
+quint run verification/quint/CodedRangeCleanReplay.qnt --main CodedRangeCleanReplay \
+  --max-steps 12 --max-samples 1 --n-traces 1 --seed 22082026 \
+  --out-itf /tmp/coded-range-clean-replay-b.itf.json --verbosity 0
+=> normalized traces byte-identical; both SHA-256 =
+   e5ebeb0ed9e749c26e9f238179546d26e4207b4e97294b78d0cdef2ea46ff935
+```
+
+Negative mutants:
+
+```text
+quint test verification/quint/CodedRangeCleanMutants.qnt \
+  --main CodedRangeCleanMutants \
+  --match 'perMemberInsteadOfCodedConflictFails|connectedComponentSerializationKillsDisjointWitness|partialAdmissionBeforeEffectFails|unclassifiedAdmissionFailsExhaustiveness|disappearingIncludedOperationFailsRetention|laterEffectWithoutCutFails|unsatisfiedIncludedWorkCannotBeClean|rejectedSatisfactionCannotRemainActive|unknownCleanCannotBecomeKnown|unknownLaterCutCannotAllowEffect|staleCaptureCannotRemainClean|removalWithoutExternalReleaseAllowedFails' \
+  --max-samples 1 --seed 22082026
+=> all 12 deliberately bad paths failed their expected safety predicate
+   (`QNT508`); command exit is intentionally non-zero for this negative suite
+```
+
+Mutant mappings are coded overlap, disjoint-claim serialization, admission
+completeness, exhaustive membership, later durable-cut gating, no-false-CLEAN,
+rejected decision refusal, CLEAN-commit Unknown reconciliation, later-cut
+Unknown gating, stale-capture refusal, and removal without exact external
+`ReleaseAllowed`.
+
+Non-claims and unresolved seams:
+
+- This is bounded delegated-model evidence, not arbitrary-width proof, Rust
+  correctness, Connect conformance, or production concurrency evidence.
+- Completed end-to-end bounds are exactly depths 3, 5, 4, and 6 for conflict,
+  capture, uncertainty, and composition. Phase-cut bounds are depth 6 each.
+  Timed-out depth 7, depth 10, and depth 13 attempts are not successes.
+- Phase cuts begin at canonical `init` and establish their modeled prefixes;
+  they do not establish external lifecycle preconditions or end-to-end
+  production coverage.
+- The evidence does not establish topology/profile mapping,
+  request/store/dirty/checksum geometry, persistence admissibility,
+  recovery-adapter correctness, lifecycle terminality, sessions, startup,
+  shutdown, publication, currentization, physical locking, or hardware
+  durability.
+- `RecoveryProtocol.qnt` and its existing analysis/Connect evidence remain
+  separate and are not evidence for this relation.
+- No Rust or Connect implementation was added. OpenSpec tasks 2.4 and 2.5
+  are complete: the delegated relation is synchronized into the active change
+  deltas and adversarial review found no blocker or high findings. Sections
+  4-5 remain the implementation, verification, and canonicalization gates.

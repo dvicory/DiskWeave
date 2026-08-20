@@ -587,3 +587,73 @@ non_claims = [
   "Abstract simultaneous same-operation generation coexistence and historical authorization retention after physical slot reuse remain outside this Connect claim.",
   "The projection does not change LifecycleRelease.qnt, CodedRangeClean.qnt, RecoveryProtocol.qnt, or downstream integration behavior.",
 ]
+
+
+[[evidence]]
+id = "evidence.coded-range-clean-model"
+path = "docs/verification/portable-verification-evidence.md"
+claim = "The CodedRangeClean delegated-model record supplies executed bounded evidence for coded conflict, one external capture-wide CLEAN-owner decision, bounded membership, separate CLEAN-commit and later-cut uncertainty reconciliation, conservative refusal, exact external removal authorization, deterministic replay, non-vacuous witnesses, and seeded negative mutants."
+tier = "portable-bounded-model"
+fault_model = [
+  "overlapping coded claims",
+  "disjoint coded claims incorrectly serialized",
+  "incomplete claim admission",
+  "unclassified capture membership",
+  "generic durable handoff treated as CLEAN sufficiency",
+  "capture-wide CLEAN decision omitted or bypassed",
+  "rejected CLEAN-owned satisfaction left active",
+  "active membership incorrectly omitted",
+  "unsatisfied or unknown CLEAN",
+  "later mutation without durable cut",
+  "unknown later cut treated as durable",
+  "later-cut reconciliation assigned to the wrong side of durable CLEAN",
+  "stale capture incorrectly remains CLEAN",
+  "unauthorized coded-claim removal",
+]
+scope = [
+  "models/quint/CodedRangeClean.qnt",
+  "verification/quint/CodedRangeCleanAnalysis.qnt",
+  "verification/quint/CodedRangeCleanReplay.qnt",
+  "verification/quint/CodedRangeCleanMutants.qnt",
+  "verification/quint/CodedRangeCleanConflictExhaustive.qnt",
+  "verification/quint/CodedRangeCleanCaptureExhaustive.qnt",
+  "verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt",
+  "verification/quint/CodedRangeCleanCompositionExhaustive.qnt",
+  "verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt",
+  "verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt",
+  "three operation identities and two capture identities in sampled analysis",
+  "two coded units in sampled analysis",
+  "finite valid/invalid claims and scopes plus external lower-frontier summary boolean",
+  "conflict exhaustive profile: 3 operations, 1 capture, 2 coded units, completed depth 3",
+  "capture exhaustive profile: 2 operations, 1 capture, 1 coded unit, completed depth 5",
+  "uncertainty exhaustive profile: 2 operations, 1 capture, 1 coded unit, completed depth 4",
+  "composition exhaustive profile: 2 operations, 1 capture, 2 coded units, completed depth 6",
+  "CLEAN-commit phase cut: 1 operation, 1 capture, 1 coded unit, phaseStep depth 6",
+  "later-cut phase cut: 2 operations, 1 capture, 1 coded unit, phaseStep depth 6",
+  "26 direct canonical scenarios plus 3 conflict, 2 composition, and 4 phase-cut predicates",
+  "sampled analysis max-steps 24 and max-samples 100000",
+  "uncertainty-profile Unknown witnesses at max-steps 4 and max-samples 100000",
+  "deterministic replay seed 22082026",
+  "12 negative mutant expectations",
+]
+requirements = [
+  "req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts",
+  "req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
+  "req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set",
+  "req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+  "req.dirty-integrity-invalidation.transitions-and-evidence-are-deterministic",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
+  "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+  "req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence",
+]
+non_claims = [
+  "This is bounded delegated-model evidence, not arbitrary-width proof, Rust correctness, Connect conformance, or production concurrency evidence.",
+  "Completed end-to-end bounds are exactly 3, 5, 4, and 6 for conflict, capture, uncertainty, and composition; phaseStep bounds are depth 6 each.",
+  "Capture depth 7, later phase-cut depth 10, and composition depth 13 timed out and are not claimed.",
+  "Phase-cut profiles begin at canonical init and establish their modeled prefixes; they do not establish external lifecycle preconditions or end-to-end production coverage.",
+  "It does not establish topology/profile mapping, request/store/dirty/checksum geometry, persistence admissibility, recovery-adapter correctness, lifecycle terminality, sessions, startup, shutdown, publication, currentization, physical locking, or hardware durability.",
+  "RecoveryProtocol.qnt and its existing analysis/Connect evidence remain separate and are not evidence for this relation.",
+  "Finite bounds are evidence-only and do not define production cardinality, lock, counter, frontier, or mechanism.",
+]
