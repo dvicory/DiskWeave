@@ -19,12 +19,12 @@ The semantic store SHALL atomically persist the affected dirty regions and stale
 - **WHEN** one recovery transaction marks a region dirty and invalidates a valid extent
 - **THEN** the resulting snapshot records both changes at one committed recovery generation and no valid digest remains authoritative for that extent
 
-#### Scenario: Recovery intent commit is rejected before authoritative commit
+#### Scenario: The write-recovery record is rejected before it becomes durable
 
 - **WHEN** the transaction is rejected or generation-mismatched before authoritative commit
 - **THEN** the proposed transaction does not become authoritative, the prior snapshot remains authoritative, and the caller receives no permission for a data/parity write
 
-#### Scenario: Recovery intent commit observation is lost, corrupt, or indeterminate
+#### Scenario: The write-recovery record's commit outcome cannot be determined
 
 - **WHEN** commitment may have occurred but its observation is lost, corrupt, or cannot be classified safely
 - **THEN** neither the prior nor proposed resulting snapshot may be assumed authoritative for a data/parity write, no data/parity-write permission exists, and reconciliation through the commit-observation contract is required
@@ -35,12 +35,12 @@ The semantic store SHALL atomically persist the affected dirty regions and stale
 
 The recovery store SHALL own the admissibility of persistence evidence used for durable recovery `CLEAN`, valid-integrity, and clean-session claims. Evidence SHALL identify the store incarnation, ordering domain, accepted and synchronized-through watermarks, topology epoch, affected range or region, capability evidence, and relevant generations. A claim SHALL be rejected when required evidence is missing, volatile, future, stale, partial, cross-store, or mismatched.
 
-#### Scenario: A region is cleared after valid typed evidence
+#### Scenario: A dirty region is cleared after persistence evidence
 
 - **WHEN** a dirty region has admissible covering persistence evidence and one recovery transaction commits recovery state `CLEAN`
 - **THEN** the region may become `CLEAN` and the transition generation is durably recorded
 
-#### Scenario: Volatile completion is supplied as durable authority
+#### Scenario: I/O completion does not prove persistence
 
 - **WHEN** a caller attempts a clean or valid claim using volatile or unknown persistence evidence
 - **THEN** the operation is rejected and the affected state remains dirty, stale, or indeterminate
@@ -71,7 +71,7 @@ The recovery boundary SHALL expose a bounded semantic snapshot/manifest, writabl
 
 Evaluation SHALL provide deterministic fixtures for candidate journal modes, synchronization modes, checkpoint policies, process reset, VM reset, power loss, commit rejection, lost commit acknowledgement, missing state, main-state corruption, and journal-state corruption. Each fixture SHALL state the conservative semantic result and evidence still required; fixture presence SHALL NOT select a production SQLite mode.
 
-#### Scenario: A dirty-intent commit is rejected or uncertain
+#### Scenario: The write-recovery record is rejected or its outcome is unknown
 
 - **WHEN** the simulator reports that the recovery commit did not become durably known
 - **THEN** the expected result forbids a data/parity write and requires reconciliation
@@ -86,7 +86,7 @@ Evaluation SHALL provide deterministic fixtures for candidate journal modes, syn
 
 The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corrupt commit observations. The semantic store SHALL accept a transaction as a protocol fact only when the adapter reports durable commitment. A rejected commit SHALL leave the exact prior semantic state authoritative. Before a concrete writable adapter attempts to publish proposed state, it SHALL durably preserve enough exact prior/proposed semantic evidence to resolve an interrupted or uncertain commit after process-local state is released. After a lost or corrupt acknowledgement for an operation that may have committed, process-local belief SHALL authorize no dependent data/parity write; the caller SHALL release that belief and reopen the durable artifact through current semantic validation.
 
-#### Scenario: A checkpoint acknowledgement is lost
+#### Scenario: Recovery CLEAN cannot be confirmed
 
 - **WHEN** a backend may have committed recovery state `CLEAN` but cannot prove the resulting semantic state
 - **THEN** the result requires reconciliation, no clean or writable claim is inferred, and dependent data/parity writes stop
@@ -106,7 +106,7 @@ The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corr
 - **WHEN** reopened state differs semantically from both prior and proposed state, cannot be read, or cannot be interpreted currently
 - **THEN** reconciliation remains required and neither candidate authorizes dependent data/parity writes
 
-#### Scenario: Inspection encounters unresolved commit intent
+#### Scenario: Inspection finds an unresolved write-recovery record outcome
 
 - **WHEN** read-only inspection encounters a durable prior/proposed write-recovery-record commit outcome that writable reopen has not reconciled
 - **THEN** it reports that reconciliation is required before manifest classification and does not initialize, migrate, clean up, or otherwise mutate semantic state

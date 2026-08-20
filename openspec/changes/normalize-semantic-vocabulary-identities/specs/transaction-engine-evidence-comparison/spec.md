@@ -35,7 +35,7 @@ The comparison SHALL normalize action and result traces to deterministic sequenc
 
 The comparison SHALL drive deterministic schedules covering successful completion, EIO/failure, delayed and out-of-order completion, short I/O, uncertain completion, frontend abandonment before and after the irreversible boundary, daemon crash at each suspension point, power loss after each modeled persistence transition, duplicate delivery, and stale operation-slot tokens.
 
-#### Scenario: Failure before durable intent
+#### Scenario: Failure occurs before the write-recovery record is durable
 
 - **WHEN** range acquisition or the first write-recovery-record action fails before durable `DIRTY` state
 - **THEN** both engines classify the transaction as safely aborted or report a mismatch; neither may claim a data/parity write occurred

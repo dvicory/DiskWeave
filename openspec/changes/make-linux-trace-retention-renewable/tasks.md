@@ -23,4 +23,4 @@
 ## 4. Canonicalization and Archive
 
 - [ ] 4.1 Run strict OpenSpec verification, archive `make-linux-trace-retention-renewable`, add the unchanged canonical requirement's implementation and evidence links, and resolve every affected reviewed-requirement gate individually.
-- [ ] 4.2 Run `cargo xtask docs knowledge readiness`, `cargo xtask docs check`, and `cargo xtask docs build`; update the U37/A17 campaign state with final canonical, implementation, evidence, and Bead anchors before closing the change.
+- [ ] 4.2 Run `cargo xtask docs knowledge readiness`, `cargo xtask docs check`, and `cargo xtask docs build`; update the **mounted-service trace continuity and renewable diagnostic retention** and `arch.diskweave.correctness-resources-are-bounded-and-observable` campaign state with final canonical, implementation, evidence, and Bead anchors before closing the change.

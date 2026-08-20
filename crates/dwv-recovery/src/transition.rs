@@ -17,10 +17,10 @@ pub enum TransitionOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum TransitionKind {
-    Intent,
-    HomeMutation,
+    WriteRecoveryRecord,
+    DataParityWrite,
     Fence,
-    Checkpoint,
+    RecoveryClean,
     SessionClose,
 }
 
@@ -103,7 +103,7 @@ mod tests {
         let event = TransitionEvidence::new(
             RecoveryTransitionId(4),
             2,
-            TransitionKind::Intent,
+            TransitionKind::WriteRecoveryRecord,
             TransitionOutcome::Uncertain,
             TopologyEpoch(3),
             RecoveryGeneration(7),
@@ -129,7 +129,7 @@ mod tests {
         let event = TransitionEvidence::new(
             RecoveryTransitionId(1),
             0,
-            TransitionKind::Checkpoint,
+            TransitionKind::RecoveryClean,
             TransitionOutcome::Refused,
             TopologyEpoch(1),
             RecoveryGeneration(2),

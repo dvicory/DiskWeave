@@ -1,4 +1,4 @@
-# Human guide
+# DiskWeave Guide
 
 DiskWeave is a parity engine for ordinary block-image files. It keeps data members
 independently readable, stores parity separately, and uses explicit recovery state

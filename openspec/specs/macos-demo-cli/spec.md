@@ -27,7 +27,7 @@ The demo SHALL expose a `dwv` entrypoint with a documented command surface for f
 ### Requirement: Demo fixture ownership is explicit
 <!-- dwv:req req.macos-demo-cli.demo-fixture-ownership-is-explicit -->
 
-The demo SHALL operate on a bounded disposable fixture root containing an identifiable demo manifest and all referenced files. Initialization SHALL establish ownership and expected identities for the root, member payloads, parity payload, recovery state, replacement targets, and evidence. Commands SHALL resolve fixture references within that owned root and SHALL refuse missing, ambiguous, aliased, or ownership-inconsistent entries before payload mutation.
+The demo SHALL operate on a bounded disposable fixture root containing an identifiable demo manifest and all referenced files. Initialization SHALL establish ownership and expected identities for the root, member payloads, parity payload, recovery state, replacement targets, and evidence. Commands SHALL resolve fixture references within that owned root and SHALL refuse missing, ambiguous, aliased, or ownership-inconsistent entries before changing data, parity, or recovery state.
 
 #### Scenario: A new disposable fixture is initialized
 
@@ -37,7 +37,7 @@ The demo SHALL operate on a bounded disposable fixture root containing an identi
 #### Scenario: An existing fixture has an unexpected path or identity
 
 - **WHEN** a referenced file is missing, replaced, aliased, outside the owned root, or has a mismatched identity or protected length
-- **THEN** the command refuses the operation before mutating payload or recovery state and reports the required reconciliation
+- **THEN** the command refuses the operation before changing data, parity, or recovery state and reports the required reconciliation
 
 ### Requirement: The offline demo exercises healthy and recoverable behavior
 <!-- dwv:req req.macos-demo-cli.the-offline-demo-exercises-healthy-and-recoverable-behavior -->
@@ -77,7 +77,7 @@ Status, state explanation, member/identity evidence, capability evidence, inspec
 ### Requirement: State-changing workflows require an identity-bound plan
 <!-- dwv:req req.macos-demo-cli.state-changing-workflows-require-an-identity-bound-plan -->
 
-Every state-changing demo workflow SHALL first produce a plan containing the expected fixture/member identities, topology and recovery generations, protected ranges, evidence used, persistent-state impact, and rollback limits. Execution SHALL require a confirmation value that matches the displayed plan and SHALL revalidate the plan before any irreversible payload mutation. A plan or confirmation mismatch SHALL preserve the fixture and recovery state.
+Every state-changing demo workflow SHALL first produce a plan containing the expected fixture/member identities, topology and recovery generations, protected ranges, evidence used, persistent-state impact, and rollback limits. Execution SHALL require a confirmation value that matches the displayed plan and SHALL revalidate the plan before any irreversible data/parity or recovery-state change. A plan or confirmation mismatch SHALL preserve the fixture and recovery state.
 
 #### Scenario: A rebuild plan is confirmed
 
@@ -87,7 +87,7 @@ Every state-changing demo workflow SHALL first produce a plan containing the exp
 #### Scenario: A plan is stale or altered
 
 - **WHEN** the fixture, topology, recovery generation, ranges, replacement identity, or confirmation value differs from the displayed plan
-- **THEN** execution refuses before payload mutation and reports the stale or mismatched plan
+- **THEN** execution refuses before changing data, parity, or recovery state and reports the stale or mismatched plan
 
 ### Requirement: The CLI remains a replaceable boundary over portable semantics
 <!-- dwv:req req.macos-demo-cli.the-cli-remains-a-replaceable-boundary-over-portable-semantics -->

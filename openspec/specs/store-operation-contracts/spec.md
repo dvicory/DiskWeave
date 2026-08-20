@@ -26,7 +26,7 @@ Each store operation SHALL identify the operation, requested range, exact comple
 ### Requirement: Store write watermarks are real monotonic evidence
 <!-- dwv:req req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence -->
 
-Each store incarnation and ordering domain SHALL assign a monotonic watermark to every accepted write. Write completion SHALL report the exact assigned watermark. Flush evidence SHALL name the same store incarnation and SHALL report a synchronized-through watermark no greater than the highest write that the store actually synchronized. Sentinel, guessed, future, stale, partial, or cross-store watermarks SHALL NOT authorize a fence, checkpoint, clean transition, or resource release.
+Each store incarnation and ordering domain SHALL assign a monotonic watermark to every accepted write. Write completion SHALL report the exact assigned watermark. Flush evidence SHALL name the same store incarnation and SHALL report a synchronized-through watermark no greater than the highest write that the store actually synchronized. Sentinel, guessed, future, stale, partial, or cross-store watermarks SHALL NOT authorize a fence, recovery state `CLEAN` transition, or resource release.
 
 #### Scenario: A store synchronizes accepted writes
 

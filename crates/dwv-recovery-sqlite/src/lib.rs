@@ -90,9 +90,9 @@ impl SqliteEvaluationMatrix {
     pub fn fixtures(&self) -> Vec<SqliteEvaluationFixture> {
         let scenarios = [
             (
-                "process-reset-after-durable-dirty-intent",
+                "process-reset-after-durable-write-recovery-record",
                 SqliteResetBoundary::Process,
-                SqliteFailurePoint::AfterDurableDirtyIntent,
+                SqliteFailurePoint::AfterDurableWriteRecoveryRecord,
                 RecoveryCommitObservation::Durable,
                 RecoveryStoreHealth::Healthy,
                 RecoveryDisposition::Proceed,
@@ -114,7 +114,7 @@ impl SqliteEvaluationMatrix {
                 RecoveryDisposition::ReconcileReadOnly,
             ),
             (
-                "commit-rejected-before-home-mutation",
+                "commit-rejected-before-data-parity-write",
                 SqliteResetBoundary::Process,
                 SqliteFailurePoint::CommitRejected,
                 RecoveryCommitObservation::Rejected,
@@ -167,7 +167,7 @@ impl SqliteEvaluationMatrix {
                         observation: *observation,
                         expected_health: *expected_health,
                         expected_disposition: *expected_disposition,
-                        permits_home_mutation: *expected_disposition
+                        permits_data_parity_write: *expected_disposition
                             == RecoveryDisposition::Proceed,
                     },
                 )
@@ -185,7 +185,7 @@ pub enum SqliteResetBoundary {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SqliteFailurePoint {
-    AfterDurableDirtyIntent,
+    AfterDurableWriteRecoveryRecord,
     AfterDurableCheckpoint,
     DuringJournalSync,
     CommitRejected,
@@ -203,7 +203,7 @@ pub struct SqliteEvaluationFixture {
     pub observation: RecoveryCommitObservation,
     pub expected_health: RecoveryStoreHealth,
     pub expected_disposition: RecoveryDisposition,
-    pub permits_home_mutation: bool,
+    pub permits_data_parity_write: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1865,13 +1865,13 @@ mod tests {
         assert_eq!(fixtures.len(), matrix.cases.len() * 7);
         assert!(fixtures.iter().any(|fixture| {
             fixture.failure == SqliteFailurePoint::MissingDatabase
-                && !fixture.permits_home_mutation
+                && !fixture.permits_data_parity_write
                 && fixture.expected_disposition == RecoveryDisposition::RebuildFromData
         }));
         assert!(fixtures.iter().any(|fixture| {
             fixture.failure == SqliteFailurePoint::CommitRejected
                 && fixture.expected_disposition == RecoveryDisposition::ReconcileReadOnly
-                && !fixture.permits_home_mutation
+                && !fixture.permits_data_parity_write
         }));
     }
 }

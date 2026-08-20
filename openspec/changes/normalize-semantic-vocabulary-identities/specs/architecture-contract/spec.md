@@ -3,9 +3,9 @@
 ### Requirement: Durable authority and uncertainty are not inferred
 <!-- dwv:req req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred -->
 
-Acknowledgement, completion, persistence, durability, recovery `CLEAN`, integrity validity, and recovery authorization SHALL remain distinct facts. A protected state change SHALL require its applicable durable prerequisite and current authority evidence. Failed, short, cancelled, abandoned, crashed, lost, stale, or uncertain effects SHALL remain visible and SHALL NOT be converted into recovery `CLEAN`, valid integrity, writable authorization, or proof that an irreversible effect did not occur.
+Acknowledgement, completion, persistence, durability, recovery `CLEAN`, integrity validity, and recovery authorization SHALL remain distinct facts. A data/parity write SHALL require the applicable durable write-recovery record and current authority evidence. Failed, short, cancelled, abandoned, crashed, lost, stale, or uncertain effects SHALL remain visible and SHALL NOT be converted into recovery `CLEAN`, valid integrity, writable authorization, or proof that an irreversible effect did not occur.
 
-#### Scenario: A protected write is acknowledged before a fence
+#### Scenario: Caller observes completion before persistence evidence is available
 
 - **WHEN** a caller observes write completion but covering persistence evidence is unavailable
 - **THEN** the request may report completion only at the established scope and recovery state remains dirty, uncertain, or otherwise conservative

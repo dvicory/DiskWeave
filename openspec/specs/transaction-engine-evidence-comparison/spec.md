@@ -8,81 +8,57 @@ selecting a production transaction engine.
 ### Requirement: Both engines consume and emit the same semantic contract
 <!-- dwv:req req.transaction-engine-evidence-comparison.both-engines-consume-and-emit-the-same-semantic-contract -->
 
-The comparison SHALL provide both engines with the same transaction identity,
-topology/recovery generations, ranges, dirty regions, integrity extents, reads,
-parity plan, writes, stores, watermarks, and limits. Backend child operations,
-runtime handles, and `procmachines` internals SHALL NOT cross the semantic
-comparison boundary.
+The comparison SHALL provide both engines with the same transaction identity, topology/recovery generations, ranges, dirty regions, integrity extents, reads, parity plan, writes, stores, watermarks, and limits. Backend child operations, runtime handles, and `procmachines` internals SHALL NOT cross the semantic comparison boundary.
 
 #### Scenario: Representative write is driven through both engines
 
-- **WHEN** the same representative dirty-region parity-write plan and result
-  sequence is submitted to both engines
-- **THEN** both engines emit the same permitted semantic action/result kinds and
-  terminal safety classification
+- **WHEN** the same representative dirty-region parity-write plan and result sequence is submitted to both engines
+- **THEN** both engines emit the same permitted semantic action/result kinds and final safety classification
 
 #### Scenario: Candidate dependency is isolated
 
 - **WHEN** the procedural adapter is compiled and inspected
-- **THEN** the dependency is confined to the candidate crate and no public
-  DiskWeave semantic type names or stores procedural implementation internals
+- **THEN** the dependency is confined to the candidate crate and no public DiskWeave semantic type names or stores procedural implementation internals
 
 ### Requirement: Normalized traces preserve safety semantics
 <!-- dwv:req req.transaction-engine-evidence-comparison.normalized-traces-preserve-safety-semantics -->
 
-The comparison SHALL normalize action and result traces to deterministic
-sequence numbers, semantic action/result kinds, stage transitions, and terminal
-dispositions. Allowed batching or child-operation ordering differences SHALL be
-representable without changing semantic outcomes.
+The comparison SHALL normalize action and result traces to deterministic sequence numbers, semantic action/result kinds, stage transitions, and final result classifications. Allowed batching or child-operation ordering differences SHALL be representable without changing semantic outcomes.
 
 #### Scenario: Equivalent batching is normalized
 
-- **WHEN** one engine batches child I/O differently while producing the same
-  semantic action results
+- **WHEN** one engine batches child I/O differently while producing the same semantic action results
 - **THEN** normalized traces compare equivalent
 
 #### Scenario: Dirty clearing proof differs
 
-- **WHEN** either engine reaches checkpoint/clear without equivalent durable
-  fence, generation, and integrity evidence
+- **WHEN** either engine attempts a recovery `CLEAN` transition without equivalent persistence evidence, generation, and integrity evidence
 - **THEN** the comparison reports a semantic mismatch and rejects the candidate
 
 ### Requirement: Deterministic fault schedules cover irreversible boundaries
 <!-- dwv:req req.transaction-engine-evidence-comparison.deterministic-fault-schedules-cover-irreversible-boundaries -->
 
-The comparison SHALL drive deterministic schedules covering successful
-completion, EIO/failure, delayed and out-of-order completion, short I/O,
-uncertain completion, frontend abandonment before and after the irreversible
-boundary, daemon crash at each suspension point, power loss after each modeled
-persistence transition, duplicate delivery, and stale operation-slot tokens.
+The comparison SHALL drive deterministic schedules covering successful completion, EIO/failure, delayed and out-of-order completion, short I/O, uncertain completion, frontend abandonment before and after the irreversible boundary, daemon crash at each suspension point, power loss after each modeled persistence transition, duplicate delivery, and stale operation-slot tokens.
 
-#### Scenario: Failure before durable intent
+#### Scenario: Failure occurs before the write-recovery record is durable
 
-- **WHEN** range acquisition or the first intent action fails before durable
-  dirty state
-- **THEN** both engines classify the transaction as safely aborted or report a
-  mismatch; neither may claim a home mutation occurred
+- **WHEN** range acquisition or the first write-recovery-record action fails before durable `DIRTY` state
+- **THEN** both engines classify the transaction as safely aborted or report a mismatch; neither may claim a data/parity write occurred
 
 #### Scenario: Failure after the irreversible boundary
 
-- **WHEN** a write, uncertain completion, crash, or power loss occurs after
-  durable intent or home mutation
-- **THEN** both engines retain dirty/reconciliation-required semantics and do
-  not silently complete or clear dirty state
+- **WHEN** a write, uncertain completion, crash, or power loss occurs after a durable write-recovery record or data/parity write
+- **THEN** both engines retain dirty state or the requirement for reconciliation and do not silently complete or clear dirty state
 
 #### Scenario: Abandonment does not cancel ownership
 
-- **WHEN** frontend abandonment occurs before or after the irreversible
-  boundary
-- **THEN** both engines preserve the same terminal/reconciliation class and
-  operation resources remain owned until backend completion is known
+- **WHEN** frontend abandonment occurs before or after the irreversible boundary
+- **THEN** both engines preserve the same completion/reconciliation classification and operation resources remain owned until backend completion is known
 
 #### Scenario: Duplicate or stale delivery arrives
 
-- **WHEN** a terminal result is delivered twice or a result carries a stale
-  operation generation
-- **THEN** duplicate terminal delivery is ignored where permitted and stale
-  generation delivery is rejected without mutating reused state
+- **WHEN** a terminal result is delivered twice or a result carries a stale operation generation
+- **THEN** duplicate terminal delivery is ignored where permitted and stale generation delivery is rejected without mutating reused state
 
 ### Requirement: Candidate selection is evidence-backed and reversible
 <!-- dwv:req req.transaction-engine-evidence-comparison.candidate-selection-is-evidence-backed-and-reversible -->

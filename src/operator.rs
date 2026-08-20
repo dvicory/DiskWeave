@@ -878,7 +878,7 @@ pub fn baseline(
         )
         .with_integrity_extent(extent.id, baseline.content_generation);
         let mut transaction = recovery.begin_protocol_txn(generation, topology.topology_epoch());
-        transaction.push(RecoveryMutation::RecordHomeFence { fence: certificate });
+        transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
         transaction.push(RecoveryMutation::InstallIntegrityDigest {
             record: IntegrityRecord {
                 extent: extent.id,

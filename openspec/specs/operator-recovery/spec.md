@@ -55,7 +55,7 @@ A `current` basis SHALL require evidence naming the exact active protection epoc
 
 The result SHALL aggregate coverage by parity role and basis with bounded range counts and byte totals, preserve bounded exact exceptions, and avoid an array-wide protection or redundancy label stronger than any included range. A command SHALL NOT scan payload solely to manufacture lineage, custody, or protection authority. An explicitly requested scrub may report algebraic and integrity observations, but those observations SHALL NOT by themselves change any authority classification.
 
-A degraded, post-gap, or recovery-needed array that is inspected successfully SHALL remain a successful observation command. Semantic refusal, blockage, unsupported capability, reconciliation-required uncertainty, and operational failure SHALL remain distinct outcomes rather than one health bit or generic error. Every result SHALL state that observation authorizes no publication, payload mutation, repair, reconstruction, protection-epoch transition, currentization, historical continuity, or destructive recovery action, and SHALL name the next independently gated action or the evidence blocker.
+A degraded, post-gap, or recovery-needed array that is inspected successfully SHALL remain a successful observation command. Semantic refusal, blockage, unsupported capability, uncertainty that requires reconciliation, and operational failure SHALL remain distinct outcomes rather than one health bit or generic error. Every result SHALL state that observation authorizes no publication, data/parity write, repair, reconstruction, protection-epoch transition, currentization, historical continuity, or destructive recovery action, and SHALL name the next independently gated action or the evidence blocker.
 
 #### Scenario: Complete recognized array is observed without continuity proof
 
@@ -94,7 +94,7 @@ A degraded, post-gap, or recovery-needed array that is inspected successfully SH
 
 #### Scenario: Observation leaves stores unchanged
 
-- **WHEN** any production assessment completes successfully, reports a blocker, or returns reconciliation-required uncertainty
+- **WHEN** any production assessment completes successfully, reports a blocker, or returns uncertainty that requires reconciliation
 - **THEN** recovery artifacts, payload bytes, publication state, writer claims, protection epochs, and authority records remain unchanged and the result states that no stronger action was authorized
 
 #### Scenario: Human and structured renderings are requested
@@ -109,7 +109,7 @@ A degraded, post-gap, or recovery-needed array that is inspected successfully SH
 <!-- dwv:requires req.metadata-loss-recovery.fresh-recovery-state-records-a-new-baseline-and-audit -->
 <!-- dwv:requires req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations -->
 
-Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action payload-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish every canonical authorization prerequisite. It SHALL invoke a canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, unsupported, or non-executable facts SHALL refuse before fresh authority or payload mutation. Total loss of recovery metadata SHALL NOT be treated as executable recovery merely because policy and parity agree.
+Production recovery preview SHALL report the current metadata-loss disposition, missing proof, consequences, non-action data/parity-write policy, baseline consequence, and a deterministic bounded proposal identity without mutation. Apply SHALL validate the proposal, reacquire current claims, reassess identity, topology, recovery state, and current evidence, and re-establish every canonical authorization prerequisite. It SHALL invoke a canonical metadata-loss transition only from those current facts. Stale, malformed, unrelated, ambiguous, conflicting, unreadable, incomplete, unsupported, or non-executable facts SHALL refuse before fresh authority or a data/parity write. Total loss of recovery metadata SHALL NOT be treated as executable recovery merely because policy and parity agree.
 
 #### Scenario: Recovery is previewed
 
@@ -119,7 +119,7 @@ Production recovery preview SHALL report the current metadata-loss disposition, 
 #### Scenario: Proposal is stale at apply
 
 - **WHEN** any proposal input or current identity, topology, recovery, or verification fact differs before apply
-- **THEN** apply refuses before recovery or payload mutation and a new preview is required
+- **THEN** apply refuses before recovery or a data/parity write and a new preview is required
 
 #### Scenario: Policy and parity agree after total metadata loss
 
@@ -133,8 +133,8 @@ Production recovery preview SHALL report the current metadata-loss disposition, 
 
 #### Scenario: Recovery commit observation is uncertain
 
-- **WHEN** recovery state has unresolved commit intent or a future authorized replacement cannot prove whether proposed durable state became current
-- **THEN** preview or apply returns reconciliation-required, does not retry automatically, and preserves enough prior and proposed evidence for explicit reconciliation
+- **WHEN** recovery state has an unresolved write-recovery-record outcome or a future authorized replacement cannot prove whether proposed durable state became current
+- **THEN** preview or apply reports that reconciliation is required, does not retry automatically, and preserves enough prior and proposed evidence for explicit reconciliation
 
 ### Requirement: Production commands share one semantic result boundary
 <!-- dwv:req req.operator-recovery.production-commands-share-one-semantic-result-boundary -->

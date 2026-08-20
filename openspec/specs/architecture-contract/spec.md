@@ -61,13 +61,15 @@ Logical slots, member roles, coding positions, assignment instances, protected g
 ### Requirement: Durable authority and uncertainty are not inferred
 <!-- dwv:req req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred -->
 
-Acknowledgement, completion, persistence, durability, clean state, integrity validity, and recovery authorization SHALL remain distinct facts. Protected mutation SHALL require the applicable durable intent and current authority evidence. Failed, short, cancelled, abandoned, crashed, lost, stale, or uncertain effects SHALL remain visible and SHALL NOT be converted into clean state, valid integrity, writable authorization, or proof that an irreversible effect did not occur.
+Acknowledgement, completion, persistence, durability, recovery `CLEAN`, integrity validity, and recovery authorization SHALL remain distinct facts. A protected state change SHALL require its applicable durable prerequisite and current authority evidence. Failed, short, cancelled, abandoned, crashed, lost, stale, or uncertain effects SHALL remain visible and SHALL NOT be converted into recovery `CLEAN`, valid integrity, writable authorization, or proof that an irreversible effect did not occur.
 
-#### Scenario: A protected write is acknowledged before a fence
-- **WHEN** a write completes from the caller's perspective but covering durable fence evidence is unavailable
+#### Scenario: Caller observes completion before persistence evidence is available
+
+- **WHEN** a caller observes write completion but covering persistence evidence is unavailable
 - **THEN** the request may report completion only at the established scope and recovery state remains dirty, uncertain, or otherwise conservative
 
 #### Scenario: A caller abandons an operation
+
 - **WHEN** completion interest is dropped after submission
 - **THEN** delivery may be suppressed, but media effects, resource ownership, and recovery reconciliation remain governed by the operation and are not rolled back by abandonment
 
@@ -96,8 +98,9 @@ Read reconstruction, rebuild, repair, rebaseline, and format interpretation SHAL
 
 #### Scenario: A missing member is mathematically reconstructible
 - **WHEN** surviving bytes permit a candidate reconstruction but required authority or integrity evidence is missing, stale, or conflicting
-- **THEN** the system refuses or marks the result degraded/uncertain and performs no unauthorized protected mutation
+- **THEN** the system refuses or marks the result degraded or uncertain and performs no unauthorized protected state change
 
 #### Scenario: An unknown format is encountered
 - **WHEN** a tool cannot establish the payload offsets, coding profile, topology, or recovery semantics of a format family
 - **THEN** it refuses writable interpretation while allowing only bounded safe inspection or direct ordinary-payload access
+

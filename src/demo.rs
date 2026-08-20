@@ -239,7 +239,7 @@ pub fn init(root: &Path, requested_size: Option<u64>) -> Result<Value, DemoError
         stripe_width: 2,
         topology_generation: EPOCH,
         session_generation: 1,
-        last_global_clean_checkpoint: 0,
+        last_global_recovery_clean_generation: 0,
         last_full_verified_checkpoint: None,
         session_state: SessionState::Closed,
         migration_state: MigrationState::Stable,
@@ -1114,10 +1114,13 @@ pub fn trace_export(root: &Path, trace_path: &Path) -> Result<Value, DemoError> 
             length: write_length,
         },
     )?;
-    push_trace(&mut trace, TraceEventKind::RecoveryIntent { generation: 1 })?;
     push_trace(
         &mut trace,
-        TraceEventKind::Checkpoint {
+        TraceEventKind::WriteRecoveryRecord { generation: 1 },
+    )?;
+    push_trace(
+        &mut trace,
+        TraceEventKind::RecoveryClean {
             generation: 1,
             durable: true,
         },

@@ -62,10 +62,10 @@ A repair plan SHALL name the source identities, replacement target identity, pro
 
 ### Requirement: Repairs use a separate target and verified readback
 <!-- dwv:req req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback -->
-<!-- dwv:requires req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
-<!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
+<!-- dwv:requires req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write -->
+<!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence -->
 
-An authorized repair SHALL write only to a separate replacement target through the owning integrity-invalidation and durability protocols. Acceptance SHALL require complete target readback, current checksum verification for the repaired generation, and a recomputed parity equation. The original mismatch report SHALL remain available.
+An authorized repair SHALL write only to a separate replacement target through the owning integrity-invalidation and write-recovery-record protocols. Acceptance SHALL require complete target readback, current checksum verification for the repaired generation, a recomputed parity equation, and any required persistence evidence for the repair claim. The original mismatch report SHALL remain available.
 
 #### Scenario: Separate-target repair succeeds
 

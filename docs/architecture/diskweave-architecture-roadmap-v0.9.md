@@ -343,7 +343,7 @@ Recovered bytes are classified as exact current, exact historical for one named 
 <!-- dwv:arch-invariant arch.diskweave.historical-evidence-remains-generation-bound -->
 <!-- dwv:constrains req.checksum-plane.checksum-coverage-names-targets-and-extents -->
 <!-- dwv:constrains req.checksum-plane.validity-is-generation-bound -->
-<!-- dwv:constrains req.checksum-plane.invalidation-precedes-protected-mutation -->
+<!-- dwv:constrains req.checksum-plane.invalidation-precedes-data-parity-write -->
 
 Historical artifacts remain valid only for the exact target, range, topology, profile, and named generations they actually describe; they are never relabeled current. Artifact role is explicit: validator evidence may accept or reject candidate bytes without supplying them, while retained parity, old data, or another copy may supply reconstruction material only under its exact historical bindings and applicable authority.
 
@@ -376,10 +376,10 @@ Before DiskWeave destroys or garbage-collects the last validator, reconstruction
 
 ## Invariant: Crash safety is evidence-ordered
 <!-- dwv:arch-invariant arch.diskweave.crash-safety-is-evidence-ordered -->
-<!-- dwv:constrains req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
+<!-- dwv:constrains req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write -->
 <!-- dwv:constrains req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence -->
 
-Durable dirty/integrity/transition intent and applicable generation changes precede dependent home mutation; clean, current, or valid promotion requires exact matching generations and target-scoped durability evidence; missing or uncertain evidence remains conservative.
+Durable write-recovery records, integrity invalidation, transition records, and applicable generation changes precede dependent data/parity mutation; clean, current, or valid promotion requires exact matching generations and target-scoped durability evidence; missing or uncertain evidence remains conservative.
 
 
 ## Invariant: Abandonment does not end operation ownership
@@ -857,16 +857,16 @@ The currentization transition is:
 1. acquire the exact topology snapshot and exclusive coded-range guard, including any advertised historical claims that depend on material the operation may overwrite;
 2. reserve bounded operation and buffer resources;
 3. read every required present data operand from the admitted epoch's stabilized or later-fenced generation, including unchanged bytes of a partially overwritten target range;
-4. fail before home mutation if a required operand cannot be read, stabilized, or admitted;
+4. fail before data/parity mutation if a required operand cannot be read, stabilized, or admitted;
 5. apply the requested bytes in memory and calculate every required parity role from that present data basis, without reading historical parity as an incremental input;
-6. before home mutation, durably transfer preservation ownership or durably narrow/retire any historical claim whose last required validator or reconstruction operand would be destroyed, and commit durable transition intent, dirty state, affected checksum invalidation, and new mutation/basis generations;
+6. before data/parity mutation, durably transfer preservation ownership or durably narrow/retire any historical claim whose last required validator or reconstruction operand would be destroyed, and commit a durable transition record, dirty state, affected checksum invalidation, and new mutation/basis generations;
 7. write data and parity through the normal crash-consistency protocol;
 8. obtain target-specific durability evidence;
 9. commit the exact range and roles as current only if generations, topology, ownership, recovery claims, preservation state, and fences still match.
 
 The range unit is bounded so first-write latency is bounded. It need not equal a dirty region or checksum extent. A full-range overwrite may avoid reading overwritten target bytes, but it still needs all other current operands.
 
-A failure before durable transition intent leaves the prior or unprotected basis unchanged. A failure after intent but before home mutation may durably abort the transition and restore that basis; if abort completion is uncertain, the conservative transition record remains. If any home mutation may have begun, the range remains dirty and may become indeterminate. The operation does not claim that old or new protection survived until restart reconciliation proves it.
+A failure before a durable transition record leaves the prior or unprotected basis unchanged. A failure after that record but before data/parity mutation may durably abort the transition and restore that basis; if abort completion is uncertain, the conservative transition record remains. If any data/parity mutation may have begun, the range remains dirty and may become indeterminate. The operation does not claim that old or new protection survived until restart reconciliation proves it.
 
 ## 6.10 Protection-role alignment
 
@@ -1100,7 +1100,7 @@ The transaction machine emits explicit actions such as:
 - acquire/release semantic range authority;
 - reserve/release executor resources;
 - read exact store ranges;
-- commit recovery-state intent or transition;
+- commit a recovery-state record or transition;
 - write data or parity;
 - obtain target-specific fence evidence;
 - verify generation and readback evidence;
@@ -1148,7 +1148,7 @@ Trace replay compares semantic outcomes and state transitions. The current canon
 
 DiskWeave must not report a region as clean or currently protected when a crash could have left data and parity from different admitted generations without replay evidence.
 
-Durable recovery intent and integrity invalidation precede dependent home mutation. If a mutation would destroy the last material required by an advertised historical recovery claim, preservation transfer or durable claim retirement also precedes that mutation. Clean/current promotion follows target-specific durable completion and generation revalidation.
+Durable write-recovery records and integrity invalidation precede dependent data/parity mutation. If a mutation would destroy the last material required by an advertised historical recovery claim, preservation transfer or durable claim retirement also precedes that mutation. Clean/current promotion follows target-specific durable completion and generation revalidation.
 
 ## 9.2 Region and mutation state
 
@@ -1170,16 +1170,16 @@ For a range whose required parity roles are current and eligible for RMW, the co
 
 1. capture topology, assignments, protection epoch, range basis, mutation generation, and integrity generations;
 2. acquire coded-range authority and bounded executor resources;
-3. durably record dirty intent, invalidate affected current data/parity checksum records for the new content generation, and transfer preservation ownership or retire/narrow any historical claim whose last required material this mutation would destroy;
+3. durably record the write-recovery record, invalidate affected current data/parity checksum records for the new content generation, and transfer preservation ownership or retire/narrow any historical claim whose last required material this mutation would destroy;
 4. read the old target and parity inputs required by the selected strategy;
 5. calculate new data and parity;
-6. issue home writes while retaining operation ownership;
+6. issue data/parity writes while retaining operation ownership;
 7. obtain exact durability evidence for every mutated target required by the request;
 8. commit resulting generations and any immediately provable checksum records;
-9. leave the region dirty until checkpoint semantics prove the complete covered set safe;
+9. leave the region dirty until recovery CLEAN semantics prove the complete covered set safe;
 10. deliver stable success only when the request's declared durability contract is satisfied.
 
-An implementation may combine database transitions or I/O where semantics remain identical. It may not move durable intent after dependent mutation.
+An implementation may combine database transitions or I/O where semantics remain identical. It may not move the write-recovery record after dependent data/parity mutation.
 
 ## 9.4 First write to a non-current basis
 
@@ -1187,7 +1187,7 @@ For a `Prior` or `Unprotected` range, the same crash protocol applies with the f
 
 An `Indeterminate` range is not an ordinary first-write case. Proof-based reconciliation must first establish the exact surviving basis or permitted transaction outcome. If proof is unavailable, a separately authorized present-data rebaseline may accept the complete readable present data as a fresh basis without claiming historical equality or the intended interrupted-write result. If neither path is authorized, mutation remains refused. Starting another write never erases transition uncertainty.
 
-A required source read failure before home mutation refuses the write. This may surface as a filesystem write error; availability does not justify updating data without a safe parity basis under the baseline profile.
+A required source read failure before data/parity mutation refuses the write. This may surface as a filesystem write error; availability does not justify updating data without a safe parity basis under the baseline profile.
 
 ## 9.5 Subsequent writes to an already dirty current range
 
@@ -1195,7 +1195,7 @@ A dirty range may accept another write only when recovery state can distinguish 
 
 - invalidate newly affected integrity generations before their mutation;
 - preserve exact operation and fence watermarks;
-- prevent checkpoint from covering incomplete later mutations;
+- prevent recovery CLEAN from covering incomplete later mutations;
 - retain sufficient evidence after uncertain completion.
 
 Optimizing dirty-region metadata write frequency must not let a later write escape the durable dirty envelope.
@@ -1204,7 +1204,7 @@ Optimizing dirty-region metadata write frequency must not let a later write esca
 
 | Event | Required result |
 |---|---|
-| read failure before mutation | refuse/fail without new home mutation |
+| read failure before mutation | refuse/fail without new data/parity mutation |
 | short read | record exact completed bytes; do not use missing bytes as zero unless geometry defines logical zero beyond member end |
 | write failure before any mutation is proved | fail with exact no-mutation result when the backend evidence supports it |
 | short or failed write after possible mutation | retain dirty/recovery-required state and exact known subrange |
@@ -1216,20 +1216,20 @@ Optimizing dirty-region metadata write frequency must not let a later write esca
 
 An indeterminate transition cannot be resolved merely by observing that current parity happens to match after restart. Equation agreement may support a fresh current-basis verification, but it does not prove which interrupted writes completed or restore invalidated historical claims.
 
-## 9.7 Flush, checkpoint, and clean
+## 9.7 Flush, recovery CLEAN, and clean
 
-A frontend flush or stable-completion request captures an exact set of admitted mutations and target watermarks. DiskWeave obtains required target-specific fences, then commits a checkpoint that names the covered topology, protection epoch, range/mutation generations, and persistence evidence.
+A frontend flush or stable-completion request captures an exact set of admitted mutations and target watermarks. DiskWeave obtains required target-specific persistence evidence, then commits recovery `CLEAN` for the captured topology, protection epoch, range/mutation generations, and evidence scope.
 
 A region becomes clean only when:
 
-- every mutation in the checkpoint set is terminal;
+- every mutation in the recovery CLEAN set is terminal;
 - required data and parity targets are durable through the captured watermarks;
 - recovery-state transitions are durable;
 - no later mutation is accidentally included;
 - basis and topology generations still match;
 - any required replay or envelope update is complete.
 
-A clean checkpoint does not prove later custody continuity or latent media integrity.
+A recovery CLEAN commit does not prove later custody continuity or latent media integrity.
 
 ## 9.8 Cancellation, abandonment, and shutdown
 
@@ -1241,7 +1241,7 @@ Shutdown has explicit states:
 2. quiesce frontends and namespace writers;
 3. drain or hand off all admitted operations;
 4. reconcile indeterminate completions where possible;
-5. obtain required checkpoints and close-session evidence;
+5. obtain required recovery CLEAN commits and close-session evidence;
 6. withdraw exported endpoints;
 7. release store claims only after writable aliases cannot remain.
 
@@ -1265,9 +1265,9 @@ I/O shards, queues, rings, registered buffers, batching, and zero-copy are repla
 
 The architecture does not require one runtime task per request or one queue per disk. It requires bounded observable queues and a drain protocol that handles late and out-of-order completions.
 
-## 9.11 Checkpoint concurrency
+## 9.11 Recovery CLEAN concurrency
 
-Checkpointing may proceed concurrently with new work only when it captures a closed mutation set and cannot mark later writes clean. Protection rollover and checksum revalidation use the same generation discipline: capture, perform work, then commit only if topology, content, and range generations remain unchanged.
+Recovery-clean commit may proceed concurrently with new work only when it captures a closed mutation set and cannot mark later writes clean. Protection rollover and checksum revalidation use the same generation discipline: capture, perform work, then commit only if topology, content, and range generations remain unchanged.
 
 ## 9.12 Memory and resource budget
 
@@ -1397,7 +1397,7 @@ For each bounded range:
 5. compare prior integrity evidence when available, without treating a difference as corruption;
 6. if existing parity already equals the calculated current parity, commit current basis without rewriting parity;
 7. before any mutation that would destroy the last required historical validator or reconstruction operand, durably transfer preservation ownership to a separately verified retained copy or durably narrow/retire every dependent historical claim;
-8. commit durable transition/dirty/integrity intent, write calculated parity, fence it, and commit current basis;
+8. commit a durable transition record, write-recovery record, and integrity invalidation, write calculated parity, fence it, and commit current basis;
 9. reject the result if any captured topology, content, assignment, protection, recovery-claim, or preservation generation changed;
 10. release resources and advance a durable resumable cursor or coverage summary.
 
@@ -2247,8 +2247,8 @@ Each harness states its proposition, production preconditions, finite bounds, re
 
 The primary independent abstract model remains PlusCal/TLA+ checked by TLC, with a Rust checker used as an independent bridge where useful. The model stays deliberately smaller than production types and covers:
 
-- durable intent and integrity invalidation;
-- home mutation and uncertain completion;
+- durable write-recovery record and integrity invalidation;
+- data/parity mutation and uncertain completion;
 - fences, checkpoint, and clean/current promotion;
 - operation obligations;
 - crash, power loss, store loss, and conservative recovery;
@@ -2436,7 +2436,7 @@ v0.9 preserves these major v0.8 decisions:
 - role-neutral stores, topology-neutral codecs, executor-owned operation lifetimes, and frontend-neutral semantic contracts;
 - explicit topology, assignments, identity observations, coding positions, and fail-closed clone handling;
 - correctness-critical recovery state separate from ordinary payloads and reconstructible management state;
-- durable dirty/integrity intent before dependent mutation;
+- durable write-recovery record and integrity invalidation before dependent mutation;
 - exact flush, FUA, cache, partial, timeout, crash, and uncertain-completion semantics;
 - independent parity and integrity planes;
 - known erasure distinct from unknown corruption;
@@ -2527,7 +2527,7 @@ These remaining items are product defaults or release-scope choices. They do not
 | Is current degraded recovery stronger than its evidence? | The claim is explicitly bounded to one current codeword, known erasures, clean/replay state, exact topology, and admissible survivors. It does not claim tolerance of an additional undetected corruption. |
 | Can unknown bytes become plausible normal data? | No. Prior candidates require historical proof, unknown ranges error, and mixed artifacts cannot be promoted as normal members. |
 | Can good sources be changed during recovery? | Normal degraded reads are read-only; repair, rebuild, and restore use separate targets and explicit promotion. |
-| Can first-write or rollover crashes manufacture current state? | No. Durable transition intent precedes mutation; current promotion needs matching generations and persistence evidence; uncertainty remains indeterminate. |
+| Can first-write or rollover crashes manufacture current state? | No. A durable transition record precedes mutation; current promotion needs matching generations and persistence evidence; uncertainty remains indeterminate. |
 | Does fast startup depend on a whole-disk scan? | No. A complete unambiguous array may publish admitted present data read/write after typed stabilization and durable epoch admission, then currentizes bounded ranges on demand and in the background. Concrete latency remains profile evidence. |
 | Can a recovery claim outlive its last required material? | No. Preservation ownership must transfer or the dependent claim must be durably narrowed/retired before destructive mutation or garbage collection. |
 | Can a manifest or copied recovery database re-establish prior writable lineage in the baseline? | No. Baseline prior-lineage artifacts are inspection or historical-recovery candidates until a separately selected authority profile defines complete positive authority semantics. |

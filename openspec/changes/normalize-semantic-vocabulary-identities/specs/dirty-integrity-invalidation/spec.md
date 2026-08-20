@@ -26,17 +26,17 @@ One canonical semantic mapping SHALL derive every dirty region intersected by a 
 ### Requirement: Write-recovery record precedes data/parity write
 <!-- dwv:req req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write -->
 
-The recovery protocol SHALL durably record every affected region as `DIRTY` and every affected `VALID` checksum extent as `STALE` before the first data/parity write. A rejected, lost, or uncertain write-recovery record commit outcome SHALL prevent the data/parity write.
+The recovery protocol SHALL durably record every affected region as `DIRTY` and every affected `VALID` checksum extent as `STALE` before the transaction emits any protected read, parity-computation, or data/parity-write action. A rejected, lost, or uncertain write-recovery-record commit observation SHALL prevent those protected transaction actions.
 
-#### Scenario: First write crosses clean regions
+#### Scenario: Write targets regions currently marked CLEAN
 
 - **WHEN** a transaction targets a clean region and a valid checksum extent
-- **THEN** the protocol commits the write-recovery record before the first data/parity write; reads needed by the operation remain governed by the existing transaction and store requirements
+- **THEN** the protocol commits the write-recovery record before any protected read, parity computation, or data/parity write in that transaction
 
-#### Scenario: Intent commit fails or is uncertain
+#### Scenario: The write-recovery record fails to commit or its outcome is unknown
 
-- **WHEN** the recovery adapter rejects, loses, or cannot classify the write-recovery-record commit
-- **THEN** no data/parity write is permitted and the transaction returns a conservative result
+- **WHEN** the recovery adapter rejects, loses, or cannot classify the write-recovery-record commit observation
+- **THEN** no protected read, parity computation, or data/parity write is permitted and the transaction returns a conservative result
 
 ### Requirement: Already-dirty writes preserve the invalidation boundary
 <!-- dwv:req req.dirty-integrity-invalidation.already-dirty-writes-preserve-the-invalidation-boundary -->
@@ -76,12 +76,12 @@ The dirty protocol SHALL select only regions covered by matching recovery author
 
 Any short, failed, uncertain, abandoned, crashed, or post-write-recovery-record recovery result SHALL preserve dirty or indeterminate evidence for every affected region. This requirement owns the durable dirty/restart consequence after such a result; frontend abandonment meaning, operation-resource lifetime, and transaction-state transitions remain owned by their respective capabilities. Restart SHALL discover durable dirty evidence and SHALL NOT infer a clean state from elapsed time, process success, or a missing action result.
 
-#### Scenario: Home write fails after intent
+#### Scenario: A data/parity write fails after the write-recovery record is durable
 
 - **WHEN** a data/parity operation is short, failed, or uncertain after the write-recovery record is durable
 - **THEN** the affected state remains dirty or indeterminate and no clean completion is reported
 
-#### Scenario: Process loss occurs before checkpoint
+#### Scenario: Process exits before recovery state is committed CLEAN
 
 - **WHEN** process state is lost after a data/parity write but before persistence evidence and the recovery-`CLEAN` transition
 - **THEN** restart enters recovery or blocked handling with dirty evidence rather than assuming the write was clean

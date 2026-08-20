@@ -35,12 +35,12 @@ The checksum plane SHALL identify each data, P, and optional Q target by stable 
 
 A checksum record SHALL become `VALID` only through a durable recovery commit that names the digest profile/set, target content generation, and persistence evidence covering the exact target bytes. Missing, stale, unknown, unsupported, or mismatched evidence SHALL remain non-valid.
 
-#### Scenario: Fenced generation matches
+#### Scenario: Persistence evidence matches the generation
 
 - **WHEN** a worker hashes the captured extent and the target generation and covering persistence evidence still match at commit
 - **THEN** the recovery store may install the digest as `VALID`
 
-#### Scenario: Volatile or changed evidence
+#### Scenario: Persistence evidence is missing or stale
 
 - **WHEN** persistence evidence is unavailable, does not cover the read bytes, or the target generation changed before commit
 - **THEN** the result is rejected and the record remains stale or absent
@@ -86,7 +86,7 @@ A full-overwrite operation MAY compute a checksum from trusted final buffers wit
 - **WHEN** a full extent overwrite has final trusted bytes and covering persistence evidence
 - **THEN** its committed digest equals a fenced readback digest for the same generation
 
-#### Scenario: Partial or volatile overwrite
+#### Scenario: Partial or unproven overwrite
 
 - **WHEN** the write covers only part of an extent or lacks covering persistence evidence
 - **THEN** the optimization is not used and the record remains stale until a valid revalidation

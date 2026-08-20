@@ -9,17 +9,17 @@ id = "guide.write-before-crash"
 title = "A write before the crash"
 path = "guide/01-write-before-crash.md"
 order = 10
-projection = "human_guide"
+projection = "diskweave_guide"
 audience = "newcomer"
 question = "What can a caller believe when a write is acknowledged and the machine stops before flush?"
 starting_knowledge = ["An ordinary file can accept a write before its bytes are durable."]
 prerequisites = []
 misconceptions = ["I/O completion is durability", "A cancelled request proves no write happened"]
-introduces = ["acknowledgement", "volatile effect", "durable fence", "dirty intent"]
+introduces = ["acknowledgement", "volatile effect", "write-recovery record", "persistence evidence"]
 defers = ["parity equations", "degraded reads", "rebuild"]
 requirements = [
   "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
-  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
+  "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write",
   "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
   "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
   "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"
@@ -37,10 +37,10 @@ non_claims = ["The example does not establish durability or a clean recovery sta
 
 [[entries.sections]]
 heading = "The safe order"
-focus = "Walk dirty intent, data/parity mutation, completion, fence, and clean checkpoint in causal order."
+focus = "Walk the write-recovery record, data/parity write, completion, persistence evidence, and recovery CLEAN in causal order."
 must_answer = ["What must be durable before protected mutation?", "Which event permits a later clean claim?"]
 requirements = [
-  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
+  "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write",
   "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
 ]
 scenarios = ["scenario.basic-write"]
@@ -48,19 +48,19 @@ non_claims = ["Ordering alone does not certify a platform's physical flush behav
 
 [[entries.sections]]
 heading = "Completion is not durability"
-focus = "Stop the executable scenario after completion but before fencing and compare caller belief, process-visible state, and durable media."
+focus = "Stop the executable scenario after completion but before persistence evidence and compare caller belief, process-visible state, and durable media."
 must_answer = ["What may the caller know after completion?", "What remains unknown after a crash?", "Why does cancellation not imply rollback?"]
 requirements = [
   "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
   "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects"
 ]
 scenarios = ["scenario.basic-write"]
-non_claims = ["Completion does not prove a durable fence.", "A dropped request does not prove the write had no effect."]
+non_claims = ["Completion does not prove persistence evidence.", "A dropped request does not prove the write had no effect."]
 
 [[entries.sections]]
 heading = "What a flush adds"
-focus = "Explain the stronger evidence supplied by a successful declared fence and retain its platform evidence boundary."
-must_answer = ["Which uncertainty does a fence resolve?", "Which hardware or platform claim remains outside portable evidence?"]
+focus = "Explain the stronger evidence supplied by accepted persistence evidence and retain its platform evidence boundary."
+must_answer = ["Which uncertainty does persistence evidence resolve?", "Which hardware or platform claim remains outside portable evidence?"]
 requirements = [
   "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
   "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred"
@@ -73,20 +73,20 @@ id = "guide.recovery-uncertainty"
 title = "What recovery can and cannot know"
 path = "guide/02-recovery-uncertainty.md"
 order = 20
-projection = "human_guide"
+projection = "diskweave_guide"
 audience = "operator"
 question = "After restart, which facts are durable, which are observable, and which must remain uncertain?"
 starting_knowledge = ["A write may have an acknowledged but not durable effect."]
 prerequisites = ["guide.write-before-crash"]
 misconceptions = ["A successful process return proves a clean checkpoint", "Elapsed time repairs missing evidence"]
-introduces = ["recovery generation", "topology epoch", "checkpoint", "reconciliation"]
+introduces = ["recovery generation", "topology epoch", "recovery CLEAN", "reconciliation"]
 defers = ["automatic repair", "platform bridge selection"]
 requirements = [
   "req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic",
-  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
   "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
   "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
-  "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority"
+  "req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority"
 ]
 scenarios = ["scenario.normalized-recovery"]
 teaching_devices = ["normalized trace", "known versus unknown evidence ledger"]
@@ -97,7 +97,7 @@ focus = "Resume after the crash and separate durable records, readable bytes, st
 must_answer = ["What can recovery observe?", "Which prior events remain unknowable?"]
 requirements = [
   "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
-  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence"
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence"
 ]
 scenarios = ["scenario.normalized-recovery"]
 non_claims = ["Readable bytes do not by themselves establish current authority."]
@@ -114,7 +114,7 @@ non_claims = ["Elapsed time does not repair stale identity or generation evidenc
 heading = "Availability is not repair authority"
 focus = "Show that serving an eligible reconstructed read is narrower than mutating protected state."
 must_answer = ["What permits a degraded read?", "What additional authority would repair require?"]
-requirements = ["req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence"]
+requirements = ["req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence"]
 scenarios = ["scenario.normalized-recovery"]
 non_claims = ["Successful reconstruction is not automatic repair authorization."]
 
@@ -134,7 +134,7 @@ id = "guide.parity-and-integrity"
 title = "How parity helps—and where it stops"
 path = "guide/03-parity-and-integrity.md"
 order = 30
-projection = "human_guide"
+projection = "diskweave_guide"
 audience = "newcomer"
 question = "What can parity reconstruct, and why does that not prove the bytes are correct?"
 starting_knowledge = ["Recovery distinguishes known effects from uncertain effects."]
@@ -145,7 +145,7 @@ defers = ["multi-parity envelope experiments"]
 requirements = [
   "req.architecture-contract.data-payloads-and-protection-metadata-remain-separate",
   "req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority",
-  "req.checksum-plane.invalidation-precedes-protected-mutation",
+  "req.checksum-plane.invalidation-precedes-data-parity-write",
   "req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback",
   "req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes",
   "req.parity-verification-repair.mismatch-classification-requires-independent-evidence"
@@ -197,7 +197,7 @@ id = "guide.boundary-and-demo"
 title = "What DiskWeave is, and what the demo proves"
 path = "guide/04-boundary-and-demo.md"
 order = 40
-projection = "human_guide"
+projection = "diskweave_guide"
 audience = "contributor"
 question = "What product boundary does DiskWeave protect, and what evidence remains outside this demo?"
 starting_knowledge = ["A protected write has separate acknowledgement, durability, and recovery evidence."]
@@ -257,6 +257,8 @@ requirements = [
 ]
 scenarios = []
 non_claims = ["Portable file-backed behavior is not Linux, macOS bridge, or hardware certification."]
+
+
 
 
 [[entries]]

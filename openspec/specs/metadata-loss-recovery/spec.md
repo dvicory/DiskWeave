@@ -42,7 +42,7 @@ The portable recovery layer SHALL expose a bounded plan for this complete case s
 
 A plan SHALL distinguish unavailable certificate receipt, exhaustive matching, uniquely verified separate-target repair, explicit data-authoritative rebaseline, ambiguous mismatch, incomplete scan, validated backup, and conflicting or absent evidence. Ambiguous, incomplete, or receipt-unavailable outcomes SHALL NOT authorize a fresh clean state or writable assembly. A mismatch SHALL use the independently owned current-evidence classification rather than identify a culprit locally. Operator confirmation SHALL authorize only matrix cases assigned to explicit data-authoritative rebaseline and SHALL NOT substitute for a certificate receipt.
 
-The current product has no validator-issued certificate receipt. Every current public verification value supplied to a certificate-receipt-gated case SHALL return `CertificateReceiptUnavailable` before authorization, fresh-state creation, or payload mutation. A future receipt capability requires a separate canonical change defining its producer and validator authority, exact array/topology/profile/session/envelope bindings, generation and freshness rules, replay or expiry behavior, and evidence and failure semantics.
+The current product has no validator-issued certificate receipt. Every current public verification value supplied to a certificate-receipt-gated case SHALL return `CertificateReceiptUnavailable` before authorization, fresh-state creation, or a data/parity write. A future receipt capability requires a separate canonical change defining its producer and validator authority, exact array/topology/profile/session/envelope bindings, generation and freshness rules, replay or expiry behavior, and evidence and failure semantics.
 
 #### Scenario: Exhaustive verification finds only matches
 
@@ -67,7 +67,7 @@ The current product has no validator-issued certificate receipt. Every current p
 #### Scenario: Public evidence cannot forge a certificate receipt
 
 - **WHEN** any currently public verification value is supplied to any certificate-receipt-gated case, with or without operator confirmation
-- **THEN** authorization returns `CertificateReceiptUnavailable`, no authorization is issued, and no fresh semantic state or payload mutation occurs
+- **THEN** authorization returns `CertificateReceiptUnavailable`, no authorization is issued, and no fresh semantic state or data/parity write occurs
 
 ### Requirement: Identity and topology ambiguity fails closed
 <!-- dwv:req req.metadata-loss-recovery.identity-and-topology-ambiguity-fails-closed -->
@@ -127,7 +127,7 @@ After an authorized completed all-data/single-parity recovery, the implementatio
 <!-- dwv:requires req.evidence-boundaries.evidence-scope-is-explicit -->
 <!-- dwv:requires req.evidence-boundaries.verification-artifacts-are-deterministic-and-bounded -->
 
-The metadata-loss dry run SHALL enumerate the complete matrix with stable case IDs, dispositions, evidence requirements, confirmation requirements, payload-write policy, and certificate-receipt availability. It SHALL omit payload bytes, paths, storage-engine handles, OS/frontend types, and unbounded operator text. The dry run SHALL be diagnostic and SHALL not authorize `CLEAN`, writable assembly, or payload mutation.
+The metadata-loss dry run SHALL enumerate the complete matrix with stable case IDs, dispositions, evidence requirements, confirmation requirements, data/parity-write policy, and certificate-receipt availability. It SHALL omit payload bytes, paths, storage-engine handles, OS/frontend types, and unbounded operator text. The dry run SHALL be diagnostic and SHALL not authorize `CLEAN`, writable assembly, or a data/parity write.
 
 #### Scenario: The matrix dry run is requested on a portable host
 
@@ -138,3 +138,4 @@ The metadata-loss dry run SHALL enumerate the complete matrix with stable case I
 
 - **WHEN** a Linux frontend, macOS bridge, or other platform integration is absent
 - **THEN** the portable planner, tests, and regular-file evaluation remain usable and make no platform conformance claim
+

@@ -1,6 +1,6 @@
-# Guide
+# DiskWeave Guide
 
-The human guide is a four-chapter, event-first curriculum on interrupted
+The DiskWeave Guide is a four-chapter, event-first curriculum on interrupted
 writes, recovery uncertainty, parity and integrity, and the product and
 evidence boundary.
 

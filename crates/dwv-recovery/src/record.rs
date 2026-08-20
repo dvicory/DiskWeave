@@ -23,7 +23,7 @@ pub enum ChecksumState {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
-pub struct FenceEvidence {
+pub struct ChecksumPersistenceEvidence {
     pub fence: StoreFenceRef,
     pub topology_epoch: dwv_core::TopologyEpoch,
     pub recovery_generation: RecoveryGeneration,
@@ -37,7 +37,7 @@ pub struct ChecksumRecord {
     pub content_generation: ContentGeneration,
     pub state: ChecksumState,
     pub digest: Option<Digest>,
-    pub fence: Option<FenceEvidence>,
+    pub persistence_evidence: Option<ChecksumPersistenceEvidence>,
 }
 
 impl ChecksumRecord {
@@ -53,7 +53,7 @@ impl ChecksumRecord {
             content_generation: ContentGeneration::ZERO,
             state: ChecksumState::Absent,
             digest: None,
-            fence: None,
+            persistence_evidence: None,
         }
     }
 
@@ -64,7 +64,7 @@ impl ChecksumRecord {
         ));
         next.state = ChecksumState::Stale;
         next.digest = None;
-        next.fence = None;
+        next.persistence_evidence = None;
         next
     }
 
@@ -74,7 +74,7 @@ impl ChecksumRecord {
         set_generation: ChecksumSetGeneration,
         content_generation: ContentGeneration,
         digest: Digest,
-        fence: FenceEvidence,
+        persistence_evidence: ChecksumPersistenceEvidence,
     ) -> Self {
         Self {
             extent,
@@ -83,11 +83,13 @@ impl ChecksumRecord {
             content_generation,
             state: ChecksumState::Valid,
             digest: Some(digest),
-            fence: Some(fence),
+            persistence_evidence: Some(persistence_evidence),
         }
     }
 
     pub const fn is_valid(&self) -> bool {
-        matches!(self.state, ChecksumState::Valid) && self.digest.is_some() && self.fence.is_some()
+        matches!(self.state, ChecksumState::Valid)
+            && self.digest.is_some()
+            && self.persistence_evidence.is_some()
     }
 }

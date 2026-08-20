@@ -1,8 +1,8 @@
 //! Portable recovery-state semantics.
 //!
-//! This crate is the authority boundary for dirty intent, integrity evidence,
-//! topology epochs, and clean checkpoints.  The reference implementation is
-//! in memory so its transaction rules can be exercised without selecting a
+//! This crate is the authority boundary for write-recovery records, integrity
+//! evidence, topology epochs, and recovery CLEAN decisions. The reference implementation
+//! is in memory so its transaction rules can be exercised without selecting a
 //! SQLite layout or durability configuration.
 
 use dwv_core::{FenceDomain, TopologyEpoch};
@@ -10,11 +10,9 @@ use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
 mod baseline;
-mod checkpoint;
 mod extent;
 mod generation;
 mod inspection;
-mod intent;
 mod invalidation;
 mod job;
 mod metadata_loss;
@@ -23,26 +21,23 @@ mod profile;
 mod provider;
 mod rebuild;
 mod record;
+mod recovery_clean;
 mod transition;
+mod write_recovery_record;
 
 pub use baseline::{
     ChecksumBaseline, ChecksumBaselineInvalidReason, ChecksumBaselineProvenance,
     ChecksumBaselineStatus, assess_checksum_baseline, expected_checksum_extents,
     new_checksum_baseline, pending_checksum_baseline_extents,
 };
-pub use checkpoint::{
-    CheckpointDecision, CheckpointRefusal, CheckpointRequest, RequiredFence, evaluate_checkpoint,
-    fence_ref,
-};
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
 pub use inspection::{
     RecoveryFormatLayer, RecoveryInspection, RecoveryReconciliation, reconcile_uncertain_commit,
 };
-pub use intent::IntentCommit;
 pub use invalidation::{
-    IntentBoundary, IntentCoverage, IntentDecision, IntentEvidence, InvalidationTarget,
-    assess_intent,
+    InvalidationTarget, WriteRecoveryRecordBoundary, WriteRecoveryRecordCoverage,
+    WriteRecoveryRecordDecision, WriteRecoveryRecordEvidence, assess_write_recovery_record,
 };
 pub use job::{
     ChecksumAuthority, ChecksumJob, ChecksumJobKey, ChecksumJobResult, ChecksumQueue,
@@ -64,10 +59,17 @@ pub use rebuild::{
     REBUILD_ID_BYTES, REBUILD_TARGET_IDENTITY_BYTES, RebuildChunkReceipt, RebuildCompletionReceipt,
     RebuildCursor, RebuildError, RebuildId, RebuildLifecycle, RebuildState, RebuildTargetIdentity,
 };
-pub use record::{ChecksumRecord, ChecksumState, ContentGeneration, Digest, FenceEvidence};
+pub use record::{
+    ChecksumPersistenceEvidence, ChecksumRecord, ChecksumState, ContentGeneration, Digest,
+};
+pub use recovery_clean::{
+    RecoveryCleanDecision, RecoveryCleanRefusal, RecoveryCleanRequest, RequiredFence,
+    evaluate_recovery_clean, fence_ref,
+};
 pub use transition::{
     RecoveryTransitionId, TransitionEvidence, TransitionKind, TransitionOutcome, TransitionTrace,
 };
+pub use write_recovery_record::WriteRecoveryRecordCommit;
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -667,7 +669,7 @@ pub enum TransitionError {
     IntegrityGenerationStale,
     PendingTopologyMissing,
     SessionOpen,
-    CheckpointGenerationBehind,
+    RecoveryCleanGenerationBehind,
     IntegrityCoverageMissing,
     IntegrityContentGenerationFuture,
     IntegrityBindingMismatch,
@@ -737,7 +739,7 @@ pub enum RecoveryMutation {
         extent: IntegrityExtentId,
         stale_generation: RecoveryGeneration,
     },
-    RecordHomeFence {
+    RecordDataParityFence {
         fence: FenceCertificate,
     },
     CloseWritableSession {
@@ -831,7 +833,7 @@ impl RecoveryTxn {
     }
 }
 
-/// dwv:req req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation
+/// dwv:req req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write
 pub trait RecoveryStateStore {
     fn load_assembly_snapshot(&self) -> Result<RecoverySnapshot, RecoveryError>;
     fn verify_integrity(&self) -> RecoveryStoreHealth;
@@ -988,7 +990,7 @@ impl MemoryRecoveryStore {
                     }),
                 }
             }
-            RecoveryMutation::RecordHomeFence { fence } => {
+            RecoveryMutation::RecordDataParityFence { fence } => {
                 validate_fence(&fence, expected_topology_epoch)?;
                 if fence.stores.is_empty() {
                     return Err(RecoveryError::InvalidTransition(
@@ -1050,7 +1052,7 @@ impl MemoryRecoveryStore {
                     ))?;
                 if through_generation < dirty_since {
                     return Err(RecoveryError::InvalidTransition(
-                        TransitionError::CheckpointGenerationBehind,
+                        TransitionError::RecoveryCleanGenerationBehind,
                     ));
                 }
                 record.state = RegionState::Clean;
@@ -1485,10 +1487,10 @@ pub enum RecoveryResetBoundary {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryFaultPoint {
-    BeforeDirtyIntentCommit,
-    AfterDirtyIntentBeforeHomeMutation,
-    AfterHomeMutationBeforeFence,
-    AfterFenceBeforeCheckpoint,
+    BeforeWriteRecoveryRecordCommit,
+    AfterDirtyWriteRecoveryRecordBeforeDataParityWrite,
+    AfterDataParityWriteBeforeFence,
+    AfterPersistenceEvidenceBeforeRecoveryClean,
     MissingState,
     CorruptState,
     CorruptJournal,
@@ -1502,46 +1504,46 @@ pub struct RecoverySimulationCase {
     pub observation: RecoveryCommitObservation,
     pub expected_health: RecoveryStoreHealth,
     pub expected_disposition: RecoveryDisposition,
-    pub permits_home_mutation: bool,
+    pub permits_data_parity_write: bool,
 }
 
 pub fn recovery_simulation_cases() -> Vec<RecoverySimulationCase> {
     vec![
         RecoverySimulationCase {
-            case_id: "intent-commit-rejected-before-home",
+            case_id: "write-recovery-record-commit-rejected-before-data-parity-write",
             reset: RecoveryResetBoundary::Process,
-            fault: RecoveryFaultPoint::BeforeDirtyIntentCommit,
+            fault: RecoveryFaultPoint::BeforeWriteRecoveryRecordCommit,
             observation: RecoveryCommitObservation::Rejected,
             expected_health: RecoveryStoreHealth::Healthy,
             expected_disposition: RecoveryDisposition::ReconcileReadOnly,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
-            case_id: "intent-ack-lost-before-home",
+            case_id: "write-recovery-record-ack-lost-before-data-parity-write",
             reset: RecoveryResetBoundary::PowerLoss,
-            fault: RecoveryFaultPoint::BeforeDirtyIntentCommit,
+            fault: RecoveryFaultPoint::BeforeWriteRecoveryRecordCommit,
             observation: RecoveryCommitObservation::Lost,
             expected_health: RecoveryStoreHealth::Stale,
             expected_disposition: RecoveryDisposition::ReconcileReadOnly,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
-            case_id: "home-write-before-fence",
+            case_id: "data-parity-write-before-fence",
             reset: RecoveryResetBoundary::PowerLoss,
-            fault: RecoveryFaultPoint::AfterHomeMutationBeforeFence,
+            fault: RecoveryFaultPoint::AfterDataParityWriteBeforeFence,
             observation: RecoveryCommitObservation::Lost,
             expected_health: RecoveryStoreHealth::Stale,
             expected_disposition: RecoveryDisposition::ReconcileReadOnly,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
-            case_id: "fence-before-checkpoint",
+            case_id: "persistence-evidence-before-recovery-clean",
             reset: RecoveryResetBoundary::Process,
-            fault: RecoveryFaultPoint::AfterFenceBeforeCheckpoint,
+            fault: RecoveryFaultPoint::AfterPersistenceEvidenceBeforeRecoveryClean,
             observation: RecoveryCommitObservation::Lost,
             expected_health: RecoveryStoreHealth::Stale,
             expected_disposition: RecoveryDisposition::ReconcileReadOnly,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
             case_id: "missing-state-after-reset",
@@ -1550,7 +1552,7 @@ pub fn recovery_simulation_cases() -> Vec<RecoverySimulationCase> {
             observation: RecoveryCommitObservation::Corrupt,
             expected_health: RecoveryStoreHealth::Missing,
             expected_disposition: RecoveryDisposition::RebuildFromData,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
             case_id: "corrupt-main-state-after-reset",
@@ -1559,7 +1561,7 @@ pub fn recovery_simulation_cases() -> Vec<RecoverySimulationCase> {
             observation: RecoveryCommitObservation::Corrupt,
             expected_health: RecoveryStoreHealth::Corrupt,
             expected_disposition: RecoveryDisposition::RebuildFromData,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
             case_id: "corrupt-journal-after-power-loss",
@@ -1568,16 +1570,16 @@ pub fn recovery_simulation_cases() -> Vec<RecoverySimulationCase> {
             observation: RecoveryCommitObservation::Corrupt,
             expected_health: RecoveryStoreHealth::Corrupt,
             expected_disposition: RecoveryDisposition::RebuildFromData,
-            permits_home_mutation: false,
+            permits_data_parity_write: false,
         },
         RecoverySimulationCase {
-            case_id: "durable-intent-after-process-reset",
+            case_id: "durable-write-recovery-record-after-process-reset",
             reset: RecoveryResetBoundary::Process,
-            fault: RecoveryFaultPoint::AfterDirtyIntentBeforeHomeMutation,
+            fault: RecoveryFaultPoint::AfterDirtyWriteRecoveryRecordBeforeDataParityWrite,
             observation: RecoveryCommitObservation::Durable,
             expected_health: RecoveryStoreHealth::Healthy,
             expected_disposition: RecoveryDisposition::Proceed,
-            permits_home_mutation: true,
+            permits_data_parity_write: true,
         },
     ]
 }
@@ -1728,7 +1730,7 @@ mod tests {
     }
 
     #[test]
-    fn fence_allows_clean_checkpoint_and_valid_digest() {
+    fn fence_allows_recovery_clean_and_valid_digest() {
         let mut recovery = store();
         let mut intent = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
         intent.push(RecoveryMutation::MarkRegionDirty {
@@ -1739,18 +1741,19 @@ mod tests {
             extent: IntegrityExtentId(9),
             stale_generation: RecoveryGeneration(1),
         });
-        intent.push(RecoveryMutation::RecordHomeFence {
+        intent.push(RecoveryMutation::RecordDataParityFence {
             fence: fence(RegionId(7), RecoveryGeneration(1)),
         });
         recovery.commit_durable(intent).unwrap();
 
         let store_fence = recovery.snapshot().fences[0].stores[0];
-        let mut checkpoint = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
-        checkpoint.push(RecoveryMutation::MarkRegionClean {
+        let mut recovery_clean =
+            recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        recovery_clean.push(RecoveryMutation::MarkRegionClean {
             region: RegionId(7),
             through_generation: RecoveryGeneration(2),
         });
-        checkpoint.push(RecoveryMutation::InstallIntegrityDigest {
+        recovery_clean.push(RecoveryMutation::InstallIntegrityDigest {
             record: IntegrityRecord {
                 extent: IntegrityExtentId(9),
                 state: IntegrityState::Valid {
@@ -1771,7 +1774,7 @@ mod tests {
                 },
             },
         });
-        recovery.commit_durable(checkpoint).unwrap();
+        recovery.commit_durable(recovery_clean).unwrap();
         assert_eq!(
             recovery.snapshot().dirty_regions[0].state,
             RegionState::Clean
@@ -2015,8 +2018,8 @@ mod tests {
     fn recovery_simulation_fixtures_cover_conservative_failures() {
         let cases = recovery_simulation_cases();
         assert!(cases.iter().any(|case| {
-            case.fault == RecoveryFaultPoint::AfterHomeMutationBeforeFence
-                && !case.permits_home_mutation
+            case.fault == RecoveryFaultPoint::AfterDataParityWriteBeforeFence
+                && !case.permits_data_parity_write
         }));
         assert!(cases.iter().any(|case| {
             case.fault == RecoveryFaultPoint::CorruptJournal
@@ -2032,7 +2035,7 @@ mod tests {
             extent: IntegrityExtentId(9),
             stale_generation: RecoveryGeneration(1),
         });
-        intent.push(RecoveryMutation::RecordHomeFence {
+        intent.push(RecoveryMutation::RecordDataParityFence {
             fence: FenceCertificate::new(
                 TopologyEpoch(1),
                 FenceDomain(1),
@@ -2080,9 +2083,9 @@ mod tests {
     }
 
     #[test]
-    fn dirty_integrity_intent_survives_semantic_export() {
+    fn dirty_integrity_write_recovery_record_survives_semantic_export() {
         let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
-        let evidence = IntentCommit::new(
+        let evidence = WriteRecoveryRecordCommit::new(
             &mut recovery,
             TopologyEpoch(1),
             RecoveryGeneration(0),

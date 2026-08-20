@@ -15,7 +15,7 @@ The reference machine SHALL expose the semantic action vocabulary for range acqu
 - **WHEN** one semantic action is implemented by several child operations
 - **THEN** the reference trace records one semantic action and leaves child completion accounting to the operation-slot layer
 
-#### Scenario: A terminal result is produced
+#### Scenario: A completed or aborted write still requires release
 
 - **WHEN** a transaction reaches a `CompletedAwaitingRelease` or `AbortedAwaitingRelease` result
 - **THEN** the normalized trace still exposes the delegated `releaseRange` action before the semantic range can be reused
@@ -30,12 +30,12 @@ The reference machine SHALL emit versioned normalized action traces with stable 
 - **WHEN** the same admitted semantic plan and owner observations are replayed through the reference boundary
 - **THEN** the normalized trace and stable semantic result representation are identical; the exact state transition remains defined by the canonical `RecoveryProtocol` module
 
-#### Scenario: A terminal obligation is started again before release
+#### Scenario: A completed or aborted write cannot restart before release
 
 - **WHEN** a `startWrite` action is attempted while the prior write is `CompletedAwaitingRelease` or `AbortedAwaitingRelease` but its range has not been released
 - **THEN** the delegated relation exposes no `startWrite` transition and preserves the owned completed or aborted state
 
-#### Scenario: A released range starts another obligation
+#### Scenario: A released range starts another write
 
 - **WHEN** the prior completed or aborted write has completed its explicit `releaseRange` action
 - **THEN** a subsequent `startWrite` transition may acquire the released range and clears the prior release marker
@@ -50,14 +50,14 @@ The reference machine SHALL emit versioned normalized action traces with stable 
 - **WHEN** a concrete result arrives after one write was released and a new write acquired the same range
 - **THEN** the owning correlation or generation requirement decides whether the result belongs to the current write; the delegated relation receives only an admitted current-write observation
 
-#### Scenario: Volatile home work is abandoned
+#### Scenario: Request is abandoned before data/parity durability is established
 
 - **WHEN** frontend delivery is abandoned after a data/parity write in `DataParityWritesAwaitingDurability` but before all affected regions are represented as known applied
 - **THEN** the relation preserves an unknown or indeterminate data/parity-write outcome, retains the owned write for reconciliation, and does not admit a recovery-`CLEAN` transition until write coverage is complete
 
 #### Scenario: Uncertainty is reconciled
 
-- **WHEN** `WriteRecoveryRecordUnknown` is reconciled with `WriteRecoveryRecordCommitOutcomeRejected` or `WriteRecoveryRecordCommitOutcomeDurable`, or `DataParityWritesUnknown` is reconciled with `DataParityWriteOutcomeIndeterminate` or `DataParityWriteOutcomeDurable`
+- **WHEN** `WriteRecoveryRecordUnknown` is reconciled with `CommitRejected` or `CommitDurable`, or `DataParityWritesUnknown` is reconciled with `DataParityWriteEffectIndeterminate` or `DataParityWriteEffectDurable`
 - **THEN** the relation applies only that domain's observation vocabulary and conservative state; clean and completed outcomes remain unavailable unless their delegated evidence predicates hold
 
 #### Scenario: An invalid transition is attempted

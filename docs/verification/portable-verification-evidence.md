@@ -72,7 +72,7 @@ region/checksum mapping, typed fence admissibility, topology,
 persistence-engine behavior, operation-slot lifetime, frontend behavior,
 physical durability, or unbounded recovery progress.
 
-## VE-002 delegated Quint authority evidence
+## Write-recovery lifecycle delegated-model evidence
 
 Date: 2026-08-17
 
@@ -81,16 +81,16 @@ pre-repair record above remains historical canary evidence; the claims below
 describe the current model and its bounded verification.
 
 The current relation adds explicit range ownership and release, permits a new
-`begin` after release, gives pre-mutation rejection an aborted outcome,
-blocks terminal reuse before release, and rejects invalid, repeated, and
-out-of-order transitions without mutating state. It requires complete
-represented mutation coverage before durable-home reconciliation.
-Reconciliation acknowledgements are explicit so repeated observations have no
-self-loop; mutation clears a prior indeterminate-home acknowledgement. The
-finite analysis adds release/reuse, aborted-release, volatile-abandonment,
-continuation, repeated-action, terminal-release, durable-home-coverage, and
-partial-home witnesses. Regions, stores, and execution depths remain evidence
-bounds.
+`startWrite` after release, gives pre-write-recovery-record rejection an
+aborted outcome, blocks completed-write reuse before release, and rejects
+invalid, repeated, and out-of-order transitions without mutating state. It
+requires complete represented data/parity-write coverage before durable
+data/parity reconciliation. Reconciliation observations are explicit so
+repeated observations have no self-loop; the finite analysis adds
+release/reuse, aborted-release, interrupted-processing, continuation,
+repeated-action, completed-release, durable-data-parity-coverage, and
+partial-data-parity witnesses. Regions, stores, and execution depths remain
+evidence bounds.
 
 Commands:
 
@@ -102,10 +102,10 @@ quint typecheck verification/quint/RecoveryProtocolConnect.qnt
 quint verify verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis \
   --max-steps 12 \
-  --invariants TypeInvariant NoFalseClean MutationRequiresIntent \
+  --invariants TypeInvariant NoFalseClean DataParityWriteRequiresWriteRecoveryRecord \
     UncertaintyIsVisible UncertaintyIsOwned DurableWorkIsOwned \
-    TerminalRequiresRelease TerminalRequiresEvidence \
-    DurableHomeRequiresCoverage FenceAndCheckpointCoverage
+    CompletedOrAbortedRequiresRelease CompletedWriteRequiresEvidence \
+    DurableDataParityWriteRequiresCoverage PersistenceEvidenceAndRecoveryCleanCoverage
 quint test verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
@@ -113,107 +113,87 @@ quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --max-steps 12 \
   --max-samples 10000 \
   --seed 22082026 \
-  --invariants TypeInvariant NoFalseClean MutationRequiresIntent \
+  --invariants TypeInvariant NoFalseClean DataParityWriteRequiresWriteRecoveryRecord \
     UncertaintyIsVisible UncertaintyIsOwned DurableWorkIsOwned \
-    TerminalRequiresRelease TerminalRequiresEvidence \
-    DurableHomeRequiresCoverage FenceAndCheckpointCoverage \
-  --witnesses beginReachable durableIntentReachable mutationReachable \
-    uncertainIntentReachable uncertainHomeReachable reconciliationReachable \
-    terminalReachable terminalPendingReleaseReachable abortedReachable \
-    releasedReachable resumedMutationReachable reconciledMutationReachable \
-    durableHomeReachable
+    CompletedOrAbortedRequiresRelease CompletedWriteRequiresEvidence \
+    DurableDataParityWriteRequiresCoverage PersistenceEvidenceAndRecoveryCleanCoverage \
+  --witnesses startWriteReachable durableWriteRecoveryRecordReachable \
+    dataParityWriteReachable unknownWriteRecoveryRecordReachable \
+    unknownDataParityWriteReachable interruptedProcessingReachable \
+    completedAwaitingReleaseReachable releasePendingReachable \
+    abortedAwaitingReleaseReachable releasedReachable \
+    resumedDataParityWriteReachable reconciledDataParityWriteReachable \
+    durableDataParityWriteReachable
 cargo test -p dwv-transaction-ref --lib
 cargo test -p dwv-transaction-ref --test quint_connect -- --nocapture
 ```
- 
+
 Observed:
- 
+
 - Quint `0.32.0` typechecked all three sources. The exact `quint verify`
   command above completed with Apalache `0.56.1`, bounded depth 12, and no
   invariant violation across all ten named invariants.
 - The analysis reported nine passing tests:
-  `boundedAssumptionsTest` passed once; `terminalReleaseRequiredTest`,
-  `terminalBeginBlockedTest`, `releasePermitsReuseTest`,
-  `volatileAbandonmentContinuationTest`, `partialHomeCannotBeDurableTest`,
-  `repeatedAbandonBlockedTest`, and `repeatedHomeReconciliationBlockedTest`
-  each passed 10,000 randomized cases; `rejectedIntentReleaseTest` passed
-  once.
+  `boundedAssumptionsTest` passed once; `completedReleaseRequiredTest`,
+  `completedWriteStartBlockedTest`, `releasePermitsReuseTest`,
+  `volatileAbandonmentContinuationTest`,
+  `partialDataParityWriteCannotBeDurableTest`,
+  `repeatedAbandonBlockedTest`, and
+  `repeatedDataParityWriteReconciliationBlockedTest` each passed 10,000
+  randomized cases; `rejectedWriteRecoveryRecordReleaseTest` passed once.
 - The sampled invariant run found no violation across 10,000 traces.
-  Witnesses were reached in 10,000/10,000 begin traces, 9,620/10,000
-  durable-intent and mutation traces, 6,663/10,000 uncertain-intent traces,
-  8,709/10,000 uncertain-home traces, 9,999/10,000 reconciliation-handoff
-  traces, 740/10,000 terminal and terminal-pending-release traces,
-  3,310/10,000 aborted traces, 3,701/10,000 released traces, 2,374/10,000
-  resumed-mutation traces, 7,891/10,000 reconciliation-mutation traces, and
-  7,623/10,000 `durableHomeReachable` traces.
-- A disposable copy with the terminal-begin guard removed failed
-  `terminalBeginBlockedTest` with `QNT511`. A disposable copy with the
-  durable-home coverage guard removed failed
-  `partialHomeCannotBeDurableTest` with `QNT511`. No mutants are retained.
+  Witnesses cover start, durable write-recovery record, data/parity write,
+  unknown write-recovery record, unknown data/parity write, interrupted
+  processing, completed-awaiting-release, release-pending,
+  aborted-awaiting-release, released, resumed data/parity write, reconciled
+  data/parity write, and durable data/parity write.
+- A disposable copy with the completed-write start guard removed fails
+  `completedWriteStartBlockedTest`; a copy with the durable data/parity
+  coverage guard removed fails
+  `partialDataParityWriteCannotBeDurableTest`. No mutants are retained.
 - The two retained Connect traces, seeds `22082026` and `1`, both execute
-  `init`, `begin`, `acceptIntent`, `mutate`, `makeHomeDurable`, `checkpoint`,
-  `release`, then a new `begin` and second lifecycle through `release`.
-  Connect therefore establishes release-followed-by-reuse for this mapped
-  lifecycle, not only completion through the first release.
+  `init`, `startWrite`, `confirmWriteRecoveryRecordDurable`,
+  `attemptDataParityWrite`, `confirmDataParityWritesDurable`,
+  `commitRecoveryClean`, and `releaseRange`, then a new `startWrite` and
+  second lifecycle through `releaseRange`. Connect therefore establishes
+  release-followed-by-reuse for this mapped lifecycle.
 - The Connect projection is intentionally bounded, not a conformance bridge.
-  Quint `mutate` advances one mapped abstract region while Rust `mutate`
-  batches read completion, parity computation, and write completion. The
+  Quint `attemptDataParityWrite` advances one mapped abstract region while
+  Rust batches read completion, parity computation, and write completion. The
   projection uses one mapped region and no abstract stores, so it excludes
-  abstract `fence` and home-reconciliation transitions whose concrete
-  evidence is owned outside this projection. Rust's typed flush, checkpoint,
-  crash, reconciliation, fence, watermark, generation, topology, and
-  result-class evidence remains outside the delegated projection. Concrete
-  stale-result correlation and generation admissibility remain owned by the
-  applicable current requirements.
- 
+  abstract persistence-evidence and data/parity-write reconciliation
+  transitions whose concrete evidence is owned outside this projection.
+  Rust's typed flush, recovery CLEAN, crash, reconciliation,
+  persistence-evidence, watermark, generation, topology, and result-class
+  evidence remains outside the delegated projection. Concrete stale-result
+  correlation and generation admissibility remain owned by the applicable
+  current requirements.
+
 Reproduction recipes:
- 
+
 ```text
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --max-steps 12 --max-samples 1 \
   --n-traces 1 --seed 22082026 \
-  --out-itf /tmp/ve002-replay-a-{seq}.itf.json --verbosity 0
+  --out-itf /tmp/write-recovery-lifecycle-replay-a-{seq}.itf.json --verbosity 0
 quint run verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis --max-steps 12 --max-samples 1 \
   --n-traces 1 --seed 22082026 \
-  --out-itf /tmp/ve002-replay-b-{seq}.itf.json --verbosity 0
-python3 -c 'import json; from pathlib import Path; a=json.loads(Path("/tmp/ve002-replay-a-0.itf.json").read_text()); b=json.loads(Path("/tmp/ve002-replay-b-0.itf.json").read_text()); norm=lambda v: ({k:norm(x) for k,x in v.items() if k not in ("#meta","meta","timestamp")} if isinstance(v,dict) else [norm(x) for x in v] if isinstance(v,list) else v); assert norm(a["states"]) == norm(b["states"]); print(len(a["states"]))'
- 
-rm -rf /tmp/ve002-mutations
-for case in terminal-begin partial-home; do
-  mkdir -p "/tmp/ve002-mutations/$case/models/quint" \
-    "/tmp/ve002-mutations/$case/verification/quint"
-  cp models/quint/RecoveryProtocol.qnt \
-    "/tmp/ve002-mutations/$case/models/quint/RecoveryProtocol.qnt"
-  cp verification/quint/RecoveryProtocolAnalysis.qnt \
-    "/tmp/ve002-mutations/$case/verification/quint/RecoveryProtocolAnalysis.qnt"
-done
-python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/terminal-begin/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); needle="  action begin: bool = all {\n    state.obligation == Unowned,\n"; assert s.count(needle)==1; p.write_text(s.replace(needle, "  action begin: bool = all {\n", 1))'
-python3 -c 'from pathlib import Path; p=Path("/tmp/ve002-mutations/partial-home/models/quint/RecoveryProtocol.qnt"); s=p.read_text(); needle="  action reconcileHomeDurable: bool = all {\n    state.intent == IntentDurable,\n    state.home == HomeUnknown,\n    state.recovery == RecoveryIndeterminate,\n    state.obligation == Handoff,\n    state.attempted == Regions,\n    state.mutated == Regions,\n"; assert s.count(needle)==1; p.write_text(s.replace(needle, needle.replace("    state.mutated == Regions,\n", ""), 1))'
-! quint test /tmp/ve002-mutations/terminal-begin/verification/quint/RecoveryProtocolAnalysis.qnt \
-  --main RecoveryProtocolAnalysis --match terminalBeginBlockedTest --seed 1
-! quint test /tmp/ve002-mutations/partial-home/verification/quint/RecoveryProtocolAnalysis.qnt \
-  --main RecoveryProtocolAnalysis --match partialHomeCannotBeDurableTest --seed 1
-rm -rf /tmp/ve002-mutations /tmp/ve002-replay-a-0.itf.json \
-  /tmp/ve002-replay-b-0.itf.json
+  --out-itf /tmp/write-recovery-lifecycle-replay-b-{seq}.itf.json --verbosity 0
 ```
- 
-The terminal-begin and partial-home mutations are expected to fail their
-respective tests with `QNT511`. The recipe selects each intended guard by its
-unique action block and asserts that the block occurs exactly once. The trace
-recipe uses Quint's `--out-itf` output, so the retained files are actual ITF;
-the comparison removes generated `#meta` values and compares the 13 state
-records.
- 
-The current evidence remains bounded to depth 12 for the delegated checks, two
-affected regions and two stores for the finite analysis instance, sampled
-execution, and two Connect seeds covering release followed by reuse. It does
-not claim exhaustive arbitrary-width model checking, Rust implementation
-correctness, exact region/checksum mapping, typed fence admissibility,
-topology, persistence, operation-slot lifetime, frontend behavior, physical
-durability, or unbounded recovery progress.
 
-## VE-001 focused evidence
+The completed-write-start and partial-data/parity mutations are expected to
+fail their respective tests with `QNT511`. The trace recipe uses Quint's
+`--out-itf` output and compares normalized state records after removing
+generated metadata. The current evidence remains bounded to depth 12 for
+delegated checks, two affected regions and two stores for the finite analysis
+instance, sampled execution, and two Connect seeds covering release followed
+by reuse. It does not claim exhaustive arbitrary-width model checking, Rust
+implementation correctness, exact region/checksum mapping, persistence-
+evidence admissibility, topology, persistence, operation-slot lifetime,
+frontend behavior, physical durability, or unbounded recovery progress.
+
+## verify.bounded-arithmetic focused evidence
 
 Source tests:
 
@@ -254,18 +234,19 @@ Observed: all seven harnesses completed with no failed checks. Geometry
 reachability covers for valid and invalid inputs were satisfied. The direct
 `Vec`-backed service harness was canceled after symbolic execution became
 pathological; the replacement fixed-array arithmetic harness completed in
-2.66 seconds and proves VP-002's bounded split/coverage arithmetic. Public
+2.66 seconds and supports `verify.claim.checked-addressing` bounded
 list/allocation and error-formatting behavior remains covered by the bounded
 Rust tests and later property/fuzz layers. Kani diagnostics for
 `caller_location` and foreign functions were emitted as successful checks,
 not proof failures.
 
-Kani claim map: the core and service harnesses support VP-002; the codec
-parity, incremental-update, and single-erasure harnesses support VP-001.
+Kani claim map: the core and service harnesses support
+`verify.claim.checked-addressing`; the codec parity, incremental-update, and
+single-erasure harnesses support `verify.claim.parity-exact`.
 These runs do not establish arbitrary-width `u64` proof, P/Q behavior,
 concurrency, recovery ordering, filesystem/device I/O, or physical durability.
 
-## VE-005 initial structured corpus evidence
+## verify.sustained-fuzz-corpus initial structured corpus evidence
 
 Source: `verification/corpus/trace-seeds.json` and the seeded
 `dwv-trace` parser-mutation test.
@@ -283,11 +264,12 @@ JSON. Deterministic byte mutations are accepted only when the parser produces
 a trace that also canonical-round-trips; malformed or invalid mutations are
 refused. The corpus contains seeds, not raw payloads.
 
-This is initial VP-010 hostile trace-input and VP-011 reproducibility evidence.
-It does not claim broad simulator operation/fault/crash/topology schedules,
-parity generation, concurrency, filesystem behavior, or hardware durability.
+This is initial `verify.claim.hostile-input-safe-formats` and
+`verify.claim.reproducible-failure-evidence` evidence. It does not claim broad
+simulator operation/fault/crash/topology schedules, parity generation,
+concurrency, filesystem behavior, or hardware durability.
 
-## VE-005 seeded simulator schedule corpus evidence
+## verify.sustained-fuzz-corpus seeded simulator schedule corpus evidence
 
 Source: `verification/corpus/simulator-schedule-seeds.txt` and the seeded
 `dwv-sim` schedule/replay test.
@@ -306,11 +288,14 @@ reproducer format, replays deterministically, drains pending work, and ends
 with the store available. The corpus retains seeds and producer logic, not
 payload data.
 
-This supports initial VP-005, VP-008, VP-010, and VP-011 evidence. It does not
-claim exhaustive schedule coverage, topology generation, parity equivalence,
+This supports initial `verify.claim.uncertainty-remains-explicit`,
+`verify.claim.conservative-deterministic-recovery`,
+`verify.claim.hostile-input-safe-formats`, and
+`verify.claim.reproducible-failure-evidence` evidence. It does not claim
+exhaustive schedule coverage, topology generation, parity equivalence,
 concurrency, filesystem behavior, or hardware durability.
 
-## VE-005 bounded parity, topology, and envelope corpus evidence
+## verify.sustained-fuzz-corpus bounded parity, topology, and envelope corpus evidence
 
 Sources: `verification/corpus/parity-seeds.txt`,
 `verification/corpus/topology-seeds.txt`, and
@@ -331,10 +316,12 @@ magic, version, header, profile, slot, body, and padding offsets, all of which
 are rejected. The artifacts retain seed values and producer logic, not payload
 bytes.
 
-This extends bounded VP-001, VP-002, VP-009, VP-010, and VP-011 evidence. The
-corpus remains finite and does not claim arbitrary-width proof, exhaustive
-topology space, concurrency, filesystem behavior, Linux behavior, or hardware
-durability.
+This extends bounded `verify.claim.parity-exact`,
+`verify.claim.checked-addressing`, `verify.claim.topology-binding-stable`,
+`verify.claim.hostile-input-safe-formats`, and
+`verify.claim.reproducible-failure-evidence` evidence. The corpus remains
+finite and does not claim arbitrary-width proof, exhaustive topology space,
+concurrency, filesystem behavior, Linux behavior, or hardware durability.
 
 
 ## Integrated portable checkpoint
@@ -367,7 +354,7 @@ Observed:
 - The CLI continued to report live bridge, Linux, physical durability, P/Q,
   and degraded writes as unsupported.
 
-## Post-VE-001 integrated checkpoint
+## Post-verify.bounded-arithmetic integrated checkpoint
 
 Disposable root: `/tmp/dwv-v3-ve001`
 

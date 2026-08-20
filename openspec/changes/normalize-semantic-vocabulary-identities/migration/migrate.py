@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """One-time vocabulary migration helpers for normalize-semantic-vocabulary-identities.
-
 This script is intentionally narrow:
 - scenario bodies and requirement semantics are owned by OpenSpec deltas;
 - this script renames approved scenario headings that OpenSpec 1.8 cannot rename losslessly;
 - this script rekeys reviewed outcomes/reasons for approved req.* renames;
 - this script applies exact reviewed canonical explanatory-text replacements that OpenSpec deltas cannot represent;
 - existing DiskWeave tooling remains responsible for semantic fingerprints, graph validation, and readiness.
+
+It does not rewrite planning-category labels. Those records are preserved as
+human-readable names in the candidate; `planning-names.toml` is provenance only.
 
 Run against a disposable candidate tree before Gate #2, then against the real cutover tree only after Gate #2.
 """
@@ -85,8 +87,82 @@ def load_text_map(change_dir: Path):
     return load_toml(path).get("text", [])
 
 
+ACTIVE_GUIDANCE_TEXT_RENAMES = (
+    ("RecordHomeFence", "ObservePersistenceEvidence"),
+    ("HomeFenceRecord", "PersistenceEvidence"),
+    ("CommitCheckpoint", "CommitRecoveryClean"),
+    ("MarkRegionClean", "CommitRecoveryClean"),
+    ("IntentDurable", "WriteRecoveryRecordDurable"),
+    ("ApplyingHomeWrites", "ApplyingDataParityWrites"),
+    ("DirtyAwaitingFence", "DirtyAwaitingPersistenceEvidence"),
+    ("HomeFenceDurable", "PersistenceEvidenceObserved"),
+    (
+        "This roadmap guides future architecture, coherence, dependency ordering, "
+        "validation strategy, milestone planning, and the reserved `OS-NNN` "
+        "work-item namespace; it does not silently override a conflicting "
+        "canonical requirement.",
+        "This roadmap guides future architecture, coherence, dependency ordering, "
+        "validation strategy, and milestone planning; it does not silently override "
+        "a conflicting canonical requirement.",
+    ),
+    (
+        "Numeric `OS-###` identifiers assigned in this active architecture roadmap "
+        "are reserved identities for the corresponding roadmap work. They are not "
+        "a general sequential namespace for unrelated OpenSpec changes. Work that "
+        "does not implement the corresponding roadmap item uses a descriptive "
+        "unnumbered OpenSpec change ID.",
+        "Roadmap items use descriptive semantic identifiers in this active "
+        "architecture roadmap. They identify the corresponding work without "
+        "defining a general sequential namespace for unrelated OpenSpec changes. "
+        "Work that does not implement a listed roadmap item uses a descriptive "
+        "OpenSpec change ID.",
+    ),
+    ("| OpenSpec | Required executable result |", "| Roadmap item | Required executable result |"),
+    ("Likely home", "Likely owner"),
+    ("home-store fences", "data/parity persistence-evidence fences"),
+    ("home-store fence", "data/parity persistence-evidence fence"),
+    ("home-media mutation", "data/parity write"),
+    ("home stores", "data/parity stores"),
+    ("home-store", "data/parity store"),
+    ("home writes", "data/parity writes"),
+    ("home write", "data/parity write"),
+    ("home mutation", "data/parity write"),
+    ("home effect", "data/parity write"),
+    ("home state", "data/parity write state"),
+    ("home fences", "persistence-evidence fences"),
+    ("home fence", "persistence-evidence fence"),
+    ("dirty/integrity/recovery intent", "dirty/integrity/write-recovery-record state"),
+    ("dirty/integrity intent", "dirty/integrity/write-recovery record"),
+    ("durable intent evidence", "durable write-recovery-record evidence"),
+    ("durable intent commit", "durable write-recovery-record commit"),
+    ("Uncertain intent commit", "Uncertain write-recovery-record commit"),
+    ("required intent/invalidation", "required write-recovery record/invalidation"),
+    ("pre-mutation intent rejection", "pre-mutation write-recovery-record rejection"),
+    ("dirty intent", "write-recovery record"),
+    ("durable intent", "durable write-recovery record"),
+    ("intent commit", "write-recovery-record commit"),
+    ("home", "data/parity"),
+)
+
+
+def prepare_active_guidance_text_updates(root: Path, prepared: dict[Path, str]):
+    path = root / "docs" / "architecture" / "diskweave-architecture-roadmap-v0.8.md"
+    if not path.is_file():
+        fail(f"missing active architecture roadmap: {path}")
+    content = prepared.get(path, path.read_text())
+
+    for old, new in ACTIVE_GUIDANCE_TEXT_RENAMES:
+        if content.count(old):
+            content = content.replace(old, new)
+
+    prepared[path] = content
+    return prepared
+
+
 def prepare_scenario_updates(root: Path, change_dir: Path):
     prepared: dict[Path, str] = {}
+    renamed_count = 0
+    pending_count = 0
     for entry in load_scenario_map(change_dir):
         path = root / "openspec" / "specs" / entry["capability"] / "spec.md"
         if not path.is_file():
@@ -102,7 +178,7 @@ def prepare_scenario_updates(root: Path, change_dir: Path):
                 f"{path}: expected one requirement {entry['requirement_id']}, "
                 f"found {len(req_matches)}"
             )
-        req_block, req_start, req_end = req_matches[0]
+        req_block, req_start, _ = req_matches[0]
         scenarios = list(scenario_blocks(req_block))
         occurrence = int(entry["occurrence"])
         if occurrence < 1 or occurrence > len(scenarios):
@@ -115,37 +191,39 @@ def prepare_scenario_updates(root: Path, change_dir: Path):
             fail(f"{path}: internal scenario ordinal mismatch")
         expected_old = entry["old"]
         expected_new = entry["new"]
-        if heading == expected_new:
-            fail(
-                f"{path}: scenario already renamed to {expected_new!r}; "
-                "refusing a partially applied migration"
-            )
-        if heading != expected_old:
-            fail(
-                f"{path}: expected scenario heading {expected_old!r}, found {heading!r}"
-            )
         digest = body_digest(body)
         if digest != entry["body_sha256"]:
             fail(
                 f"{path}: body digest mismatch for {expected_old!r}: "
                 f"expected {entry['body_sha256']}, found {digest}"
             )
+        if heading == expected_new:
+            renamed_count += 1
+            continue
+        if heading != expected_old:
+            fail(
+                f"{path}: expected scenario heading {expected_old!r}, found {heading!r}"
+            )
+        pending_count += 1
         absolute_heading_start = req_start + scenario_start
         old_line = f"#### Scenario: {expected_old}"
         new_line = f"#### Scenario: {expected_new}"
         if original[absolute_heading_start:absolute_heading_start + len(old_line)] != old_line:
             fail(f"{path}: heading location changed unexpectedly")
-        updated = (
+        prepared[path] = (
             original[:absolute_heading_start]
             + new_line
             + original[absolute_heading_start + len(old_line):]
         )
-        prepared[path] = updated
+    if renamed_count and pending_count:
+        fail("scenario migration is partially applied; refusing mixed old/new headings")
     return prepared
 
 
 
 def prepare_text_updates(root: Path, change_dir: Path, prepared: dict[Path, str]):
+    renamed_count = 0
+    pending_count = 0
     for entry in load_text_map(change_dir):
         path = root / entry["path"]
         if not path.is_file():
@@ -155,11 +233,17 @@ def prepare_text_updates(root: Path, change_dir: Path, prepared: dict[Path, str]
         new = entry["new"]
         old_count = content.count(old)
         new_count = content.count(new)
+        if old_count and new_count:
+            fail(f"{path}: reviewed replacement has both old and new text")
         if new_count:
-            fail(f"{path}: reviewed replacement is already present; refusing partial migration")
+            renamed_count += 1
+            continue
         if old_count != 1:
             fail(f"{path}: expected exact reviewed text once, found {old_count}")
+        pending_count += 1
         prepared[path] = content.replace(old, new, 1)
+    if renamed_count and pending_count:
+        fail("canonical text migration is partially applied; refusing mixed old/new text")
     return prepared
 
 def atomic_write(path: Path, content: str):
@@ -257,6 +341,7 @@ def main() -> int:
 
     prepared = prepare_scenario_updates(root, change_dir)
     prepared = prepare_text_updates(root, change_dir, prepared)
+    prepared = prepare_active_guidance_text_updates(root, prepared)
     rekey_reviewed(root, change_dir, apply=False)
 
     if args.mode == "check":

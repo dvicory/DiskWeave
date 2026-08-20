@@ -30,7 +30,7 @@ impl InvalidationTarget {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum IntentBoundary {
+pub enum WriteRecoveryRecordBoundary {
     CleanRegion,
     ValidChecksum,
     UnknownRegion,
@@ -39,27 +39,27 @@ pub enum IntentBoundary {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IntentCoverage {
+pub struct WriteRecoveryRecordCoverage {
     pub topology_epoch: TopologyEpoch,
     pub generation: RecoveryGeneration,
     pub target: InvalidationTarget,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum IntentDecision {
-    AlreadyCovered(IntentCoverage),
+pub enum WriteRecoveryRecordDecision {
+    AlreadyCovered(WriteRecoveryRecordCoverage),
     RequiresDurableCommit {
-        coverage: IntentCoverage,
-        boundaries: Vec<IntentBoundary>,
+        coverage: WriteRecoveryRecordCoverage,
+        boundaries: Vec<WriteRecoveryRecordBoundary>,
     },
 }
 
-impl IntentDecision {
+impl WriteRecoveryRecordDecision {
     pub const fn requires_commit(&self) -> bool {
         matches!(self, Self::RequiresDurableCommit { .. })
     }
 
-    pub fn coverage(&self) -> &IntentCoverage {
+    pub fn coverage(&self) -> &WriteRecoveryRecordCoverage {
         match self {
             Self::AlreadyCovered(coverage) | Self::RequiresDurableCommit { coverage, .. } => {
                 coverage
@@ -68,13 +68,13 @@ impl IntentDecision {
     }
 }
 
-/// Determine whether an identical durable intent is already sufficient.
-pub fn assess_intent(
+/// Determine whether an identical durable write-recovery record is already sufficient.
+pub fn assess_write_recovery_record(
     snapshot: &RecoverySnapshot,
     topology_epoch: TopologyEpoch,
     generation: RecoveryGeneration,
     target: InvalidationTarget,
-) -> Result<IntentDecision, RecoveryError> {
+) -> Result<WriteRecoveryRecordDecision, RecoveryError> {
     if snapshot.topology_epoch != topology_epoch {
         return Err(RecoveryError::TopologyMismatch {
             expected: topology_epoch,
@@ -82,7 +82,7 @@ pub fn assess_intent(
         });
     }
 
-    let coverage = IntentCoverage {
+    let coverage = WriteRecoveryRecordCoverage {
         topology_epoch,
         generation,
         target,
@@ -97,8 +97,10 @@ pub fn assess_intent(
             .map(|record| record.state)
         {
             Some(RegionState::Dirty { dirty_since }) if dirty_since <= generation => {}
-            Some(RegionState::Indeterminate) => boundaries.push(IntentBoundary::UnknownRegion),
-            _ => boundaries.push(IntentBoundary::CleanRegion),
+            Some(RegionState::Indeterminate) => {
+                boundaries.push(WriteRecoveryRecordBoundary::UnknownRegion)
+            }
+            _ => boundaries.push(WriteRecoveryRecordBoundary::CleanRegion),
         }
     }
 
@@ -111,15 +113,17 @@ pub fn assess_intent(
         {
             Some(IntegrityState::Stale { stale_generation }) if *stale_generation <= generation => {
             }
-            Some(IntegrityState::Absent) | None => boundaries.push(IntentBoundary::AbsentChecksum),
-            _ => boundaries.push(IntentBoundary::ValidChecksum),
+            Some(IntegrityState::Absent) | None => {
+                boundaries.push(WriteRecoveryRecordBoundary::AbsentChecksum)
+            }
+            _ => boundaries.push(WriteRecoveryRecordBoundary::ValidChecksum),
         }
     }
 
     if boundaries.is_empty() {
-        Ok(IntentDecision::AlreadyCovered(coverage))
+        Ok(WriteRecoveryRecordDecision::AlreadyCovered(coverage))
     } else {
-        Ok(IntentDecision::RequiresDurableCommit {
+        Ok(WriteRecoveryRecordDecision::RequiresDurableCommit {
             coverage,
             boundaries,
         })
@@ -127,7 +131,7 @@ pub fn assess_intent(
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct IntentEvidence {
+pub struct WriteRecoveryRecordEvidence {
     pub topology_epoch: TopologyEpoch,
     pub captured_generation: RecoveryGeneration,
     pub committed_generation: RecoveryGeneration,
@@ -135,7 +139,7 @@ pub struct IntentEvidence {
     pub durable: bool,
 }
 
-impl IntentEvidence {
+impl WriteRecoveryRecordEvidence {
     pub const fn already_covered(
         topology_epoch: TopologyEpoch,
         generation: RecoveryGeneration,
@@ -158,11 +162,11 @@ mod tests {
     use dwv_core::TopologyEpoch;
 
     #[test]
-    fn clean_or_valid_boundaries_require_a_new_intent() {
+    fn clean_or_valid_boundaries_require_a_new_write_recovery_record() {
         let snapshot = MemoryRecoveryStore::new(TopologyEpoch(4))
             .snapshot()
             .clone();
-        let decision = assess_intent(
+        let decision = assess_write_recovery_record(
             &snapshot,
             TopologyEpoch(4),
             RecoveryGeneration(0),
@@ -186,14 +190,17 @@ mod tests {
         txn.mark_region_dirty(RegionId(2), RecoveryGeneration(0));
         txn.mark_integrity_stale(IntegrityExtentId(8), RecoveryGeneration(0));
         store.commit_durable(txn).unwrap();
-        let decision = assess_intent(
+        let decision = assess_write_recovery_record(
             store.snapshot(),
             TopologyEpoch(4),
             RecoveryGeneration(1),
             target,
         )
         .unwrap();
-        assert!(matches!(decision, IntentDecision::AlreadyCovered(_)));
+        assert!(matches!(
+            decision,
+            WriteRecoveryRecordDecision::AlreadyCovered(_)
+        ));
         assert_eq!(store.snapshot().integrity_records.len(), 1);
     }
 }

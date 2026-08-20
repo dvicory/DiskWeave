@@ -5,11 +5,11 @@
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryCutPoint {
-    HomeMutationBeforeIntent,
-    AfterIntentBeforeHome,
-    AfterHomeMutationBeforeFence,
-    AfterFenceBeforeCheckpoint,
-    AfterCheckpoint,
+    DataParityWriteBeforeWriteRecoveryRecord,
+    AfterWriteRecoveryRecordBeforeDataParityWrite,
+    AfterDataParityWriteBeforeFence,
+    AfterPersistenceEvidenceBeforeRecoveryClean,
+    AfterRecoveryClean,
     RestartAfterCrash,
 }
 
@@ -72,37 +72,39 @@ impl RecoverySchedule {
         let extents = sorted_unique(extents);
 
         match self.cut_point {
-            RecoveryCutPoint::HomeMutationBeforeIntent => {
+            RecoveryCutPoint::DataParityWriteBeforeWriteRecoveryRecord => {
                 state.outcome = Some(RecoveryModelOutcome::Blocked);
-                state.events.push(RecoveryModelEvent::IntentRefused);
+                state
+                    .events
+                    .push(RecoveryModelEvent::WriteRecoveryRecordRefused);
             }
-            RecoveryCutPoint::AfterIntentBeforeHome => {
-                state.mark_intent(regions, extents);
+            RecoveryCutPoint::AfterWriteRecoveryRecordBeforeDataParityWrite => {
+                state.mark_write_recovery_record(regions, extents);
                 state.outcome = Some(RecoveryModelOutcome::Interrupted);
             }
-            RecoveryCutPoint::AfterHomeMutationBeforeFence => {
-                state.mark_intent(regions, extents);
-                state.home_mutation_emitted = true;
+            RecoveryCutPoint::AfterDataParityWriteBeforeFence => {
+                state.mark_write_recovery_record(regions, extents);
+                state.data_parity_write_emitted = true;
                 state.outcome = Some(RecoveryModelOutcome::ReconciliationRequired);
             }
-            RecoveryCutPoint::AfterFenceBeforeCheckpoint => {
-                state.mark_intent(regions, extents);
-                state.home_mutation_emitted = true;
+            RecoveryCutPoint::AfterPersistenceEvidenceBeforeRecoveryClean => {
+                state.mark_write_recovery_record(regions, extents);
+                state.data_parity_write_emitted = true;
                 state.fence_durable = true;
                 state.outcome = Some(RecoveryModelOutcome::Interrupted);
             }
-            RecoveryCutPoint::AfterCheckpoint => {
-                state.mark_intent(regions, extents);
-                state.home_mutation_emitted = true;
+            RecoveryCutPoint::AfterRecoveryClean => {
+                state.mark_write_recovery_record(regions, extents);
+                state.data_parity_write_emitted = true;
                 state.fence_durable = true;
-                state.checkpointed = true;
+                state.recovery_clean = true;
                 state.dirty_regions.clear();
                 state.session_dirty = false;
-                state.outcome = Some(RecoveryModelOutcome::CheckpointedWithStaleIntegrity);
+                state.outcome = Some(RecoveryModelOutcome::RecoveryCleanWithStaleIntegrity);
             }
             RecoveryCutPoint::RestartAfterCrash => {
-                state.mark_intent(regions, extents);
-                state.home_mutation_emitted = true;
+                state.mark_write_recovery_record(regions, extents);
+                state.data_parity_write_emitted = true;
                 state.outcome = Some(RecoveryModelOutcome::ReconciliationRequired);
             }
         }
@@ -120,16 +122,16 @@ pub enum RecoveryModelOutcome {
     Blocked,
     Interrupted,
     ReconciliationRequired,
-    CheckpointedWithStaleIntegrity,
+    RecoveryCleanWithStaleIntegrity,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryModelEvent {
-    IntentRefused,
-    IntentDurable,
-    HomeMutationEmitted,
+    WriteRecoveryRecordRefused,
+    WriteRecoveryRecordDurable,
+    DataParityWriteEmitted,
     FenceDurable,
-    CheckpointDurable,
+    RecoveryCleanDurable,
     StateDigest {
         dirty_regions: Vec<u64>,
         stale_extents: Vec<u64>,
@@ -142,19 +144,20 @@ pub struct RecoveryModelState {
     pub dirty_regions: Vec<u64>,
     pub stale_extents: Vec<u64>,
     pub session_dirty: bool,
-    pub home_mutation_emitted: bool,
+    pub data_parity_write_emitted: bool,
     pub fence_durable: bool,
-    pub checkpointed: bool,
+    pub recovery_clean: bool,
     pub outcome: Option<RecoveryModelOutcome>,
     pub events: Vec<RecoveryModelEvent>,
 }
 
 impl RecoveryModelState {
-    fn mark_intent(&mut self, regions: Vec<u64>, extents: Vec<u64>) {
+    fn mark_write_recovery_record(&mut self, regions: Vec<u64>, extents: Vec<u64>) {
         self.dirty_regions = regions;
         self.stale_extents = extents;
         self.session_dirty = true;
-        self.events.push(RecoveryModelEvent::IntentDurable);
+        self.events
+            .push(RecoveryModelEvent::WriteRecoveryRecordDurable);
     }
 }
 
@@ -169,11 +172,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn every_pre_checkpoint_cut_point_preserves_dirty_evidence() {
+    fn every_pre_recovery_clean_cut_point_preserves_dirty_evidence() {
         for cut_point in [
-            RecoveryCutPoint::AfterIntentBeforeHome,
-            RecoveryCutPoint::AfterHomeMutationBeforeFence,
-            RecoveryCutPoint::AfterFenceBeforeCheckpoint,
+            RecoveryCutPoint::AfterWriteRecoveryRecordBeforeDataParityWrite,
+            RecoveryCutPoint::AfterDataParityWriteBeforeFence,
+            RecoveryCutPoint::AfterPersistenceEvidenceBeforeRecoveryClean,
             RecoveryCutPoint::RestartAfterCrash,
         ] {
             let state = RecoverySchedule::first_write(cut_point).replay();
@@ -184,21 +187,28 @@ mod tests {
     }
 
     #[test]
-    fn mutation_before_durable_intent_is_refused_without_home_io() {
-        let state =
-            RecoverySchedule::first_write(RecoveryCutPoint::HomeMutationBeforeIntent).replay();
-        assert!(!state.home_mutation_emitted);
+    fn data_parity_write_before_durable_write_recovery_record_is_refused_without_io() {
+        let state = RecoverySchedule::first_write(
+            RecoveryCutPoint::DataParityWriteBeforeWriteRecoveryRecord,
+        )
+        .replay();
+        assert!(!state.data_parity_write_emitted);
         assert!(state.dirty_regions.is_empty());
         assert_eq!(state.outcome, Some(RecoveryModelOutcome::Blocked));
-        assert!(state.events.contains(&RecoveryModelEvent::IntentRefused));
+        assert!(
+            state
+                .events
+                .contains(&RecoveryModelEvent::WriteRecoveryRecordRefused)
+        );
     }
 
     #[test]
-    fn crash_after_home_mutation_before_checkpoint_remains_dirty() {
+    fn crash_after_data_parity_write_before_recovery_clean_remains_dirty() {
         let state =
-            RecoverySchedule::first_write(RecoveryCutPoint::AfterHomeMutationBeforeFence).replay();
-        assert!(state.home_mutation_emitted);
-        assert!(!state.checkpointed);
+            RecoverySchedule::first_write(RecoveryCutPoint::AfterDataParityWriteBeforeFence)
+                .replay();
+        assert!(state.data_parity_write_emitted);
+        assert!(!state.recovery_clean);
         assert_eq!(state.dirty_regions, vec![1]);
         assert_eq!(
             state.outcome,
@@ -208,8 +218,9 @@ mod tests {
 
     #[test]
     fn overlap_schedule_is_sorted_and_unioned_deterministically() {
-        let schedule =
-            RecoverySchedule::overlapping_writes(RecoveryCutPoint::AfterIntentBeforeHome);
+        let schedule = RecoverySchedule::overlapping_writes(
+            RecoveryCutPoint::AfterWriteRecoveryRecordBeforeDataParityWrite,
+        );
         let state = schedule.replay();
         assert_eq!(state.dirty_regions, vec![1, 2, 3]);
         assert_eq!(state.stale_extents, vec![10, 20, 21]);
@@ -217,13 +228,13 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_does_not_infer_checksum_validity() {
-        let state = RecoverySchedule::first_write(RecoveryCutPoint::AfterCheckpoint).replay();
+    fn recovery_clean_does_not_infer_checksum_validity() {
+        let state = RecoverySchedule::first_write(RecoveryCutPoint::AfterRecoveryClean).replay();
         assert!(state.dirty_regions.is_empty());
         assert_eq!(state.stale_extents, vec![10]);
         assert_eq!(
             state.outcome,
-            Some(RecoveryModelOutcome::CheckpointedWithStaleIntegrity)
+            Some(RecoveryModelOutcome::RecoveryCleanWithStaleIntegrity)
         );
     }
 }

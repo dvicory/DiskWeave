@@ -34,16 +34,17 @@ Live negative cases failed closed for second-owner acquisition, cleanup against 
 - `cargo test -p dwv-frontend-ublk`: 13 passed across two suites, including the deterministic undersized-fixture and missing-recovery-authority checks moved out of the guest workflow.
 - `cargo test -p dwv-transaction-ref partial_multi_store_fence_is_rejected`: passed outside the timed guest workflow.
 - `cargo test --test cli_demo`: covers portable trace replay, malformed trace refusal, oversized trace refusal, lifecycle confirmation, and source-preserving replay.
-- The current VE-002 bounded recovery-model evidence is recorded in
+- The current verify.write-recovery-lifecycle bounded recovery-model evidence is recorded in
   `docs/verification/portable-verification-evidence.md` and is independent
   of this Linux acceptance run; it does not broaden the Linux claim.
 - Kani 0.67.0 `dirty_region_mapping_covers_every_intersection_once`: 0 of 584 checks failed, 7 unreachable.
 - Kani 0.67.0 `fence_coverage_requires_every_store_region_and_incarnation`: 0 of 893 checks failed, 6 unreachable.
 
 The current Quint recovery model exercises crash/loss cuts before and after
-durable intent, protected mutation, fence, and checkpoint, with explicit
-uncertainty and reconciliation. Its disposable durable-intent mutation was
-rejected by `MutationRequiresIntent` and was not retained. Trace replay remains
-validation-only: it rechecks adapter translation and completion mapping
+durable write-recovery record, data/parity write, persistence evidence, and
+recovery CLEAN, with explicit uncertainty and reconciliation. Its disposable
+write-recovery-record guard mutation was rejected by
+`DataParityWriteRequiresWriteRecoveryRecord` and was not retained. Trace replay
+remains validation-only: it rechecks adapter translation and completion mapping
 without opening a fixture, backend, or device, mutating payload bytes, or
 claiming application consumption or physical durability.

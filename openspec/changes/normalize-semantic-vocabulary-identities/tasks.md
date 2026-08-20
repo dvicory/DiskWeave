@@ -15,7 +15,7 @@
 
 ## One-time migration and equivalence
 
-- [ ] 2.1 Run `migration/migrate.py` against the non-authoritative candidate target as specified in Design "One-time migration mechanics", including approved scenario headings, exact canonical explanatory text, and reviewed-state rekeys.
+- [ ] 2.1 Verify the candidate contains the approved one-time migration result described in Design "One-time migration mechanics" and that the retained maps still correspond to the final scenario headings, canonical explanatory text, and reviewed-state rekeys; do not rerun the migration against the already-materialized final candidate.
 - [ ] 2.2 Prove the requirement graph and reviewed outcomes/reasons are equivalent under the approved requirement map; refresh fingerprints only through existing knowledge tooling.
 - [ ] 2.3 Prove the delegated model is structurally equivalent after label canonicalization and run its bounded verification/Connect evidence.
 - [ ] 2.4 Run the complete scenario-heading/body consistency check and fail on any retired current heading not covered by the migration map or an explicit precise-retention decision.
@@ -25,5 +25,5 @@
 
 - [ ] 3.1 Run strict OpenSpec validation, knowledge readiness, `cargo xtask docs check`, docs build, focused Rust/trace tests, and compatibility checks on the complete candidate target.
 - [ ] 3.2 Present the exact candidate target and equivalence evidence for Gate #2. Do not modify current authority before approval.
-- [ ] 3.3 After Gate #2, perform the real cutover in the order defined by Design "Gates and cutover": apply the reviewed non-spec target and reviewed current-Bead edits, sync the approved OpenSpec deltas once, run the disposable migration, and refresh reviewed fingerprints; do not commit a half-migrated canonical state.
-- [ ] 3.4 Re-run the full validation/equivalence suite. If every check passes, archive the already-synced change without another spec sync; do not restore the old parser-locator scenario headings.
+- [ ] 3.3 After Gate #2, land or apply the exact reviewed candidate and the reviewed current-Bead edits in the order defined by Design "Gates and cutover"; do not reconstruct the target by rerunning spec sync or the disposable migration.
+- [ ] 3.4 Re-run the full validation/equivalence suite. If every check passes and canonical specs already match the approved delta result, archive the change without another spec sync.

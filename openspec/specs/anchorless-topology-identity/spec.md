@@ -76,12 +76,12 @@ Writable assembly SHALL require exactly one confident or explicitly attested can
 ### Requirement: Topology transition plans bind source, target, and recovery
 <!-- dwv:req req.anchorless-topology-identity.topology-transition-plans-bind-source-target-and-recovery -->
 
-Every prepared topology transition SHALL have a bounded plan bound to the current array identity, source topology epoch, expected assignment-instance identities and generations, exact source and target protected geometry and coding profiles, required quiescence or explicit reconciliation mode, recovery and rollback boundaries, and verification evidence required before promotion. The system SHALL revalidate those bindings before protected mutation and before promotion. A stale binding or unsupported execution mode SHALL be refused without changing transition state, protected bytes, or the active topology.
+Every prepared topology transition SHALL have a bounded plan bound to the current array identity, source topology epoch, expected assignment-instance identities and generations, exact source and target protected geometry and coding profiles, required quiescence or explicit reconciliation mode, recovery and rollback boundaries, and verification evidence required before promotion. The system SHALL revalidate those bindings before changing protected data/parity state and before promotion. A stale binding or unsupported execution mode SHALL be refused without changing transition state, protected bytes, or the active topology.
 
 #### Scenario: An assignment changes after planning
 
-- **WHEN** an expected assignment instance or generation no longer matches when the transition is about to mutate protected bytes
-- **THEN** the transition is refused without mutation and the active topology remains authoritative
+- **WHEN** an expected assignment instance or generation no longer matches when the transition is about to change protected data/parity state
+- **THEN** the transition is refused without changing protected data/parity state and the active topology remains authoritative
 
 #### Scenario: A requested transition mode is unsupported
 

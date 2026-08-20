@@ -1,7 +1,7 @@
 # recovery-state-semantics Specification
 
 ## Purpose
-Recovery state is a durable protocol authority, not a mirror of home-media bytes. It records the evidence and generations needed to decide whether future writes, clean transitions, and integrity claims are allowed. SQLite may implement this interface later, but SQL tables and row IDs SHALL not define the portable semantics.
+Recovery state is durable protocol authority, not a mirror of data/parity bytes. It records the evidence and generations needed to decide whether future writes, recovery CLEAN transitions, and integrity claims are allowed. SQLite may implement this interface later, but SQL tables and row IDs SHALL not define the portable semantics.
 ## Requirements
 ### Requirement: Recovery transactions are generation-checked and atomic
 <!-- dwv:req req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic -->
@@ -18,42 +18,42 @@ Each transaction SHALL capture an expected recovery generation and topology epoc
 - **WHEN** another transaction has advanced the recovery generation before commit
 - **THEN** the stale transaction is rejected with no durable side effect
 
-### Requirement: Home mutation requires durable dirty and integrity invalidation intent
-<!-- dwv:req req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent -->
-<!-- dwv:refines req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation -->
+### Requirement: Data/parity write requires write-recovery record
+<!-- dwv:req req.recovery-state-semantics.data-parity-write-requires-write-recovery-record -->
+<!-- dwv:refines req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write -->
 
-The semantic store SHALL atomically persist the affected dirty regions and stale integrity extents at one generation before a caller may rely on that transaction as the owner's durable invalidation intent. Dirty and stale generations SHALL survive in-memory process loss until a later explicit recovery transaction changes them. A rejected or generation-mismatched transaction leaves the prior snapshot authoritative. A lost, corrupt, or indeterminate commit observation establishes no authoritative resulting snapshot for the caller, provides no permission for protected home mutation, and requires reconciliation through the recovery commit-observation contract.
+The semantic store SHALL atomically persist the affected dirty regions and stale integrity extents at one generation before a caller may rely on that state as the write-recovery record required for a data/parity write. Dirty and stale generations SHALL survive in-memory process loss until a later explicit recovery transaction changes them. A rejected or generation-mismatched transaction leaves the prior snapshot authoritative. A lost, corrupt, or otherwise unclassifiable commit observation establishes no authoritative resulting snapshot for the caller, provides no permission for a data/parity write, and requires reconciliation through the write-recovery-record commit-observation contract.
 
 #### Scenario: A valid integrity extent is touched
 
 - **WHEN** one recovery transaction marks a region dirty and invalidates a valid extent
 - **THEN** the resulting snapshot records both changes at one committed recovery generation and no valid digest remains authoritative for that extent
 
-#### Scenario: Recovery intent commit is rejected before authoritative commit
+#### Scenario: The write-recovery record is rejected before it becomes durable
 
 - **WHEN** the transaction is rejected or generation-mismatched before authoritative commit
-- **THEN** the proposed transaction does not become authoritative, the prior snapshot remains authoritative, and the caller receives no permission for home mutation
+- **THEN** the proposed transaction does not become authoritative, the prior snapshot remains authoritative, and the caller receives no permission for a data/parity write
 
-#### Scenario: Recovery intent commit observation is lost, corrupt, or indeterminate
+#### Scenario: The write-recovery record's commit outcome cannot be determined
 
-- **WHEN** commitment may have occurred but its acknowledgement is lost, corrupt, or indeterminate
-- **THEN** neither the prior nor proposed resulting snapshot may be assumed authoritative for protected mutation, no home-mutation permission exists, and reconciliation through the recovery commit-observation contract is required
+- **WHEN** commitment may have occurred but its observation is lost, corrupt, or cannot be classified safely
+- **THEN** neither the prior nor proposed resulting snapshot may be assumed authoritative for a data/parity write, no data/parity-write permission exists, and reconciliation through the commit-observation contract is required
 
-### Requirement: Clean and valid claims require typed fence evidence
-<!-- dwv:req req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence -->
+### Requirement: Clean and valid claims require persistence evidence
+<!-- dwv:req req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence -->
 <!-- dwv:requires req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence -->
 
-The recovery store SHALL own the admissibility of typed evidence used for durable clean, valid-integrity, and clean-session claims. Evidence SHALL identify the store incarnation, ordering domain, accepted and synchronized-through watermarks, topology epoch, affected range or region, capability evidence, and relevant generations. A claim SHALL be rejected when required evidence is missing, volatile, future, stale, partial, cross-store, or mismatched.
+The recovery store SHALL own the admissibility of persistence evidence used for durable recovery `CLEAN`, valid-integrity, and clean-session claims. Evidence SHALL identify the store incarnation, ordering domain, accepted and synchronized-through watermarks, topology epoch, affected range or region, capability evidence, and relevant generations. A claim SHALL be rejected when required evidence is missing, volatile, future, stale, partial, cross-store, or mismatched.
 
-#### Scenario: A region is cleared after valid typed evidence
+#### Scenario: A dirty region is cleared after persistence evidence
 
-- **WHEN** a dirty region has admissible covering evidence and one recovery transaction records a clean checkpoint
-- **THEN** the region may become clean and the checkpoint generation is durably recorded
+- **WHEN** a dirty region has admissible covering persistence evidence and one recovery transaction commits recovery state `CLEAN`
+- **THEN** the region may become `CLEAN` and the transition generation is durably recorded
 
-#### Scenario: Volatile completion is supplied as durable authority
+#### Scenario: I/O completion does not prove persistence
 
 - **WHEN** a caller attempts a clean or valid claim using volatile or unknown persistence evidence
-- **THEN** the mutation is rejected and the affected state remains dirty, stale, or indeterminate
+- **THEN** the operation is rejected and the affected state remains dirty, stale, or indeterminate
 
 ### Requirement: Topology snapshots are immutable within a transaction
 <!-- dwv:req req.recovery-state-semantics.topology-snapshots-are-immutable-within-a-transaction -->
@@ -68,7 +68,7 @@ Transactions SHALL capture one topology epoch. A commit under a different epoch 
 ### Requirement: Semantic export and health are independent of storage engine layout
 <!-- dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout -->
 
-The recovery boundary SHALL expose a bounded semantic snapshot/manifest, writable-open path, and observational inspection path. Observational inspection SHALL classify absent state, present supported state, corrupt or unreadable state, unsupported interpretation, migration required before writable use, and uncertain or reconciliation-required state without creating a database, acquiring writable ownership, running initialization or migration, repairing state, or changing the inspected artifact. Missing, corrupt, stale, unavailable, unsupported, migration-required, reconciliation-required, or failed-to-load recovery state SHALL remain an explicit conservative result and SHALL block new home mutations until the owning recovery semantics establish current authority. A caller SHALL NOT substitute generation zero, a clean snapshot, success, or a successful trace for failed recovery access. Export SHALL not expose SQLite pages, row IDs, or implementation pointers.
+The recovery boundary SHALL expose a bounded semantic snapshot/manifest, writable-open path, and observational inspection path. Observational inspection SHALL classify absent state, present supported state, corrupt or unreadable state, unsupported interpretation, migration required before writable use, and uncertain state that requires reconciliation without creating a database, acquiring writable ownership, running initialization or migration, repairing state, or changing the inspected artifact. Missing, corrupt, stale, unavailable, unsupported, migration-required, reconciliation-required, or failed-to-load recovery state SHALL remain an explicit conservative result and SHALL block new data/parity writes until the owning recovery semantics establish current authority. A caller SHALL NOT substitute generation zero, a clean snapshot, success, or a successful trace for failed recovery access. Export SHALL not expose SQLite pages, row IDs, or implementation pointers.
 
 #### Scenario: Recovery state is missing
 
@@ -84,6 +84,7 @@ The recovery boundary SHALL expose a bounded semantic snapshot/manifest, writabl
 
 - **WHEN** observational inspection validates a supported current semantic manifest
 - **THEN** it returns the bounded semantic manifest while leaving payload, parity, recovery generation, semantic schema, migration state, and integrity state unchanged
+
 ### Requirement: Writable recovery ownership is crash-releasing
 <!-- dwv:req req.recovery-state-semantics.writable-recovery-ownership-is-crash-releasing -->
 
@@ -129,27 +130,27 @@ The portable recovery boundary SHALL expose a versioned semantic schema descript
 <!-- dwv:req req.recovery-state-semantics.evaluation-fixtures-cover-candidate-durability-and-reset-boundaries -->
 <!-- dwv:requires req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects -->
 
-Evaluation SHALL provide deterministic fixtures for candidate journal modes, synchronization modes, checkpoint policies, process reset, VM reset, power loss, commit rejection, lost commit acknowledgement, missing state, main-state corruption, and journal-state corruption. Each fixture SHALL state the conservative semantic disposition and evidence still required; fixture presence SHALL NOT select a production SQLite mode.
+Evaluation SHALL provide deterministic fixtures for candidate journal modes, synchronization modes, checkpoint policies, process reset, VM reset, power loss, commit rejection, lost commit acknowledgement, missing state, main-state corruption, and journal-state corruption. Each fixture SHALL state the conservative semantic result and evidence still required; fixture presence SHALL NOT select a production SQLite mode.
 
-#### Scenario: A dirty-intent commit is rejected or uncertain
+#### Scenario: The write-recovery record is rejected or its outcome is unknown
 
 - **WHEN** the simulator reports that the recovery commit did not become durably known
-- **THEN** the expected disposition forbids protected home mutation and requires reconciliation
+- **THEN** the expected result forbids a data/parity write and requires reconciliation
 
 #### Scenario: Recovery state is missing or corrupt after reset
 
 - **WHEN** the recovery adapter cannot validate its state or journal
-- **THEN** the expected disposition blocks writable assembly and permits only an explicit recovery plan
+- **THEN** the expected result blocks writable assembly and permits only an explicit recovery plan
 
 ### Requirement: Recovery adapters report conservative commit observations
 <!-- dwv:req req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations -->
 
-The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corrupt commit observations. The semantic store SHALL accept a transaction as a protocol fact only when the adapter reports durable commitment. A rejected commit SHALL leave the exact prior semantic state authoritative. Before a concrete writable adapter attempts to publish proposed state, it SHALL durably preserve enough exact prior/proposed semantic evidence to resolve an interrupted or uncertain commit after process-local state is released. After a lost or corrupt acknowledgement for an operation that may have committed, process-local belief SHALL authorize no dependent mutation; the caller SHALL release that belief and reopen the durable artifact through current semantic validation.
+The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corrupt commit observations. The semantic store SHALL accept a transaction as a protocol fact only when the adapter reports durable commitment. A rejected commit SHALL leave the exact prior semantic state authoritative. Before a concrete writable adapter attempts to publish proposed state, it SHALL durably preserve enough exact prior/proposed semantic evidence to resolve an interrupted or uncertain commit after process-local state is released. After a lost or corrupt acknowledgement for an operation that may have committed, process-local belief SHALL authorize no dependent data/parity write; the caller SHALL release that belief and reopen the durable artifact through current semantic validation.
 
-#### Scenario: A checkpoint acknowledgement is lost
+#### Scenario: Recovery CLEAN cannot be confirmed
 
-- **WHEN** a backend may have committed a checkpoint but cannot prove the resulting semantic state
-- **THEN** the semantic disposition is reconciliation-required, no clean or writable claim is inferred, and dependent mutation stops
+- **WHEN** a backend may have committed recovery state `CLEAN` but cannot prove the resulting semantic state
+- **THEN** the result requires reconciliation, no clean or writable claim is inferred, and dependent data/parity writes stop
 
 #### Scenario: Reopen finds the exact prior state
 
@@ -164,12 +165,12 @@ The replaceable adapter seam SHALL distinguish durable, rejected, lost, and corr
 #### Scenario: Reopen finds neither exact state
 
 - **WHEN** reopened state differs semantically from both prior and proposed state, cannot be read, or cannot be interpreted currently
-- **THEN** reconciliation remains required and neither candidate authorizes dependent mutation
+- **THEN** reconciliation remains required and neither candidate authorizes dependent data/parity writes
 
-#### Scenario: Inspection encounters unresolved commit intent
+#### Scenario: Inspection finds an unresolved write-recovery record outcome
 
-- **WHEN** read-only inspection encounters a durable prior/proposed intent that writable reopen has not reconciled
-- **THEN** it reports reconciliation-required before manifest classification and does not initialize, migrate, clean up, or otherwise mutate semantic state
+- **WHEN** read-only inspection encounters a durable prior/proposed write-recovery-record commit outcome that writable reopen has not reconciled
+- **THEN** it reports that reconciliation is required before manifest classification and does not initialize, migrate, clean up, or otherwise mutate semantic state
 
 ### Requirement: The SQLite prototype remains evaluation-only and storage-independent at the semantic boundary
 <!-- dwv:req req.recovery-state-semantics.the-sqlite-prototype-remains-evaluation-only-and-storage-independent-at-the-semantic-boundary -->
@@ -198,8 +199,8 @@ Recovery state SHALL represent an offline rebuild with a stable rebuild identifi
 
 #### Scenario: A rebuild cursor advances
 
-- **WHEN** the replacement bytes through offset N have been read back, equation-verified, and durably fenced under the captured source topology
-- **THEN** one atomic recovery transaction advances the first-unprocessed-byte cursor to N and records the matching fence evidence
+- **WHEN** the replacement bytes through offset N have been read back, equation-verified, and covered by persistence evidence under the captured source topology
+- **THEN** one atomic recovery transaction advances the first-unprocessed-byte cursor to N and records the matching persistence evidence
 
 #### Scenario: A stale rebuild transaction commits
 
@@ -210,3 +211,4 @@ Recovery state SHALL represent an offline rebuild with a stable rebuild identifi
 
 - **WHEN** a current bounded semantic manifest is exported during an interrupted rebuild
 - **THEN** it contains enough typed rebuild state to validate a later resume without exposing a path, SQLite layout, or process-local resource
+

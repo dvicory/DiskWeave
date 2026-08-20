@@ -11,10 +11,10 @@ mod machine;
 mod trace;
 
 pub use action::{
-    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult, FenceEvidence,
-    IntentRequirement, ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite,
-    RangeGuardToken, ResultKind, SemanticFailure, SemanticIoResult, StoreWatermark,
-    StoreWatermarks, TransactionAction, TransactionIdentity,
+    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult,
+    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
+    SemanticFailure, SemanticIoResult, StoreWatermark, StoreWatermarks, TransactionAction,
+    TransactionIdentity, TransactionPersistenceEvidence, WriteRecoveryRecordRequirement,
 };
 pub use error::{ErrorClass, PlanError, TransactionError};
 pub use machine::{

@@ -1,4 +1,4 @@
-# ADR: VE-002 delegated Quint recovery-protocol model
+# ADR: verify.write-recovery-lifecycle delegated Quint recovery-protocol model
 
 - **Status:** Accepted for the portable evidence lane
 - **Date:** 2026-08-17
@@ -9,11 +9,11 @@
 ## Decision
 
 At the current synced revision, `models/quint/RecoveryProtocol.qnt` is the
-sole current model authority for the bounded VE-002 reference relation. The
+sole current model authority for the bounded write-recovery lifecycle reference relation. The
 parameterized `RecoveryProtocol` module is the canonical protocol source. The
 separate `RecoveryProtocolAnalysis` module is maintained at
 `verification/quint/RecoveryProtocolAnalysis.qnt`; it binds that relation to
-the finite VE-002 evidence instance and provides assumptions, witnesses, and
+the finite write-recovery lifecycle evidence instance and provides assumptions, witnesses, and
 runs without adding protocol semantics.
 
 At this boundary, the delegated authority is the parameterized state, action,
@@ -25,7 +25,7 @@ verification evidence only; they are not product cardinality limits, protocol
 alternatives, or exhaustive proof of arbitrary-width instances.
 
 The model does not define exact region mapping, checksum extent semantics,
-topology identity, typed fence admissibility, store persistence, adapter
+topology identity, persistence-evidence admissibility, store persistence, adapter
 commit observations, operation-slot lifetime, frontend delivery, or
 production recovery authority. Those decisions remain owned by their current
 requirements.
@@ -37,39 +37,40 @@ historical provenance, not a second current authority.
 
 ## Why Quint
 
-The old PlusCal model was independent, but it advanced an unknown home effect
+The old PlusCal model was independent, but it advanced an unknown data/parity-write outcome
 to durable through an implicit recovery step and did not represent an
-uncertain intent commit separately from a rejected one. The Quint model makes
+uncertain write-recovery-record commit separately from a rejected one. The Quint model makes
 both uncertainty boundaries explicit and requires an explicit reconciliation
 action before a clean or terminal state can be reached.
 
 ## Model scope and invariants
 
-The parameterized protocol relation admits one active write obligation at a
+The parameterized protocol relation admits one active write lifecycle at a
 time. Explicit release permits sequential range reuse within the represented
 relation. Its state vocabulary includes:
 
-- pending, durable, and unknown invalidation intent;
-- unmodified, volatile, durable, and unknown home effects;
+- pending, durable, and unknown write-recovery records;
+- no, awaiting-durability, durable, and unknown data/parity writes;
 - clean, dirty, and indeterminate recovery;
-- unowned, in-flight, handoff, and terminal ownership;
-- parameterized affected-region and store sets, fence coverage, checkpoint
-  coverage, abandonment, process loss, and explicit reconciliation.
+- unowned, normal, interrupted, and completed-awaiting-release ownership;
+- parameterized affected-region and store sets, persistence-evidence and
+  recovery-CLEAN coverage, abandonment, process loss, and explicit
+  reconciliation.
 
-It checks the ten current VE-002 invariants:
+It checks the ten current write-recovery lifecycle invariants:
 
 - `TypeInvariant`;
 - `NoFalseClean`;
-- `MutationRequiresIntent`;
+- `DataParityWriteRequiresWriteRecoveryRecord`;
 - `UncertaintyIsVisible`;
 - `UncertaintyIsOwned`;
 - `DurableWorkIsOwned`;
-- `TerminalRequiresRelease`;
-- `TerminalRequiresEvidence`;
-- `DurableHomeRequiresCoverage`;
-- `FenceAndCheckpointCoverage`.
+- `CompletedOrAbortedRequiresRelease`;
+- `CompletedWriteRequiresEvidence`;
+- `DurableDataParityWriteRequiresCoverage`;
+- `PersistenceEvidenceAndRecoveryCleanCoverage`.
 
-The VE-002 analysis binds `Regions = {"data", "parity"}` and
+The write-recovery lifecycle analysis binds `Regions = {"data", "parity"}` and
 `Stores = {"data", "parity"}` and uses checker `--max-steps 12`. These are
 finite executable evidence bounds, not exhaustive model checking, proof of
 the Rust implementation, real I/O, a persistence engine, or unbounded
@@ -79,7 +80,7 @@ recovery progress.
 
 | Option | Independence from DiskWeave | Evidence fit | Decision |
 |---|---|---|---|
-| **Quint 0.32.0** | High: model-only Quint source and separate simulator | Bounded safety, reachability, explicit uncertainty, deterministic traces, mutation checks | **Current VE-002 authority** |
+| **Quint 0.32.0** | High: model-only Quint source and separate simulator | Bounded safety, reachability, explicit uncertainty, deterministic traces, mutation checks | **Current write-recovery lifecycle authority** |
 | Official TLC | High: mature separate checker for TLA+ | Historical bounded safety and reachability | Retired with the source model |
 | `tla-rs` / `tla-checker` 0.6.11 | High checker independence, same retired TLA+ source | Historical finite cross-check | Retired with the source model |
 | Stateright 0.31 | Medium: separate Rust model required | Safety and reachability | Not selected; no second model |
@@ -135,17 +136,18 @@ mutant was not retained.
 ## Current model and evidence
 
 The current `models/quint/RecoveryProtocol.qnt` relation adds explicit
-range-held and range-release state, permits a new `begin` after release, gives
-pre-mutation intent rejection an owned aborted outcome, guards terminal reuse
-before release, and requires complete represented mutation coverage before a
-durable home result. Invalid, repeated, and out-of-order action handling is
-partial rather than silently transitioning.
+range-owned and release state, permits a new `startWrite` after release, gives
+pre-write-recovery-record rejection an owned aborted outcome, guards completed
+reuse before release, and requires complete represented data/parity-write
+coverage before a durable data/parity-write result. Invalid, repeated, and
+out-of-order action handling is partial rather than silently transitioning.
 
-Current evidence includes direct release/reuse, terminal-begin rejection, and
-partial-home tests; bounded witnesses for aborted, released, resumed-mutation,
-reconciliation-mutation, and `durableHomeReachable` states; bounded Quint
-verification at checker depth 12; deterministic ITF replay; disposable
-negative mutations; and two seeded Quint Connect runs.
+Current evidence includes direct release/reuse, completed-start rejection, and
+partial-data/parity-write tests; bounded witnesses for aborted, released,
+resumed-data/parity-write, reconciled-data/parity-write, and
+`durableDataParityWriteReachable` states; bounded Quint verification at checker
+depth 12; deterministic ITF replay; disposable negative mutations; and two
+seeded Quint Connect runs.
 
 The retained bounded command is:
 
@@ -153,10 +155,11 @@ The retained bounded command is:
 quint verify verification/quint/RecoveryProtocolAnalysis.qnt \
   --main RecoveryProtocolAnalysis \
   --max-steps 12 \
-  --invariants TypeInvariant NoFalseClean MutationRequiresIntent \
+    DataParityWriteRequiresWriteRecoveryRecord \
     UncertaintyIsVisible UncertaintyIsOwned DurableWorkIsOwned \
-    TerminalRequiresRelease TerminalRequiresEvidence \
-    DurableHomeRequiresCoverage FenceAndCheckpointCoverage
+    CompletedOrAbortedRequiresRelease CompletedWriteRequiresEvidence \
+    DurableDataParityWriteRequiresCoverage \
+    PersistenceEvidenceAndRecoveryCleanCoverage
 ```
 
 With Quint `0.32.0` and Apalache `0.56.1`, it completed without an invariant
@@ -168,25 +171,26 @@ tests, mutations, ITF replay, and Connect executions remain separate evidence
 types.
 
 The two retained Connect traces, seeds `22082026` and `1`, each complete a
-mapped lifecycle through `release`, then execute a new `begin` and second
-lifecycle through `release`. The Connect driver covers only the mapped
-lifecycle fields: Rust batches reads, parity, and writes, while Quint
-separates one mapped abstract region mutation. The projection excludes
-abstract fence and home-reconciliation transitions whose concrete evidence is
-owned elsewhere. Typed fence, watermark, generation, topology, concrete
-stale-result correlation, and result-class evidence remains Rust-owned.
+mapped lifecycle through `releaseRange`, then execute a new `startWrite` and
+second lifecycle through `releaseRange`. The Connect driver covers only the
+mapped write-lifecycle fields: Rust batches reads, parity, and writes, while
+Quint separates one mapped abstract region mutation. The projection excludes
+abstract persistence-evidence and data/parity-write-reconciliation transitions
+whose concrete evidence is owned elsewhere. Persistence evidence, watermark,
+generation, topology, concrete stale-result correlation, and result-class
+evidence remains Rust-owned.
 
 ## Lessons and next campaign
 
 The canary showed that delegated authority is useful only when the boundary
 names the exact state and actions. It exposed real modeling defects rather
-than merely translating syntax: intent-commit uncertainty and home-effect
-uncertainty need different explicit reconciliation states; terminal ownership
-must survive until release; and a released range must be reusable without
-silently replacing an unreleased obligation. It also showed that sampled
-simulation needs witnesses for rare terminal paths; a green invariant run
-alone would not establish that checkpoint and terminal ownership are
-reachable.
+than merely translating syntax: write-recovery-record uncertainty and
+data/parity-write uncertainty need different explicit reconciliation states;
+terminal ownership must survive until release; and a released range must be
+reusable without silently replacing an unreleased obligation. It also showed
+that sampled simulation needs witnesses for rare terminal paths; a green
+invariant run alone would not establish that persistence evidence and terminal
+ownership are reachable.
 
 The bounded Connect spike taught a second boundary lesson. A useful test can
 replay a small shared lifecycle through the Rust reference machine without
@@ -195,18 +199,18 @@ Rust's batched action/result and typed evidence seam is not a one-to-one
 implementation of the abstract Quint relation. The test is therefore
 conformance evidence for the mapped subset, not implementation proof.
 
-The highest-value next application is **U11: portable shutdown, endpoint
-withdrawal, and claim-release ordering**, after its existing implementation
-readiness gate is resolved. A small Quint model should own only the bounded
+The highest-value next application is the **portable shutdown, endpoint
+withdrawal, and claim-release ordering** capability, after its existing
+implementation readiness gate is resolved. A small Quint model should own only the bounded
 ordering and conservative outcomes for admission closure, quiescence, drain
-or handoff, exact checkpoint/close-session evidence, endpoint withdrawal, and
-claim release. It should leave recovery authority, operation-slot lifetime,
+or handoff, exact recovery-CLEAN/close-session evidence, endpoint withdrawal,
+and claim release. It should leave recovery authority, operation-slot lifetime,
 frontend-specific endpoint ownership, and operator result vocabulary with
-their current owners. VE-003 remains the follow-on choice once the executor,
+their current owners.
+`verify.concurrency-schedules` remains the follow-on choice once the executor,
 job, and shutdown concurrency seam exists.
 
 References:
 
 - [Quint](https://github.com/informalsystems/quint)
-- `openspec/specs/explicit-transaction-machine/spec.md`
-- `docs/architecture/normalization/diskweave-v0.9-campaign.md` (U11)
+- `docs/architecture/normalization/diskweave-v0.9-campaign.md` (portable shutdown, endpoint withdrawal, and claim-release ordering)

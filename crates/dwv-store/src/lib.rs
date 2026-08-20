@@ -1083,7 +1083,7 @@ pub enum SlotState {
     PartiallyCompleted,
     Draining,
     CompletionUncertain,
-    ReconciliationRequired,
+    AwaitingReconciliation,
     Reclaimable,
 }
 
@@ -1453,7 +1453,7 @@ impl OperationSlotTable {
             }) {
                 SlotState::CompletionUncertain
             } else {
-                SlotState::ReconciliationRequired
+                SlotState::AwaitingReconciliation
             };
         }
         Ok(())
@@ -1516,7 +1516,7 @@ impl OperationSlotTable {
             } else if slot.drain_state == DrainState::Required {
                 SlotState::Draining
             } else {
-                SlotState::ReconciliationRequired
+                SlotState::AwaitingReconciliation
             };
         } else {
             slot.state = SlotState::PartiallyCompleted;

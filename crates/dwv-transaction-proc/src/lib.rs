@@ -146,7 +146,7 @@ async fn candidate_task(io: Pin<&CandidateIo>) -> TaskEnd {
                 Poll::Ready(Ok(Some(CandidateControl::DaemonCrash)))
                 | Poll::Ready(Ok(Some(CandidateControl::PowerLoss))) => {
                     let terminal = if action.kind() == ActionKind::AcquireRange
-                        && io.plan.intent.requires_commit()
+                        && io.plan.write_recovery_record.requires_commit()
                     {
                         CandidateTerminal::Aborted
                     } else {
@@ -217,7 +217,11 @@ impl CandidateMachine {
         self.machine.is_done()
     }
     fn requires_commit(&self) -> bool {
-        self.machine.lock_ref().plan.intent.requires_commit()
+        self.machine
+            .lock_ref()
+            .plan
+            .write_recovery_record
+            .requires_commit()
     }
     fn send_control(&mut self, control: CandidateControl) -> Result<(), CandidateError> {
         self.metrics.polls += 1;
@@ -291,7 +295,7 @@ impl CandidateMachine {
 }
 
 pub fn semantic_actions(plan: &TransactionPlan) -> Vec<TransactionAction> {
-    let generation = plan.captured_intent_generation();
+    let generation = plan.captured_write_recovery_record_generation();
     let certificate = plan.checksum_extents.iter().fold(
         FenceCertificate::new(
             plan.topology_epoch,
@@ -317,7 +321,7 @@ pub fn semantic_actions(plan: &TransactionPlan) -> Vec<TransactionAction> {
     let mut actions = vec![TransactionAction::AcquireRange {
         ranges: plan.ranges.clone(),
     }];
-    if plan.intent.requires_commit() {
+    if plan.write_recovery_record.requires_commit() {
         actions.push(TransactionAction::PersistDirtyAndInvalidateIntegrity {
             dirty_regions: plan.dirty_regions.clone(),
             checksum_extents: plan.checksum_extents.clone(),
@@ -335,7 +339,7 @@ pub fn semantic_actions(plan: &TransactionPlan) -> Vec<TransactionAction> {
             stores: plan.stores.clone(),
             through: plan.through.clone(),
         },
-        TransactionAction::CommitCheckpointOrClear { certificate },
+        TransactionAction::CommitRecoveryClean { certificate },
         TransactionAction::ReleaseRange,
     ]);
     actions
@@ -535,15 +539,15 @@ fn result_matches(action: ActionKind, result: ResultKind) -> bool {
             (ActionKind::AcquireRange, ResultKind::RangeAcquired)
                 | (
                     ActionKind::PersistDirtyAndInvalidateIntegrity,
-                    ResultKind::RecoveryIntentDurable
+                    ResultKind::WriteRecoveryRecordDurable
                 )
                 | (ActionKind::ReadSet, ResultKind::ReadSetComplete)
                 | (ActionKind::ComputeParity, ResultKind::ParityComputed)
                 | (ActionKind::WriteSet, ResultKind::WriteSetComplete)
                 | (ActionKind::FlushSet, ResultKind::FlushSetComplete)
                 | (
-                    ActionKind::CommitCheckpointOrClear,
-                    ResultKind::CheckpointCommitted
+                    ActionKind::CommitRecoveryClean,
+                    ResultKind::RecoveryCleanCommitted
                 )
                 | (ActionKind::ReleaseRange, ResultKind::RangeReleased)
         )
@@ -576,20 +580,20 @@ fn classify_result(
 ) -> Option<CandidateTerminal> {
     let failed = match result {
         ActionResult::Failed(_) => true,
-        ActionResult::RecoveryIntentDurable(committed) => {
+        ActionResult::WriteRecoveryRecordDurable(committed) => {
             committed.topology_epoch != plan.topology_epoch
-                || committed.generation != plan.captured_intent_generation()
+                || committed.generation != plan.captured_write_recovery_record_generation()
         }
-        ActionResult::RecoveryIntentCommitted(evidence) => {
+        ActionResult::WriteRecoveryRecordDurableWithEvidence(evidence) => {
             !evidence.durable
                 || evidence.topology_epoch != plan.topology_epoch
-                || evidence.captured_generation != plan.captured_intent_generation()
+                || evidence.captured_generation != plan.captured_write_recovery_record_generation()
                 || evidence.committed_generation.0 < evidence.captured_generation.0
                 || evidence.target != plan.invalidation_target()
         }
-        ActionResult::CheckpointCommitted(committed) => {
+        ActionResult::RecoveryCleanCommitted(committed) => {
             committed.topology_epoch != plan.topology_epoch
-                || committed.generation.0 < plan.captured_intent_generation().0
+                || committed.generation.0 < plan.captured_write_recovery_record_generation().0
         }
         ActionResult::ReadSetComplete(value) => {
             !matches!(value, dwv_transaction_ref::SemanticIoResult::Complete)
@@ -607,14 +611,14 @@ fn classify_result(
             &plan.through,
             &plan.dirty_regions,
             &plan.checksum_extents,
-            plan.captured_intent_generation(),
+            plan.captured_write_recovery_record_generation(),
         ),
         _ => false,
     };
     if !failed {
         return None;
     }
-    if action == ActionKind::AcquireRange && plan.intent.requires_commit() {
+    if action == ActionKind::AcquireRange && plan.write_recovery_record.requires_commit() {
         Some(CandidateTerminal::Aborted)
     } else {
         Some(CandidateTerminal::ReconciliationRequired)
@@ -624,12 +628,12 @@ fn classify_result(
 fn stage_for_action(action: ActionKind) -> Stage {
     match action {
         ActionKind::AcquireRange => Stage::AcquireRange,
-        ActionKind::PersistDirtyAndInvalidateIntegrity => Stage::IntentCommit,
+        ActionKind::PersistDirtyAndInvalidateIntegrity => Stage::WriteRecoveryRecordCommit,
         ActionKind::ReadSet => Stage::ReadSet,
         ActionKind::ComputeParity => Stage::ComputeParity,
         ActionKind::WriteSet => Stage::WriteSet,
         ActionKind::FlushSet => Stage::FlushSet,
-        ActionKind::CommitCheckpointOrClear => Stage::Checkpoint,
+        ActionKind::CommitRecoveryClean => Stage::RecoveryClean,
         ActionKind::ReleaseRange => Stage::Release,
     }
 }
@@ -639,13 +643,13 @@ fn stage_after_result(requires_commit: bool, action: ActionKind, result: &Action
         return if action == ActionKind::AcquireRange && requires_commit {
             Stage::Aborted
         } else {
-            Stage::ReconciliationRequired
+            Stage::AwaitingReconciliation
         };
     }
     match action {
         ActionKind::AcquireRange => {
             if requires_commit {
-                Stage::IntentCommit
+                Stage::WriteRecoveryRecordCommit
             } else {
                 Stage::ReadSet
             }
@@ -654,8 +658,8 @@ fn stage_after_result(requires_commit: bool, action: ActionKind, result: &Action
         ActionKind::ReadSet => Stage::ComputeParity,
         ActionKind::ComputeParity => Stage::WriteSet,
         ActionKind::WriteSet => Stage::FlushSet,
-        ActionKind::FlushSet => Stage::Checkpoint,
-        ActionKind::CommitCheckpointOrClear => Stage::Release,
+        ActionKind::FlushSet => Stage::RecoveryClean,
+        ActionKind::CommitRecoveryClean => Stage::Release,
         ActionKind::ReleaseRange => Stage::Completed,
     }
 }
@@ -749,7 +753,7 @@ mod tests {
     }
 
     #[test]
-    fn comparison_accepts_failure_before_durable_intent() {
+    fn comparison_accepts_failure_before_durable_write_recovery_record() {
         let report = compare_schedule(
             test_plan(),
             &[ActionResult::failure(
@@ -775,7 +779,7 @@ mod tests {
         );
 
         let mut stale = successful_results(&test_plan());
-        stale[1] = ActionResult::RecoveryIntentDurable(
+        stale[1] = ActionResult::WriteRecoveryRecordDurable(
             dwv_transaction_ref::CommittedRecoveryGeneration::new(
                 dwv_recovery::RecoveryGeneration(3),
                 dwv_core::TopologyEpoch(1),
@@ -798,9 +802,9 @@ mod tests {
             ActionResult::FlushSetComplete(evidence) => evidence.certificate.clone(),
             _ => unreachable!(),
         };
-        results[5] = ActionResult::FlushSetComplete(dwv_transaction_ref::FenceEvidence::volatile(
-            certificate,
-        ));
+        results[5] = ActionResult::FlushSetComplete(
+            dwv_transaction_ref::TransactionPersistenceEvidence::volatile(certificate),
+        );
 
         let candidate = drive_candidate(plan.clone(), &results).unwrap();
         assert_eq!(
@@ -895,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn abandonment_after_durable_intent_keeps_completion_owned() {
+    fn abandonment_after_durable_write_recovery_record_keeps_completion_owned() {
         let plan = test_plan();
         let results = successful_results(&plan);
         let mut reference = dwv_transaction_ref::TransactionMachine::new(plan.clone()).unwrap();
@@ -928,26 +932,26 @@ mod tests {
     }
 
     #[test]
-    fn crash_and_power_loss_preserve_pre_and_post_intent_classes() {
-        let mut before_intent = CandidateMachine::new(test_plan());
-        before_intent.poll_action().unwrap();
-        before_intent.daemon_crash().unwrap();
+    fn crash_and_power_loss_preserve_pre_and_post_write_recovery_record_classes() {
+        let mut before_write_recovery_record = CandidateMachine::new(test_plan());
+        before_write_recovery_record.poll_action().unwrap();
+        before_write_recovery_record.daemon_crash().unwrap();
         assert_eq!(
-            poll_until_terminal(&mut before_intent).unwrap(),
+            poll_until_terminal(&mut before_write_recovery_record).unwrap(),
             CandidateTerminal::Aborted
         );
 
-        let mut after_intent = CandidateMachine::new(test_plan());
-        after_intent.poll_action().unwrap();
-        after_intent
+        let mut after_write_recovery_record = CandidateMachine::new(test_plan());
+        after_write_recovery_record.poll_action().unwrap();
+        after_write_recovery_record
             .submit_result(ActionResult::RangeAcquired(
                 dwv_transaction_ref::RangeGuardToken::new(1),
             ))
             .unwrap();
-        after_intent.poll_action().unwrap();
-        after_intent.power_loss().unwrap();
+        after_write_recovery_record.poll_action().unwrap();
+        after_write_recovery_record.power_loss().unwrap();
         assert_eq!(
-            poll_until_terminal(&mut after_intent).unwrap(),
+            poll_until_terminal(&mut after_write_recovery_record).unwrap(),
             CandidateTerminal::ReconciliationRequired
         );
     }
@@ -1014,26 +1018,26 @@ mod tests {
         use dwv_core::TopologyEpoch;
         use dwv_recovery::RecoveryGeneration;
         use dwv_transaction_ref::{
-            CommittedRecoveryGeneration, ComputationResult, FenceEvidence, RangeGuardToken,
-            SemanticIoResult,
+            CommittedRecoveryGeneration, ComputationResult, RangeGuardToken, SemanticIoResult,
+            TransactionPersistenceEvidence,
         };
 
         let certificate = semantic_actions(plan)
             .into_iter()
             .find_map(|action| match action {
-                TransactionAction::CommitCheckpointOrClear { certificate } => Some(certificate),
+                TransactionAction::CommitRecoveryClean { certificate } => Some(certificate),
                 _ => None,
             })
             .unwrap();
         let generation = CommittedRecoveryGeneration::new(RecoveryGeneration(2), TopologyEpoch(1));
         vec![
             ActionResult::RangeAcquired(RangeGuardToken::new(1)),
-            ActionResult::RecoveryIntentDurable(generation),
+            ActionResult::WriteRecoveryRecordDurable(generation),
             ActionResult::ReadSetComplete(SemanticIoResult::Complete),
             ActionResult::ParityComputed(ComputationResult::Complete),
             ActionResult::WriteSetComplete(SemanticIoResult::Complete),
-            ActionResult::FlushSetComplete(FenceEvidence::durable(certificate)),
-            ActionResult::CheckpointCommitted(generation),
+            ActionResult::FlushSetComplete(TransactionPersistenceEvidence::durable(certificate)),
+            ActionResult::RecoveryCleanCommitted(generation),
             ActionResult::RangeReleased,
         ]
     }

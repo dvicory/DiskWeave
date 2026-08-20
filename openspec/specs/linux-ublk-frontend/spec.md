@@ -33,7 +33,7 @@ The Linux adapter SHALL validate every kernel-provided operation, flag, range, c
 #### Scenario: A range overflows virtual geometry
 
 - **WHEN** sector conversion, byte-count conversion, or checked end arithmetic overflows or exceeds the published capacity
-- **THEN** the adapter rejects the request before semantic admission or protected mutation
+- **THEN** the adapter rejects the request before semantic admission or a data/parity write
 
 #### Scenario: Unsupported intent arrives
 
@@ -58,12 +58,12 @@ The Linux adapter SHALL validate every kernel-provided operation, flag, range, c
 ### Requirement: Kernel tags and operation resources remain bounded and generation-safe
 <!-- dwv:req req.linux-ublk-frontend.kernel-tags-and-operation-resources-remain-bounded-and-generation-safe -->
 
-The frontend SHALL publish finite queue, depth, transfer, buffer, operation-slot, child-operation, trace, and shutdown bounds. It SHALL reserve existing semantic admission before accepting irreversible work and retain each kernel tag and buffer until the corresponding generational operation reaches a safe terminal or reconciliation point. Exhaustion SHALL backpressure or fail deterministically before protected mutation; stale or duplicate completions SHALL NOT complete a reused tag or reclaim live resources. Deterministic adapter evidence SHALL cover admission exhaustion, explicit abandonment, stale and duplicate completion, and trace-bound exhaustion.
+The frontend SHALL publish finite queue, depth, transfer, buffer, operation-slot, child-operation, trace, and shutdown bounds. It SHALL reserve existing semantic admission before accepting irreversible work and retain each kernel tag and buffer until the corresponding generational operation reaches a safe terminal or reconciliation point. Exhaustion SHALL backpressure or fail deterministically before a data/parity write; stale or duplicate completions SHALL NOT complete a reused tag or reclaim live resources. Deterministic adapter evidence SHALL cover admission exhaustion, explicit abandonment, stale and duplicate completion, and trace-bound exhaustion.
 
 #### Scenario: Admission is exhausted
 
 - **WHEN** no configured tag, buffer, or semantic operation slot is available
-- **THEN** the request is backpressured or fails with bounded resource exhaustion before protected mutation
+- **THEN** the request is backpressured or fails with bounded resource exhaustion before a data/parity write
 
 #### Scenario: A stale completion names a reused tag
 
@@ -85,7 +85,7 @@ The frontend SHALL publish finite queue, depth, transfer, buffer, operation-slot
 <!-- dwv:requires req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe -->
 <!-- dwv:requires req.healthy-portable-io.publication-identity-is-derived-from-admitted-semantics -->
 
-The initial Linux profile SHALL publish exactly one writable endpoint only when the validated topology contains exactly one data slot, one parity slot, and all required current recovery and portable admission authority. The endpoint SHALL target that explicit stable data slot while the portable topology remains variable-width. Publication metadata SHALL carry the exact publication identity supplied by the admitted service, including its array identity, and live discovery SHALL match by array identity before comparing the complete publication identity rather than reconstructing admission from fixture or path coincidence. Publication SHALL return a distinct successful published result only after the owned endpoint exists and is accepting work; admission success alone SHALL remain pre-publication. A wider or otherwise unsupported valid topology SHALL be reported as unsupported before publication or mutation; the adapter SHALL NOT publish a subset, classify the topology itself as invalid, or encode the profile limit in portable APIs or persistent state.
+The initial Linux profile SHALL publish exactly one writable endpoint only when the validated topology contains exactly one data slot, one parity slot, and all required current recovery and portable admission authority. The endpoint SHALL target that explicit stable data slot while the portable topology remains variable-width. Publication metadata SHALL carry the exact publication identity supplied by the admitted service, including its array identity, and live discovery SHALL match by array identity before comparing the complete publication identity rather than reconstructing admission from fixture or path coincidence. Publication SHALL return a distinct successful published result only after the owned endpoint exists and is accepting work; admission success alone SHALL remain pre-publication. A wider or otherwise unsupported valid topology SHALL be reported as unsupported before publication or data/parity writes; the adapter SHALL NOT publish a subset, classify the topology itself as invalid, or encode the profile limit in portable APIs or persistent state.
 
 #### Scenario: The acceptance topology is assembled
 
@@ -100,12 +100,12 @@ The initial Linux profile SHALL publish exactly one writable endpoint only when 
 #### Scenario: A different admitted object shares the fixture directory
 
 - **WHEN** live endpoint metadata carries the same array identity but a publication identity different from the currently assessed admitted service even if fixture paths or labels coincide
-- **THEN** discovery reports reconciliation-required and does not report the current array online
+- **THEN** discovery reports that reconciliation is required and does not report the current array online
 
 #### Scenario: A different admitted object for the same array is live
 
 - **WHEN** live endpoint metadata carries the same array identity but a publication identity different from the currently assessed admitted service
-- **THEN** discovery reports reconciliation-required and does not report the current array online
+- **THEN** discovery reports that reconciliation is required and does not report the current array online
 
 #### Scenario: An unrelated array is live
 
@@ -115,22 +115,22 @@ The initial Linux profile SHALL publish exactly one writable endpoint only when 
 #### Scenario: A wider topology is supplied
 
 - **WHEN** a valid topology contains more than one data slot or otherwise exceeds the initial Linux profile
-- **THEN** publication is refused as unsupported with no endpoint, partial claims, recovery mutation, or payload mutation
+- **THEN** publication is refused as unsupported with no endpoint, partial claims, recovery mutation, or data/parity write
 
 #### Scenario: Publication fails after admission
 
 - **WHEN** current state changes, endpoint creation fails, or publication outcome requires reconciliation after portable admission
-- **THEN** the frontend reports the exact failed or reconciliation-required outcome and does not report successful publication
+- **THEN** the frontend reports the exact failed result or that reconciliation is required and does not report successful publication
 
 ### Requirement: Assembly and shutdown preserve ownership and recovery authority
 <!-- dwv:req req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority -->
 
-Before publication, the Linux workflow SHALL validate fixture ownership, stable opened-file identities, fixed geometry, topology epoch, recovery-state access, required roles, capability compatibility, and backing/export non-aliasing, and SHALL acquire every writable store and recovery claim with crash-releasing operating-system descriptor locks. Marker existence SHALL not own a claim. Any failure SHALL release partial claims and leave no writable endpoint. Reacquisition after process death SHALL revalidate current store and recovery authority. Shutdown SHALL close admission, quiesce through a captured sequence, drain or conservatively reconcile admitted operations, require the portable global flush/checkpoint with exact region and store-watermark fence evidence, remove only the owned ublk endpoint, and release claims. Unmount success SHALL NOT mask a later drain, checkpoint, or cleanup failure.
+Before publication, the Linux workflow SHALL validate fixture ownership, stable opened-file identities, fixed geometry, topology epoch, recovery-state access, required roles, capability compatibility, and backing/export non-aliasing, and SHALL acquire every writable store and recovery claim with crash-releasing operating-system descriptor locks. Marker existence SHALL not own a claim. Any failure SHALL release partial claims and leave no writable endpoint. Reacquisition after process death SHALL revalidate current store and recovery authority. Shutdown SHALL close admission, quiesce through a captured sequence, drain or conservatively reconcile admitted operations, require the portable global flush and recovery state `CLEAN` commit with exact region and store-watermark persistence evidence, remove only the owned ublk endpoint, and release claims. Unmount success SHALL NOT mask a later drain, recovery `CLEAN` commit, or cleanup failure.
 
 #### Scenario: A backing file is replaced or resized
 
 - **WHEN** current opened identity or geometry differs from the fixture's recorded assignment
-- **THEN** assembly fails before publication or recovery/payload mutation
+- **THEN** assembly fails before publication, recovery mutation, or a data/parity write
 
 #### Scenario: Backing and export identities alias
 
@@ -139,13 +139,13 @@ Before publication, the Linux workflow SHALL validate fixture ownership, stable 
 
 #### Scenario: Clean shutdown completes
 
-- **WHEN** consumers have unmounted, admission closes, all admitted operations drain, the portable flush/checkpoint succeeds, and the owned ublk endpoint is removed
+- **WHEN** consumers have unmounted, admission closes, all admitted operations drain, the portable flush and recovery state `CLEAN` commit succeed, and the owned ublk endpoint is removed
 - **THEN** the service closes all backing/recovery handles and reports a bounded successful shutdown
 
 #### Scenario: Shutdown cannot complete after unmount
 
-- **WHEN** consumers have unmounted but drain, checkpoint, or owned-endpoint removal fails
-- **THEN** shutdown reports failure or reconciliation-required state and does not report a clean checkpoint
+- **WHEN** consumers have unmounted but drain, recovery `CLEAN` commit, or owned-endpoint removal fails
+- **THEN** shutdown reports failure or reconciliation-required state and does not report recovery state `CLEAN`
 
 #### Scenario: Stale cleanup is interrupted
 
@@ -165,12 +165,12 @@ Before publication, the Linux workflow SHALL validate fixture ownership, stable 
 ### Requirement: The disposable Linux fixture remains independently inspectable
 <!-- dwv:req req.linux-ublk-frontend.the-disposable-linux-fixture-remains-independently-inspectable -->
 
-The Linux workflow SHALL create or open only a bounded identifiable disposable fixture containing ordinary data and parity payload files plus separate recovery state. Initialization and inspection SHALL validate that every referenced path remains within the owned root and matches recorded type, identity, and protected length. After successful shutdown, read-only inspection SHALL report exact data/parity hashes and recovery/integrity disposition without mounting or mutating the fixture, and the ordinary data member SHALL remain independently mountable read-only as its conventional filesystem image.
+The Linux workflow SHALL create or open only a bounded identifiable disposable fixture containing ordinary data and parity payload files plus separate recovery state. Initialization and inspection SHALL validate that every referenced path remains within the owned root and matches recorded type, identity, and protected length. After successful shutdown, read-only inspection SHALL report exact data/parity hashes and recovery/integrity result without mounting or changing the fixture, and the ordinary data member SHALL remain independently mountable read-only as its conventional filesystem image.
 
 #### Scenario: A fixture path escapes its root
 
 - **WHEN** a manifest reference is absolute, traverses outside the root, is missing, or has changed identity or length
-- **THEN** initialization, assembly, or inspection refuses before protected mutation
+- **THEN** initialization, assembly, or inspection refuses before changing protected state
 
 #### Scenario: The frontend is stopped
 

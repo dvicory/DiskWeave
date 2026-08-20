@@ -1,466 +1,466 @@
 // -*- mode: Bluespec; -*-
 /**
- * VE-002 bounded recovery protocol model.
- * The model is model-only. It defines one active write obligation at a
+ * verify.write-recovery-lifecycle bounded recovery protocol model.
+ * The model is model-only. It defines one active write lifecycle at a
  * time. Explicit release permits sequential range reuse within the
  * represented relation.
- * Exact region mapping, typed fence evidence, topology, persistence, resource
- * lifetime, and production recovery authority remain owned by their current
- * OpenSpec requirements.
+ * Exact region mapping, persistence-evidence admissibility, topology,
+ * persistence, resource lifetime, and production recovery authority remain
+ * owned by their current OpenSpec requirements.
  */
 // dwv:req req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent
 module RecoveryProtocol {
   const Regions: Set[str]
   const Stores: Set[str]
 
-  type IntentState = NoIntent | IntentPending | IntentDurable | IntentUnknown
-  type HomeState = HomeUnmodified | HomeVolatile | HomeDurable | HomeUnknown
+  type WriteRecoveryRecordState = NoWriteRecoveryRecord | WriteRecoveryRecordPending | WriteRecoveryRecordDurable | WriteRecoveryRecordUnknown
+  type DataParityWriteState = NoDataParityWrites | DataParityWritesAwaitingDurability | DataParityWritesDurable | DataParityWritesUnknown
   type RecoveryState = RecoveryClean | RecoveryDirty | RecoveryIndeterminate
-  type ObligationState = Unowned | InFlight | Handoff | Terminal | Aborted
-  type IntentObservation =
-    IntentCommitUnknown
-    | IntentCommitRejected
-    | IntentCommitDurable
-  type HomeObservation =
-    HomeEffectUnknown
-    | HomeEffectIndeterminate
-    | HomeEffectDurable
+  type WriteLifecycleState = Unowned | NormalProcessing | InterruptedProcessing | CompletedAwaitingRelease | AbortedAwaitingRelease
+  type WriteRecoveryRecordCommitObservation =
+    CommitUnknown
+    | CommitRejected
+    | CommitDurable
+  type DataParityWriteObservation =
+    NoDataParityWriteObservation
+    | DataParityWriteEffectIndeterminate
+    | DataParityWriteEffectDurable
 
   type ProtocolState = {
-    intent: IntentState,
-    intentObservation: IntentObservation,
-    home: HomeState,
-    homeObservation: HomeObservation,
-    homeReconciled: bool,
-    recovery: RecoveryState,
-    obligation: ObligationState,
-    invalidated: bool,
-    mutated: Set[str],
-    attempted: Set[str],
-    fenced: Set[str],
-    checkpointed: Set[str],
-    rangeHeld: bool,
-    terminalPendingRelease: bool,
+    writeRecoveryRecord: WriteRecoveryRecordState,
+    writeRecoveryRecordCommitObservation: WriteRecoveryRecordCommitObservation,
+    dataParityWriteState: DataParityWriteState,
+    dataParityWriteObservation: DataParityWriteObservation,
+    dataParityWriteObservationFinalized: bool,
+    recoveryState: RecoveryState,
+    writeLifecycle: WriteLifecycleState,
+    integrityClaimsInvalidated: bool,
+    writeKnownAppliedRegions: Set[str],
+    writeAttemptedRegions: Set[str],
+    storesWithPersistenceEvidence: Set[str],
+    recoveryCleanRegions: Set[str],
+    rangeOwned: bool,
+    releasePending: bool,
     rangeReleased: bool,
   }
 
   var state: ProtocolState
 
   pure def active(s: ProtocolState): bool =
-    s.obligation == InFlight or s.obligation == Handoff
+    s.writeLifecycle == NormalProcessing or s.writeLifecycle == InterruptedProcessing
 
-  pure def abortedUnreleased(
+  pure def abortedWriteAwaitingRelease(
     s: ProtocolState,
-    observation: IntentObservation,
+    observation: WriteRecoveryRecordCommitObservation,
   ): ProtocolState = {
     ...s,
-    intent: NoIntent,
-    intentObservation: observation,
-    home: HomeUnmodified,
-    homeObservation: HomeEffectUnknown,
-    homeReconciled: false,
-    recovery: RecoveryClean,
-    obligation: Aborted,
-    invalidated: false,
-    mutated: Set(),
-    attempted: Set(),
-    fenced: Set(),
-    checkpointed: Set(),
-    rangeHeld: true,
-    terminalPendingRelease: true,
+    writeRecoveryRecord: NoWriteRecoveryRecord,
+    writeRecoveryRecordCommitObservation: observation,
+    dataParityWriteState: NoDataParityWrites,
+    dataParityWriteObservation: NoDataParityWriteObservation,
+    dataParityWriteObservationFinalized: false,
+    recoveryState: RecoveryClean,
+    writeLifecycle: AbortedAwaitingRelease,
+    integrityClaimsInvalidated: false,
+    writeKnownAppliedRegions: Set(),
+    writeAttemptedRegions: Set(),
+    storesWithPersistenceEvidence: Set(),
+    recoveryCleanRegions: Set(),
+    rangeOwned: true,
+    releasePending: true,
     rangeReleased: false,
   }
   
   action init: bool = all {
     state' = {
-      intent: NoIntent,
-      intentObservation: IntentCommitUnknown,
-      home: HomeUnmodified,
-      homeObservation: HomeEffectUnknown,
-      homeReconciled: false,
-      recovery: RecoveryClean,
-      obligation: Unowned,
-      invalidated: false,
-      mutated: Set(),
-      attempted: Set(),
-      fenced: Set(),
-      checkpointed: Set(),
-      rangeHeld: false,
-      terminalPendingRelease: false,
+      writeRecoveryRecord: NoWriteRecoveryRecord,
+      writeRecoveryRecordCommitObservation: CommitUnknown,
+      dataParityWriteState: NoDataParityWrites,
+      dataParityWriteObservation: NoDataParityWriteObservation,
+      dataParityWriteObservationFinalized: false,
+      recoveryState: RecoveryClean,
+      writeLifecycle: Unowned,
+      integrityClaimsInvalidated: false,
+      writeKnownAppliedRegions: Set(),
+      writeAttemptedRegions: Set(),
+      storesWithPersistenceEvidence: Set(),
+      recoveryCleanRegions: Set(),
+      rangeOwned: false,
+      releasePending: false,
       rangeReleased: false,
     },
   }
-  action begin: bool = all {
-    state.obligation == Unowned,
+  action startWrite: bool = all {
+    state.writeLifecycle == Unowned,
     state' = {
       ...state,
-      intent: IntentPending,
-      intentObservation: IntentCommitUnknown,
-      home: HomeUnmodified,
-      homeObservation: HomeEffectUnknown,
-      homeReconciled: false,
-      recovery: RecoveryDirty,
-      obligation: InFlight,
-      invalidated: false,
-      attempted: Set(),
-      mutated: Set(),
-      fenced: Set(),
-      checkpointed: Set(),
-      rangeHeld: true,
-      terminalPendingRelease: false,
+      writeRecoveryRecord: WriteRecoveryRecordPending,
+      writeRecoveryRecordCommitObservation: CommitUnknown,
+      dataParityWriteState: NoDataParityWrites,
+      dataParityWriteObservation: NoDataParityWriteObservation,
+      dataParityWriteObservationFinalized: false,
+      recoveryState: RecoveryDirty,
+      writeLifecycle: NormalProcessing,
+      integrityClaimsInvalidated: false,
+      writeAttemptedRegions: Set(),
+      writeKnownAppliedRegions: Set(),
+      storesWithPersistenceEvidence: Set(),
+      recoveryCleanRegions: Set(),
+      rangeOwned: true,
+      releasePending: false,
       rangeReleased: false,
     },
   }
 
-  action acceptIntent: bool = all {
-    state.intent == IntentPending,
+  action confirmWriteRecoveryRecordDurable: bool = all {
+    state.writeRecoveryRecord == WriteRecoveryRecordPending,
     state' = {
       ...state,
-      intent: IntentDurable,
-      intentObservation: IntentCommitDurable,
-      invalidated: true,
+      writeRecoveryRecord: WriteRecoveryRecordDurable,
+      writeRecoveryRecordCommitObservation: CommitDurable,
+      integrityClaimsInvalidated: true,
     },
   }
 
-  action loseIntent: bool = all {
-    state.intent == IntentPending,
+  action observeWriteRecoveryRecordCommitUnknown: bool = all {
+    state.writeRecoveryRecord == WriteRecoveryRecordPending,
     state' = {
       ...state,
-      intent: IntentUnknown,
-      intentObservation: IntentCommitUnknown,
-      recovery: RecoveryIndeterminate,
-      obligation: Handoff,
+      writeRecoveryRecord: WriteRecoveryRecordUnknown,
+      writeRecoveryRecordCommitObservation: CommitUnknown,
+      recoveryState: RecoveryIndeterminate,
+      writeLifecycle: InterruptedProcessing,
     },
   }
 
-  action reconcileIntent(observation: IntentObservation): bool = all {
-    observation == IntentCommitRejected or observation == IntentCommitDurable,
-    state.intent == IntentUnknown,
-    state.home == HomeUnmodified,
-    state.mutated == Set(),
-    state' = if (observation == IntentCommitRejected)
-      abortedUnreleased(state, observation)
+  action reconcileWriteRecoveryRecordCommitObservation(observation: WriteRecoveryRecordCommitObservation): bool = all {
+    observation == CommitRejected or observation == CommitDurable,
+    state.writeRecoveryRecord == WriteRecoveryRecordUnknown,
+    state.dataParityWriteState == NoDataParityWrites,
+    state.writeKnownAppliedRegions == Set(),
+    state' = if (observation == CommitRejected)
+      abortedWriteAwaitingRelease(state, observation)
     else
       {
         ...state,
-        intent: IntentDurable,
-        intentObservation: observation,
-        recovery: RecoveryDirty,
-        obligation: Handoff,
-        invalidated: true,
+        writeRecoveryRecord: WriteRecoveryRecordDurable,
+        writeRecoveryRecordCommitObservation: observation,
+        recoveryState: RecoveryDirty,
+        writeLifecycle: InterruptedProcessing,
+        integrityClaimsInvalidated: true,
       },
   }
 
-  action mutate: bool = {
-    nondet region = Regions.exclude(state.attempted).oneOf()
+  action attemptDataParityWrite: bool = {
+    nondet region = Regions.exclude(state.writeAttemptedRegions).oneOf()
     all {
       active(state),
-      state.intent == IntentDurable,
-      state.attempted != Regions,
+      state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+      state.writeAttemptedRegions != Regions,
       state' = {
         ...state,
-        home: if (state.home == HomeUnknown) HomeUnknown else HomeVolatile,
-        homeReconciled: if (state.home == HomeUnknown) false else state.homeReconciled,
-        recovery: if (state.home == HomeUnknown)
+        dataParityWriteState: if (state.dataParityWriteState == DataParityWritesUnknown) DataParityWritesUnknown else DataParityWritesAwaitingDurability,
+        dataParityWriteObservationFinalized: if (state.dataParityWriteState == DataParityWritesUnknown) false else state.dataParityWriteObservationFinalized,
+        recoveryState: if (state.dataParityWriteState == DataParityWritesUnknown)
           RecoveryIndeterminate
         else
-          state.recovery,
-        obligation: if (state.home == HomeUnknown) Handoff else state.obligation,
-        attempted: state.attempted.union(Set(region)),
-        mutated: if (state.home == HomeUnknown)
-          state.mutated
+          state.recoveryState,
+        writeLifecycle: if (state.dataParityWriteState == DataParityWritesUnknown) InterruptedProcessing else state.writeLifecycle,
+        writeAttemptedRegions: state.writeAttemptedRegions.union(Set(region)),
+        writeKnownAppliedRegions: if (state.dataParityWriteState == DataParityWritesUnknown)
+          state.writeKnownAppliedRegions
         else
-          state.mutated.union(Set(region)),
+          state.writeKnownAppliedRegions.union(Set(region)),
       },
     }
   }
 
-  action reconcileMutation: bool = all {
-    state.intent == IntentDurable,
-    state.home == HomeUnknown,
-    state.recovery == RecoveryIndeterminate,
-    state.obligation == Handoff,
-    state.mutated != state.attempted,
+  action reconcileDataParityWriteCoverage: bool = all {
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesUnknown,
+    state.recoveryState == RecoveryIndeterminate,
+    state.writeLifecycle == InterruptedProcessing,
+    state.writeKnownAppliedRegions != state.writeAttemptedRegions,
     state' = {
       ...state,
-      mutated: state.attempted,
+      writeKnownAppliedRegions: state.writeAttemptedRegions,
     },
   }
 
-  action makeHomeDurable: bool = all {
+  action confirmDataParityWritesDurable: bool = all {
     active(state),
-    state.intent == IntentDurable,
-    state.home == HomeVolatile,
-    state.attempted == Regions,
-    state.mutated == Regions,
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesAwaitingDurability,
+    state.writeAttemptedRegions == Regions,
+    state.writeKnownAppliedRegions == Regions,
     state' = {
       ...state,
-      home: HomeDurable,
-      homeObservation: HomeEffectDurable,
-      homeReconciled: true,
+      dataParityWriteState: DataParityWritesDurable,
+      dataParityWriteObservation: DataParityWriteEffectDurable,
+      dataParityWriteObservationFinalized: true,
     },
   }
 
-  action fence: bool = {
-    nondet store = Stores.exclude(state.fenced).oneOf()
+  action observePersistenceEvidence: bool = {
+    nondet store = Stores.exclude(state.storesWithPersistenceEvidence).oneOf()
     all {
       active(state),
-      state.intent == IntentDurable,
-      state.home == HomeDurable,
-      state.fenced != Stores,
+      state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+      state.dataParityWriteState == DataParityWritesDurable,
+      state.storesWithPersistenceEvidence != Stores,
       state' = {
         ...state,
-        fenced: state.fenced.union(Set(store)),
+        storesWithPersistenceEvidence: state.storesWithPersistenceEvidence.union(Set(store)),
       },
     }
   }
 
-  action checkpoint: bool = all {
+  action commitRecoveryClean: bool = all {
     active(state),
-    state.recovery == RecoveryDirty,
-    state.intent == IntentDurable,
-    state.home == HomeDurable,
-    state.mutated == Regions,
-    state.fenced == Stores,
+    state.recoveryState == RecoveryDirty,
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesDurable,
+    state.writeKnownAppliedRegions == Regions,
+    state.storesWithPersistenceEvidence == Stores,
     state' = {
       ...state,
-      recovery: RecoveryClean,
-      checkpointed: Regions,
-      obligation: Terminal,
-      rangeHeld: true,
-      terminalPendingRelease: true,
+      recoveryState: RecoveryClean,
+      recoveryCleanRegions: Regions,
+      writeLifecycle: CompletedAwaitingRelease,
+      rangeOwned: true,
+      releasePending: true,
       rangeReleased: false,
     },
   }
 
-  action release: bool = all {
-    state.rangeHeld,
-    state.terminalPendingRelease,
-    state.obligation == Terminal or state.obligation == Aborted,
+  action releaseRange: bool = all {
+    state.rangeOwned,
+    state.releasePending,
+    state.writeLifecycle == CompletedAwaitingRelease or state.writeLifecycle == AbortedAwaitingRelease,
     state' = {
-      intent: NoIntent,
-      intentObservation: IntentCommitUnknown,
-      home: HomeUnmodified,
-      homeObservation: HomeEffectUnknown,
-      homeReconciled: false,
-      recovery: RecoveryClean,
-      obligation: Unowned,
-      invalidated: false,
-      mutated: Set(),
-      attempted: Set(),
-      fenced: Set(),
-      checkpointed: Set(),
-      rangeHeld: false,
-      terminalPendingRelease: false,
+      writeRecoveryRecord: NoWriteRecoveryRecord,
+      writeRecoveryRecordCommitObservation: CommitUnknown,
+      dataParityWriteState: NoDataParityWrites,
+      dataParityWriteObservation: NoDataParityWriteObservation,
+      dataParityWriteObservationFinalized: false,
+      recoveryState: RecoveryClean,
+      writeLifecycle: Unowned,
+      integrityClaimsInvalidated: false,
+      writeKnownAppliedRegions: Set(),
+      writeAttemptedRegions: Set(),
+      storesWithPersistenceEvidence: Set(),
+      recoveryCleanRegions: Set(),
+      rangeOwned: false,
+      releasePending: false,
       rangeReleased: true,
     },
   }
-  action loseHome: bool = all {
+  action observeDataParityWriteEffectIndeterminate: bool = all {
     active(state),
-    state.intent == IntentDurable,
-    state.home == HomeVolatile or state.home == HomeDurable,
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesAwaitingDurability or state.dataParityWriteState == DataParityWritesDurable,
     state' = {
       ...state,
-      home: HomeUnknown,
-      homeObservation: HomeEffectIndeterminate,
-      homeReconciled: false,
-      recovery: RecoveryIndeterminate,
-      obligation: Handoff,
-      attempted: state.attempted.union(state.mutated),
-      mutated: Set(),
+      dataParityWriteState: DataParityWritesUnknown,
+      dataParityWriteObservation: DataParityWriteEffectIndeterminate,
+      dataParityWriteObservationFinalized: false,
+      recoveryState: RecoveryIndeterminate,
+      writeLifecycle: InterruptedProcessing,
+      writeAttemptedRegions: state.writeAttemptedRegions.union(state.writeKnownAppliedRegions),
+      writeKnownAppliedRegions: Set(),
     },
   }
 
-  action reconcileHomeIndeterminate: bool = all {
-    state.intent == IntentDurable,
-    state.home == HomeUnknown,
-    state.recovery == RecoveryIndeterminate,
-    state.obligation == Handoff,
+  action reconcileDataParityWriteEffectIndeterminate: bool = all {
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesUnknown,
+    state.recoveryState == RecoveryIndeterminate,
+    state.writeLifecycle == InterruptedProcessing,
     (
-      state.homeObservation != HomeEffectIndeterminate
-      or not(state.homeReconciled)
+      state.dataParityWriteObservation != DataParityWriteEffectIndeterminate
+      or not(state.dataParityWriteObservationFinalized)
     ),
     state' = {
       ...state,
-      home: HomeUnknown,
-      homeObservation: HomeEffectIndeterminate,
-      homeReconciled: true,
-      recovery: RecoveryIndeterminate,
-      obligation: Handoff,
+      dataParityWriteState: DataParityWritesUnknown,
+      dataParityWriteObservation: DataParityWriteEffectIndeterminate,
+      dataParityWriteObservationFinalized: true,
+      recoveryState: RecoveryIndeterminate,
+      writeLifecycle: InterruptedProcessing,
     },
   }
 
-  action reconcileHomeDurable: bool = all {
-    state.intent == IntentDurable,
-    state.home == HomeUnknown,
-    state.recovery == RecoveryIndeterminate,
-    state.obligation == Handoff,
-    state.attempted == Regions,
-    state.mutated == Regions,
+  action reconcileDataParityWriteEffectDurable: bool = all {
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable,
+    state.dataParityWriteState == DataParityWritesUnknown,
+    state.recoveryState == RecoveryIndeterminate,
+    state.writeLifecycle == InterruptedProcessing,
+    state.writeAttemptedRegions == Regions,
+    state.writeKnownAppliedRegions == Regions,
     (
-      state.homeObservation != HomeEffectDurable
-      or not(state.homeReconciled)
+      state.dataParityWriteObservation != DataParityWriteEffectDurable
+      or not(state.dataParityWriteObservationFinalized)
     ),
     state' = {
       ...state,
-      home: HomeDurable,
-      homeObservation: HomeEffectDurable,
-      homeReconciled: true,
-      recovery: RecoveryDirty,
-      obligation: Handoff,
+      dataParityWriteState: DataParityWritesDurable,
+      dataParityWriteObservation: DataParityWriteEffectDurable,
+      dataParityWriteObservationFinalized: true,
+      recoveryState: RecoveryDirty,
+      writeLifecycle: InterruptedProcessing,
     },
   }
 
 
-  action abandon: bool = all {
-    state.obligation == InFlight,
-    state' = if (state.intent == IntentPending and state.home == HomeUnmodified)
+  action enterInterruptedProcessing: bool = all {
+    state.writeLifecycle == NormalProcessing,
+    state' = if (state.writeRecoveryRecord == WriteRecoveryRecordPending and state.dataParityWriteState == NoDataParityWrites)
       {
         ...state,
-        intent: IntentUnknown,
-        intentObservation: IntentCommitUnknown,
-        recovery: RecoveryIndeterminate,
-        obligation: Handoff,
+        writeRecoveryRecord: WriteRecoveryRecordUnknown,
+        writeRecoveryRecordCommitObservation: CommitUnknown,
+        recoveryState: RecoveryIndeterminate,
+        writeLifecycle: InterruptedProcessing,
       }
     else
       {
         ...state,
-        home: if (state.home == HomeVolatile) HomeUnknown else state.home,
-        homeObservation: if (state.home == HomeVolatile)
-          HomeEffectIndeterminate
+        dataParityWriteState: if (state.dataParityWriteState == DataParityWritesAwaitingDurability) DataParityWritesUnknown else state.dataParityWriteState,
+        dataParityWriteObservation: if (state.dataParityWriteState == DataParityWritesAwaitingDurability)
+          DataParityWriteEffectIndeterminate
         else
-          state.homeObservation,
-        homeReconciled: if (state.home == HomeVolatile)
+          state.dataParityWriteObservation,
+        dataParityWriteObservationFinalized: if (state.dataParityWriteState == DataParityWritesAwaitingDurability)
           false
         else
-          state.homeReconciled,
-        recovery: if (
-          state.intent == IntentUnknown
-          or state.home == HomeUnknown
-          or state.home == HomeVolatile
+          state.dataParityWriteObservationFinalized,
+        recoveryState: if (
+          state.writeRecoveryRecord == WriteRecoveryRecordUnknown
+          or state.dataParityWriteState == DataParityWritesUnknown
+          or state.dataParityWriteState == DataParityWritesAwaitingDurability
         ) RecoveryIndeterminate else RecoveryDirty,
-        obligation: Handoff,
-        attempted: if (state.home == HomeVolatile)
-          state.attempted.union(state.mutated)
+        writeLifecycle: InterruptedProcessing,
+        writeAttemptedRegions: if (state.dataParityWriteState == DataParityWritesAwaitingDurability)
+          state.writeAttemptedRegions.union(state.writeKnownAppliedRegions)
         else
-          state.attempted,
-        mutated: if (state.home == HomeVolatile) Set() else state.mutated,
+          state.writeAttemptedRegions,
+        writeKnownAppliedRegions: if (state.dataParityWriteState == DataParityWritesAwaitingDurability) Set() else state.writeKnownAppliedRegions,
       },
   }
 
   action step: bool = any {
-    begin,
-    acceptIntent,
-    loseIntent,
-    reconcileIntent(IntentCommitRejected),
-    reconcileIntent(IntentCommitDurable),
-    mutate,
-    reconcileMutation,
-    makeHomeDurable,
-    fence,
-    checkpoint,
-    release,
-    loseHome,
-    reconcileHomeIndeterminate,
-    reconcileHomeDurable,
-    abandon,
+    startWrite,
+    confirmWriteRecoveryRecordDurable,
+    observeWriteRecoveryRecordCommitUnknown,
+    reconcileWriteRecoveryRecordCommitObservation(CommitRejected),
+    reconcileWriteRecoveryRecordCommitObservation(CommitDurable),
+    attemptDataParityWrite,
+    reconcileDataParityWriteCoverage,
+    confirmDataParityWritesDurable,
+    observePersistenceEvidence,
+    commitRecoveryClean,
+    releaseRange,
+    observeDataParityWriteEffectIndeterminate,
+    reconcileDataParityWriteEffectIndeterminate,
+    reconcileDataParityWriteEffectDurable,
+    enterInterruptedProcessing,
   }
 
   val TypeInvariant: bool =
-    state.attempted.subseteq(Regions)
-    and state.mutated.subseteq(Regions)
-    and state.mutated.subseteq(state.attempted)
-    and state.fenced.subseteq(Stores)
-    and state.checkpointed.subseteq(Regions)
+    state.writeAttemptedRegions.subseteq(Regions)
+    and state.writeKnownAppliedRegions.subseteq(Regions)
+    and state.writeKnownAppliedRegions.subseteq(state.writeAttemptedRegions)
+    and state.storesWithPersistenceEvidence.subseteq(Stores)
+    and state.recoveryCleanRegions.subseteq(Regions)
     and (
-      (state.obligation == Unowned) implies not(state.rangeHeld)
+      (state.writeLifecycle == Unowned) implies not(state.rangeOwned)
     )
     and (
-      (state.obligation != Unowned) implies state.rangeHeld
+      (state.writeLifecycle != Unowned) implies state.rangeOwned
     )
     and (
       state.rangeReleased implies (
-        state.obligation == Unowned and not(state.rangeHeld)
+        state.writeLifecycle == Unowned and not(state.rangeOwned)
       )
     )
 
-  val TerminalRequiresRelease: bool =
-    (state.obligation == Terminal or state.obligation == Aborted) implies (
-      state.rangeHeld and state.terminalPendingRelease
+  val CompletedOrAbortedRequiresRelease: bool =
+    (state.writeLifecycle == CompletedAwaitingRelease or state.writeLifecycle == AbortedAwaitingRelease) implies (
+      state.rangeOwned and state.releasePending
     )
 
-  val DurableHomeRequiresCoverage: bool =
-    state.home == HomeDurable implies (
-      state.attempted == Regions and state.mutated == Regions
+  val DurableDataParityWriteRequiresCoverage: bool =
+    state.dataParityWriteState == DataParityWritesDurable implies (
+      state.writeAttemptedRegions == Regions and state.writeKnownAppliedRegions == Regions
     )
   val NoFalseClean: bool =
-    (state.recovery == RecoveryClean) implies (
+    (state.recoveryState == RecoveryClean) implies (
       (
-        state.obligation == Unowned
-        or state.obligation == Terminal
-        or state.obligation == Aborted
+        state.writeLifecycle == Unowned
+        or state.writeLifecycle == CompletedAwaitingRelease
+        or state.writeLifecycle == AbortedAwaitingRelease
       )
       and (
-        state.intent == NoIntent
+        state.writeRecoveryRecord == NoWriteRecoveryRecord
         or (
-          state.intent == IntentDurable
-          and state.invalidated
-          and state.home == HomeDurable
+          state.writeRecoveryRecord == WriteRecoveryRecordDurable
+          and state.integrityClaimsInvalidated
+          and state.dataParityWriteState == DataParityWritesDurable
         )
       )
-      and (state.obligation == Terminal implies state.checkpointed == Regions)
+      and (state.writeLifecycle == CompletedAwaitingRelease implies state.recoveryCleanRegions == Regions)
       and (
-        state.obligation == Aborted
-        implies state.attempted == Set() and state.mutated == Set()
+        state.writeLifecycle == AbortedAwaitingRelease
+        implies state.writeAttemptedRegions == Set() and state.writeKnownAppliedRegions == Set()
       )
     )
 
-  val MutationRequiresIntent: bool =
-    state.attempted != Set() implies state.intent == IntentDurable
+  val DataParityWriteRequiresWriteRecoveryRecord: bool =
+    state.writeAttemptedRegions != Set() implies state.writeRecoveryRecord == WriteRecoveryRecordDurable
 
   val UncertaintyIsVisible: bool =
     (
-      state.intent == IntentUnknown
-      or state.home == HomeUnknown
-      or state.recovery == RecoveryIndeterminate
+      state.writeRecoveryRecord == WriteRecoveryRecordUnknown
+      or state.dataParityWriteState == DataParityWritesUnknown
+      or state.recoveryState == RecoveryIndeterminate
     ) implies (
-      state.recovery != RecoveryClean
-      and state.obligation != Terminal
-      and state.obligation != Aborted
+      state.recoveryState != RecoveryClean
+      and state.writeLifecycle != CompletedAwaitingRelease
+      and state.writeLifecycle != AbortedAwaitingRelease
     )
 
   val UncertaintyIsOwned: bool =
     (
-      state.intent == IntentUnknown
-      or state.home == HomeUnknown
-      or state.recovery == RecoveryIndeterminate
-    ) implies state.obligation != Unowned
+      state.writeRecoveryRecord == WriteRecoveryRecordUnknown
+      or state.dataParityWriteState == DataParityWritesUnknown
+      or state.recoveryState == RecoveryIndeterminate
+    ) implies state.writeLifecycle != Unowned
 
   val DurableWorkIsOwned: bool =
     (
-      state.intent == IntentDurable
-      or state.intent == IntentUnknown
-      or state.home != HomeUnmodified
-    ) implies state.obligation != Unowned
+      state.writeRecoveryRecord == WriteRecoveryRecordDurable
+      or state.writeRecoveryRecord == WriteRecoveryRecordUnknown
+      or state.dataParityWriteState != NoDataParityWrites
+    ) implies state.writeLifecycle != Unowned
 
-  val TerminalRequiresEvidence: bool =
-    (state.obligation == Terminal) implies (
-      state.recovery == RecoveryClean
-      and state.intent == IntentDurable
-      and state.invalidated
-      and state.home == HomeDurable
-      and state.attempted == Regions
-      and state.mutated == Regions
-      and state.fenced == Stores
-      and state.checkpointed == Regions
-      and state.rangeHeld
-      and state.terminalPendingRelease
+  val CompletedWriteRequiresEvidence: bool =
+    (state.writeLifecycle == CompletedAwaitingRelease) implies (
+      state.recoveryState == RecoveryClean
+      and state.writeRecoveryRecord == WriteRecoveryRecordDurable
+      and state.integrityClaimsInvalidated
+      and state.dataParityWriteState == DataParityWritesDurable
+      and state.writeAttemptedRegions == Regions
+      and state.writeKnownAppliedRegions == Regions
+      and state.storesWithPersistenceEvidence == Stores
+      and state.recoveryCleanRegions == Regions
+      and state.rangeOwned
+      and state.releasePending
       and not(state.rangeReleased)
     )
 
-  val FenceAndCheckpointCoverage: bool =
-    state.fenced.subseteq(Stores)
-    and state.checkpointed.subseteq(state.mutated)
-    and (state.checkpointed != Set() implies state.fenced == Stores)
+  val PersistenceEvidenceAndRecoveryCleanCoverage: bool =
+    state.storesWithPersistenceEvidence.subseteq(Stores)
+    and state.recoveryCleanRegions.subseteq(state.writeKnownAppliedRegions)
+    and (state.recoveryCleanRegions != Set() implies state.storesWithPersistenceEvidence == Stores)
 }
 

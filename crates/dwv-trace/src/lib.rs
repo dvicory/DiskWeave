@@ -1,8 +1,9 @@
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-pub const TRACE_VERSION: u16 = 1;
+pub const TRACE_VERSION: u16 = 2;
 pub const LEGACY_TRACE_VERSION: u16 = 0;
+pub const PREVIOUS_TRACE_VERSION: u16 = 1;
 pub const MAX_EVENTS: usize = 512;
 pub const MAX_TRACE_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_RANGE: u64 = 1024 * 1024;
@@ -107,10 +108,10 @@ pub enum TraceEventKind {
         offset: u64,
         length: u64,
     },
-    RecoveryIntent {
+    WriteRecoveryRecord {
         generation: u64,
     },
-    Checkpoint {
+    RecoveryClean {
         generation: u64,
         durable: bool,
     },
@@ -256,8 +257,8 @@ impl Trace {
                 TraceEventKind::Read { length, .. }
                 | TraceEventKind::DegradedRead { length, .. } => state.bytes_read += length,
                 TraceEventKind::Flush { .. } => state.flushes += 1,
-                TraceEventKind::RecoveryIntent { generation }
-                | TraceEventKind::Checkpoint { generation, .. } => {
+                TraceEventKind::WriteRecoveryRecord { generation }
+                | TraceEventKind::RecoveryClean { generation, .. } => {
                     state.recovery_generation = state.recovery_generation.max(generation)
                 }
                 TraceEventKind::Checksum { outcome, .. } => {
@@ -342,6 +343,7 @@ impl Trace {
         let trace = match u16::try_from(schema).unwrap_or(u16::MAX) {
             TRACE_VERSION => serde_json::from_value(value)
                 .map_err(|error| TraceError::Json(error.to_string()))?,
+            PREVIOUS_TRACE_VERSION => migrate_previous(value)?,
             LEGACY_TRACE_VERSION => migrate_legacy(value)?,
             version => return Err(TraceError::UnsupportedVersion(version)),
         };
@@ -400,8 +402,8 @@ fn validate_event(fixture: &TraceFixture, event: &TraceEventKind) -> Result<(), 
         )),
         TraceEventKind::Open { .. }
         | TraceEventKind::Flush { .. }
-        | TraceEventKind::RecoveryIntent { .. }
-        | TraceEventKind::Checkpoint { .. }
+        | TraceEventKind::WriteRecoveryRecord { .. }
+        | TraceEventKind::RecoveryClean { .. }
         | TraceEventKind::Checksum { .. }
         | TraceEventKind::RepairDecision { .. }
         | TraceEventKind::Outcome { .. } => Ok(()),
@@ -410,6 +412,39 @@ fn validate_event(fixture: &TraceFixture, event: &TraceEventKind) -> Result<(), 
         | TraceEventKind::DegradedRead { offset, length, .. }
         | TraceEventKind::RebuildChunk { offset, length, .. } => validate_range(*offset, *length),
     }
+}
+
+fn rename_prior_event_names(value: &mut serde_json::Value) -> Result<(), TraceError> {
+    let events = value
+        .get_mut("events")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or_else(|| TraceError::Invalid("events are required for migration".to_owned()))?;
+    for event in events {
+        let kind = event
+            .get_mut("kind")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| TraceError::Invalid("trace event kind is required".to_owned()))?;
+        for (old, new) in [
+            ("RecoveryIntent", "WriteRecoveryRecord"),
+            ("Checkpoint", "RecoveryClean"),
+        ] {
+            if let Some(payload) = kind.remove(old) {
+                if kind.contains_key(new) {
+                    return Err(TraceError::Invalid(format!(
+                        "trace event contains both {old} and {new}"
+                    )));
+                }
+                kind.insert(new.to_owned(), payload);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn migrate_previous(mut value: serde_json::Value) -> Result<Trace, TraceError> {
+    rename_prior_event_names(&mut value)?;
+    value["schema"] = serde_json::json!(TRACE_VERSION);
+    serde_json::from_value(value).map_err(|error| TraceError::Json(error.to_string()))
 }
 
 #[derive(Deserialize)]
@@ -427,7 +462,8 @@ fn legacy_write_length() -> u64 {
     4096
 }
 
-fn migrate_legacy(value: serde_json::Value) -> Result<Trace, TraceError> {
+fn migrate_legacy(mut value: serde_json::Value) -> Result<Trace, TraceError> {
+    rename_prior_event_names(&mut value)?;
     let legacy: LegacyTrace =
         serde_json::from_value(value).map_err(|error| TraceError::Json(error.to_string()))?;
     if legacy.schema != LEGACY_TRACE_VERSION {
@@ -647,7 +683,7 @@ mod tests {
 
     #[test]
     fn malformed_and_future_versions_are_refused() {
-        let malformed = br#"{"schema":1,"fixture":{"size":16384,"seed":7,"write_length":4096},"events":[],"extra":true}"#;
+        let malformed = br#"{"schema":2,"fixture":{"size":16384,"seed":7,"write_length":4096},"events":[],"extra":true}"#;
         assert!(matches!(
             Trace::from_json(malformed),
             Err(TraceError::Json(_))
@@ -658,6 +694,37 @@ mod tests {
             Trace::from_json(future),
             Err(TraceError::UnsupportedVersion(9))
         );
+    }
+
+    #[test]
+    fn schema_one_renames_recovery_events_and_reexports_current_schema() {
+        let prior = br#"{
+            "schema": 1,
+            "fixture": {"size": 16, "seed": 7, "write_length": 4},
+            "events": [
+                {"sequence": 0, "kind": {"Open": {"size": 16}}},
+                {"sequence": 1, "kind": {"RecoveryIntent": {"generation": 1}}},
+                {"sequence": 2, "kind": {"Checkpoint": {"generation": 1, "durable": true}}},
+                {"sequence": 3, "kind": {"Outcome": {"outcome": "Success"}}}
+            ]
+        }"#;
+        let migrated = Trace::from_json(prior).unwrap();
+        assert!(matches!(
+            &migrated.events[1].kind,
+            TraceEventKind::WriteRecoveryRecord { generation: 1 }
+        ));
+        assert!(matches!(
+            &migrated.events[2].kind,
+            TraceEventKind::RecoveryClean {
+                generation: 1,
+                durable: true
+            }
+        ));
+        let output = String::from_utf8(migrated.to_json().unwrap()).unwrap();
+        assert!(output.contains("WriteRecoveryRecord"));
+        assert!(output.contains("RecoveryClean"));
+        assert!(!output.contains("RecoveryIntent"));
+        assert!(!output.contains("Checkpoint"));
     }
 
     #[test]
@@ -674,7 +741,7 @@ mod tests {
         assert_eq!(migrated, current);
         assert_eq!(
             serde_json::from_slice::<serde_json::Value>(&migrated.to_json().unwrap()).unwrap()["schema"],
-            1
+            2
         );
     }
 

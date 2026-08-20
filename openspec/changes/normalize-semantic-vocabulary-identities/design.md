@@ -19,7 +19,7 @@ The migration must preserve:
 - write completion versus proven durability;
 - delegated-model write durability versus concrete persistence evidence;
 - recovery `DIRTY`, `CLEAN`, and `INDETERMINATE`;
-- unknown outcome versus indeterminate outcome;
+- unknown write state versus indeterminate write-effect observation;
 - normal processing versus interrupted processing;
 - reconciliation as a separate operation/condition;
 - completed/aborted write state versus released ownership;
@@ -66,7 +66,7 @@ The write lifecycle is:
 
 **Reconciliation** examines the allowed evidence for an uncertain operation and determines what DiskWeave may safely claim next. It is not retry, rollback, repair, or the entire interrupted lifecycle. In prose prefer “requires reconciliation” over noun-heavy forms such as “reconciliation-required condition.”
 
-`WriteRecoveryRecordUnknown` and `DataParityWritesUnknown` are state values: the relation cannot safely classify the corresponding current fact as a known durable record or as no-write/awaiting-durability/durable data-parity state. Outcome values are separate. `NoDataParityWriteOutcome` is the baseline value when no data/parity effect observation has been accepted. `DataParityWriteOutcomeIndeterminate` records that a data/parity effect may have occurred but cannot be classified more definitely. `writeOutcomeReconciliationComplete` separately records whether the modeled reconciliation step has completed, so an indeterminate outcome does not itself imply completed reconciliation.
+`WriteRecoveryRecordUnknown` and `DataParityWritesUnknown` are state values: the relation cannot safely classify the corresponding current fact as a known durable record or as no-write/awaiting-durability/durable data-parity state. Observation values are separate. `NoDataParityWriteObservation` is the baseline value when no data/parity effect observation has been accepted. `DataParityWriteEffectIndeterminate` records that a data/parity effect may have occurred but cannot be classified more definitely. `dataParityWriteObservationFinalized` separately records whether that observation classification is final, so an indeterminate observation can exist before finalization.
 
 ### Secondary terms
 
@@ -107,7 +107,7 @@ An interrupted write should be explainable as:
 
 This map is mechanical. It changes labels only. State cardinality, guards, transitions, invariants, finite parameters, release behavior, and delegated scope must remain unchanged.
 
-### State and outcome types
+### State and observation types
 
 | Current | Target |
 |---|---|
@@ -116,19 +116,19 @@ This map is mechanical. It changes labels only. State cardinality, guards, trans
 | `IntentPending` | `WriteRecoveryRecordPending` |
 | `IntentDurable` | `WriteRecoveryRecordDurable` |
 | `IntentUnknown` | `WriteRecoveryRecordUnknown` |
-| `IntentObservation` | `WriteRecoveryRecordCommitOutcome` |
-| `IntentCommitUnknown` | `WriteRecoveryRecordCommitOutcomeUnknown` |
-| `IntentCommitRejected` | `WriteRecoveryRecordCommitOutcomeRejected` |
-| `IntentCommitDurable` | `WriteRecoveryRecordCommitOutcomeDurable` |
+| `IntentObservation` | `WriteRecoveryRecordCommitObservation` |
+| `IntentCommitUnknown` | `CommitUnknown` |
+| `IntentCommitRejected` | `CommitRejected` |
+| `IntentCommitDurable` | `CommitDurable` |
 | `HomeState` | `DataParityWriteState` |
 | `HomeUnmodified` | `NoDataParityWrites` |
 | `HomeVolatile` | `DataParityWritesAwaitingDurability` |
 | `HomeDurable` | `DataParityWritesDurable` |
 | `HomeUnknown` | `DataParityWritesUnknown` |
-| `HomeObservation` | `DataParityWriteOutcome` |
-| `HomeEffectUnknown` | `NoDataParityWriteOutcome` |
-| `HomeEffectIndeterminate` | `DataParityWriteOutcomeIndeterminate` |
-| `HomeEffectDurable` | `DataParityWriteOutcomeDurable` |
+| `HomeObservation` | `DataParityWriteObservation` |
+| `HomeEffectUnknown` | `NoDataParityWriteObservation` |
+| `HomeEffectIndeterminate` | `DataParityWriteEffectIndeterminate` |
+| `HomeEffectDurable` | `DataParityWriteEffectDurable` |
 | `ObligationState` | `WriteLifecycleState` |
 | `InFlight` | `NormalProcessing` |
 | `Handoff` | `InterruptedProcessing` |
@@ -142,10 +142,10 @@ This map is mechanical. It changes labels only. State cardinality, guards, trans
 | Current | Target |
 |---|---|
 | `intent` | `writeRecoveryRecord` |
-| `intentObservation` | `writeRecoveryRecordCommitOutcome` |
+| `intentObservation` | `writeRecoveryRecordCommitObservation` |
 | `home` | `dataParityWriteState` |
-| `homeObservation` | `dataParityWriteOutcome` |
-| `homeReconciled` | `writeOutcomeReconciliationComplete` |
+| `homeObservation` | `dataParityWriteObservation` |
+| `homeReconciled` | `dataParityWriteObservationFinalized` |
 | `recovery` | `recoveryState` |
 | `obligation` | `writeLifecycle` |
 | `invalidated` | `integrityClaimsInvalidated` |
@@ -157,22 +157,33 @@ This map is mechanical. It changes labels only. State cardinality, guards, trans
 | `terminalPendingRelease` | `releasePending` |
 | `begin` | `startWrite` |
 | `acceptIntent` | `confirmWriteRecoveryRecordDurable` |
-| `loseIntent` | `observeWriteRecoveryRecordCommitOutcomeUnknown` |
-| `reconcileIntent` | `reconcileWriteRecoveryRecordCommitOutcome` |
+| `loseIntent` | `observeWriteRecoveryRecordCommitUnknown` |
+| `reconcileIntent` | `reconcileWriteRecoveryRecordCommitObservation` |
 | `mutate` | `attemptDataParityWrite` |
-| `reconcileMutation` | `reconcileDataParityWriteOutcome` |
+| `reconcileMutation` | `reconcileDataParityWriteCoverage` |
 | `makeHomeDurable` | `confirmDataParityWritesDurable` |
 | `fence` | `observePersistenceEvidence` |
 | `checkpoint` | `commitRecoveryClean` |
 | `release` | `releaseRange` |
-| `loseHome` | `observeDataParityWriteOutcomeIndeterminate` |
-| `reconcileHomeIndeterminate` | `reconcileDataParityWriteIndeterminate` |
-| `reconcileHomeDurable` | `reconcileDataParityWriteDurable` |
+| `loseHome` | `observeDataParityWriteEffectIndeterminate` |
+| `reconcileHomeIndeterminate` | `reconcileDataParityWriteEffectIndeterminate` |
+| `reconcileHomeDurable` | `reconcileDataParityWriteEffectDurable` |
 | `abandon` | `enterInterruptedProcessing` |
 
 Keep `init` and `step`. Rename helper predicates/invariants mechanically so they use the target concepts, for example `TerminalRequiresRelease` → `CompletedOrAbortedRequiresRelease`, `DurableHomeRequiresCoverage` → `DurableDataParityWriteRequiresCoverage`, `MutationRequiresIntent` → `DataParityWriteRequiresWriteRecoveryRecord`, and `FenceAndCheckpointCoverage` → `PersistenceEvidenceAndRecoveryCleanCoverage`.
 
 The model action names describe abstract state transitions, not concrete I/O commands.
+
+### Rust/API label completion
+
+The same vocabulary applies to existing Rust/API labels when the mapping is one-to-one and behavior-preserving:
+
+- `WriteRecoveryRecordRequirement::FirstWrite` → `WriteRecoveryRecordRequirement::CommitRequired`;
+- `WriteRecoveryRecordRequirement::AlreadyDirty` → `WriteRecoveryRecordRequirement::AlreadyCovered`;
+- `ActionResult::WriteRecoveryRecordCommitted(WriteRecoveryRecordEvidence)` → `ActionResult::WriteRecoveryRecordDurableWithEvidence(WriteRecoveryRecordEvidence)`;
+- a recovery-specific internal `checkpoint` module/file that owns the recovery-`CLEAN` operation → `recovery_clean`.
+
+These are label-only changes. They SHALL NOT change enum cardinality, payloads, guards, result-kind classification, ordering, persistence predicates, or release behavior. Maintenance, rebuild-progress, SQLite, and other genuine checkpoint concepts retain `checkpoint`.
 
 ## 3. Identity policy and migration maps
 
@@ -247,16 +258,16 @@ Do not edit root `AGENTS.md` during Gate #1 design.
 
 ## 6. One-time migration mechanics
 
-One-time mechanics live under `migration/` and are archived with this change. They are not permanent product/tooling architecture.
+One-time mechanics under `migration/` were used to materialize the Gate #2 candidate and are archived with this change as migration evidence. They are not permanent product/tooling architecture and are not rerun after the final candidate already contains their approved result.
 
-`migration/migrate.py` has four responsibilities:
+`migration/migrate.py` was limited to four responsibilities while constructing the candidate:
 
 1. rename only the scenario headings listed in `scenario-renames.toml`, after verifying the post-delta requirement ID, occurrence, old heading, and approved body digest;
 2. apply only the exact canonical explanatory-text replacements listed in `canonical-text-renames.toml` for text outside OpenSpec requirement blocks;
 3. rekey reviewed outcomes/reasons for renamed `req.*` IDs without inventing review decisions;
 4. fail if any old/current mapping is missing, duplicated, ambiguous, or already partially applied.
 
-Permanent `xtask`/knowledge tooling remains the source of truth for current fingerprints, graph integrity, readiness, and orphan detection. After the one-time rekey and successful equivalence check, refresh renamed requirement fingerprints through the existing knowledge resolve path using the preserved outcome/reason.
+The final Gate #2 candidate carries the approved scenario headings directly in both canonical specs and the active delta. The migration files remain provenance for how that target was constructed; do not run the one-time script again during final cutover. Permanent `xtask`/knowledge tooling remains the source of truth for current fingerprints, graph integrity, readiness, and orphan detection.
 
 The script must not rewrite scenario bodies, infer semantic equivalence, perform free-form prose rewriting, or create permissive aliases.
 
@@ -315,23 +326,21 @@ After Gate #1, build the complete final target in a non-authoritative candidate/
 - apply all approved OpenSpec bodies, titles, IDs, and relationships;
 - apply the delegated model/API/trace/documentation/planning renames required by downstream work;
 - normalize every active change;
-- run the disposable scenario/review-state migration;
+- materialize the approved final scenario headings, canonical explanatory text, and reviewed-state rekeys represented by the one-time migration evidence;
 - run OpenSpec, knowledge/readiness, model, Rust/trace, docs, and compatibility checks.
 
 Gate #2 reviews that exact target and its equivalence evidence.
 
 ### Final cutover
 
-Only after Gate #2, perform the real authority transition in one bounded JJ cutover revision/workspace:
+Only after Gate #2, perform the real authority transition from the exact reviewed candidate:
 
-1. apply the already-reviewed model/API/trace/docs/planning target in that workspace;
-2. run the repository OpenSpec sync workflow so the approved requirement bodies, titles, IDs, and relationships become canonical;
-3. run the disposable one-time migration to apply the approved scenario-heading, explanatory-text, and reviewed-state rekeys;
-4. refresh reviewed fingerprints with preserved outcomes/reasons;
-5. run the complete validation/equivalence suite;
-6. archive the already-synced change without syncing it again, because the one-time heading migration intentionally leaves canonical scenario titles newer than the parser-locator headings retained in the delta.
+1. land or apply the exact Gate #2-reviewed candidate revision, including its canonical specs, model/API/trace/docs/planning target, final scenario headings, and reviewed-state migration;
+2. apply the separately reviewed shared-Bead edits;
+3. run the complete validation/equivalence suite against that exact state;
+4. verify that the canonical specs already contain the approved delta result, then archive this change without another spec sync.
 
-A failed post-sync check fails the cutover revision; do not land a half-migrated canonical state. Do not re-sync after the one-time migration or the old parser-locator scenario headings could be restored.
+Do not reconstruct the reviewed candidate by rerunning OpenSpec sync or the disposable migration during cutover. A failed final check blocks the cutover; do not land or archive a half-migrated state.
 
 After cutover, current maintained surfaces use only current names. Old names remain only in migration history and historical provenance.
 

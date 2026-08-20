@@ -180,7 +180,7 @@ fn trace_cli_replays_without_mutating_source_and_rejects_bad_input() {
     assert!(!trace_text.contains(root.to_str().unwrap()));
 
     let rendered = json_stdout(&run(&root, &["trace-render"]));
-    assert_eq!(rendered["summary"]["schema"], 1);
+    assert_eq!(rendered["summary"]["schema"], 2);
     assert_eq!(rendered["summary"]["event_count"], 11);
 
     let legacy_path = root.join("legacy-trace.json");
@@ -196,7 +196,7 @@ fn trace_cli_replays_without_mutating_source_and_rejects_bad_input() {
         &root,
         &["trace-render", "--trace", "legacy-trace.json"],
     ));
-    assert_eq!(migrated["summary"]["schema"], 1);
+    assert_eq!(migrated["summary"]["schema"], 2);
 
     let source_before = fs::read(root.join("data0.raw")).unwrap();
     let replay = json_stdout(&run(&root, &["trace-replay"]));

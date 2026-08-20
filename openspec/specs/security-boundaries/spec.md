@@ -9,7 +9,7 @@ Define cross-cutting safety boundaries for authority, hostile input, privacy, re
 ### Requirement: Read-only inspection and mutation authority are separate
 <!-- dwv:req req.security-boundaries.read-only-inspection-and-mutation-authority-are-separate -->
 
-Inspection, verification, planning, and evidence export SHALL be usable without mutation authority. Destructive repair, topology changes, rebaseline, format migration, and external-write release SHALL require an identity- and generation-bound plan with explicit confirmation and revalidation before irreversible mutation.
+Inspection, verification, planning, and evidence export SHALL be usable without mutation authority. Destructive repair, topology changes, rebaseline, format migration, and external-write release SHALL require an identity- and generation-bound plan with explicit confirmation and revalidation before the protected state change.
 
 #### Scenario: An inspection command runs
 - **WHEN** an operator requests status, identity evidence, capability evidence, inspection, or verification
@@ -17,7 +17,7 @@ Inspection, verification, planning, and evidence export SHALL be usable without 
 
 #### Scenario: A state-changing plan is stale
 - **WHEN** a plan's identity, range, generation, or evidence no longer matches the observed state
-- **THEN** execution is rejected before protected mutation
+- **THEN** execution is rejected before the protected state change
 
 ### Requirement: Hostile inputs and resources are bounded before admission
 <!-- dwv:req req.security-boundaries.hostile-inputs-and-resources-are-bounded-before-admission -->

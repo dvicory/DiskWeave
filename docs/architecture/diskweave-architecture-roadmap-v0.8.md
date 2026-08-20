@@ -12,7 +12,7 @@ supersedes: arch.diskweave.v0.7
 
 **Decision posture:** **ACCEPTED** decisions are buildable commitments; **PROVISIONAL** choices are preferred but replaceable; **VALIDATE** items require executable evidence; **TUNABLE** choices are delegated to implementation agents; **USER-DECISION** items are the deliberately small set that require product-owner input; **FORMAT-EXPERIMENTAL** bytes may protect only disposable data.
 
-Current required product behavior is canonical only under `openspec/specs/*/spec.md`. Every statement, status label, table, diagram, `MUST`, and `SHALL` in this document is non-canonical roadmap intent or rationale until represented by a current canonical requirement. This roadmap guides future architecture, coherence, dependency ordering, validation strategy, milestone planning, and the reserved `OS-NNN` work-item namespace; it does not silently override a conflicting canonical requirement. Divergence among this roadmap, current specifications, and implementation may be a deliberate refinement, accidental architectural loss, unresolved change, or obsolete roadmap intent and must be surfaced and reconciled explicitly.
+Current required product behavior is canonical only under `openspec/specs/*/spec.md`. Every statement, status label, table, diagram, `MUST`, and `SHALL` in this document is non-canonical roadmap intent or rationale until represented by a current canonical requirement. This roadmap guides future architecture, coherence, dependency ordering, validation strategy, and milestone planning; it does not silently override a conflicting canonical requirement. Divergence among this roadmap, current specifications, and implementation may be a deliberate refinement, accidental architectural loss, unresolved change, or obsolete roadmap intent and must be surfaced and reconciled explicitly.
 
 > **Executive verdict**
 >
@@ -20,7 +20,7 @@ Current required product behavior is canonical only under `openspec/specs/*/spec
 >
 > Data payloads contain no required DiskWeave metadata. Array identity and assignments are established from durable recovery state plus multiple identity observations; ambiguous clones fail closed. Recovery state is operationally authoritative while the array is writable, but losing it never makes intact data proprietary. A small redundant parity-device envelope may improve discovery and disaster recovery, while the parity payload itself remains simple and directly addressable.
 >
-> Crash consistency is a protocol, not a consequence of Rust ownership. Durable dirty intent and integrity invalidation precede dependent media mutation; FLUSH, FUA, volatile caches, partial completion, uncertain completion, daemon death, power loss, and resource draining are explicit semantics. Checksums form an independent integrity plane, and automatic repair requires a uniquely supported result from verified-good evidence.
+> Crash consistency is a protocol, not a consequence of Rust ownership. Durable write-recovery record and integrity invalidation precede dependent media mutation; FLUSH, FUA, volatile caches, partial completion, uncertain completion, daemon death, power loss, and resource draining are explicit semantics. Checksums form an independent integrity plane, and automatic repair requires a uniquely supported result from verified-good evidence.
 >
 > The architecture preserves a narrow reusable media substrate: role-neutral stores and capabilities, topology-independent coding primitives, operation-slot ownership, backend adapters, deterministic low-level media faults, and evidence plumbing. The block request model, logical slots, positional parity mapping, dirty-region protocol, `array.sqlite3` recovery semantics, and whole-file namespace placement are deliberately product-specific. This boundary improves replaceability, deterministic testing, and dependency direction without introducing allocator, object, per-item protection-policy, or universal-transaction machinery that the specified product does not need.
 >
@@ -38,7 +38,7 @@ Current required product behavior is canonical only under `openspec/specs/*/spec
 | macOS frontend | Virtual raw files attached through DiskImages; FSKit first, macFUSE alternative | **VALIDATE** |
 | Transaction orchestration | `procmachines` candidate compared against an explicit reference machine | **PROVISIONAL** |
 | Resource lifetime | Executor-owned operation slots retain buffers/submissions until terminal evidence | **ACCEPTED** |
-| Crash safety | Persistent dirty/integrity intent first; journal/PPL only after evidence | **ACCEPTED** |
+| Crash safety | Persistent dirty/integrity/write-recovery record first; journal/PPL only after evidence | **ACCEPTED** |
 | Recovery state | `array.sqlite3` preferred behind `RecoveryStateStore`; not existential to intact data | **PROVISIONAL IMPLEMENTATION / ACCEPTED SEMANTICS** |
 | Parity format | Simple payload; small redundant envelope likely, still FORMAT-EXPERIMENTAL | **PROVISIONAL** |
 | Integrity | Data and parity checksums are first-class and generation-bound | **ACCEPTED** |
@@ -400,7 +400,7 @@ Names below are illustrative. Responsibilities and prohibited dependencies are a
 
 ## 5.1 Reusable media substrate
 
-| Responsibility | Likely home | Must not depend on |
+| Responsibility | Likely owner | Must not depend on |
 |---|---|---|
 | Pure coding primitives and reference/optimized implementations | `dwv-codec` | array discovery, slot bindings, StoreId, SQLite, frontends |
 | Random-access store operations, identity observations, durability capabilities | `dwv-store` | namespace paths, fixed data/parity role, recovery schema |
@@ -877,10 +877,9 @@ enum RecoveryMutation {
 
     MarkRegionDirty(DirtyMutation),
     MarkIntegrityStale(IntegrityInvalidation),
-    RecordHomeFence(HomeFenceRecord),
+    ObservePersistenceEvidence(PersistenceEvidence),
     RecordUncertainCompletion(UncertainMutation),
-    CommitCheckpoint(CheckpointProof),
-    MarkRegionClean(CleanTransition),
+    CommitRecoveryClean(RecoveryCleanTransition),
     InstallIntegrityDigest(IntegrityInstallation),
 
     CloseWritableSession(SessionClose),
@@ -898,11 +897,11 @@ enum RecoveryMutation {
 
 The exact grouping and naming are replaceable. These semantic rules are not:
 
-1. **Before dependent home-media mutation:** the region's new mutation generation, `DIRTY` state, and every overlapping checksum transition to `STALE` SHALL become durable as one atomic recovery-state decision. A partial commit that exposes only some of those facts is invalid.
-2. **Already-dirty writes:** generation advancement and any newly required integrity invalidation SHALL be durable before the new home effect. An older checkpoint cannot clear a newer generation.
-3. **Fence recording:** `RecordHomeFence` may cite only persistence evidence matching the exact physical-store incarnation, capability context, topology epoch, ordering watermark, and mutation generation. Recording a fence does not itself make a region clean.
+1. **Before dependent data/parity write:** the region's new mutation generation, `DIRTY` state, and every overlapping checksum transition to `STALE` SHALL become durable as one atomic recovery-state decision. A partial commit that exposes only some of those facts is invalid.
+2. **Already-dirty writes:** generation advancement and any newly required integrity invalidation SHALL be durable before the new data/parity write. An older checkpoint cannot clear a newer generation.
+3. **Fence recording:** `ObservePersistenceEvidence` may cite only persistence evidence matching the exact physical-store incarnation, capability context, topology epoch, ordering watermark, and mutation generation. Recording a fence does not itself make a region clean.
 4. **Uncertainty:** a lost, timed-out, or otherwise uncertain completion SHALL preserve or strengthen `DIRTY`/`INDETERMINATE` state. Uncertainty is removed only by a defined reconciliation, replay, exhaustive verification, or verified rewrite—not by retrying an optimistic metadata update.
-5. **Checkpoint and clean:** `CommitCheckpoint`/`MarkRegionClean` SHALL atomically bind the exact covered region generations to a sufficient set of durable store-fence evidence. They are permitted only after all covered writers are terminal or durably handed to recovery, and compare-and-set predicates SHALL reject a changed topology, assignment, session, or mutation generation.
+5. **Checkpoint and clean:** `CommitRecoveryClean` SHALL atomically bind the exact covered region generations to a sufficient set of durable store-fence evidence. It is permitted only after all covered writers are terminal or durably handed to recovery, and compare-and-set predicates SHALL reject a changed topology, assignment, session, or mutation generation.
 6. **Integrity installation:** `InstallIntegrityDigest` is permitted only when target identity, checksum profile, content generation, and cited target-store durability evidence still match. A successful read or an unrelated flush is insufficient.
 7. **Writable sessions:** `BeginWritableSession` is durable before writable exposure. `CloseWritableSession` is permitted only after the required global checkpoint and evidence set are durable; parity-envelope session transitions follow Section 8.9.
 8. **Topology:** `PrepareTopology` is durable before any new mapping is exposed or used for irreversible effects. `CommitTopology` occurs only after required quiescence, verification, and promotion evidence. `Abort` is valid only before irreversible effects; otherwise recovery reconciles the prepared plan explicitly.
@@ -926,7 +925,7 @@ SQLite is preferred because crash-safety maturity, durability semantics, boring 
 7. implementation simplicity;
 8. representative performance and write amplification.
 
-Journal mode, synchronization level, checkpoint policy, page size, connection topology, busy handling, backup strategy, and filesystem placement are executable decisions. Tests cover process kill, simulated/VM reset, database corruption, disk-full/ENOSPC, I/O error, partial migration, and later physical power loss. A successful SQLite commit means only that the selected SQLite/VFS/storage contract was met; the home-store durability protocol remains separate.
+Journal mode, synchronization level, checkpoint policy, page size, connection topology, busy handling, backup strategy, and filesystem placement are executable decisions. Tests cover process kill, simulated/VM reset, database corruption, disk-full/ENOSPC, I/O error, partial migration, and later physical power loss. A successful SQLite commit means only that the selected SQLite/VFS/storage contract was met; the data/parity store durability protocol remains separate.
 
 Recommended deployment profiles:
 
@@ -1024,7 +1023,7 @@ before writable exposure:
     all required parity envelopes durably record DIRTY(session S)
     array.sqlite3 durably records ACTIVE(session S)
 
-clean shutdown/checkpoint:
+clean shutdown/recovery CLEAN:
     quiesce admitted writes
     durably flush required data and parity stores
     array.sqlite3 durably records CLOSED(session S, fence proof)
@@ -1158,7 +1157,7 @@ Semantics:
 
 - sequence numbers are monotonic within an ordering domain and are assigned at admission, so a flush has an exact closed set of prior mutations;
 - a flush captures all admitted mutations through its declared sequence/scope; later admissions are not prerequisites and cannot change the captured set;
-- `preflush` requires prior covered writes to reach the flush boundary before any dependent home-media effect of the new write;
+- `preflush` requires prior covered writes to reach the flush boundary before any dependent data/parity-media effect of the new write;
 - `StableBeforeCompletion` requires affected data/parity writes to pass a certified durability fence before success is delivered;
 - a plain write may complete before physical durability only under an advertised write-back cache contract;
 - abandonment changes result delivery, not transaction or resource obligations;
@@ -1218,7 +1217,7 @@ The store has no `data_slot`, `parity_role`, `filesystem_type`, `coding_group`, 
 | logical/physical block size | validation, alignment, RMW |
 | minimum/optimal alignment | safe splitting and performance |
 | maximum transfer and queue constraints | bounded child I/O |
-| durable flush | checkpoint/clean proof |
+| durable flush | recovery CLEAN proof |
 | FUA or proven emulation | stable completion |
 | ordering guarantees | fence construction |
 | atomic/torn-write granularity | fault model and metadata design |
@@ -1289,7 +1288,7 @@ Roadmap rules:
 6. A frontend cannot strengthen backend semantics. It may expose only durability behavior supported by the complete frontend/store/recovery/hardware contract.
 7. The conservative implementation may fence the whole array and record one aggregate checkpoint. More precise per-domain, per-store, or per-region watermarks are compatible optimizations, not permanent format assumptions.
 
-A `FenceSet` is a proof composition over required stores and watermarks, not a cryptographic certificate unless a later format explicitly defines one. OS-002 owns the store/capability evidence vocabulary; OS-010 owns its recovery-protocol use; OS-013 integrates it into healthy I/O; OS-036 certifies real Linux/hardware meaning.
+A `FenceSet` is a proof composition over required stores and watermarks, not a cryptographic certificate unless a later format explicitly defines one. roadmap-item:role-neutral-stores owns the store/capability evidence vocabulary; roadmap-item:dirty-integrity-recovery owns its recovery-protocol use; roadmap-item:healthy-portable-io integrates it into healthy I/O; roadmap-item:linux-flush-fua-probes certifies real Linux/hardware meaning.
 
 ## 9.5 Request planning and decomposition
 
@@ -1314,12 +1313,12 @@ A write to two different data slots at the same logical offset races on the same
 ```rust
 enum Action {
     AcquireRange(RangeRequest),
-    PersistDirtyAndInvalidateIntegrity(MutationIntent),
+    PersistDirtyAndInvalidateIntegrity(WriteRecoveryRecord),
     ReadSet(ReadSetPlan),
     ComputeParity(CodecPlan),
     WriteSet(WriteSetPlan),
     FlushSet(FlushPlan),
-    CommitCheckpointOrClear(CheckpointProof),
+    CommitRecoveryCleanOrClear(RecoveryCleanProof),
     ReleaseRange(RangeGuardId),
 }
 
@@ -1466,23 +1465,23 @@ A persistent dirty record conceptually contains:
 - parity/checksum profile IDs;
 - affected checksum extents and their new stale generations;
 - active/terminal mutation bookkeeping required for checkpoint safety;
-- highest durable home-store fence known for the region;
+- highest durable data/parity persistence-evidence fence known for the region;
 - indeterminate or recovery-required evidence.
 
 ```mermaid
 stateDiagram-v2
     [*] --> Clean
-    Clean --> IntentDurable: commit DIRTY + checksum STALE + generation
-    IntentDurable --> ApplyingHomeWrites
-    ApplyingHomeWrites --> DirtyAwaitingFence
-    DirtyAwaitingFence --> HomeFenceDurable
-    HomeFenceDurable --> Clean: durable checkpoint/clear
+    Clean --> WriteRecoveryRecordDurable: commit DIRTY + checksum STALE + generation
+    WriteRecoveryRecordDurable --> ApplyingDataParityWrites
+    ApplyingDataParityWrites --> DirtyAwaitingPersistenceEvidence
+    DirtyAwaitingPersistenceEvidence --> PersistenceEvidenceObserved
+    PersistenceEvidenceObserved --> Clean: durable checkpoint/clear
 
-    IntentDurable --> RecoveryRequired: crash/restart
-    ApplyingHomeWrites --> RecoveryRequired: crash/restart
-    DirtyAwaitingFence --> RecoveryRequired: crash/restart
-    HomeFenceDurable --> RecoveryRequired: clear not proven durable
-    ApplyingHomeWrites --> Indeterminate: completion/persistence unknowable
+    WriteRecoveryRecordDurable --> RecoveryRequired: crash/restart
+    ApplyingDataParityWrites --> RecoveryRequired: crash/restart
+    DirtyAwaitingPersistenceEvidence --> RecoveryRequired: crash/restart
+    PersistenceEvidenceObserved --> RecoveryRequired: clear not proven durable
+    ApplyingDataParityWrites --> Indeterminate: completion/persistence unknowable
     Indeterminate --> RecoveryRequired
     RecoveryRequired --> Clean: exhaustive verify/recompute + durable clear
 ```
@@ -1491,10 +1490,10 @@ A clean record never wins a conflict with dirty/unknown evidence. Mutation gener
 
 ## 10.3 First write to a clean region
 
-Before the first dependent home-media mutation:
+Before the first dependent data/parity write:
 
 ```text
-dirty intent is durable
+write-recovery record is durable
 all overlapping checksum evidence is STALE for the new generation
 topology snapshot and identity remain valid
 range guard is held
@@ -1516,7 +1515,7 @@ sequenceDiagram
     T->>L: acquire global parity-address guard
     L-->>T: guard
     T->>R: commit DIRTY + checksum STALE + mutation generation
-    R-->>T: durable intent evidence
+    R-->>T: durable write-recovery-record evidence
     T->>E: ReadSet(old target/parity or reconstruct inputs)
     E->>D: read_at
     E->>P: read_at
@@ -1534,7 +1533,7 @@ sequenceDiagram
     T->>L: release only after safe terminal state or durable handoff
 ```
 
-If the durable intent commit fails or is uncertain, no dependent home write is submitted. If a home write has been submitted and its result is uncertain, the range remains indeterminate and the operation slot drains/reconciles.
+If the durable write-recovery-record commit fails or is uncertain, no dependent data/parity write is submitted. If a data/parity write has been submitted and its result is uncertain, the range remains indeterminate and the operation slot drains/reconciles.
 
 ## 10.4 Subsequent write to an already-dirty region
 
@@ -1578,13 +1577,13 @@ The planner chooses RMW or reconstruct-write. Before writing, all required input
 
 Partial child completion is recorded per store/range. A successful data write plus failed parity write and a successful parity write plus failed data write both remain dirty. DiskWeave does not attempt to claim rollback unless it has a separately proven undo protocol.
 
-## 10.6 Flush, checkpoint, and clean
+## 10.6 Flush, recovery CLEAN, and clean
 
 ```mermaid
 sequenceDiagram
     autonumber
     participant F as Frontend
-    participant C as Checkpoint coordinator
+    participant C as Recovery-clean coordinator
     participant W as Active writers
     participant E as Executor
     participant S as Data/parity stores
@@ -1598,7 +1597,7 @@ sequenceDiagram
     S-->>E: fence outcomes
     E-->>C: FenceSet for exact stores/watermarks
     alt every required fence proven
-        C->>R: commit checkpoint/clear with expected epoch + generations + FenceSet
+        C->>R: commit recovery CLEAN/clear with expected epoch + generations + FenceSet
         R-->>C: durable recovery commit
         C-->>F: success
     else failure or uncertainty
@@ -1613,16 +1612,16 @@ Before `CLEAN`:
 all covered mutations are terminal or safely reconciled
 required data and parity writes are durably fenced
 FenceSet covers the exact store incarnations and submitted-through watermarks
-recovery-state checkpoint atomically binds that evidence to exact region generations
+recovery CLEAN commit atomically binds that evidence to exact region generations
 no unresolved mutation-generation conflict exists
 no topology transition can reinterpret the range
 ```
 
-A successful frontend flush is delivered only after that recovery-state commit is durable. If the home-store fence succeeded but the checkpoint commit failed or is uncertain, the bytes may be durable but the region remains dirty/indeterminate. The first implementation may use an array-wide fence. Per-domain/per-store/per-region watermarks are later optimizations only after equivalence evidence.
+A successful frontend flush is delivered only after that recovery-state commit is durable. If the data/parity persistence-evidence fence succeeded but the recovery CLEAN commit failed or is uncertain, the bytes may be durable but the region remains dirty/indeterminate. The first implementation may use an array-wide fence. Per-domain/per-store/per-region watermarks are later optimizations only after equivalence evidence.
 
 ## 10.7 Stable-before-completion and preflush
 
-A stable/FUA-like request completes only after its affected data and parity operations produce sufficient `PersistenceEvidence` under the active capability context. The region may remain conservatively dirty until a later recovery-state checkpoint; stable frontend completion proves the requested home-store boundary, while metadata cleanup and `CLEAN` are separate facts.
+A stable/FUA-like request completes only after its affected data and parity operations produce sufficient `PersistenceEvidence` under the active capability context. The region may remain conservatively dirty until a later recovery-state checkpoint; stable frontend completion proves the requested data/parity store boundary, while metadata cleanup and `CLEAN` are separate facts.
 
 A preflush request first fences all prior covered writes in its ordering domain. It then performs the new write under its own durability intent. Unsupported FUA/preflush is never silently downgraded; the frontend advertises a truthful limit or returns unsupported/error.
 
@@ -1659,22 +1658,22 @@ Cancellation is a request to the backend, not proof of cancellation. Shutdown:
 2. captures/quiesces ordering domains;
 3. drains or reconciles submitted operations;
 4. commits dirty/indeterminate evidence for unresolved work;
-5. performs a global checkpoint when possible;
+5. performs a global recovery CLEAN when possible;
 6. only then tears down frontends and releases physical claims.
 
 A watchdog must understand these states and not kill a healthy daemon merely because a real flush/recovery is slow.
 
 ## 10.9 Recovery-state failure
 
-- Failure before durable intent: reject write; no home mutation was permitted.
-- Uncertain intent commit: do not mutate home stores; require recovery-store reconciliation before service.
-- Failure recording a post-write result or home-fence evidence: home state may have changed or may already be durable; keep/establish dirty/indeterminate evidence through the safest surviving path and stop writes if authority is unavailable. Never recreate the missing proof from an ordinary completion alone.
+- Failure before durable write-recovery record: reject write; no data/parity write was permitted.
+- Uncertain write-recovery-record commit: do not mutate data/parity stores; require recovery-store reconciliation before service.
+- Failure recording a post-write result or data/parity-fence evidence: data/parity write state may have changed or may already be durable; keep/establish dirty/indeterminate evidence through the safest surviving path and stop writes if authority is unavailable. Never recreate the missing proof from an ordinary completion alone.
 - Recovery DB corruption or loss while serving: stop admitting writes, retain operation resources until terminal or emergency durable handoff, quiesce frontends, and transition to recovery-required.
 - Disk full/ENOSPC in recovery storage is a correctness failure, not a management warning.
 
 ## 10.10 Parity-envelope session certificate
 
-The optional coarse envelope state improves disaster recovery but does not replace fine-grained recovery state. `CLOSED_CLEAN` is written only after all required home-store fences and recovery-state close commit succeed.
+The optional coarse envelope state improves disaster recovery but does not replace fine-grained recovery state. `CLOSED_CLEAN` is written only after all required data/parity persistence-evidence fences and recovery-state close commit succeed.
 
 A valid certificate plus matching identity/topology may support scan-free DB recreation only under trusted ownership continuity or equivalent anti-rollback evidence. Without that, exhaustive verification is required. The certificate never establishes current checksum coverage or absence of latent corruption.
 
@@ -1703,7 +1702,7 @@ The transaction machine owns:
 - acquired range guards;
 - buffer **tokens**, not buffer memory;
 - action requests and semantic results;
-- dirty/integrity/recovery intent;
+- dirty/integrity/write-recovery-record state;
 - frontend delivery interest.
 
 The executor/operation slot owns:
@@ -1768,7 +1767,7 @@ Every request reserves bounded admission before irreversible work. Admission inc
 - recovery-state transaction capacity where known;
 - trace/evidence budget or an explicit bounded drop policy that cannot hide required terminal events.
 
-If resources are unavailable, the request waits or fails before dirty intent/home mutation. Resource exhaustion after intent follows normal dirty/recovery policy; it is never treated as rollback.
+If resources are unavailable, the request waits or fails before the write-recovery record or data/parity write. Resource exhaustion after the write-recovery record follows normal dirty/recovery policy; it is never treated as rollback.
 
 Generational tokens prevent use-after-reuse. A token contains slot/index plus generation; lookup validates both. Reclamation increments generation before reuse. Loom or a focused deterministic model is appropriate if custom atomics implement this lifecycle.
 
@@ -1803,7 +1802,7 @@ Rules:
 
 ## 11.7 Checkpoint concurrency
 
-A checkpoint captures a precise set of mutation generations or ordering watermarks. A writer either registers before capture and is awaited, or is admitted after capture and remains dirty for a later checkpoint. There is no gap in which a write mutates home media but belongs to neither set.
+A checkpoint captures a precise set of mutation generations or ordering watermarks. A writer either registers before capture and is awaited, or is admitted after capture and remains dirty for a later checkpoint. There is no gap in which a write mutates data/parity media but belongs to neither set.
 
 Checksum revalidation follows the same generation discipline: it captures a content generation and durable fence watermark, computes, then commits only if neither changed.
 
@@ -1816,9 +1815,9 @@ stateDiagram-v2
     [*] --> Serving
     Serving --> AdmissionClosed
     AdmissionClosed --> Draining
-    Draining --> Checkpointing: all operations terminal/handoff
+    Draining --> RecoveryCleaning: all operations terminal/handoff
     Draining --> RecoveryRequired: timeout/uncertainty
-    Checkpointing --> FrontendsStopped: checkpoint durable
+    RecoveryCleaning --> FrontendsStopped: recovery CLEAN durable
     RecoveryRequired --> FrontendsStopped: dirty evidence durable
     FrontendsStopped --> ClaimsReleased
     ClaimsReleased --> [*]
@@ -2025,7 +2024,7 @@ flowchart TD
 | Failure | Required semantic result |
 |---|---|
 | short read/write | exact completed subrange recorded; parent fails/dirty; never treat as full success |
-| EIO before mutation | fail/refuse without new home mutation |
+| EIO before mutation | fail/refuse without new data/parity write |
 | EIO after any mutation | retain dirty/recovery-required evidence |
 | timeout or lost completion | `INDETERMINATE`; drain/reconcile; never assume failure or success |
 | duplicate completion | detect by generational child ID; terminalize once |
@@ -2394,11 +2393,11 @@ A consumer cannot start merely because one member appeared.
 3. unmount clear/encrypted views;
 4. unmount member filesystems;
 5. close frontend admission and drain/reconcile operations;
-6. perform global durable checkpoint when possible;
+6. perform global durable recovery CLEAN when possible;
 7. stop virtual devices;
 8. release physical and recovery-state claims.
 
-VM and later hardware tests prove that shutdown cannot self-deadlock or report clean before the final required fence/checkpoint.
+VM and later hardware tests prove that shutdown cannot self-deadlock or report clean before the final required fence/recovery CLEAN commit.
 
 ## 15.6 Mount namespaces and automount prevention
 
@@ -2862,22 +2861,22 @@ The diagram is a claim hierarchy, not a mandatory serial queue. A layer is intro
 
 | ID | Required property |
 |---|---|
-| **VP-001** | Parity/coding math is exact for the declared profile and erasure set. |
-| **VP-002** | Address, range, capacity, alignment, and metadata-location arithmetic is checked. |
-| **VP-003** | Durable dirty intent and integrity invalidation precede dependent home mutation. |
-| **VP-004** | No execution or recovery path reports false `CLEAN`. |
-| **VP-005** | Uncertain completion remains uncertain until reconciled; it never becomes implicit success or rollback. |
-| **VP-006** | `VALID` integrity evidence names the exact durable content generation it covers. |
-| **VP-007** | Consequential work remains owned through terminal completion, reconciliation, or durable handoff. |
-| **VP-008** | Recovery is conservative, deterministic, and idempotent for the declared evidence. |
-| **VP-009** | Topology and physical-role binding cannot drift underneath admitted work. |
-| **VP-010** | Persistent, control, and trace formats are bounded and hostile-input safe. |
-| **VP-011** | Failures retain reproducible producer evidence and a semantic replay artifact where representable. |
-| **VP-012** | Product claims never exceed the evidence tier. |
-| **VP-013** | Store APIs and executor resources do not acquire permanent data/parity/filesystem roles. |
-| **VP-014** | Codec implementations are independent of discovery, physical identity, topology containers, and placement. |
-| **VP-015** | Persistent decoders reject unknown/incompatible product-format families rather than guessing. |
-| **VP-016** | Production abstractions have a concrete accepted consumer and do not encode speculative behavior. |
+| **verify.claim.parity-exact** | Parity/coding math is exact for the declared profile and erasure set. |
+| **verify.claim.checked-addressing** | Address, range, capacity, alignment, and metadata-location arithmetic is checked. |
+| **verify.claim.write-recovery-before-data-parity-write** | Durable write-recovery record and integrity invalidation precede dependent data/parity write. |
+| **verify.claim.no-false-clean** | No execution or recovery path reports false `CLEAN`. |
+| **verify.claim.uncertainty-remains-explicit** | Uncertain completion remains uncertain until reconciled; it never becomes implicit success or rollback. |
+| **verify.claim.integrity-evidence-binds-generation** | `VALID` integrity evidence names the exact durable content generation it covers. |
+| **verify.claim.consequential-work-remains-owned** | Consequential work remains owned through terminal completion, reconciliation, or durable handoff. |
+| **verify.claim.conservative-deterministic-recovery** | Recovery is conservative, deterministic, and idempotent for the declared evidence. |
+| **verify.claim.topology-binding-stable** | Topology and physical-role binding cannot drift underneath admitted work. |
+| **verify.claim.hostile-input-safe-formats** | Persistent, control, and trace formats are bounded and hostile-input safe. |
+| **verify.claim.reproducible-failure-evidence** | Failures retain reproducible producer evidence and a semantic replay artifact where representable. |
+| **verify.claim.claims-stay-within-evidence** | Product claims never exceed the evidence tier. |
+| **verify.claim.role-neutral-store-resources** | Store APIs and executor resources do not acquire permanent data/parity/filesystem roles. |
+| **verify.claim.topology-independent-codec** | Codec implementations are independent of discovery, physical identity, topology containers, and placement. |
+| **verify.claim.reject-unknown-formats** | Persistent decoders reject unknown/incompatible product-format families rather than guessing. |
+| **verify.claim.no-speculative-production-abstractions** | Production abstractions have a concrete accepted consumer and do not encode speculative behavior. |
 
 Every proof, model, schedule, fuzz corpus, simulator scenario, integration test, and benchmark names the VP properties it supports, its bounds/assumptions, retained witness, and explicit non-claims.
 
@@ -2926,9 +2925,9 @@ Do not attempt application-wide verification, async/concurrency proof through Ka
 
 ## 21.5 Abstract transaction/recovery model
 
-Maintain one deliberately small primary model for VP-003 through VP-008.
+Maintain one deliberately small primary model for verify.claim.write-recovery-before-data-parity-write through verify.claim.conservative-deterministic-recovery.
 
-**Current VE-002 decision:** use the parameterized Quint model in
+**Current verify.write-recovery-lifecycle decision:** use the parameterized Quint model in
 `models/quint/RecoveryProtocol.qnt` as the current executable authority for
 the bounded abstract transaction/recovery relation. It admits one active write
 obligation at a time; explicit release permits sequential range reuse. Its
@@ -2939,8 +2938,8 @@ checker are historical provenance; Stateright remains an unselected
 alternative, not a second model.
 
 The model holds terminal ownership until explicit release, permits a new
-obligation after release, gives pre-mutation intent rejection an owned aborted
-outcome, requires complete represented mutation coverage before durable-home
+obligation after release, gives pre-mutation write-recovery-record rejection an owned aborted
+outcome, requires complete represented mutation coverage before durable-data/parity
 reconciliation, keeps uncertainty owned, and leaves invalid, repeated, or
 out-of-order actions without state mutation. Its finite evidence, two-seed
 Quint Connect projection of the mapped Rust lifecycle, and delegated-source
@@ -2957,7 +2956,7 @@ The comparison considers:
 - tooling maintenance, CI, license, and team ergonomics;
 - model drift cost.
 
-The first model covers abstract dirty intent, integrity invalidation, home mutation, durable versus uncertain completion, fences, checkpoint/clean, consequential-work ownership, crash, power loss, device loss, and idempotent conservative recovery. It does not mirror Rust fields, SQLite tables, buffer contents, queue internals, or full array scale.
+The first model covers abstract write-recovery record, integrity invalidation, data/parity write, durable versus uncertain completion, fences, checkpoint/clean, consequential-work ownership, crash, power loss, device loss, and idempotent conservative recovery. It does not mirror Rust fields, SQLite tables, buffer contents, queue internals, or full array scale.
 
 Record finite bounds, omitted facts, symmetry, fairness, and environmental assumptions. Safety and liveness are separate. “Recovery eventually completes” is meaningful only under stated assumptions such as quiesced new writes, terminal device responses, no further faults, and scheduler fairness.
 
@@ -3062,131 +3061,132 @@ These are architecture guards, not a separate formal-verification program.
 
 Attack silent corruption, durability, uncertainty, recovery, and permanent-format risk before throughput optimization. Dependency order is semantic; implementation agents inspect actual completed/active work and do not restart conformant milestones.
 
-Numeric `OS-###` identifiers assigned in this active architecture roadmap are reserved identities for the corresponding roadmap work. They are not a general sequential namespace for unrelated OpenSpec changes. Work that does not implement the corresponding roadmap item uses a descriptive unnumbered OpenSpec change ID.
+Roadmap items use descriptive semantic identifiers in this active architecture roadmap. They identify the corresponding work without defining a general sequential namespace for unrelated OpenSpec changes. Work that does not implement a listed roadmap item uses a descriptive OpenSpec change ID.
 
 ```mermaid
 flowchart TD
-    O000[OS-000 decisions + agent contract] --> O001[OS-001 block/frontend semantics]
-    O000 --> O002[OS-002 stores/capabilities]
-    O000 --> O003[OS-003 codec math]
-    O001 --> O004[OS-004 deterministic simulator]
-    O002 --> O004
-    O003 --> O004
-    O004 --> O005[OS-005 recovery semantics + SQLite]
-    O003 --> O006[OS-006 identity/topology]
-    O005 --> O006
-    O005 --> O007[OS-007 parity envelope]
-    O006 --> O007
-    O004 --> O008[OS-008 explicit transaction]
-    O005 --> O008
-    O008 --> O009[OS-009 procmachines comparison]
-    O005 --> O010[OS-010 dirty/integrity protocol]
-    O008 --> O010
-    O009 --> O010
-    O010 --> O011[OS-011 checksum plane]
-    O002 --> O012[OS-012 file stores]
-    O005 --> O012
-    O010 --> O013[OS-013 healthy portable I/O]
-    O011 --> O013
-    O012 --> O013
-    O013 --> O014[OS-014 verify/selective repair]
-    O007 --> O015[OS-015 metadata-loss recovery]
-    O014 --> O015
-    O015 --> O016[OS-016 degraded read/rebuild]
-    O011 --> O017[OS-017 scrub/verified repair]
-    O016 --> O017
-    O013 --> O020[OS-020 macOS bridge spike]
-    O020 --> O021[OS-021 macOS frontend]
-    O021 --> O022[OS-022 APFS acceptance]
-    O015 --> O022
-    O013 --> O024[OS-024 normalized trace]
-    O013 --> O030[OS-030 ublk conformance]
+    terminology[Terminology and agent contract] --> block_semantics[Normalized block/frontend semantics]
+    terminology --> stores[Stores and capabilities]
+    terminology --> codec_math[Codec math]
+    block_semantics --> simulator[Deterministic simulator]
+    stores --> simulator
+    codec_math --> simulator
+    simulator --> recovery_state[Recovery semantics and SQLite]
+    codec_math --> topology_identity[Identity and topology]
+    recovery_state --> topology_identity
+    recovery_state --> parity_envelope[Parity envelope]
+    topology_identity --> parity_envelope
+    simulator --> transaction[Explicit transaction]
+    recovery_state --> transaction
+    transaction --> transaction_comparison[Transaction implementation comparison]
+    recovery_state --> integrity_protocol[Dirty/integrity protocol]
+    transaction --> integrity_protocol
+    transaction_comparison --> integrity_protocol
+    integrity_protocol --> checksum[Checksum plane]
+    stores --> file_stores[File stores]
+    recovery_state --> file_stores
+    integrity_protocol --> healthy_io[Healthy portable I/O]
+    checksum --> healthy_io
+    file_stores --> healthy_io
+    healthy_io --> verify_repair[Verification and selective repair]
+    parity_envelope --> metadata_recovery[Metadata-loss recovery]
+    verify_repair --> metadata_recovery
+    metadata_recovery --> degraded_rebuild[Degraded read and rebuild]
+    checksum --> degraded_rebuild
+    degraded_rebuild --> scrub_repair[Scrub and verified repair]
+    macos_bridge[macOS bridge feasibility]
+    healthy_io --> macos_bridge
+    macos_bridge --> macos_frontend[macOS frontend]
+    macos_frontend --> apfs_acceptance[APFS acceptance]
+    metadata_recovery --> apfs_acceptance
+    healthy_io --> normalized_trace[Normalized trace]
+    healthy_io --> ublk_conformance[ublk conformance]
 ```
 
 ## 22.2 Phase 0 — contracts, math, simulation, recovery state, and transaction evidence
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-000** | Terminology, invariants, D/P/V/T/U/F and VP registers, gate map, and implementation-agent contract. |
-| **OS-001** | Normalized block operations, frontend events, ordering/flush/FUA/abandonment semantics, limits, and conformance fixtures. |
-| **OS-002** | Role-neutral `RandomAccessStore`, capabilities/evidence levels, persistence/fence evidence vocabulary, identity observations, safety profiles, and adapter tests. |
-| **OS-003** | Reference XOR math, checked geometry, future P/Q seam, independent golden/property vectors, and topology-free dependency tests. |
-| **OS-004** | Deterministic durable/volatile/pending/completion simulator, crash/power distinction, fault schedules, minimization, and core invariants. |
-| **OS-005** | `RecoveryStateStore` mutation vocabulary, guarded atomic groups, session/topology/maintenance semantics, SQLite alternatives/configuration evidence, migration/corruption behavior, and control-state separation. |
-| **OS-006** | Anchorless topology/identity-evidence model, clone refusal, immutable snapshots, assignment generations, and transition plans. |
-| **OS-007** | Bare/envelope/envelope+bitmap parity-profile comparison, exact-capacity accounting, independent decoder, hostile/torn/disagreeing copies, migration, and measured choice/fallback. |
-| **OS-008** | Small explicit parity-write transaction oracle with normalized actions, failures, crash schedules, and terminal states. |
-| **OS-009** | Real pinned `procmachines` implementation of the same protocol, trace/state equivalence, mutation detection, resource benchmark, and selection/fallback ADR. |
+| **roadmap-item:terminology-agent-contract** | Terminology, invariants, accepted decisions, provisional choices, validation questions, semantic boundaries, format candidates, verification claims, gate map, and implementation-agent contract. |
+| **roadmap-item:normalized-block-operations** | Normalized block operations, frontend events, ordering/flush/FUA/abandonment semantics, limits, and conformance fixtures. |
+| **roadmap-item:role-neutral-stores** | Role-neutral `RandomAccessStore`, capabilities/evidence levels, persistence/fence evidence vocabulary, identity observations, safety profiles, and adapter tests. |
+| **roadmap-item:reference-xor-math** | Reference XOR math, checked geometry, future P/Q seam, independent golden/property vectors, and topology-free dependency tests. |
+| **roadmap-item:media-durability-simulator** | Deterministic durable/volatile/pending/completion simulator, crash/power distinction, fault schedules, minimization, and core invariants. |
+| **roadmap-item:recovery-state-store** | `RecoveryStateStore` mutation vocabulary, guarded atomic groups, session/topology/maintenance semantics, SQLite alternatives/configuration evidence, migration/corruption behavior, and control-state separation. |
+| **roadmap-item:topology-identity** | Anchorless topology/identity-evidence model, clone refusal, immutable snapshots, assignment generations, and transition plans. |
+| **roadmap-item:parity-envelope-profiles** | Bare/envelope/envelope+bitmap parity-profile comparison, exact-capacity accounting, independent decoder, hostile/torn/disagreeing copies, migration, and measured choice/fallback. |
+| **roadmap-item:parity-write-transaction** | Small explicit parity-write transaction oracle with normalized actions, failures, crash schedules, and terminal states. |
+| **roadmap-item:transaction-engine-comparison** | Real pinned `procmachines` implementation of the same protocol, trace/state equivalence, mutation detection, resource benchmark, and selection/fallback ADR. |
 
 No Phase 0 format is stable unless its format gate explicitly passes.
 
 ## 22.3 Phase 1 — conservative portable single parity and integrity
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-010** | Dirty-region, checksum invalidation, mutation generations, scoped home-fence evidence, guarded checkpoint/clean, abandonment, uncertainty, and recovery protocol. |
-| **OS-011** | Data/P/Q checksum targets, profile/generation records, durable-fence validity, asynchronous revalidation, migration, and repair-evidence semantics. |
-| **OS-012** | File-backed data/parity stores, locks, stable identity, sparse/capability characterization, recovery/control DB placement, and injected failures. |
-| **OS-013** | End-to-end healthy read/write/flush/reopen through normalized requests, transaction machine, executor, stores, recovery, integrity, and bounded resources. |
-| **OS-014** | Exhaustive parity verification, mismatch classification, independent evidence, zero-write matching ranges, and evidence-gated selective candidate generation. |
-| **OS-015** | Formal metadata-loss matrix, all-data recovery, envelope/manifest use, clone/parity ambiguity, new-baseline workflow, and safe refusal. |
-| **OS-016** | Proven-clean degraded reads, resumable separate-target rebuild, target readback verification, and topology promotion. |
-| **OS-017** | CLI scrub, data/parity/ambiguous/conflicting classification, identity/generation-bound repair plans, source preservation, failure/interruption/stale-plan evidence. |
+| **roadmap-item:dirty-integrity-recovery** | Dirty-region, checksum invalidation, mutation generations, scoped data/parity persistence evidence, guarded recovery `CLEAN`, abandonment, uncertainty, and recovery protocol. |
+| **roadmap-item:checksum-plane** | Data/P/Q checksum targets, profile/generation records, durable-fence validity, asynchronous revalidation, migration, and repair-evidence semantics. |
+| **roadmap-item:file-backed-stores** | File-backed data/parity stores, locks, stable identity, sparse/capability characterization, recovery/control DB placement, and injected failures. |
+| **roadmap-item:healthy-portable-io** | End-to-end healthy read/write/flush/reopen through normalized requests, transaction machine, executor, stores, recovery, integrity, and bounded resources. |
+| **roadmap-item:parity-verification-repair** | Exhaustive parity verification, mismatch classification, independent evidence, zero-write matching ranges, and evidence-gated selective candidate generation. |
+| **roadmap-item:metadata-loss-recovery** | Formal metadata-loss matrix, all-data recovery, envelope/manifest use, clone/parity ambiguity, new-baseline workflow, and safe refusal. |
+| **roadmap-item:degraded-reads-rebuild** | Proven-clean degraded reads, resumable separate-target rebuild, target readback verification, and topology promotion. |
+| **roadmap-item:scrub-verified-repair** | CLI scrub, data/parity/ambiguous/conflicting classification, identity/generation-bound repair plans, source preservation, failure/interruption/stale-plan evidence. |
 
 ## 22.4 Phase 2 — macOS reference and normalized traces
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-020** | FSKit/macFUSE/DiskImages fixed-size virtual-file feasibility, operation/sync/cache/disconnect trace, entitlements, and ADR. |
-| **OS-021** | macOS frontend translating virtual-file operations to normalized requests with fixed size, backpressure, alias prevention, and clean detach/restart. |
-| **OS-022** | Full APFS healthy/degraded/rebuild/direct-attach/metadata-loss/clone/mismatch acceptance suite. |
-| **OS-023** | macOS synchronization and durability characterization with exact `portable-demo` claims and unsupported semantics. |
-| **OS-024** | Bounded versioned privacy-safe trace export/render/replay through `dwv demo`, deterministic final states, malformed/oversized rejection, migration, and minimized failures. |
+| **roadmap-item:macos-bridge-feasibility** | FSKit/macFUSE/DiskImages fixed-size virtual-file feasibility, operation/sync/cache/disconnect trace, entitlements, and ADR. |
+| **roadmap-item:macos-frontend** | macOS frontend translating virtual-file operations to normalized requests with fixed size, backpressure, alias prevention, and clean detach/restart. |
+| **roadmap-item:apfs-acceptance** | Full APFS healthy/degraded/rebuild/direct-attach/metadata-loss/clone/mismatch acceptance suite. |
+| **roadmap-item:macos-durability** | macOS synchronization and durability characterization with exact `portable-demo` claims and unsupported semantics. |
+| **roadmap-item:normalized-trace-replay** | Bounded versioned privacy-safe trace export/render/replay through `dwv demo`, deterministic final states, malformed/oversized rejection, migration, and minimized failures. |
 
 ## 22.5 Phase 3 — Linux production frontend and deployment
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-030** | ublk UAPI/library feasibility, supported kernels, operation/flag/limit/recovery conformance, resource baseline, and mount-namespace proof. |
-| **OS-031** | Linux operation-slot/io_uring executor, generational buffers, fanout, CQE aggregation, cancellation/drain/uncertainty, and fallback adapter. |
-| **OS-032** | Coherent multi-slot ublk group, all-or-nothing assembly, quiescence, daemon recovery, and no unsafe reissue. |
-| **OS-033** | Sanitized Linux trace capture from fio/fsx, ext4/XFS, dm-crypt, mergerfs, databases, sparse/media workloads, and fixture promotion. |
-| **OS-034** | ext4/XFS, encryption, mergerfs, sparse/mmap/fsync, workload, UUID/automount, and direct-recovery certification. |
-| **OS-035** | NixOS/systemd/udev/mount-namespace lifecycle, boot/shutdown/recovery ordering, resource caps, and failure drills. |
-| **OS-036** | Linux and physical flush/FUA/cache/identity probes with persisted evidence and safety-profile gating. |
-| **OS-037** | Production single-parity release candidate with sustained verified workloads, security/observability, and support matrix. |
+| **roadmap-item:ublk-feasibility** | ublk UAPI/library feasibility, supported kernels, operation/flag/limit/recovery conformance, resource baseline, and mount-namespace proof. |
+| **roadmap-item:linux-executor** | Linux operation-slot/io_uring executor, generational buffers, fanout, CQE aggregation, cancellation/drain/uncertainty, and fallback adapter. |
+| **roadmap-item:ublk-group-lifecycle** | Coherent multi-slot ublk group, all-or-nothing assembly, quiescence, daemon recovery, and no unsafe reissue. |
+| **roadmap-item:linux-trace-capture** | Sanitized Linux trace capture from fio/fsx, ext4/XFS, dm-crypt, mergerfs, databases, sparse/media workloads, and fixture promotion. |
+| **roadmap-item:linux-filesystem-conformance** | ext4/XFS, encryption, mergerfs, sparse/mmap/fsync, workload, UUID/automount, and direct-recovery certification. |
+| **roadmap-item:nixos-lifecycle** | NixOS/systemd/udev/mount-namespace lifecycle, boot/shutdown/recovery ordering, resource caps, and failure drills. |
+| **roadmap-item:linux-flush-fua-probes** | Linux and physical flush/FUA/cache/identity probes with persisted evidence and safety-profile gating. |
+| **roadmap-item:linux-release-candidate** | Production single-parity release candidate with sustained verified workloads, security/observability, and support matrix. |
 
 ## 22.6 Phase 4 — stronger durability, integrity, and redundancy
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-040** | Optional recovery-state replica protocol and replica-set transitions, only if required. |
-| **OS-041** | Journal versus PPL ADR and formal/simulator model. |
-| **OS-042** | Selected journal/PPL implementation, replay/checkpoint/migration, and destructive evidence. |
-| **OS-043** | Expanded checksum/scrub/repair profiles and storage policy. |
-| **OS-044** | Degraded writes with every missing-role case, durable absent-slot representation, replay/rebuild, and extra-failure policy. |
-| **OS-045** | Dual P/Q field/profile/position/tail mapping, independent vectors/decoder, capacity, and migration. |
-| **OS-046** | Online build/check/scrub/rebuild with concurrent-write reconciliation, resumable checkpoints, and QoS. |
+| **roadmap-item:recovery-state-replica** | Optional recovery-state replica protocol and replica-set transitions, only if required. |
+| **roadmap-item:journal-ppl-decision** | Journal versus PPL ADR and formal/simulator model. |
+| **roadmap-item:journal-ppl-implementation** | Selected journal/PPL implementation, replay/checkpoint/migration, and destructive evidence. |
+| **roadmap-item:checksum-scrub-expansion** | Expanded checksum/scrub/repair profiles and storage policy. |
+| **roadmap-item:degraded-writes** | Degraded writes with every missing-role case, durable absent-slot representation, replay/rebuild, and extra-failure policy. |
+| **roadmap-item:dual-pq-profile** | Dual P/Q field/profile/position/tail mapping, independent vectors/decoder, capacity, and migration. |
+| **roadmap-item:online-scrub-rebuild** | Online build/check/scrub/rebuild with concurrent-write reconciliation, resumable checkpoints, and QoS. |
 
 ## 22.7 Phase 5 — optional conventional namespace product
 
-| OpenSpec | Required executable result |
+| Roadmap item | Required executable result |
 |---|---|
-| **OS-050** | Namespace semantics contract. |
-| **OS-051** | Pure whole-file policy matching and logical-slot selection. |
-| **OS-052** | FUSE adapter and filesystem conformance. |
-| **OS-053** | Passthrough/transport benchmark and claim boundaries. |
-| **OS-054** | Safe mover/rebalance, staging/protection states, and crash recovery. |
+| **roadmap-item:namespace-semantics** | Namespace semantics contract. |
+| **roadmap-item:whole-file-placement** | Pure whole-file policy matching and logical-slot selection. |
+| **roadmap-item:fuse-filesystem-conformance** | FUSE adapter and filesystem conformance. |
+| **roadmap-item:passthrough-benchmark** | Passthrough/transport benchmark and claim boundaries. |
+| **roadmap-item:safe-mover-rebalance** | Safe mover/rebalance, staging/protection states, and crash recovery. |
 
 This remains a namespace over conventional member filesystems. It does not own extent allocation or per-item parity.
 
 ## 22.8 Additive verification evidence
 
-- **VE-001:** bounded arithmetic and pure-component verification;
-- **VE-002:** independent abstract transaction/recovery model;
-- **VE-003:** concurrency schedule exploration;
-- **VE-004:** production-adjacent deterministic I/O simulation;
-- **VE-005:** sustained property/fuzz schedule and parser corpus.
+- **verify.bounded-arithmetic:** bounded arithmetic and pure-component verification;
+- **verify.write-recovery-lifecycle:** independent abstract transaction/recovery model;
+- **verify.concurrency-schedules:** concurrency schedule exploration;
+- **verify.production-io-simulation:** production-adjacent deterministic I/O simulation;
+- **verify.sustained-fuzz-corpus:** sustained property/fuzz schedule and parser corpus.
 
 These changes attach at dependency-ready points and do not automatically block unrelated portable delivery. Move one earlier only to resolve a concrete high-consequence uncertainty.
 
@@ -3270,74 +3270,74 @@ These changes attach at dependency-ready points and do not automatically block u
 
 ## 24.1 Accepted decisions
 
-| ID | Decision |
+| Decision | Meaning |
 |---|---|
-| **D-001** | DiskWeave is a portable parity block engine below conventional per-member filesystems, not a custom filesystem. |
-| **D-002** | Each healthy data payload remains an ordinary independently readable image. |
-| **D-003** | Data members contain no required DiskWeave metadata, sidecar, or partition. |
-| **D-004** | ublk, FSKit, io_uring, SQLite, `procmachines`, runtimes, codecs, and checksum crates remain behind replaceable seams. |
-| **D-005** | Array, slot, physical store, coding position, assignment, and topology epoch identities are distinct. |
-| **D-006** | Identity uses multiple observations; clone/assignment ambiguity blocks writes. |
-| **D-007** | Logical transaction and backend resource lifetimes are separate. |
-| **D-008** | The first writable protocol uses durable dirty/integrity intent before home mutation and durable home fences before clear. |
-| **D-009** | Data and every parity role are checksum targets; parity cleanliness and integrity coverage are separate. |
-| **D-010** | A checksum is valid only for a named content generation covered by durable target-store fence evidence. |
-| **D-011** | Sampling never establishes `CLEAN`. |
-| **D-012** | Automatic repair requires a unique result from verified-good evidence and target readback. |
-| **D-013** | `array.sqlite3` loss never destroys intact data; all-data recovery can establish a new topology/baseline. |
-| **D-014** | The first production release prohibits writes when a required data/parity role is unavailable. |
-| **D-015** | Runtime and persistent granularities remain independent. |
-| **D-016** | Full verification is distinct from parity rewrite; matching ranges require no writes. |
-| **D-017** | Backing and exported endpoints cannot alias while active. |
-| **D-018** | Simulator, file-backed, macOS, Linux, and hardware evidence establish different claims. |
-| **D-019** | No stable format without independent recovery tools and migration evidence. |
-| **D-020** | Routine reversible implementation choices are delegated to agents. |
-| **D-021** | Consequential work remains owned until terminal resolution, reconciliation, or durable recovery handoff. |
-| **D-022** | Task/future/frontend disappearance is not rollback or a terminal outcome. |
-| **D-023** | `dwv-sim` remains the domain simulator; general deterministic I/O runtimes only complement it. |
-| **D-024** | Normalized semantic traces are the common portable regression artifact; producer witnesses remain tool-scoped and retained. |
-| **D-025** | Verification tools may not force a general runtime/effect system, transaction rewrite, CLI redesign, or format change. |
-| **D-026** | The primary abstract model is independent of production Rust, records bounds/fairness, and translates counterexamples to simulator scenarios; the VE-002 Quint canary is the current model authority and one maintained model is required. |
-| **D-027** | Persistence durability and logical protection policy are distinct; current `BlockRequest` carries only durability semantics. |
-| **D-028** | Physical stores are role-neutral; logical roles and coding positions are topology bindings. |
-| **D-029** | Codec primitives consume explicit profiles/positions/shards and are independent of topology, stores, and placement. |
-| **D-030** | Operation-slot/executor ownership is role-neutral. |
-| **D-031** | The low-level durable/volatile/completion media model is independent of parity/SQLite policy; a physical crate split is optional. |
-| **D-032** | Namespace placement is deterministic whole-file logical-slot selection, not an extent allocator or per-object protection mechanism. |
-| **D-033** | Persistent formats identify the DiskWeave block-parity family and reject incompatible interpretation. |
-| **D-034** | No speculative allocator, object graph, universal transaction framework, protection API, or placeholder crate is introduced without a concrete accepted consumer. |
-| **D-035** | Any product that owns filesystem namespace or allocation and changes the recoverability contract requires a separate approved architecture and format; it is not a hidden mode of DiskWeave block parity. |
+| **product boundary** | DiskWeave is a portable parity block engine below conventional per-member filesystems, not a custom filesystem. |
+| **ordinary data payloads** | Each healthy data payload remains an ordinary independently readable image. |
+| **metadata-free data members** | Data members contain no required DiskWeave metadata, sidecar, or partition. |
+| **replaceable mechanisms** | ublk, FSKit, io_uring, SQLite, `procmachines`, runtimes, codecs, and checksum crates remain behind replaceable seams. |
+| **distinct identity dimensions** | Array, slot, physical store, coding position, assignment, and topology epoch identities are distinct. |
+| **multi-observation identity** | Identity uses multiple observations; clone/assignment ambiguity blocks writes. |
+| **separate lifetimes** | Logical transaction and backend resource lifetimes are separate. |
+| **write-recovery ordering** | The first writable protocol uses durable dirty/integrity/write-recovery-record coverage before data/parity writes and persistence evidence before recovery `CLEAN`. |
+| **checksum targets** | Data and every parity role are checksum targets; parity cleanliness and integrity coverage are separate. |
+| **generation-bound checksums** | A checksum is valid only for a named content generation covered by durable target-store persistence evidence. |
+| **no sampled clean** | Sampling never establishes `CLEAN`. |
+| **unique verified repair** | Automatic repair requires a unique result from verified-good evidence and target readback. |
+| **metadata-loss recovery** | `array.sqlite3` loss never destroys intact data; all-data recovery can establish a new topology/baseline. |
+| **complete-role write gate** | The first production release prohibits writes when a required data/parity role is unavailable. |
+| **independent granularities** | Runtime and persistent granularities remain independent. |
+| **no-write matching verification** | Full verification is distinct from parity rewrite; matching ranges require no writes. |
+| **endpoint non-aliasing** | Backing and exported endpoints cannot alias while active. |
+| **evidence tiers** | Simulator, file-backed, macOS, Linux, and hardware evidence establish different claims. |
+| **independent recovery tools** | No stable format without independent recovery tools and migration evidence. |
+| **delegated implementation choices** | Routine reversible implementation choices are delegated to agents. |
+| **owned consequential work** | Consequential work remains owned until terminal resolution, reconciliation, or durable recovery handoff. |
+| **disappearance is not a result** | Task/future/frontend disappearance is not rollback or a terminal outcome. |
+| **domain simulator** | `dwv-sim` remains the domain simulator; general deterministic I/O runtimes only complement it. |
+| **normalized trace artifact** | Normalized semantic traces are the common portable regression artifact; producer witnesses remain tool-scoped and retained. |
+| **verification scope** | Verification tools may not force a general runtime/effect system, transaction rewrite, CLI redesign, or format change. |
+| **delegated model authority** | The primary abstract model is independent of production Rust, records bounds/fairness, and translates counterexamples to simulator scenarios; the verify.write-recovery-lifecycle Quint canary is the current model authority and one maintained model is required. |
+| **durability versus protection** | Persistence durability and logical protection policy are distinct; current `BlockRequest` carries only durability semantics. |
+| **role-neutral stores** | Physical stores are role-neutral; logical roles and coding positions are topology bindings. |
+| **topology-independent codec** | Codec primitives consume explicit profiles/positions/shards and are independent of topology, stores, and placement. |
+| **role-neutral operation slots** | Operation-slot/executor ownership is role-neutral. |
+| **media durability model** | The low-level durable/volatile/completion media model is independent of parity/SQLite policy; a physical crate split is optional. |
+| **whole-file namespace placement** | Namespace placement is deterministic whole-file logical-slot selection, not an extent allocator or per-object protection mechanism. |
+| **format family discriminator** | Persistent formats identify the DiskWeave block-parity family and reject incompatible interpretation. |
+| **no speculative abstractions** | No speculative allocator, object graph, universal transaction framework, protection API, or placeholder crate is introduced without a concrete accepted consumer. |
+| **separate namespace products** | Any product that owns filesystem namespace or allocation and changes the recoverability contract requires a separate approved architecture and format; it is not a hidden mode of DiskWeave block parity. |
 
 ## 24.2 Provisional implementation choices
 
-| ID | Preferred choice | Exit seam/evidence |
-|---|---|---|
-| **P-001** | ublk Linux frontend | normalized block/frontend contract |
-| **P-002** | io_uring Linux executor | role-neutral store/executor and fallback adapter |
-| **P-003** | `procmachines` transaction implementation | explicit oracle, semantic traces, benchmark, dependency exit plan |
-| **P-004** | SQLite `array.sqlite3` | `RecoveryStateStore`, semantic export, all-data recovery path |
-| **P-005** | Small redundant parity envelope | bare/envelope/bitmap comparison; exact-capacity and crash evidence |
-| **P-006** | BLAKE3-256 integrity profile | semantic algorithm/profile fields and online migration |
-| **P-007** | FSKit-first macOS raw-file bridge | frontend contract; macFUSE/other alternative |
-| **P-008** | mergerfs initial namespace | separately replaceable namespace plane |
-| **P-009** | Module-level substrate/protocol separation | split crates only when dependency evidence justifies it |
-| **P-010** | Parameterized Quint model for the bounded abstract transaction/recovery relation | one-model maintenance, seeded mutation failure, deterministic traces, witness coverage, and explicit non-claims |
+| Choice | Exit seam/evidence |
+|---|---|
+| **ublk Linux frontend** | normalized block/frontend contract |
+| **io_uring Linux executor** | role-neutral store/executor and fallback adapter |
+| **`procmachines` transaction implementation** | explicit oracle, semantic traces, benchmark, dependency exit plan |
+| **SQLite `array.sqlite3`** | `RecoveryStateStore`, semantic export, all-data recovery path |
+| **Small redundant parity envelope** | bare/envelope/bitmap comparison; exact-capacity and crash evidence |
+| **BLAKE3-256 integrity profile** | semantic algorithm/profile fields and online migration |
+| **FSKit-first macOS raw-file bridge** | frontend contract; macFUSE/other alternative |
+| **mergerfs initial namespace** | separately replaceable namespace plane |
+| **Module-level substrate/protocol separation** | split crates only when dependency evidence justifies it |
+| **Parameterized Quint model for the bounded abstract transaction/recovery relation** | one-model maintenance, seeded mutation failure, deterministic traces, witness coverage, and explicit non-claims |
 
 ## 24.3 Validation decisions
 
-| ID | Question | Required evidence |
-|---|---|---|
-| **V-001** | Which parity-envelope/reserve profile is justified? | OS-007 decoder, capacity, hostile/copy/session crash, benchmark |
-| **V-002** | Which SQLite configuration meets the selected profile? | process/VM/hardware crash tests and ADR |
-| **V-003** | Does `procmachines` earn production use? | OS-009 equivalence, mutation, resource, dependency evidence |
-| **V-004** | Which macOS bridge correctly supports DiskImages/APFS? | OS-020–023 |
-| **V-005** | Which ublk/io_uring topology is efficient and safe? | OS-030–036 |
-| **V-006** | Which P/Q profile/mapping becomes stable? | independent vectors/decoder, migration, fault tests |
-| **V-007** | Is journal/PPL worth its complexity? | abstract model, simulator, benchmark, destructive evidence |
-| **V-008** | Is application-level recovery replication needed? | deployment availability requirements and modeled protocol |
-| **V-009** | Do current store/codec/executor/simulator dependencies violate D-028–D-031? | repository dependency/type tests and minimal correction if found |
-| **V-010** | Which checksum extent/profile is operationally best? | storage overhead, invalidation, scrub/rebuild, throughput benchmarks |
-| **V-011** | What exact ownership-continuity evidence permits scan-free clean-envelope recovery? | threat model, identity/rollback fixtures, destructive tests |
+| Validation question | Required evidence |
+|---|---|
+| **Which parity-envelope/reserve profile is justified?** | `roadmap-item:parity-envelope-profiles` decoder, capacity, hostile/copy/session crash, benchmark |
+| **Which SQLite configuration meets the selected profile?** | process/VM/hardware crash tests and ADR |
+| **Does `procmachines` earn production use?** | `roadmap-item:transaction-engine-comparison` equivalence, mutation, resource, dependency evidence |
+| **Which macOS bridge correctly supports DiskImages/APFS?** | `roadmap-item:macos-bridge-feasibility` |
+| **Which ublk/io_uring topology is efficient and safe?** | `roadmap-item:ublk-feasibility` |
+| **Which P/Q profile/mapping becomes stable?** | independent vectors/decoder, migration, fault tests |
+| **Is journal/PPL worth its complexity?** | abstract model, simulator, benchmark, destructive evidence |
+| **Is application-level recovery replication needed?** | deployment availability requirements and modeled protocol |
+| **Do current store, codec, executor, and simulator dependencies preserve the accepted role-neutral substrate boundaries?** | repository dependency/type tests against the role-neutral-store, topology-independent-codec, operation-slot, and media-model decisions |
+| **Which checksum extent/profile is operationally best?** | storage overhead, invalidation, scrub/rebuild, throughput benchmarks |
+| **What exact ownership-continuity evidence permits scan-free clean-envelope recovery?** | threat model, identity/rollback fixtures, destructive tests |
 
 ## 24.4 Tunable policy
 
@@ -3352,20 +3352,20 @@ Queue/ring/shard counts, slot/buffer limits, lock quantum, RMW size, dirty/check
 
 ## 24.6 Permanent-format candidates
 
-| ID | Candidate | What freezes | Constraint / migration / interrupted behavior |
-|---|---|---|---|
-| **F-001** | data payload mapping | virtual byte zero equals payload byte zero; no hidden metadata | changing requires a distinct migration/product; never reinterpret in place |
-| **F-002** | identity semantics | array/slot/store/coding/assignment/epoch separation | preserve IDs or perform explicit quiesced migration |
-| **F-003** | XOR parity mapping | byte correspondence and zero-tail rule | optimized implementation replaceable; new profile requires parity rebuild/parallel set |
-| **F-004** | P/Q profile | field, polynomial, symbols, coefficients, positions, tails | independent vectors and explicit full migration |
-| **F-005** | parity payload boundaries | physical offset/length/reserve | copy/rebuild for incompatible changes; never silently shorten protection |
-| **F-006** | parity envelope | header/features/body/copy/session selection | staged A/B migration; last valid committed copy; old reader behavior defined |
-| **F-007** | recovery-state semantics | dirty/integrity/checkpoint/topology generations | transactional SQLite migration, semantic export, all-data rebuild path |
-| **F-008** | exported recovery manifest | topology/profile/evidence schema | documented versioned readers; no raw DB pages |
-| **F-009** | integrity profile | algorithm, digest, extent, generation | parallel build/verify/select/retire |
-| **F-010** | journal/PPL | record/order/replay semantics | deferred; dual reader/checkpoint migration if adopted |
-| **F-011** | normalized trace/scenario | semantic event/replay schema | fixture migration; never array compatibility truth |
-| **F-012** | product-format family discriminator | safe decoder dispatch/refusal | existing magic/profile may satisfy; never reuse across incompatible products |
+| Candidate | What freezes | Constraint / migration / interrupted behavior |
+|---|---|---|
+| **data payload mapping** | virtual byte zero equals payload byte zero; no hidden metadata | changing requires a distinct migration/product; never reinterpret in place |
+| **identity semantics** | array/slot/store/coding/assignment/epoch separation | preserve IDs or perform explicit quiesced migration |
+| **XOR parity mapping** | byte correspondence and zero-tail rule | optimized implementation replaceable; new profile requires parity rebuild/parallel set |
+| **P/Q profile** | field, polynomial, symbols, coefficients, positions, tails | independent vectors and explicit full migration |
+| **parity payload boundaries** | physical offset/length/reserve | copy/rebuild for incompatible changes; never silently shorten protection |
+| **parity envelope** | header/features/body/copy/session selection | staged A/B migration; last valid committed copy; old reader behavior defined |
+| **recovery-state semantics** | dirty/integrity/recovery-`CLEAN`/topology generations | transactional SQLite migration, semantic export, all-data rebuild path |
+| **exported recovery manifest** | topology/profile/evidence schema | documented versioned readers; no raw DB pages |
+| **integrity profile** | algorithm, digest, extent, generation | parallel build/verify/select/retire |
+| **journal/PPL** | journal/order/replay semantics | deferred; dual-reader/progress-checkpoint migration if adopted |
+| **normalized trace/scenario** | semantic event/replay schema | fixture migration; never array compatibility truth |
+| **product-format family discriminator** | safe decoder dispatch/refusal | existing magic/profile may satisfy; never reuse across incompatible products |
 
 Data payload bytes and `control.sqlite3` are deliberately absent from DiskWeave's custom stable-format list.
 
@@ -3416,12 +3416,12 @@ Prefer the smallest end-to-end slice that exercises a semantic contract and fail
 
 ## 25.3 OpenSpecs are executable contracts
 
-`openspec/config.yaml` defines current authoring and identifier rules. An active numbered change is valid only when it implements the matching `OS-NNN` row in this current active roadmap and declares exactly one matching `<!-- dwv:roadmap-node OS-NNN -->` marker. Archived numbered changes need not remain in future active roadmaps, but their numeric identities remain globally reserved and unique. Descriptive unnumbered changes do not imply roadmap implementation. For roadmap-numbered work, this roadmap recommends the following sections; deviations remain subject to the supported OpenSpec schema and must preserve an executable acceptance contract.
+`openspec/config.yaml` defines current authoring and identifier rules. A change that implements a listed roadmap item uses a descriptive change ID and declares exactly one matching `<!-- dwv:roadmap-item roadmap-item:<descriptive-name> -->` marker. Unlisted work also uses descriptive IDs and does not imply roadmap implementation. Numbered planning documents never allocate OpenSpec IDs, and archived numeric identities remain historical provenance only. This roadmap recommends the following sections; deviations remain subject to the supported OpenSpec schema and must preserve an executable acceptance contract.
 
 Authoring ownership is explicit: authors search current canonical specs before proposing or writing requirements or scenarios. One canonical owning requirement covers each invariant, state transition, authority decision, durability predicate, lifecycle rule, failure rule, and recovery decision. Duplicate independent normative ownership is drift to reconcile. Non-owners state only local refinement, composition, or adapter mapping, and scenarios test only that local behavior. Proposals classify affected ownership as preserved, semantics-preserving relocation, semantic change, or new; stable `req.*` IDs remain when materially owned semantics remain unchanged.
 
 ```markdown
-# OS-XYZ: Title
+# Roadmap item: roadmap-item:<descriptive-name> — Title
 
 ## 1. Architecture decisions and target gate
 ## 2. Concrete outcome
@@ -3455,7 +3455,7 @@ Authoring ownership is explicit: authors search current canonical specs before p
 
 **2. Concrete outcome**
 
-Describe an observable result, not merely a crate/module. Example: “A crash after one home write restarts dirty and never serves degraded bytes from the range.”
+Describe an observable result, not merely a crate/module. Example: “A crash after one data/parity write restarts dirty and never serves degraded bytes from the range.”
 
 **3. Prerequisites and inspected repository state**
 
@@ -3486,7 +3486,7 @@ For each resource/state, identify owner, transfer, terminal outcome, and reclama
 
 **8. Irreversible and durability boundaries**
 
-Identify exact point after which rollback cannot be assumed; required intent/invalidation before it; data/parity/recovery fences; the store incarnations, topology/generations, and ordering watermarks covered by persistence evidence; and the meaning of ordinary completion, stable completion, flush, crash, and power loss.
+Identify exact point after which rollback cannot be assumed; required write-recovery record/invalidation before it; data/parity/recovery fences; the store incarnations, topology/generations, and ordering watermarks covered by persistence evidence; and the meaning of ordinary completion, stable completion, flush, crash, and power loss.
 
 **9. State and sequence diagrams**
 
@@ -3792,7 +3792,7 @@ The architecture fails if reusable lower layers acquire assumptions that:
 - low-level media faults require SQLite/dirty-region types;
 - format decoding guesses product semantics.
 
-Sections 5, 6, 7, 9, 11, and VP-013–VP-015 prevent these failures through dependency and executable tests.
+Sections 5, 6, 7, 9, 11, and verify.claim.role-neutral-store-resources–verify.claim.reject-unknown-formats prevent these failures through dependency and executable tests.
 
 ## 27.2 Self-review: speculative architecture
 
@@ -3806,7 +3806,7 @@ The architecture also fails if implementation is complicated by unused:
 - placeholder crates or feature branches;
 - generalized abstractions with no concrete accepted consumer.
 
-Invariant 28, D-034, OpenSpec scoping, and the product-family boundary in Section 18 prevent this failure.
+Invariant 28 (no speculative abstractions), OpenSpec scoping, and the product-family boundary in Section 18 prevent this failure.
 
 ## 27.3 Completeness test
 
@@ -3833,7 +3833,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Backing payload:** Physical/file-backed byte range storing one data or parity image behind a virtual endpoint.
 
-**Checkpoint:** Durable proof that a captured set of mutations has reached required home-store fences and recovery state has advanced accordingly.
+**Checkpoint:** Durable proof that a captured set of mutations has reached required data/parity persistence-evidence fences and recovery state has advanced accordingly.
 
 **Clean:** The active protocol proves that durable data, parity, and required recovery evidence satisfy the latest covered generation. It is not a claim of no latent corruption.
 
@@ -3881,7 +3881,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Store incarnation:** One specifically identified and claimed physical/file-backed store instance. Evidence for an earlier incarnation cannot authorize a replacement object at the same path.
 
-**Recovery mutation:** Guarded, idempotent semantic update to correctness-critical recovery state; examples include dirty/integrity intent, fence recording, checkpoint/clean, topology preparation, and verified rebuild progress.
+**Recovery mutation:** Guarded, idempotent semantic update to correctness-critical recovery state; examples include dirty/integrity/write-recovery record, fence recording, checkpoint/clean, topology preparation, and verified rebuild progress.
 
 **Recovery state:** Correctness-critical topology, dirty, integrity, checkpoint, and maintenance state, provisionally in `array.sqlite3` plus narrow parity envelopes.
 
@@ -3893,7 +3893,7 @@ A provisional crate, database, frontend, runtime, queue topology, or optimizatio
 
 **Safety profile:** Required capability/evidence set governing simulation, demo, read-only, or production-write service.
 
-**Stable-before-completion:** FUA/write-through semantic requiring affected home stores to pass a certified durable fence before success delivery.
+**Stable-before-completion:** FUA/write-through semantic requiring affected data/parity stores to pass a certified durable fence before success delivery.
 
 **Topology epoch:** Immutable mapping generation captured by admitted work.
 
@@ -3930,7 +3930,7 @@ Before implementing or changing a component, answer:
 - Does the codec see only explicit profile/position/shard semantics?
 - Who owns actual buffers, permits, tags, child operations, uncertain completions, and shutdown draining?
 - What is the irreversible boundary and durable recovery handoff?
-- What must be durable before home mutation and before clean/checkpoint, and which store incarnations/watermarks/capability context does the evidence cover?
+- What must be durable before data/parity write and before clean/checkpoint, and which store incarnations/watermarks/capability context does the evidence cover?
 - What happens on short I/O, EIO, timeout, duplicate/lost completion, disappearance, abandonment, daemon crash, and power loss?
 - What happens when `array.sqlite3` is corrupt/missing/stale or identity/topology evidence conflicts?
 - Does any persistent artifact change? What freezes, how is it bounded/decoded/migrated, and what happens on interrupted migration?

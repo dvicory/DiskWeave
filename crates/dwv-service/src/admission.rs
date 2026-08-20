@@ -229,7 +229,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             admission.snapshot(token).unwrap().state,
-            dwv_store::SlotState::ReconciliationRequired
+            dwv_store::SlotState::AwaitingReconciliation
         );
         admission.reclaim(token, false).unwrap();
         assert_eq!(admission.usage().backend_submissions, 0);

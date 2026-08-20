@@ -330,17 +330,17 @@ where
     let trace_digest = blake3::hash(&trace_bytes).to_hex().to_string();
     let trace_count = replay.record_count;
     if let Err(error) = run_result {
-        lifecycle.transition(LifecycleState::ReconciliationRequired)?;
+        lifecycle.transition(LifecycleState::AwaitingReconciliation)?;
         return Err(ublk_io(error));
     }
     if QUEUE_FAILED.load(Ordering::SeqCst) {
-        lifecycle.transition(LifecycleState::ReconciliationRequired)?;
+        lifecycle.transition(LifecycleState::AwaitingReconciliation)?;
         return Err(AdapterError::ReconciliationRequired(
             "ublk queue stopped after an I/O or completion failure".into(),
         ));
     }
     if !replay.clean {
-        lifecycle.transition(LifecycleState::ReconciliationRequired)?;
+        lifecycle.transition(LifecycleState::AwaitingReconciliation)?;
         return Err(AdapterError::ReconciliationRequired(
             "frontend trace contains exhausted or abandoned work".into(),
         ));
@@ -350,7 +350,7 @@ where
         .map_err(|_| AdapterError::ReconciliationRequired("tag table lock poisoned".into()))?
         .is_empty();
     if !drained {
-        lifecycle.transition(LifecycleState::ReconciliationRequired)?;
+        lifecycle.transition(LifecycleState::AwaitingReconciliation)?;
         return Err(AdapterError::ReconciliationRequired(
             "queue stopped with active tags".into(),
         ));

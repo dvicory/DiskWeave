@@ -10,7 +10,7 @@
 
 Guide projection configuration SHALL describe audience, question, learning outcome, prerequisites, misconceptions, deferred concepts, canonical requirement/scenario/evidence references, and an ordered set of section briefs. Each section brief SHALL provide a proposed Markdown heading, focus, questions it must answer, applicable sources, and explicit non-claims. The briefs guide drafting and review but SHALL NOT copy canonical requirement text, define semantic authority, or become generated page state. Deterministic readiness SHALL reject missing or empty section-brief fields for DiskWeave Guide entries. The initial DiskWeave Guide SHALL use those briefs to form a causal journey in which readers can identify what happened, what is durable, what callers may believe, what recovery observes, what remains uncertain, and what DiskWeave refuses to infer.
 
-#### Scenario: A Human Guide chapter is drafted
+#### Scenario: A DiskWeave Guide chapter is drafted
 
 - **WHEN** an agent writes or revises a DiskWeave Guide chapter
 - **THEN** it follows the entry's ordered section briefs, answers each required question from the linked current sources, preserves the stated non-claims, and uses maintained checked-in Markdown rather than generated prose.

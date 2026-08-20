@@ -3,9 +3,9 @@ use dwv_recovery::{IntegrityExtentId, RecoveryGeneration, RegionId};
 use dwv_store::StoreId;
 use dwv_transaction_proc::{compare_schedule, measure_schedule, semantic_actions};
 use dwv_transaction_ref::{
-    ActionResult, CommittedRecoveryGeneration, ComputationResult, FenceEvidence,
-    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
-    SemanticIoResult, StoreWatermark, TransactionAction, TransactionPlan,
+    ActionResult, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
+    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, SemanticIoResult, StoreWatermark,
+    TransactionAction, TransactionPersistenceEvidence, TransactionPlan,
 };
 
 fn plan() -> TransactionPlan {
@@ -41,19 +41,19 @@ fn results(plan: &TransactionPlan) -> Vec<ActionResult> {
     let certificate = semantic_actions(plan)
         .into_iter()
         .find_map(|action| match action {
-            TransactionAction::CommitCheckpointOrClear { certificate } => Some(certificate),
+            TransactionAction::CommitRecoveryClean { certificate } => Some(certificate),
             _ => None,
         })
         .unwrap();
     let generation = CommittedRecoveryGeneration::new(RecoveryGeneration(2), TopologyEpoch(1));
     vec![
         ActionResult::RangeAcquired(RangeGuardToken::new(1)),
-        ActionResult::RecoveryIntentDurable(generation),
+        ActionResult::WriteRecoveryRecordDurable(generation),
         ActionResult::ReadSetComplete(SemanticIoResult::Complete),
         ActionResult::ParityComputed(ComputationResult::Complete),
         ActionResult::WriteSetComplete(SemanticIoResult::Complete),
-        ActionResult::FlushSetComplete(FenceEvidence::durable(certificate)),
-        ActionResult::CheckpointCommitted(generation),
+        ActionResult::FlushSetComplete(TransactionPersistenceEvidence::durable(certificate)),
+        ActionResult::RecoveryCleanCommitted(generation),
         ActionResult::RangeReleased,
     ]
 }

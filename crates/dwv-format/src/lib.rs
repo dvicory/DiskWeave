@@ -283,7 +283,7 @@ pub struct EnvelopeRecord {
     pub stripe_width: u16,
     pub topology_generation: u64,
     pub session_generation: u64,
-    pub last_global_clean_checkpoint: u64,
+    pub last_global_recovery_clean_generation: u64,
     pub last_full_verified_checkpoint: Option<u64>,
     pub session_state: SessionState,
     pub migration_state: MigrationState,
@@ -627,7 +627,7 @@ fn same_semantics(a: &EnvelopeRecord, b: &EnvelopeRecord) -> bool {
         && a.stripe_width == b.stripe_width
         && a.topology_generation == b.topology_generation
         && a.session_generation == b.session_generation
-        && a.last_global_clean_checkpoint == b.last_global_clean_checkpoint
+        && a.last_global_recovery_clean_generation == b.last_global_recovery_clean_generation
         && a.last_full_verified_checkpoint == b.last_full_verified_checkpoint
         && a.session_state == b.session_state
         && a.migration_state == b.migration_state
@@ -671,7 +671,7 @@ fn encode_body(record: &EnvelopeRecord) -> Result<Vec<u8>, FormatError> {
     body.extend_from_slice(&record.stripe_width.to_le_bytes());
     body.extend_from_slice(&record.topology_generation.to_le_bytes());
     body.extend_from_slice(&record.session_generation.to_le_bytes());
-    body.extend_from_slice(&record.last_global_clean_checkpoint.to_le_bytes());
+    body.extend_from_slice(&record.last_global_recovery_clean_generation.to_le_bytes());
     body.push(record.last_full_verified_checkpoint.is_some() as u8);
     body.extend_from_slice(
         &record
@@ -709,7 +709,7 @@ fn decode_body(
     let stripe_width = cursor.u16()?;
     let topology_generation = cursor.u64()?;
     let session_generation = cursor.u64()?;
-    let last_global_clean_checkpoint = cursor.u64()?;
+    let last_global_recovery_clean_generation = cursor.u64()?;
     let verified = cursor.u8()?;
     if verified > 1 {
         return Err(FormatError::InvalidField("verified checkpoint flag"));
@@ -743,7 +743,7 @@ fn decode_body(
         stripe_width,
         topology_generation,
         session_generation,
-        last_global_clean_checkpoint,
+        last_global_recovery_clean_generation,
         last_full_verified_checkpoint: (verified == 1).then_some(verified_checkpoint),
         session_state,
         migration_state,
@@ -933,7 +933,7 @@ mod tests {
             stripe_width: 2,
             topology_generation: 7,
             session_generation: 8,
-            last_global_clean_checkpoint: 6,
+            last_global_recovery_clean_generation: 6,
             last_full_verified_checkpoint: None,
             session_state: SessionState::Dirty,
             migration_state: MigrationState::Stable,

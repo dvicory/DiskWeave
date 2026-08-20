@@ -9,9 +9,9 @@ possible:
 
 | Durable facts after restart | Safe conclusion |
 | --- | --- |
-| No durable intent and old payload/parity remain | The old state is authoritative. |
-| Durable `DIRTY`/`STALE` intent exists, but no completed checkpoint | The range needs recovery; do not call it clean. |
-| Payload/parity fences and the matching checkpoint are durable | The checkpointed state may become authoritative for that exact range and generation. |
+| No write-recovery record and old payload/parity remain | The old state is authoritative. |
+| Durable `DIRTY`/`STALE` write-recovery record exists, but recovery `CLEAN` is not committed | The range needs recovery; do not call it clean. |
+| Payload/parity persistence evidence and matching recovery `CLEAN` state are durable | The resulting state may become authoritative for that exact range and generation. |
 
 These are examples of evidence patterns, not permission to guess from file
 timestamps or elapsed time.
@@ -25,11 +25,12 @@ DiskWeave checks:
 - each member's stable identity and coding position;
 - the recovery generation;
 - the exact byte range;
-- the fence or checksum evidence attached to that range.
+- the persistence evidence attached to that range.
 
-A checkpoint from an older generation cannot make a newer write clean. A
-replacement disk that happens to occupy the same path is not automatically the
-same member. A checksum for one extent says nothing about an adjacent extent.
+A recovery `CLEAN` commit from an older generation cannot make a newer write
+clean. A replacement disk that happens to occupy the same path is not
+automatically the same member. Evidence for one extent says nothing about an
+adjacent extent.
 
 ## Availability is not repair authority
 
@@ -58,7 +59,7 @@ For each range, ask in this order:
 3. Is the range directly readable?
 4. If not, is there one explicitly authorized reconstruction?
 5. If writing a replacement or repair target, has readback, parity verification,
-   and a durability fence completed before promotion?
+   and persistence evidence completed before promotion?
 
 When an answer is missing or contradictory, the safe result is refusal or an
 explicit uncertain/degraded state—not a clean guess.
@@ -71,6 +72,5 @@ necessary but not sufficient evidence.
 ```{needlist}
 :filter: "type == 'req' and capability == 'recovery-state-semantics'"
 ```
-
-**Provenance:** `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`; `req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence`; `req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout`; `req.normalized-trace-replay.replay-is-deterministic-across-portable-backends`; scenario `scenario.normalized-recovery`.
+**Provenance:** `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`; `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence`; `req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout`; `req.normalized-trace-replay.replay-is-deterministic-across-portable-backends`; `req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority`; scenario `scenario.normalized-recovery`.
 

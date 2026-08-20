@@ -1,10 +1,10 @@
 //! Deterministic bounded checksum jobs and generation-checked result commits.
 
 use crate::{
-    ChecksumExtent, ChecksumProfileId, ChecksumRecord, ChecksumSet, ChecksumSetGeneration,
-    ChecksumSetState, ChecksumState, ContentGeneration, Digest, DigestProvider, FenceEvidence,
-    GenerationCapture, IntentCommit, IntentEvidence, InvalidationTarget, RecoveryError,
-    RecoveryGeneration, RecoveryStateStore,
+    ChecksumExtent, ChecksumPersistenceEvidence, ChecksumProfileId, ChecksumRecord, ChecksumSet,
+    ChecksumSetGeneration, ChecksumSetState, ChecksumState, ContentGeneration, Digest,
+    DigestProvider, GenerationCapture, InvalidationTarget, RecoveryError, RecoveryGeneration,
+    RecoveryStateStore, WriteRecoveryRecordCommit, WriteRecoveryRecordEvidence,
 };
 use dwv_core::TopologyEpoch;
 use std::collections::VecDeque;
@@ -19,21 +19,21 @@ pub struct ChecksumJobKey {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReadEvidence {
-    pub fence: FenceEvidence,
+    pub persistence_evidence: ChecksumPersistenceEvidence,
     pub complete: bool,
 }
 
 impl ReadEvidence {
-    pub const fn new(fence: FenceEvidence) -> Self {
+    pub const fn new(persistence_evidence: ChecksumPersistenceEvidence) -> Self {
         Self {
-            fence,
+            persistence_evidence,
             complete: true,
         }
     }
 
-    pub const fn volatile(fence: FenceEvidence) -> Self {
+    pub const fn volatile(persistence_evidence: ChecksumPersistenceEvidence) -> Self {
         Self {
-            fence,
+            persistence_evidence,
             complete: false,
         }
     }
@@ -94,7 +94,7 @@ impl ChecksumJob {
             });
         }
         if !self.evidence.complete {
-            return Err(JobError::MissingFenceEvidence);
+            return Err(JobError::MissingPersistenceEvidence);
         }
         if self.bytes.len() as u64 != self.extent.range.length {
             return Err(JobError::ReadLengthMismatch {
@@ -102,8 +102,8 @@ impl ChecksumJob {
                 actual: self.bytes.len() as u64,
             });
         }
-        if self.evidence.fence.recovery_generation != self.content_generation.0 {
-            return Err(JobError::FenceGenerationMismatch);
+        if self.evidence.persistence_evidence.recovery_generation != self.content_generation.0 {
+            return Err(JobError::PersistenceEvidenceGenerationMismatch);
         }
         let digest = provider.digest(&self.bytes).map_err(JobError::Provider)?;
         Ok(ChecksumJobResult {
@@ -136,7 +136,7 @@ pub enum CommitOutcome {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RejectReason {
-    MissingFence,
+    MissingPersistenceEvidence,
     TopologyChanged,
     SetChanged,
     GenerationChanged,
@@ -151,12 +151,12 @@ pub enum JobError {
         expected: ChecksumProfileId,
         actual: ChecksumProfileId,
     },
-    MissingFenceEvidence,
+    MissingPersistenceEvidence,
     ReadLengthMismatch {
         expected: u64,
         actual: u64,
     },
-    FenceGenerationMismatch,
+    PersistenceEvidenceGenerationMismatch,
     Provider(crate::ProviderError),
 }
 
@@ -172,16 +172,16 @@ impl fmt::Display for JobError {
                     actual, expected
                 )
             }
-            Self::MissingFenceEvidence => {
-                formatter.write_str("checksum job lacks durable fence evidence")
+            Self::MissingPersistenceEvidence => {
+                formatter.write_str("checksum job lacks durable persistence evidence")
             }
             Self::ReadLengthMismatch { expected, actual } => write!(
                 formatter,
                 "checksum read length {actual} does not match extent length {expected}"
             ),
-            Self::FenceGenerationMismatch => {
-                formatter.write_str("checksum fence does not cover the captured content generation")
-            }
+            Self::PersistenceEvidenceGenerationMismatch => formatter.write_str(
+                "checksum persistence evidence does not cover the captured content generation",
+            ),
             Self::Provider(error) => error.fmt(formatter),
         }
     }
@@ -293,12 +293,12 @@ impl ChecksumAuthority {
     }
 
     /// Persist OS-010 invalidation before advancing the checksum authority.
-    pub fn invalidate_with_intent<S: RecoveryStateStore + ?Sized>(
+    pub fn invalidate_with_write_recovery_record<S: RecoveryStateStore + ?Sized>(
         &mut self,
         store: &mut S,
         target: InvalidationTarget,
-    ) -> Result<IntentEvidence, RecoveryError> {
-        let evidence = IntentCommit::new(
+    ) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
+        let evidence = WriteRecoveryRecordCommit::new(
             store,
             self.topology_epoch,
             self.recovery_generation,
@@ -335,10 +335,10 @@ impl ChecksumAuthority {
 
     pub fn commit(&mut self, result: ChecksumJobResult) -> CommitOutcome {
         if !result.evidence.complete {
-            return CommitOutcome::Rejected(RejectReason::MissingFence);
+            return CommitOutcome::Rejected(RejectReason::MissingPersistenceEvidence);
         }
         if result.capture.topology_epoch != self.topology_epoch
-            || result.evidence.fence.topology_epoch != self.topology_epoch
+            || result.evidence.persistence_evidence.topology_epoch != self.topology_epoch
         {
             return CommitOutcome::Rejected(RejectReason::TopologyChanged);
         }
@@ -348,8 +348,8 @@ impl ChecksumAuthority {
         if result.capture.recovery_generation != self.recovery_generation {
             return CommitOutcome::Rejected(RejectReason::GenerationChanged);
         }
-        if result.evidence.fence.recovery_generation != result.content_generation.0 {
-            return CommitOutcome::Rejected(RejectReason::MissingFence);
+        if result.evidence.persistence_evidence.recovery_generation != result.content_generation.0 {
+            return CommitOutcome::Rejected(RejectReason::MissingPersistenceEvidence);
         }
         let Some(record) = self
             .records
@@ -374,7 +374,7 @@ impl ChecksumAuthority {
             result.key.set_generation,
             result.content_generation,
             result.digest,
-            result.evidence.fence,
+            result.evidence.persistence_evidence,
         );
         *record = next.clone();
         CommitOutcome::Committed(next)
@@ -405,8 +405,8 @@ impl ChecksumAuthority {
 mod tests {
     use super::*;
     use crate::{
-        BLAKE3_256_PROFILE, Blake3Provider, ChecksumTarget, FenceEvidence, InvalidationTarget,
-        MemoryRecoveryStore,
+        BLAKE3_256_PROFILE, Blake3Provider, ChecksumPersistenceEvidence, ChecksumTarget,
+        InvalidationTarget, MemoryRecoveryStore,
     };
     use dwv_core::{ByteRange, SlotId, TopologyEpoch};
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
@@ -427,7 +427,7 @@ mod tests {
     }
 
     fn evidence(generation: RecoveryGeneration) -> ReadEvidence {
-        ReadEvidence::new(FenceEvidence {
+        ReadEvidence::new(ChecksumPersistenceEvidence {
             fence: StoreFenceRef {
                 fence_id: FenceId(1),
                 store_id: StoreId(1),
@@ -552,21 +552,21 @@ mod tests {
     }
 
     #[test]
-    fn os010_intent_is_durable_before_checksum_stale_state() {
+    fn os010_write_recovery_record_is_durable_before_checksum_stale_state() {
         let mut store = MemoryRecoveryStore::new(TopologyEpoch(2));
         let mut authority =
             ChecksumAuthority::new(TopologyEpoch(2), ChecksumSetGeneration::INITIAL);
         authority.register(record());
 
-        let intent = authority
-            .invalidate_with_intent(
+        let evidence = authority
+            .invalidate_with_write_recovery_record(
                 &mut store,
                 InvalidationTarget::new(vec![], vec![crate::IntegrityExtentId(7)]),
             )
             .unwrap();
 
-        assert!(intent.durable);
-        assert_eq!(intent.committed_generation, RecoveryGeneration(1));
+        assert!(evidence.durable);
+        assert_eq!(evidence.committed_generation, RecoveryGeneration(1));
         assert_eq!(authority.recovery_generation, RecoveryGeneration(1));
         assert_eq!(
             authority.record(crate::IntegrityExtentId(7)).unwrap().state,

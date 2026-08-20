@@ -1,7 +1,8 @@
 use crate::error::ErrorClass;
 use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
 use dwv_recovery::{
-    FenceCertificate, IntegrityExtentId, IntentEvidence, RecoveryGeneration, RegionId, SessionId,
+    FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId, SessionId,
+    WriteRecoveryRecordEvidence,
 };
 use dwv_store::{StoreFenceRef, StoreId, StoreWriteWatermark};
 
@@ -119,22 +120,22 @@ impl CommittedRecoveryGeneration {
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum IntentRequirement {
-    FirstWrite,
-    AlreadyDirty {
+pub enum WriteRecoveryRecordRequirement {
+    CommitRequired,
+    AlreadyCovered {
         durable_generation: RecoveryGeneration,
     },
 }
 
-impl IntentRequirement {
+impl WriteRecoveryRecordRequirement {
     pub const fn requires_commit(self) -> bool {
-        matches!(self, Self::FirstWrite)
+        matches!(self, Self::CommitRequired)
     }
 
     pub const fn generation(self, captured: RecoveryGeneration) -> RecoveryGeneration {
         match self {
-            Self::FirstWrite => captured,
-            Self::AlreadyDirty { durable_generation } => durable_generation,
+            Self::CommitRequired => captured,
+            Self::AlreadyCovered { durable_generation } => durable_generation,
         }
     }
 }
@@ -161,7 +162,7 @@ pub enum TransactionAction {
         stores: Vec<StoreId>,
         through: StoreWatermarks,
     },
-    CommitCheckpointOrClear {
+    CommitRecoveryClean {
         certificate: FenceCertificate,
     },
     ReleaseRange,
@@ -175,7 +176,7 @@ pub enum ActionKind {
     ComputeParity,
     WriteSet,
     FlushSet,
-    CommitCheckpointOrClear,
+    CommitRecoveryClean,
     ReleaseRange,
 }
 
@@ -190,7 +191,7 @@ impl TransactionAction {
             Self::ComputeParity { .. } => ActionKind::ComputeParity,
             Self::WriteSet { .. } => ActionKind::WriteSet,
             Self::FlushSet { .. } => ActionKind::FlushSet,
-            Self::CommitCheckpointOrClear { .. } => ActionKind::CommitCheckpointOrClear,
+            Self::CommitRecoveryClean { .. } => ActionKind::CommitRecoveryClean,
             Self::ReleaseRange => ActionKind::ReleaseRange,
         }
     }
@@ -199,12 +200,12 @@ impl TransactionAction {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ResultKind {
     RangeAcquired,
-    RecoveryIntentDurable,
+    WriteRecoveryRecordDurable,
     ReadSetComplete,
     ParityComputed,
     WriteSetComplete,
     FlushSetComplete,
-    CheckpointCommitted,
+    RecoveryCleanCommitted,
     RangeReleased,
     Failed,
 }
@@ -247,13 +248,13 @@ impl ComputationResult {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FenceEvidence {
+pub struct TransactionPersistenceEvidence {
     pub certificate: FenceCertificate,
     pub durable: bool,
     pub uncertain: bool,
 }
 
-impl FenceEvidence {
+impl TransactionPersistenceEvidence {
     pub fn durable(certificate: FenceCertificate) -> Self {
         Self {
             certificate,
@@ -340,13 +341,13 @@ impl SemanticFailure {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ActionResult {
     RangeAcquired(RangeGuardToken),
-    RecoveryIntentDurable(CommittedRecoveryGeneration),
-    RecoveryIntentCommitted(IntentEvidence),
+    WriteRecoveryRecordDurable(CommittedRecoveryGeneration),
+    WriteRecoveryRecordDurableWithEvidence(WriteRecoveryRecordEvidence),
     ReadSetComplete(SemanticIoResult),
     ParityComputed(ComputationResult),
     WriteSetComplete(SemanticIoResult),
-    FlushSetComplete(FenceEvidence),
-    CheckpointCommitted(CommittedRecoveryGeneration),
+    FlushSetComplete(TransactionPersistenceEvidence),
+    RecoveryCleanCommitted(CommittedRecoveryGeneration),
     RangeReleased,
     Failed(SemanticFailure),
 }
@@ -355,13 +356,15 @@ impl ActionResult {
     pub const fn kind(&self) -> ResultKind {
         match self {
             Self::RangeAcquired(_) => ResultKind::RangeAcquired,
-            Self::RecoveryIntentDurable(_) => ResultKind::RecoveryIntentDurable,
-            Self::RecoveryIntentCommitted(_) => ResultKind::RecoveryIntentDurable,
+            Self::WriteRecoveryRecordDurable(_) => ResultKind::WriteRecoveryRecordDurable,
+            Self::WriteRecoveryRecordDurableWithEvidence(_) => {
+                ResultKind::WriteRecoveryRecordDurable
+            }
             Self::ReadSetComplete(_) => ResultKind::ReadSetComplete,
             Self::ParityComputed(_) => ResultKind::ParityComputed,
             Self::WriteSetComplete(_) => ResultKind::WriteSetComplete,
             Self::FlushSetComplete(_) => ResultKind::FlushSetComplete,
-            Self::CheckpointCommitted(_) => ResultKind::CheckpointCommitted,
+            Self::RecoveryCleanCommitted(_) => ResultKind::RecoveryCleanCommitted,
             Self::RangeReleased => ResultKind::RangeReleased,
             Self::Failed(_) => ResultKind::Failed,
         }
@@ -414,14 +417,16 @@ mod tests {
             vec![(RegionId(7), generation), (RegionId(8), generation)],
         )
         .with_integrity_extent(IntegrityExtentId(9), generation);
-        assert!(!FenceEvidence::durable(certificate).covers(
-            epoch,
-            FenceDomain(5),
-            &stores,
-            &[RegionId(7), RegionId(8)],
-            &[IntegrityExtentId(9)],
-            generation,
-        ));
+        assert!(
+            !TransactionPersistenceEvidence::durable(certificate).covers(
+                epoch,
+                FenceDomain(5),
+                &stores,
+                &[RegionId(7), RegionId(8)],
+                &[IntegrityExtentId(9)],
+                generation,
+            )
+        );
     }
 }
 
@@ -478,7 +483,7 @@ mod kani_verification {
             )
             .with_integrity_extent(IntegrityExtentId(9), generation)
             .with_integrity_extent(IntegrityExtentId(10), generation);
-        let covered = FenceEvidence::durable(certificate).covers(
+        let covered = TransactionPersistenceEvidence::durable(certificate).covers(
             epoch,
             FenceDomain(5),
             &stores,

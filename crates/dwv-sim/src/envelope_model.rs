@@ -9,7 +9,7 @@ pub enum EnvelopeCutPoint {
     MarkDirty,
     ProtectedMutation,
     DurableFence,
-    RecoveryCheckpoint,
+    RecoveryClean,
     PublishClean,
     BeginMigration { target: Profile },
     CompleteMigration,
@@ -84,7 +84,7 @@ pub fn run_envelope_schedule(
     let mut metadata_writes = 0;
     let mut protected_writes = 0;
     let mut fenced = false;
-    let mut checkpointed = false;
+    let mut recovery_clean = false;
     let mut clean_publish_blocked = false;
     let mut crashed = false;
     let mut migration_target = None;
@@ -104,9 +104,9 @@ pub fn run_envelope_schedule(
             }
             EnvelopeCutPoint::ProtectedMutation => protected_writes += 1,
             EnvelopeCutPoint::DurableFence => fenced = true,
-            EnvelopeCutPoint::RecoveryCheckpoint => checkpointed = true,
+            EnvelopeCutPoint::RecoveryClean => recovery_clean = true,
             EnvelopeCutPoint::PublishClean => {
-                if fenced && checkpointed {
+                if fenced && recovery_clean {
                     first.session_state = SessionState::Clean;
                     second.session_state = SessionState::Clean;
                     first.copy_generation += 1;
@@ -233,7 +233,7 @@ fn base_record(
         stripe_width: 2,
         topology_generation: 1,
         session_generation: 1,
-        last_global_clean_checkpoint: 0,
+        last_global_recovery_clean_generation: 0,
         last_full_verified_checkpoint: None,
         session_state: SessionState::Closed,
         migration_state: MigrationState::Stable,
@@ -300,7 +300,7 @@ mod tests {
     }
 
     #[test]
-    fn clean_requires_fence_and_checkpoint() {
+    fn clean_requires_persistence_evidence_and_recovery_clean() {
         let early = EnvelopeSchedule::new(vec![EnvelopeCutPoint::PublishClean]);
         let outcome =
             run_envelope_schedule(Profile::RedundantEnvelope, 16_384, 8_192, &early).unwrap();
@@ -310,7 +310,7 @@ mod tests {
             EnvelopeCutPoint::MarkDirty,
             EnvelopeCutPoint::ProtectedMutation,
             EnvelopeCutPoint::DurableFence,
-            EnvelopeCutPoint::RecoveryCheckpoint,
+            EnvelopeCutPoint::RecoveryClean,
             EnvelopeCutPoint::PublishClean,
         ]);
         let outcome =

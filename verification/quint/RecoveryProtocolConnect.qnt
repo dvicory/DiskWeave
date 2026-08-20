@@ -1,11 +1,12 @@
 /**
- * Bounded Quint Connect spike for the VE-002 delegated relation.
+ * Bounded verify.write-recovery-lifecycle Quint Connect spike.
  *
  * The bridge tests the observable normal lifecycle against
  * dwv-transaction-ref. The retained seeds reach release and then a new
- * begin, so this projection covers release-followed-by-reuse for the mapped
- * lifecycle. It excludes abstract fence and home-reconciliation outcomes
- * whose concrete evidence is owned outside this projection.
+ * startWrite, so this projection covers release-followed-by-reuse for the
+ * mapped lifecycle. It excludes abstract persistence-evidence and
+ * data/parity-write reconciliation outcomes whose concrete evidence is owned
+ * outside this projection.
  */
 module RecoveryProtocolConnect {
   import RecoveryProtocol(
@@ -14,21 +15,20 @@ module RecoveryProtocolConnect {
   ).* from "../../models/quint/RecoveryProtocol"
 
   action connectStep: bool = any {
-    begin,
-    acceptIntent,
-    mutate,
-    makeHomeDurable,
-    checkpoint,
-    release,
+    startWrite,
+    confirmWriteRecoveryRecordDurable,
+    attemptDataParityWrite,
+    confirmDataParityWritesDurable,
+    commitRecoveryClean,
+    releaseRange,
   }
 
   run normalConnectPath =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(mutate)
-      .then(makeHomeDurable)
-      .then(checkpoint)
-      .then(release)
-
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(attemptDataParityWrite)
+      .then(confirmDataParityWritesDurable)
+      .then(commitRecoveryClean)
+      .then(releaseRange)
 }

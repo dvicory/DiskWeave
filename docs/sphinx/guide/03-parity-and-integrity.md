@@ -33,7 +33,7 @@ It does not independently answer:
 > Are these the correct and current members, and are their bytes authoritative?
 
 That second question needs identity, topology, generation, checksum, recovery, and
-durability evidence.
+persistence evidence.
 
 ## Follow four different evidence journeys
 
@@ -93,7 +93,7 @@ parity should be 98   if both data members are authoritative
 The equation cannot choose among them. **Verified repair** is allowed only when
 independent identity and integrity evidence identifies one bad protected value
 and one authoritative replacement. Repair then uses a separate target, verified
-readback, and durability evidence. A parity mismatch by itself is a report, not
+readback, and persistence evidence. A parity mismatch by itself is a report, not
 repair authority.
 
 ### Journey 4: authority cannot be recovered
@@ -122,5 +122,5 @@ states its evidence boundary.
 :filter: "type == 'req' and capability in ['parity-verification-repair', 'checksum-scrub-verified-repair', 'degraded-read-offline-rebuild', 'checksum-plane']"
 ```
 
-**Provenance:** `req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority`; `req.checksum-plane.invalidation-precedes-protected-mutation`; `req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback`; `req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes`; `req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target`; `req.parity-verification-repair.mismatch-classification-requires-independent-evidence`; scenario `scenario.normalized-recovery`.
+**Provenance:** `req.architecture-contract.recovery-and-repair-never-promote-algebraic-possibility-to-authority`; `req.checksum-plane.invalidation-precedes-data-parity-write`; `req.checksum-scrub-verified-repair.repairs-use-a-separate-target-and-verified-readback`; `req.degraded-read-offline-rebuild.known-erasure-reads-reconstruct-exact-requested-bytes`; `req.degraded-read-offline-rebuild.offline-rebuild-writes-only-a-separate-replacement-target`; `req.parity-verification-repair.mismatch-classification-requires-independent-evidence`; scenario `scenario.normalized-recovery`.
 

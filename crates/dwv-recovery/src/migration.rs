@@ -119,8 +119,8 @@ pub enum MigrationOutcome {
 mod tests {
     use super::*;
     use crate::{
-        BLAKE3_256_PROFILE, ChecksumProfileId, ChecksumSetGeneration, ChecksumTarget,
-        ContentGeneration, FenceEvidence, IntegrityExtentId,
+        BLAKE3_256_PROFILE, ChecksumPersistenceEvidence, ChecksumProfileId, ChecksumSetGeneration,
+        ChecksumTarget, ContentGeneration, IntegrityExtentId,
     };
     use dwv_core::{ByteRange, SlotId};
 
@@ -141,7 +141,7 @@ mod tests {
             set,
             ContentGeneration::ZERO,
             [extent.id.0 as u8; 32],
-            FenceEvidence {
+            ChecksumPersistenceEvidence {
                 fence: dwv_store::StoreFenceRef {
                     fence_id: dwv_store::FenceId(1),
                     store_id: dwv_store::StoreId(1),

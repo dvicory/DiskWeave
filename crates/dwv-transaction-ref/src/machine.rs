@@ -1,14 +1,15 @@
 use crate::action::{
-    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult, IntentRequirement,
+    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult,
     ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
     SemanticFailure, SemanticIoResult, StoreWatermarks, TransactionAction,
+    WriteRecoveryRecordRequirement,
 };
 use crate::error::{ErrorClass, PlanError, TransactionError};
 use crate::trace::Trace;
 use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
 use dwv_recovery::{
-    FenceCertificate, IntegrityExtentId, IntentEvidence, InvalidationTarget, RecoveryGeneration,
-    RegionId,
+    FenceCertificate, IntegrityExtentId, InvalidationTarget, RecoveryGeneration, RegionId,
+    WriteRecoveryRecordEvidence,
 };
 use dwv_store::StoreId;
 
@@ -40,7 +41,7 @@ pub struct TransactionPlan {
     pub topology_epoch: TopologyEpoch,
     pub recovery_generation: RecoveryGeneration,
     pub fence_domain: FenceDomain,
-    pub intent: IntentRequirement,
+    pub write_recovery_record: WriteRecoveryRecordRequirement,
     pub ranges: Vec<ParityRange>,
     pub dirty_regions: Vec<RegionId>,
     pub checksum_extents: Vec<IntegrityExtentId>,
@@ -62,7 +63,7 @@ impl TransactionPlan {
             topology_epoch,
             recovery_generation,
             fence_domain,
-            intent: IntentRequirement::FirstWrite,
+            write_recovery_record: WriteRecoveryRecordRequirement::CommitRequired,
             ranges: Vec::new(),
             dirty_regions: Vec::new(),
             checksum_extents: Vec::new(),
@@ -80,8 +81,11 @@ impl TransactionPlan {
         self
     }
 
-    pub fn with_intent(mut self, intent: IntentRequirement) -> Self {
-        self.intent = intent;
+    pub fn with_write_recovery_record(
+        mut self,
+        write_recovery_record: WriteRecoveryRecordRequirement,
+    ) -> Self {
+        self.write_recovery_record = write_recovery_record;
         self
     }
 
@@ -125,8 +129,9 @@ impl TransactionPlan {
         self
     }
 
-    pub fn captured_intent_generation(&self) -> RecoveryGeneration {
-        self.intent.generation(self.recovery_generation)
+    pub fn captured_write_recovery_record_generation(&self) -> RecoveryGeneration {
+        self.write_recovery_record
+            .generation(self.recovery_generation)
     }
 
     pub fn invalidation_target(&self) -> InvalidationTarget {
@@ -210,16 +215,16 @@ impl TransactionPlan {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum Stage {
     AcquireRange,
-    IntentCommit,
+    WriteRecoveryRecordCommit,
     ReadSet,
     ComputeParity,
     WriteSet,
     FlushSet,
-    Checkpoint,
+    RecoveryClean,
     Release,
     Completed,
     Aborted,
-    ReconciliationRequired,
+    AwaitingReconciliation,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -244,8 +249,8 @@ pub struct TransactionState {
     pub disposition: Disposition,
     pub frontend_abandoned: bool,
     pub irreversible_boundary: bool,
-    pub intent_durable: bool,
-    pub home_mutation_emitted: bool,
+    pub write_recovery_record_durable: bool,
+    pub data_parity_write_emitted: bool,
     pub captured_topology_epoch: TopologyEpoch,
     pub captured_recovery_generation: RecoveryGeneration,
     pub last_failure: Option<SemanticFailure>,
@@ -265,14 +270,14 @@ pub struct TransactionMachine {
 impl TransactionMachine {
     pub fn new(plan: TransactionPlan) -> Result<Self, TransactionError> {
         plan.validate().map_err(TransactionError::InvalidPlan)?;
-        let captured_recovery_generation = plan.captured_intent_generation();
+        let captured_recovery_generation = plan.captured_write_recovery_record_generation();
         let state = TransactionState {
             stage: Stage::AcquireRange,
             disposition: Disposition::InProgress,
             frontend_abandoned: false,
             irreversible_boundary: false,
-            intent_durable: !plan.intent.requires_commit(),
-            home_mutation_emitted: false,
+            write_recovery_record_durable: !plan.write_recovery_record.requires_commit(),
+            data_parity_write_emitted: false,
             captured_topology_epoch: plan.topology_epoch,
             captured_recovery_generation,
             last_failure: None,
@@ -356,7 +361,7 @@ impl TransactionMachine {
         match self.state.stage {
             Stage::Completed => Some(TerminalDisposition::Completed),
             Stage::Aborted => Some(TerminalDisposition::Aborted),
-            Stage::ReconciliationRequired => Some(TerminalDisposition::ReconciliationRequired),
+            Stage::AwaitingReconciliation => Some(TerminalDisposition::ReconciliationRequired),
             _ => None,
         }
     }
@@ -405,11 +410,11 @@ impl TransactionMachine {
         self.trace.record_daemon_crash(self.next_sequence)?;
         self.next_sequence = self.next_sequence.saturating_add(1);
         self.pending = None;
-        if self.state.stage == Stage::AcquireRange && !self.state.intent_durable {
+        if self.state.stage == Stage::AcquireRange && !self.state.write_recovery_record_durable {
             self.transition(Stage::Aborted, None)?;
         } else {
             self.transition(
-                Stage::ReconciliationRequired,
+                Stage::AwaitingReconciliation,
                 Some(SemanticFailure::new(ErrorClass::DaemonCrash)),
             )?;
         }
@@ -451,10 +456,12 @@ impl TransactionMachine {
         result: ActionResult,
     ) -> Result<Option<Stage>, TransactionError> {
         if let ActionResult::Failed(failure) = result {
-            let next = if action == ActionKind::AcquireRange && !self.state.intent_durable {
+            let next = if action == ActionKind::AcquireRange
+                && !self.state.write_recovery_record_durable
+            {
                 Stage::Aborted
             } else {
-                Stage::ReconciliationRequired
+                Stage::AwaitingReconciliation
             };
             self.transition(next, Some(failure))?;
             return Ok(None);
@@ -463,27 +470,27 @@ impl TransactionMachine {
         match (action, result) {
             (ActionKind::AcquireRange, ActionResult::RangeAcquired(token)) => {
                 self.range_guard = Some(token);
-                Ok(Some(if self.plan.intent.requires_commit() {
-                    Stage::IntentCommit
+                Ok(Some(if self.plan.write_recovery_record.requires_commit() {
+                    Stage::WriteRecoveryRecordCommit
                 } else {
                     Stage::ReadSet
                 }))
             }
             (
                 ActionKind::PersistDirtyAndInvalidateIntegrity,
-                ActionResult::RecoveryIntentDurable(committed),
+                ActionResult::WriteRecoveryRecordDurable(committed),
             ) => {
                 self.require_generation(committed)?;
-                self.state.intent_durable = true;
+                self.state.write_recovery_record_durable = true;
                 self.state.irreversible_boundary = true;
                 Ok(Some(Stage::ReadSet))
             }
             (
                 ActionKind::PersistDirtyAndInvalidateIntegrity,
-                ActionResult::RecoveryIntentCommitted(evidence),
+                ActionResult::WriteRecoveryRecordDurableWithEvidence(evidence),
             ) => {
-                self.require_intent_evidence(&evidence)?;
-                self.state.intent_durable = true;
+                self.require_write_recovery_record_evidence(&evidence)?;
+                self.state.write_recovery_record_durable = true;
                 self.state.irreversible_boundary = true;
                 Ok(Some(Stage::ReadSet))
             }
@@ -513,16 +520,16 @@ impl TransactionMachine {
                         ));
                     }
                     self.state.irreversible_boundary = true;
-                    self.state.home_mutation_emitted = true;
+                    self.state.data_parity_write_emitted = true;
                     Ok(Some(Stage::FlushSet))
                 }
                 SemanticIoResult::Failed => {
-                    self.state.home_mutation_emitted = true;
+                    self.state.data_parity_write_emitted = true;
                     self.reconcile(ErrorClass::WriteFailed)?;
                     Ok(None)
                 }
                 SemanticIoResult::Uncertain => {
-                    self.state.home_mutation_emitted = true;
+                    self.state.data_parity_write_emitted = true;
                     self.reconcile(ErrorClass::WriteUncertain)?;
                     Ok(None)
                 }
@@ -537,7 +544,7 @@ impl TransactionMachine {
                     self.state.captured_recovery_generation,
                 ) {
                     self.last_fence = Some(evidence.certificate.clone());
-                    Ok(Some(Stage::Checkpoint))
+                    Ok(Some(Stage::RecoveryClean))
                 } else {
                     self.reconcile(if evidence.uncertain {
                         ErrorClass::FenceUncertain
@@ -547,7 +554,7 @@ impl TransactionMachine {
                     Ok(None)
                 }
             }
-            (ActionKind::CommitCheckpointOrClear, ActionResult::CheckpointCommitted(committed)) => {
+            (ActionKind::CommitRecoveryClean, ActionResult::RecoveryCleanCommitted(committed)) => {
                 self.require_generation_at_least(committed)?;
                 Ok(Some(Stage::Release))
             }
@@ -568,7 +575,7 @@ impl TransactionMachine {
 
     fn emit_for_stage(&mut self, stage: Stage) -> Result<(), TransactionError> {
         match stage {
-            Stage::IntentCommit => {
+            Stage::WriteRecoveryRecordCommit => {
                 self.emit(TransactionAction::PersistDirtyAndInvalidateIntegrity {
                     dirty_regions: self.plan.dirty_regions.clone(),
                     checksum_extents: self.plan.checksum_extents.clone(),
@@ -585,7 +592,7 @@ impl TransactionMachine {
                 // executor may have accepted child I/O even if its result is
                 // later lost or uncertain.
                 self.state.irreversible_boundary = true;
-                self.state.home_mutation_emitted = true;
+                self.state.data_parity_write_emitted = true;
                 self.emit(TransactionAction::WriteSet {
                     writes: self.plan.writes.clone(),
                 })
@@ -594,18 +601,18 @@ impl TransactionMachine {
                 stores: self.plan.stores.clone(),
                 through: self.plan.through.clone(),
             }),
-            Stage::Checkpoint => self.emit(TransactionAction::CommitCheckpointOrClear {
-                certificate: self.checkpoint_certificate(),
+            Stage::RecoveryClean => self.emit(TransactionAction::CommitRecoveryClean {
+                certificate: self.recovery_clean_certificate(),
             }),
             Stage::Release => self.emit(TransactionAction::ReleaseRange),
             Stage::AcquireRange
             | Stage::Completed
             | Stage::Aborted
-            | Stage::ReconciliationRequired => Ok(()),
+            | Stage::AwaitingReconciliation => Ok(()),
         }
     }
 
-    fn checkpoint_certificate(&self) -> FenceCertificate {
+    fn recovery_clean_certificate(&self) -> FenceCertificate {
         self.last_fence.clone().unwrap_or_else(|| {
             FenceCertificate::new(
                 self.plan.topology_epoch,
@@ -652,10 +659,10 @@ impl TransactionMachine {
                 }
             }
             Stage::Aborted => Disposition::Aborted,
-            Stage::ReconciliationRequired => Disposition::ReconciliationRequired,
+            Stage::AwaitingReconciliation => Disposition::ReconciliationRequired,
             _ => Disposition::InProgress,
         };
-        if stage == Stage::ReconciliationRequired {
+        if stage == Stage::AwaitingReconciliation {
             self.trace.record_reconciliation_required(
                 self.next_sequence,
                 failure.map(|value| value.class),
@@ -668,7 +675,7 @@ impl TransactionMachine {
     fn reconcile(&mut self, class: ErrorClass) -> Result<(), TransactionError> {
         self.pending = None;
         self.transition(
-            Stage::ReconciliationRequired,
+            Stage::AwaitingReconciliation,
             Some(SemanticFailure::new(class)),
         )
     }
@@ -712,10 +719,13 @@ impl TransactionMachine {
         Ok(())
     }
 
-    fn require_intent_evidence(&self, evidence: &IntentEvidence) -> Result<(), TransactionError> {
+    fn require_write_recovery_record_evidence(
+        &self,
+        evidence: &WriteRecoveryRecordEvidence,
+    ) -> Result<(), TransactionError> {
         if !evidence.durable {
             return Err(TransactionError::InvalidResult(
-                "recovery intent evidence is not durable",
+                "write-recovery record evidence is not durable",
             ));
         }
         if evidence.topology_epoch != self.plan.topology_epoch {
@@ -738,7 +748,7 @@ impl TransactionMachine {
         }
         if evidence.target != self.plan.invalidation_target() {
             return Err(TransactionError::InvalidResult(
-                "recovery intent coverage does not match the transaction",
+                "write-recovery record coverage does not match the transaction",
             ));
         }
         Ok(())
@@ -751,15 +761,15 @@ fn result_matches(action: ActionKind, result: ResultKind) -> bool {
         (ActionKind::AcquireRange, ResultKind::RangeAcquired)
             | (
                 ActionKind::PersistDirtyAndInvalidateIntegrity,
-                ResultKind::RecoveryIntentDurable
+                ResultKind::WriteRecoveryRecordDurable
             )
             | (ActionKind::ReadSet, ResultKind::ReadSetComplete)
             | (ActionKind::ComputeParity, ResultKind::ParityComputed)
             | (ActionKind::WriteSet, ResultKind::WriteSetComplete)
             | (ActionKind::FlushSet, ResultKind::FlushSetComplete)
             | (
-                ActionKind::CommitCheckpointOrClear,
-                ResultKind::CheckpointCommitted
+                ActionKind::CommitRecoveryClean,
+                ResultKind::RecoveryCleanCommitted
             )
             | (ActionKind::ReleaseRange, ResultKind::RangeReleased)
     )
@@ -768,10 +778,13 @@ fn result_matches(action: ActionKind, result: ResultKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ActionResult, ErrorClass, FenceEvidence, StoreWatermark, TraceEvent};
+    use crate::{
+        ActionResult, ErrorClass, StoreWatermark, TraceEvent, TransactionPersistenceEvidence,
+    };
     use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
     use dwv_recovery::{
-        FenceCertificate, IntegrityExtentId, IntentEvidence, RecoveryGeneration, RegionId,
+        FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId,
+        WriteRecoveryRecordEvidence,
     };
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
 
@@ -791,7 +804,7 @@ mod tests {
             .with_watermarks(vec![StoreWatermark::new(store, StoreWriteWatermark(8))])
     }
 
-    fn durable_fence() -> FenceEvidence {
+    fn durable_fence() -> TransactionPersistenceEvidence {
         let plan = plan();
         let store = StoreId(1);
         let certificate = FenceCertificate::new(
@@ -808,7 +821,7 @@ mod tests {
             vec![(RegionId(1), RecoveryGeneration(3))],
         )
         .with_integrity_extent(IntegrityExtentId(4), RecoveryGeneration(3));
-        let evidence = FenceEvidence::durable(certificate);
+        let evidence = TransactionPersistenceEvidence::durable(certificate);
         assert!(evidence.covers(
             plan.topology_epoch,
             plan.fence_domain,
@@ -825,7 +838,7 @@ mod tests {
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
         machine
-            .apply(ActionResult::RecoveryIntentDurable(
+            .apply(ActionResult::WriteRecoveryRecordDurable(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(3), TopologyEpoch(7)),
             ))
             .unwrap();
@@ -844,16 +857,19 @@ mod tests {
             .kind()
         {
             ActionKind::AcquireRange => ActionResult::RangeAcquired(RangeGuardToken(1)),
-            ActionKind::PersistDirtyAndInvalidateIntegrity => ActionResult::RecoveryIntentDurable(
-                CommittedRecoveryGeneration::new(RecoveryGeneration(3), TopologyEpoch(7)),
-            ),
+            ActionKind::PersistDirtyAndInvalidateIntegrity => {
+                ActionResult::WriteRecoveryRecordDurable(CommittedRecoveryGeneration::new(
+                    RecoveryGeneration(3),
+                    TopologyEpoch(7),
+                ))
+            }
             ActionKind::ReadSet => ActionResult::ReadSetComplete(SemanticIoResult::complete()),
             ActionKind::ComputeParity => {
                 ActionResult::ParityComputed(ComputationResult::complete())
             }
             ActionKind::WriteSet => ActionResult::WriteSetComplete(SemanticIoResult::complete()),
             ActionKind::FlushSet => ActionResult::FlushSetComplete(durable_fence()),
-            ActionKind::CommitCheckpointOrClear => ActionResult::CheckpointCommitted(
+            ActionKind::CommitRecoveryClean => ActionResult::RecoveryCleanCommitted(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
             ),
             ActionKind::ReleaseRange => ActionResult::RangeReleased,
@@ -861,7 +877,7 @@ mod tests {
     }
 
     #[test]
-    fn legal_first_write_orders_intent_before_home_write() {
+    fn legal_first_write_orders_write_recovery_record_before_data_parity_write() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         assert_eq!(
             machine.pending_action().unwrap().kind(),
@@ -875,11 +891,11 @@ mod tests {
             ActionKind::PersistDirtyAndInvalidateIntegrity
         );
         machine
-            .apply(ActionResult::RecoveryIntentDurable(
+            .apply(ActionResult::WriteRecoveryRecordDurable(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(3), TopologyEpoch(7)),
             ))
             .unwrap();
-        assert!(machine.state().intent_durable);
+        assert!(machine.state().write_recovery_record_durable);
         assert_eq!(
             machine.pending_action().unwrap().kind(),
             ActionKind::ReadSet
@@ -887,36 +903,38 @@ mod tests {
     }
 
     #[test]
-    fn failed_intent_never_emits_a_write() {
+    fn failed_write_recovery_record_never_emits_a_data_parity_write() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
         machine
-            .apply(ActionResult::failure(ErrorClass::RecoveryIntentRejected))
+            .apply(ActionResult::failure(
+                ErrorClass::WriteRecoveryRecordRejected,
+            ))
             .unwrap();
-        assert_eq!(machine.stage(), Stage::ReconciliationRequired);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
         assert!(machine.pending_action().is_none());
-        assert!(!machine.state().home_mutation_emitted);
+        assert!(!machine.state().data_parity_write_emitted);
     }
 
     #[test]
-    fn incomplete_fence_cannot_checkpoint_or_release() {
+    fn incomplete_persistence_evidence_cannot_commit_recovery_clean_or_release() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut machine);
         machine
             .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
             .unwrap();
-        let incomplete = FenceEvidence::volatile(durable_fence().certificate);
+        let incomplete = TransactionPersistenceEvidence::volatile(durable_fence().certificate);
         machine
             .apply(ActionResult::FlushSetComplete(incomplete))
             .unwrap();
-        assert_eq!(machine.stage(), Stage::ReconciliationRequired);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
         assert!(machine.pending_action().is_none());
     }
 
     #[test]
-    fn complete_path_releases_only_after_checkpoint() {
+    fn complete_path_releases_only_after_recovery_clean() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut machine);
         machine
@@ -927,10 +945,10 @@ mod tests {
             .unwrap();
         assert_eq!(
             machine.pending_action().unwrap().kind(),
-            ActionKind::CommitCheckpointOrClear
+            ActionKind::CommitRecoveryClean
         );
         machine
-            .apply(ActionResult::CheckpointCommitted(
+            .apply(ActionResult::RecoveryCleanCommitted(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
             ))
             .unwrap();
@@ -975,7 +993,7 @@ mod tests {
             .apply(ActionResult::FlushSetComplete(durable_fence()))
             .unwrap();
         machine
-            .apply(ActionResult::CheckpointCommitted(
+            .apply(ActionResult::RecoveryCleanCommitted(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
             ))
             .unwrap();
@@ -988,8 +1006,8 @@ mod tests {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut machine);
         machine.daemon_crash().unwrap();
-        assert_eq!(machine.stage(), Stage::ReconciliationRequired);
-        assert!(machine.state().home_mutation_emitted);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
+        assert!(machine.state().data_parity_write_emitted);
     }
 
     #[test]
@@ -1010,7 +1028,7 @@ mod tests {
             assert!(restarted.pending_action().is_none());
             assert!(matches!(
                 restarted.stage(),
-                Stage::Aborted | Stage::ReconciliationRequired
+                Stage::Aborted | Stage::AwaitingReconciliation
             ));
             assert!(
                 restarted
@@ -1022,9 +1040,9 @@ mod tests {
             if results.is_empty() {
                 assert_eq!(pending_kind, ActionKind::AcquireRange);
                 assert_eq!(restarted.stage(), Stage::Aborted);
-                assert!(!restarted.state().home_mutation_emitted);
+                assert!(!restarted.state().data_parity_write_emitted);
             } else {
-                assert_eq!(restarted.stage(), Stage::ReconciliationRequired);
+                assert_eq!(restarted.stage(), Stage::AwaitingReconciliation);
             }
 
             let running = TransactionMachine::replay(plan(), &results).unwrap();
@@ -1040,20 +1058,20 @@ mod tests {
 
     #[test]
     fn uncertain_results_are_conservative_at_each_mutating_boundary() {
-        let mut intent = TransactionMachine::new(plan()).unwrap();
-        intent
+        let mut machine = TransactionMachine::new(plan()).unwrap();
+        machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
-        intent
-            .apply(ActionResult::failure(ErrorClass::RecoveryIntentLost))
+        machine
+            .apply(ActionResult::failure(ErrorClass::WriteRecoveryRecordLost))
             .unwrap();
-        assert_eq!(intent.stage(), Stage::ReconciliationRequired);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
 
         let mut read = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut read);
         read.apply(ActionResult::WriteSetComplete(SemanticIoResult::uncertain()))
             .unwrap();
-        assert_eq!(read.stage(), Stage::ReconciliationRequired);
+        assert_eq!(read.stage(), Stage::AwaitingReconciliation);
 
         let mut fence = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut fence);
@@ -1061,15 +1079,15 @@ mod tests {
             .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
             .unwrap();
         fence
-            .apply(ActionResult::FlushSetComplete(FenceEvidence::uncertain(
-                durable_fence().certificate,
-            )))
+            .apply(ActionResult::FlushSetComplete(
+                TransactionPersistenceEvidence::uncertain(durable_fence().certificate),
+            ))
             .unwrap();
-        assert_eq!(fence.stage(), Stage::ReconciliationRequired);
+        assert_eq!(fence.stage(), Stage::AwaitingReconciliation);
     }
 
     #[test]
-    fn failed_checkpoint_never_releases() {
+    fn failed_recovery_clean_never_releases() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         drive_to_write(&mut machine);
         machine
@@ -1079,21 +1097,21 @@ mod tests {
             .apply(ActionResult::FlushSetComplete(durable_fence()))
             .unwrap();
         machine
-            .apply(ActionResult::failure(ErrorClass::CheckpointFailed))
+            .apply(ActionResult::failure(ErrorClass::RecoveryCleanFailed))
             .unwrap();
-        assert_eq!(machine.stage(), Stage::ReconciliationRequired);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
         assert!(machine.pending_action().is_none());
     }
 
     #[test]
-    fn crash_with_unknown_intent_is_not_optimistically_aborted() {
+    fn crash_with_unknown_write_recovery_record_is_not_optimistically_aborted() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
         machine.daemon_crash().unwrap();
-        assert_eq!(machine.stage(), Stage::ReconciliationRequired);
-        assert!(!machine.state().home_mutation_emitted);
+        assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
+        assert!(!machine.state().data_parity_write_emitted);
     }
 
     #[test]
@@ -1104,7 +1122,7 @@ mod tests {
             .unwrap();
         let before = machine.state().clone();
         let error = machine
-            .apply(ActionResult::RecoveryIntentDurable(
+            .apply(ActionResult::WriteRecoveryRecordDurable(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
             ))
             .unwrap_err();
@@ -1147,7 +1165,7 @@ mod tests {
         let simulation = simulator.run(&schedule).unwrap();
         let fence = match simulation.deliveries[1].completion.persistence {
             dwv_store::PersistenceEvidence::DurableByFence { fence } => fence,
-            evidence => panic!("simulator did not produce fence evidence: {evidence:?}"),
+            evidence => panic!("simulator did not produce persistence evidence: {evidence:?}"),
         };
         let mut certificate = FenceCertificate::new(
             TopologyEpoch(7),
@@ -1170,11 +1188,11 @@ mod tests {
             .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
             .unwrap();
         machine
-            .apply(ActionResult::FlushSetComplete(FenceEvidence::durable(
-                certificate,
-            )))
+            .apply(ActionResult::FlushSetComplete(
+                TransactionPersistenceEvidence::durable(certificate),
+            ))
             .unwrap();
-        assert_eq!(machine.stage(), Stage::Checkpoint);
+        assert_eq!(machine.stage(), Stage::RecoveryClean);
         assert!(
             simulation
                 .final_snapshot
@@ -1184,12 +1202,13 @@ mod tests {
     }
 
     #[test]
-    fn already_dirty_skips_redundant_intent_action() {
-        let mut machine =
-            TransactionMachine::new(plan().with_intent(IntentRequirement::AlreadyDirty {
+    fn already_covered_skips_redundant_write_recovery_record_action() {
+        let mut machine = TransactionMachine::new(plan().with_write_recovery_record(
+            WriteRecoveryRecordRequirement::AlreadyCovered {
                 durable_generation: RecoveryGeneration(3),
-            }))
-            .unwrap();
+            },
+        ))
+        .unwrap();
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
@@ -1203,7 +1222,7 @@ mod tests {
     fn replay_is_deterministic() {
         let results = vec![
             ActionResult::RangeAcquired(RangeGuardToken(1)),
-            ActionResult::RecoveryIntentDurable(CommittedRecoveryGeneration::new(
+            ActionResult::WriteRecoveryRecordDurable(CommittedRecoveryGeneration::new(
                 RecoveryGeneration(3),
                 TopologyEpoch(7),
             )),
@@ -1211,7 +1230,7 @@ mod tests {
             ActionResult::ParityComputed(ComputationResult::complete()),
             ActionResult::WriteSetComplete(SemanticIoResult::complete()),
             ActionResult::FlushSetComplete(durable_fence()),
-            ActionResult::CheckpointCommitted(CommittedRecoveryGeneration::new(
+            ActionResult::RecoveryCleanCommitted(CommittedRecoveryGeneration::new(
                 RecoveryGeneration(4),
                 TopologyEpoch(7),
             )),
@@ -1224,12 +1243,12 @@ mod tests {
     }
 
     #[test]
-    fn structured_intent_evidence_is_checked_before_reads() {
+    fn structured_write_recovery_record_evidence_is_checked_before_reads() {
         let mut machine = TransactionMachine::new(plan()).unwrap();
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .unwrap();
-        let evidence = IntentEvidence {
+        let evidence = WriteRecoveryRecordEvidence {
             topology_epoch: TopologyEpoch(7),
             captured_generation: RecoveryGeneration(3),
             committed_generation: RecoveryGeneration(4),
@@ -1237,7 +1256,9 @@ mod tests {
             durable: true,
         };
         machine
-            .apply(ActionResult::RecoveryIntentCommitted(evidence))
+            .apply(ActionResult::WriteRecoveryRecordDurableWithEvidence(
+                evidence,
+            ))
             .unwrap();
         assert_eq!(machine.stage(), Stage::ReadSet);
         assert_eq!(

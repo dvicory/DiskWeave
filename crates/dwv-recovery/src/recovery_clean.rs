@@ -1,4 +1,4 @@
-//! Generation-checked fence and checkpoint decisions.
+//! Generation-checked fence and recovery CLEAN decisions.
 
 use crate::{
     FenceCertificate, IntegrityExtentId, RecoveryError, RecoveryGeneration, RecoverySnapshot,
@@ -14,7 +14,7 @@ pub struct RequiredFence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CheckpointRequest {
+pub struct RecoveryCleanRequest {
     pub topology_epoch: TopologyEpoch,
     pub fence_domain: FenceDomain,
     pub generation: RecoveryGeneration,
@@ -23,7 +23,7 @@ pub struct CheckpointRequest {
     pub checksum_extents: Vec<IntegrityExtentId>,
 }
 
-impl CheckpointRequest {
+impl RecoveryCleanRequest {
     pub fn new(
         topology_epoch: TopologyEpoch,
         fence_domain: FenceDomain,
@@ -56,7 +56,7 @@ impl CheckpointRequest {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CheckpointRefusal {
+pub enum RecoveryCleanRefusal {
     GenerationChanged,
     TopologyChanged,
     MissingStoreFence,
@@ -67,33 +67,33 @@ pub enum CheckpointRefusal {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CheckpointDecision {
+pub enum RecoveryCleanDecision {
     Clear {
         certificate: FenceCertificate,
         session_dirty: bool,
     },
     Refused {
-        reason: CheckpointRefusal,
+        reason: RecoveryCleanRefusal,
         missing_stores: Vec<StoreId>,
         missing_regions: Vec<RegionId>,
         missing_extents: Vec<IntegrityExtentId>,
     },
 }
 
-impl CheckpointDecision {
+impl RecoveryCleanDecision {
     pub const fn permits_clear(&self) -> bool {
         matches!(self, Self::Clear { .. })
     }
 }
 
-pub fn evaluate_checkpoint(
+pub fn evaluate_recovery_clean(
     snapshot: &RecoverySnapshot,
-    request: &CheckpointRequest,
+    request: &RecoveryCleanRequest,
     certificate: &FenceCertificate,
-) -> Result<CheckpointDecision, RecoveryError> {
+) -> Result<RecoveryCleanDecision, RecoveryError> {
     if snapshot.generation != request.generation {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::GenerationChanged,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::GenerationChanged,
             missing_stores: Vec::new(),
             missing_regions: Vec::new(),
             missing_extents: Vec::new(),
@@ -102,8 +102,8 @@ pub fn evaluate_checkpoint(
     if certificate.topology_epoch != request.topology_epoch
         || certificate.fence_domain != request.fence_domain
     {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::TopologyChanged,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::TopologyChanged,
             missing_stores: Vec::new(),
             missing_regions: Vec::new(),
             missing_extents: Vec::new(),
@@ -139,24 +139,24 @@ pub fn evaluate_checkpoint(
         .collect();
 
     if !missing_stores.is_empty() {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::MissingStoreFence,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::MissingStoreFence,
             missing_stores,
             missing_regions,
             missing_extents,
         });
     }
     if !missing_regions.is_empty() {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::MissingRegionCoverage,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::MissingRegionCoverage,
             missing_stores,
             missing_regions,
             missing_extents,
         });
     }
     if !missing_extents.is_empty() {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::MissingIntegrityCoverage,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::MissingIntegrityCoverage,
             missing_stores,
             missing_regions,
             missing_extents,
@@ -168,15 +168,15 @@ pub fn evaluate_checkpoint(
         .as_ref()
         .is_some_and(|session| !session.closed || session.global_fence.is_none());
     if session_dirty {
-        return Ok(CheckpointDecision::Refused {
-            reason: CheckpointRefusal::SessionStillDirty,
+        return Ok(RecoveryCleanDecision::Refused {
+            reason: RecoveryCleanRefusal::SessionStillDirty,
             missing_stores,
             missing_regions,
             missing_extents,
         });
     }
 
-    Ok(CheckpointDecision::Clear {
+    Ok(RecoveryCleanDecision::Clear {
         certificate: certificate.clone(),
         session_dirty,
     })
@@ -202,12 +202,12 @@ pub fn fence_ref(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{IntentCommit, InvalidationTarget, MemoryRecoveryStore};
+    use crate::{InvalidationTarget, MemoryRecoveryStore, WriteRecoveryRecordCommit};
 
     #[test]
-    fn checkpoint_requires_covering_fence_and_matching_generation() {
+    fn recovery_clean_requires_covering_fence_and_matching_generation() {
         let mut store = MemoryRecoveryStore::new(TopologyEpoch(5));
-        IntentCommit::new(
+        WriteRecoveryRecordCommit::new(
             &mut store,
             TopologyEpoch(5),
             RecoveryGeneration(0),
@@ -216,7 +216,7 @@ mod tests {
         .commit()
         .unwrap();
         let request =
-            CheckpointRequest::new(TopologyEpoch(5), FenceDomain(9), RecoveryGeneration(1))
+            RecoveryCleanRequest::new(TopologyEpoch(5), FenceDomain(9), RecoveryGeneration(1))
                 .with_store(StoreId(7), StoreWriteWatermark(4))
                 .with_region(RegionId(1))
                 .with_checksum_extent(IntegrityExtentId(2));
@@ -233,14 +233,15 @@ mod tests {
             vec![(RegionId(1), RecoveryGeneration(1))],
         )
         .with_integrity_extent(IntegrityExtentId(2), RecoveryGeneration(1));
-        let decision = evaluate_checkpoint(store.snapshot(), &request, &certificate).unwrap();
+        let decision = evaluate_recovery_clean(store.snapshot(), &request, &certificate).unwrap();
         assert!(decision.permits_clear());
 
-        let stale = CheckpointRequest::new(TopologyEpoch(5), FenceDomain(9), RecoveryGeneration(0));
+        let stale =
+            RecoveryCleanRequest::new(TopologyEpoch(5), FenceDomain(9), RecoveryGeneration(0));
         assert!(matches!(
-            evaluate_checkpoint(store.snapshot(), &stale, &certificate).unwrap(),
-            CheckpointDecision::Refused {
-                reason: CheckpointRefusal::GenerationChanged,
+            evaluate_recovery_clean(store.snapshot(), &stale, &certificate).unwrap(),
+            RecoveryCleanDecision::Refused {
+                reason: RecoveryCleanRefusal::GenerationChanged,
                 ..
             }
         ));

@@ -2699,7 +2699,7 @@ fn validate_curriculum(app: &App) -> Result<(), AppError> {
         let table = entry
             .as_table()
             .ok_or_else(|| AppError::new("curriculum_invalid", "entry must be a table"))?;
-        if table.get("projection").and_then(toml::Value::as_str) != Some("human_guide") {
+        if table.get("projection").and_then(toml::Value::as_str) != Some("diskweave_guide") {
             continue;
         }
         let id = table
@@ -2908,18 +2908,29 @@ fn read_authority_file(root: &Path, path: &Path) -> Result<String, AppError> {
         .map_err(|error| AppError::new("roadmap_invalid_utf8", format!("{relative}: {error}")))
 }
 
-fn roadmap_table_node(line: &str) -> Option<String> {
+fn roadmap_table_item(line: &str) -> Option<String> {
     let cell = line.split('|').nth(1)?.trim();
-    let node = cell.strip_prefix("**")?.strip_suffix("**")?;
-    let digits = node.strip_prefix("OS-")?;
-    (digits.len() == 3 && digits.bytes().all(|byte| byte.is_ascii_digit())).then(|| node.to_owned())
+    let item = cell.strip_prefix("**")?.strip_suffix("**")?;
+    item.strip_prefix("roadmap-item:")
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
 }
 
-fn numeric_change_node(change_id: &str) -> Option<String> {
-    let suffix = change_id.strip_prefix("os-")?;
-    let (digits, _) = suffix.split_once('-')?;
-    (digits.len() == 3 && digits.bytes().all(|byte| byte.is_ascii_digit()))
-        .then(|| format!("OS-{digits}"))
+fn proposal_roadmap_items(text: &str) -> Vec<String> {
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let value = line
+                .strip_prefix("<!-- dwv:roadmap-item ")
+                .and_then(|value| value.strip_suffix(" -->"))
+                .or_else(|| {
+                    line.strip_prefix("<!-- dwv:roadmap-node ")
+                        .and_then(|value| value.strip_suffix(" -->"))
+                })?;
+            let value = value.strip_prefix("roadmap-item:").unwrap_or(value);
+            (!value.is_empty()).then(|| value.to_owned())
+        })
+        .collect()
 }
 
 fn archived_change_id(directory: &str) -> &str {
@@ -2961,17 +2972,6 @@ fn append_change_directories(
     Ok(())
 }
 
-fn proposal_roadmap_nodes(text: &str) -> Vec<String> {
-    text.lines()
-        .filter_map(|line| {
-            line.trim()
-                .strip_prefix("<!-- dwv:roadmap-node ")
-                .and_then(|value| value.strip_suffix(" -->"))
-                .map(str::to_owned)
-        })
-        .collect()
-}
-
 /// dwv:req req.documentation-knowledge-architecture.active-roadmap-is-explicit-and-non-authoritative
 fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
     retired_path_preflight(app)?;
@@ -3009,9 +3009,9 @@ fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
     }
 
     let roadmap = marked_text.expect("one marked roadmap has text");
-    let roadmap_nodes = roadmap
+    let roadmap_items = roadmap
         .lines()
-        .filter_map(roadmap_table_node)
+        .filter_map(roadmap_table_item)
         .collect::<BTreeSet<_>>();
     let mut changes = Vec::new();
     append_change_directories(
@@ -3029,40 +3029,42 @@ fn validate_roadmap_identifiers(app: &App) -> Result<(), AppError> {
 
     let mut claims = BTreeMap::<String, Vec<String>>::new();
     let mut diagnostics = Vec::new();
-    for (path, change_id, active) in changes {
-        let Some(node) = numeric_change_node(&change_id) else {
+    for (path, _change_id, active) in changes {
+        if !active {
             continue;
+        }
+        let proposal_path = app.root.join(&path).join("proposal.md");
+        let declarations = if proposal_path.is_file() {
+            proposal_roadmap_items(&read_authority_file(&app.root, &proposal_path)?)
+        } else {
+            Vec::new()
         };
-        claims.entry(node.clone()).or_default().push(path.clone());
-        if active && !roadmap_nodes.contains(&node) {
+        if declarations.is_empty() {
+            continue;
+        }
+        if declarations.len() != 1 {
             diagnostics.push(json!({
-                "gate": "numeric-change-not-in-roadmap",
+                "gate": "roadmap-item-declaration-count",
                 "change": path,
-                "roadmap_node": node,
+                "declared": declarations,
             }));
         }
-        if active {
-            let proposal_path = app.root.join(&path).join("proposal.md");
-            let declarations = if proposal_path.is_file() {
-                proposal_roadmap_nodes(&read_authority_file(&app.root, &proposal_path)?)
-            } else {
-                Vec::new()
-            };
-            if declarations.as_slice() != [node.as_str()] {
+        for item in declarations {
+            if !roadmap_items.contains(&item) {
                 diagnostics.push(json!({
-                    "gate": "numeric-proposal-roadmap-declaration",
+                    "gate": "roadmap-item-not-in-roadmap",
                     "change": path,
-                    "expected": node,
-                    "declared": declarations,
+                    "roadmap_item": item,
                 }));
             }
+            claims.entry(item).or_default().push(path.clone());
         }
     }
-    for (node, paths) in claims {
+    for (item, paths) in claims {
         if paths.len() > 1 {
             diagnostics.push(json!({
-                "gate": "duplicate-numeric-change-identity",
-                "roadmap_node": node,
+                "gate": "duplicate-roadmap-item-claim",
+                "roadmap_item": item,
                 "changes": paths,
             }));
         }
@@ -3290,7 +3292,7 @@ pub(super) fn planning_nomenclature(app: &App) -> Result<Value, AppError> {
     Ok(result)
 }
 
-/// dwv:req req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority
+/// dwv:req req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority
 pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
     retired_path_preflight(app)?;
     validate_roadmap_identifiers(app)?;
@@ -3916,10 +3918,12 @@ mod tests {
                 ),
             ]
         );
-        assert!(catalog
-            .invariants
-            .iter()
-            .any(|invariant| invariant.document_id == "arch.diskweave.v0.9"));
+        assert!(
+            catalog
+                .invariants
+                .iter()
+                .any(|invariant| invariant.document_id == "arch.diskweave.v0.9")
+        );
         let history = architecture_history(&app, "arch.diskweave.v0.7".to_owned()).unwrap();
         assert_eq!(history["authority"], "historical");
         assert_eq!(history["document"]["status"], "superseded");
@@ -4704,10 +4708,7 @@ mod tests {
             Vec::new(),
             vec!["docs/milestones/m11.md".to_owned()],
         ));
-        assert_retired_path_error(doctor(
-            &app,
-            vec!["docs/milestones/m11.md".to_owned()],
-        ));
+        assert_retired_path_error(doctor(&app, vec!["docs/milestones/m11.md".to_owned()]));
         assert_retired_path_error(change_impact(&app, None));
         assert_retired_path_error(validate_roadmap_identifiers(&app));
         assert_retired_path_error(architecture_catalog(&app));
@@ -5008,12 +5009,12 @@ mod tests {
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
-    fn human_guide_curriculum_requires_section_briefs() {
+    fn diskweave_guide_curriculum_requires_section_briefs() {
         let (root, app) = fixture("curriculum-sections");
         fs::create_dir_all(root.join("docs")).unwrap();
         fs::write(
             root.join("docs/curriculum.toml"),
-            "schema = 'dwv.docs.curriculum.v1'\n[[entries]]\nid = 'guide.one'\nprojection = 'human_guide'\naudience = 'newcomer'\nquestion = 'Why?'\nmisconceptions = ['none']\nrequirements = ['req.cap.one']\n",
+            "schema = 'dwv.docs.curriculum.v1'\n[[entries]]\nid = 'guide.one'\nprojection = 'diskweave_guide'\naudience = 'newcomer'\nquestion = 'Why?'\nmisconceptions = ['none']\nrequirements = ['req.cap.one']\n",
         )
         .unwrap();
         assert_eq!(
@@ -5023,7 +5024,7 @@ mod tests {
 
         fs::write(
             root.join("docs/curriculum.toml"),
-            "schema = 'dwv.docs.curriculum.v1'\n[[entries]]\nid = 'guide.one'\nprojection = 'human_guide'\naudience = 'newcomer'\nquestion = 'Why?'\nmisconceptions = ['none']\nrequirements = ['req.cap.one']\n[[entries.sections]]\nheading = 'Start here'\nfocus = 'Explain one event.'\nmust_answer = ['What happened?']\nrequirements = ['req.cap.one']\nscenarios = []\nnon_claims = ['No durability claim.']\n",
+            "schema = 'dwv.docs.curriculum.v1'\n[[entries]]\nid = 'guide.one'\nprojection = 'diskweave_guide'\naudience = 'newcomer'\nquestion = 'Why?'\nmisconceptions = ['none']\nrequirements = ['req.cap.one']\n[[entries.sections]]\nheading = 'Start here'\nfocus = 'Explain one event.'\nmust_answer = ['What happened?']\nrequirements = ['req.cap.one']\nscenarios = []\nnon_claims = ['No durability claim.']\n",
         )
         .unwrap();
         validate_curriculum(&app).unwrap();
@@ -5824,32 +5825,31 @@ mod tests {
         fs::create_dir_all(root.join("openspec/changes/archive")).unwrap();
         fs::write(
             root.join("docs/architecture/diskweave-architecture-roadmap-v0.8.md"),
-            "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n\nNarrative mentions OS-029 only.\n\n| OpenSpec | Result |\n|---|---|\n| **OS-030** | ublk conformance |\n| **OS-031** | Linux executor |\n",
+            "# Architecture\n<!-- dwv:active-architecture-roadmap -->\n\nNarrative mentions retired OS-029 only.\n\n| Roadmap item | Result |\n|---|---|\n| **roadmap-item:ublk-conformance** | ublk conformance |\n| **roadmap-item:linux-executor** | Linux executor |\n",
         )
         .unwrap();
         (root, app)
     }
 
     #[test]
-    fn roadmap_validator_accepts_matching_numeric_and_descriptive_changes() {
+    fn roadmap_validator_accepts_matching_and_descriptive_changes() {
         let (root, app) = roadmap_fixture("roadmap-valid");
-        fs::create_dir_all(root.join("openspec/changes/os-030-ublk-conformance")).unwrap();
+        fs::create_dir_all(root.join("openspec/changes/ublk-conformance")).unwrap();
         fs::write(
-            root.join("openspec/changes/os-030-ublk-conformance/proposal.md"),
-            "<!-- dwv:roadmap-node OS-030 -->\n",
+            root.join("openspec/changes/ublk-conformance/proposal.md"),
+            "<!-- dwv:roadmap-item roadmap-item:ublk-conformance -->\n",
         )
         .unwrap();
         fs::create_dir_all(root.join("openspec/changes/request-fix")).unwrap();
         fs::write(
             root.join("openspec/changes/request-fix/proposal.md"),
-            "Descriptive changes need no roadmap node.\n",
+            "Descriptive changes need no roadmap item.\n",
         )
         .unwrap();
 
         validate_roadmap_identifiers(&app).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
-
 
     #[test]
     fn roadmap_validator_accepts_archived_change_missing_from_roadmap() {
@@ -5887,17 +5887,32 @@ mod tests {
     }
 
     #[test]
-    fn roadmap_validator_rejects_unknown_mismatch_and_duplicate_claims() {
+    fn roadmap_validator_rejects_legacy_unknown_and_duplicate_claims() {
         let (root, app) = roadmap_fixture("roadmap-invalid");
-        fs::create_dir_all(root.join("openspec/changes/os-030-wrong-declaration")).unwrap();
+        fs::create_dir_all(root.join("openspec/changes/legacy-declaration")).unwrap();
         fs::write(
-            root.join("openspec/changes/os-030-wrong-declaration/proposal.md"),
+            root.join("openspec/changes/legacy-declaration/proposal.md"),
             "<!-- dwv:roadmap-node OS-031 -->\n",
         )
         .unwrap();
-        fs::create_dir_all(root.join("openspec/changes/archive/2026-08-09-os-030-older-claim"))
-            .unwrap();
-        fs::create_dir_all(root.join("openspec/changes/os-029-unrelated-work")).unwrap();
+        fs::create_dir_all(root.join("openspec/changes/duplicate-a")).unwrap();
+        fs::write(
+            root.join("openspec/changes/duplicate-a/proposal.md"),
+            "<!-- dwv:roadmap-item roadmap-item:ublk-conformance -->\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("openspec/changes/duplicate-b")).unwrap();
+        fs::write(
+            root.join("openspec/changes/duplicate-b/proposal.md"),
+            "<!-- dwv:roadmap-item roadmap-item:ublk-conformance -->\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("openspec/changes/multiple-declarations")).unwrap();
+        fs::write(
+            root.join("openspec/changes/multiple-declarations/proposal.md"),
+            "<!-- dwv:roadmap-item roadmap-item:ublk-conformance -->\n<!-- dwv:roadmap-item roadmap-item:linux-executor -->\n",
+        )
+        .unwrap();
 
         let error = validate_roadmap_identifiers(&app).unwrap_err();
         assert_eq!(error.code, "roadmap_identifier_invalid");
@@ -5911,9 +5926,9 @@ mod tests {
         assert_eq!(
             gates,
             BTreeSet::from([
-                "duplicate-numeric-change-identity",
-                "numeric-change-not-in-roadmap",
-                "numeric-proposal-roadmap-declaration",
+                "duplicate-roadmap-item-claim",
+                "roadmap-item-declaration-count",
+                "roadmap-item-not-in-roadmap",
             ])
         );
         fs::remove_dir_all(root).unwrap();

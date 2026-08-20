@@ -1,6 +1,7 @@
 DiskWeave is correctness-first storage software. Prefer simple, explicit designs over clever abstractions.
 
 Write technical prose using ISO 24495-1 and Zinsser's principles of simplicity and economy. Preserve DiskWeave terminology and correctness-relevant semantics.
+Use descriptive names for current concepts. When a stable identifier is needed, use a descriptive semantic ID instead of an opaque code. Keep generated Bead IDs and version identifiers as-is. Use legacy IDs only when referring to historical material.
 
 Current `openspec/specs/*/spec.md` requirements own current product behavior. A current requirement may explicitly delegate a bounded part of its exact semantics to an executable model; only that delegated surface is model authority. Active OpenSpec changes contain proposed target behavior. When work is being executed through a change, its delta specs define the target contract for that work and its tasks record implementation progress. Current requirements and their delegated semantics remain canonical until the completed, verified change is synced. The document marked `dwv:active-architecture-roadmap` guides future architecture and sequencing; it does not override current specs. Implementation, tests, non-delegated models, evidence, milestones, Beads, and historical artifacts are not semantic authority. Surface contradictions, missing invariants, and consequential ambiguity rather than resolving them from non-authoritative sources.
 

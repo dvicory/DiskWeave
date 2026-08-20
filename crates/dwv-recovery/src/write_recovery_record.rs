@@ -1,19 +1,20 @@
-//! Durable intent operations over the recovery-state adapter.
+//! Durable write-recovery record operations over the recovery-state adapter.
 
 use crate::{
-    IntentDecision, IntentEvidence, InvalidationTarget, RecoveryCommitObservation, RecoveryError,
-    RecoveryGeneration, RecoveryStateStore, assess_intent,
+    InvalidationTarget, RecoveryCommitObservation, RecoveryError, RecoveryGeneration,
+    RecoveryStateStore, WriteRecoveryRecordDecision, WriteRecoveryRecordEvidence,
+    assess_write_recovery_record,
 };
 use dwv_core::TopologyEpoch;
 
-pub struct IntentCommit<'a, S: RecoveryStateStore + ?Sized> {
+pub struct WriteRecoveryRecordCommit<'a, S: RecoveryStateStore + ?Sized> {
     store: &'a mut S,
     topology_epoch: TopologyEpoch,
     expected_generation: RecoveryGeneration,
     target: InvalidationTarget,
 }
 
-impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
+impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
     pub fn new(
         store: &'a mut S,
         topology_epoch: TopologyEpoch,
@@ -28,9 +29,9 @@ impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
         }
     }
 
-    pub fn assess(&self) -> Result<IntentDecision, RecoveryError> {
+    pub fn assess(&self) -> Result<WriteRecoveryRecordDecision, RecoveryError> {
         let snapshot = self.store.load_assembly_snapshot()?;
-        assess_intent(
+        assess_write_recovery_record(
             &snapshot,
             self.topology_epoch,
             self.expected_generation,
@@ -38,10 +39,10 @@ impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
         )
     }
 
-    pub fn commit(self) -> Result<IntentEvidence, RecoveryError> {
+    pub fn commit(self) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
         let decision = self.assess()?;
-        if let IntentDecision::AlreadyCovered(coverage) = decision {
-            return Ok(IntentEvidence::already_covered(
+        if let WriteRecoveryRecordDecision::AlreadyCovered(coverage) = decision {
+            return Ok(WriteRecoveryRecordEvidence::already_covered(
                 coverage.topology_epoch,
                 coverage.generation,
                 coverage.target,
@@ -59,7 +60,7 @@ impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
             txn.mark_integrity_stale(*extent, self.expected_generation);
         }
         let committed_generation = self.store.commit_durable(txn)?;
-        Ok(IntentEvidence {
+        Ok(WriteRecoveryRecordEvidence {
             topology_epoch: self.topology_epoch,
             captured_generation: self.expected_generation,
             committed_generation,
@@ -71,7 +72,7 @@ impl<'a, S: RecoveryStateStore + ?Sized> IntentCommit<'a, S> {
     pub fn commit_observed(
         self,
         observation: RecoveryCommitObservation,
-    ) -> Result<IntentEvidence, RecoveryError> {
+    ) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
         if !observation.is_durable() {
             return Err(RecoveryError::CommitNotDurable(observation));
         }
@@ -85,10 +86,10 @@ mod tests {
     use crate::{MemoryRecoveryStore, RegionId};
 
     #[test]
-    fn intent_commit_is_atomic_and_repeated_intent_is_idempotent() {
+    fn write_recovery_record_commit_is_atomic_and_repeated_record_is_idempotent() {
         let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
         let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
-        let evidence = IntentCommit::new(
+        let evidence = WriteRecoveryRecordCommit::new(
             &mut store,
             TopologyEpoch(3),
             RecoveryGeneration(0),
@@ -98,10 +99,14 @@ mod tests {
         .unwrap();
         assert_eq!(evidence.committed_generation, RecoveryGeneration(1));
         assert!(evidence.durable);
-        let repeated =
-            IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(1), target)
-                .commit()
-                .unwrap();
+        let repeated = WriteRecoveryRecordCommit::new(
+            &mut store,
+            TopologyEpoch(3),
+            RecoveryGeneration(1),
+            target,
+        )
+        .commit()
+        .unwrap();
         assert_eq!(repeated.committed_generation, RecoveryGeneration(1));
         assert_eq!(store.snapshot().generation, RecoveryGeneration(1));
     }
@@ -110,8 +115,13 @@ mod tests {
     fn rejected_observation_does_not_mutate_state() {
         let mut store = MemoryRecoveryStore::new(TopologyEpoch(3));
         let target = InvalidationTarget::new(vec![RegionId(1)], vec![]);
-        let result = IntentCommit::new(&mut store, TopologyEpoch(3), RecoveryGeneration(0), target)
-            .commit_observed(RecoveryCommitObservation::Lost);
+        let result = WriteRecoveryRecordCommit::new(
+            &mut store,
+            TopologyEpoch(3),
+            RecoveryGeneration(0),
+            target,
+        )
+        .commit_observed(RecoveryCommitObservation::Lost);
         assert!(matches!(result, Err(RecoveryError::CommitNotDurable(_))));
         assert_eq!(store.snapshot().generation, RecoveryGeneration(0));
         assert!(store.snapshot().dirty_regions.is_empty());

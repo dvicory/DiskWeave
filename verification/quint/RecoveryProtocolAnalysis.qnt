@@ -1,5 +1,6 @@
 /**
- * VE-002 finite evidence instance for the canonical recovery protocol.
+ * verify.write-recovery-lifecycle finite evidence instance for the canonical
+ * recovery protocol.
  *
  * The imported model owns the parameterized state/action/invariant relation.
  * These concrete values, witnesses, and bounds belong to verification only.
@@ -15,165 +16,171 @@ module RecoveryProtocolAnalysis {
     Stores == Set("data", "parity"),
   }
 
-  val beginReachable: bool = state.obligation == InFlight
-  val durableIntentReachable: bool = state.intent == IntentDurable
-  val mutationReachable: bool =
-    state.mutated != Set() or state.attempted != Set()
-  val uncertainIntentReachable: bool = state.intent == IntentUnknown
-  val uncertainHomeReachable: bool = state.home == HomeUnknown
-  val reconciliationReachable: bool = state.obligation == Handoff
-  val terminalReachable: bool = state.obligation == Terminal
-  val terminalPendingReleaseReachable: bool =
-    state.obligation == Terminal
-    and state.rangeHeld
-    and state.terminalPendingRelease
-  val abortedReachable: bool =
-    state.obligation == Aborted
-    and state.rangeHeld
-    and state.terminalPendingRelease
+  val startWriteReachable: bool = state.writeLifecycle == NormalProcessing
+  val durableWriteRecoveryRecordReachable: bool =
+    state.writeRecoveryRecord == WriteRecoveryRecordDurable
+  val dataParityWriteReachable: bool =
+    state.writeKnownAppliedRegions != Set()
+      or state.writeAttemptedRegions != Set()
+  val unknownWriteRecoveryRecordReachable: bool =
+    state.writeRecoveryRecord == WriteRecoveryRecordUnknown
+  val unknownDataParityWriteReachable: bool =
+    state.dataParityWriteState == DataParityWritesUnknown
+  val interruptedProcessingReachable: bool =
+    state.writeLifecycle == InterruptedProcessing
+  val completedAwaitingReleaseReachable: bool =
+    state.writeLifecycle == CompletedAwaitingRelease
+  val releasePendingReachable: bool =
+    state.writeLifecycle == CompletedAwaitingRelease
+    and state.rangeOwned
+    and state.releasePending
+  val abortedAwaitingReleaseReachable: bool =
+    state.writeLifecycle == AbortedAwaitingRelease
+    and state.rangeOwned
+    and state.releasePending
   val releasedReachable: bool =
-    state.obligation == Unowned
+    state.writeLifecycle == Unowned
     and state.rangeReleased
-    and not(state.rangeHeld)
-  val resumedMutationReachable: bool =
-    state.home == HomeUnknown
-    and state.mutated != Set()
-    and state.mutated != Regions
-  val reconciledMutationReachable: bool =
-    state.home == HomeUnknown
-    and state.attempted == Regions
-    and state.mutated == Regions
-  val durableHomeReachable: bool =
-    state.home == HomeDurable
-    and state.attempted == Regions
-    and state.mutated == Regions
+    and not(state.rangeOwned)
+  val resumedDataParityWriteReachable: bool =
+    state.dataParityWriteState == DataParityWritesUnknown
+    and state.writeKnownAppliedRegions != Set()
+    and state.writeKnownAppliedRegions != Regions
+  val reconciledDataParityWriteReachable: bool =
+    state.dataParityWriteState == DataParityWritesUnknown
+    and state.writeAttemptedRegions == Regions
+    and state.writeKnownAppliedRegions == Regions
+  val durableDataParityWriteReachable: bool =
+    state.dataParityWriteState == DataParityWritesDurable
+    and state.writeAttemptedRegions == Regions
+    and state.writeKnownAppliedRegions == Regions
 
-
-
-  run terminalReleaseRequiredTest =
+  run completedReleaseRequiredTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(2.reps(i => mutate))
-      .then(makeHomeDurable)
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(2.reps(i => attemptDataParityWrite))
+      .then(confirmDataParityWritesDurable)
       .expect(
-        durableHomeReachable
-        and state.recovery == RecoveryDirty
+        durableDataParityWriteReachable
+        and state.recoveryState == RecoveryDirty
       )
-      .then(2.reps(i => fence))
-      .then(checkpoint)
-      .then(release)
+      .then(2.reps(i => observePersistenceEvidence))
+      .then(commitRecoveryClean)
+      .then(releaseRange)
       .expect(
-        state.obligation == Unowned
+        state.writeLifecycle == Unowned
         and state.rangeReleased
-        and not(state.rangeHeld)
+        and not(state.rangeOwned)
       )
 
-  run terminalBeginBlockedTest =
+  run completedWriteStartBlockedTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(2.reps(i => mutate))
-      .then(makeHomeDurable)
-      .then(2.reps(i => fence))
-      .then(checkpoint)
-      .then(begin.fail())
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(2.reps(i => attemptDataParityWrite))
+      .then(confirmDataParityWritesDurable)
+      .then(2.reps(i => observePersistenceEvidence))
+      .then(commitRecoveryClean)
+      .then(startWrite.fail())
 
   run releasePermitsReuseTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(2.reps(i => mutate))
-      .then(makeHomeDurable)
-      .then(2.reps(i => fence))
-      .then(checkpoint)
-      .then(release)
-      .then(begin)
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(2.reps(i => attemptDataParityWrite))
+      .then(confirmDataParityWritesDurable)
+      .then(2.reps(i => observePersistenceEvidence))
+      .then(commitRecoveryClean)
+      .then(releaseRange)
+      .then(startWrite)
       .expect(
-        state.obligation == InFlight
-        and state.rangeHeld
+        state.writeLifecycle == NormalProcessing
+        and state.rangeOwned
         and not(state.rangeReleased)
       )
 
-  run rejectedIntentReleaseTest =
+  run rejectedWriteRecoveryRecordReleaseTest =
     init
-      .then(begin)
-      .then(loseIntent)
-      .then(reconcileIntent(IntentCommitRejected))
-      .expect(
-        state.obligation == Aborted
-        and state.rangeHeld
-        and state.terminalPendingRelease
+      .then(startWrite)
+      .then(observeWriteRecoveryRecordCommitUnknown)
+      .then(
+        reconcileWriteRecoveryRecordCommitObservation(
+          CommitRejected
+        )
       )
-      .then(release)
       .expect(
-        state.obligation == Unowned
+        state.writeLifecycle == AbortedAwaitingRelease
+        and state.rangeOwned
+        and state.releasePending
+      )
+      .then(releaseRange)
+      .expect(
+        state.writeLifecycle == Unowned
         and state.rangeReleased
-        and not(state.rangeHeld)
+        and not(state.rangeOwned)
       )
 
   run volatileAbandonmentContinuationTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(mutate)
-      .then(abandon)
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(attemptDataParityWrite)
+      .then(enterInterruptedProcessing)
       .expect(
-        state.home == HomeUnknown
-        and state.recovery == RecoveryIndeterminate
-        and state.obligation == Handoff
-        and state.attempted != Set()
-        and state.mutated == Set()
+        state.dataParityWriteState == DataParityWritesUnknown
+        and state.recoveryState == RecoveryIndeterminate
+        and state.writeLifecycle == InterruptedProcessing
+        and state.writeAttemptedRegions != Set()
+        and state.writeKnownAppliedRegions == Set()
       )
-      .then(reconcileMutation)
-      .then(mutate)
-      .then(reconcileMutation)
+      .then(reconcileDataParityWriteCoverage)
+      .then(attemptDataParityWrite)
+      .then(reconcileDataParityWriteCoverage)
       .expect(
-        state.home == HomeUnknown
-        and state.attempted == Regions
-        and state.mutated == Regions
+        state.dataParityWriteState == DataParityWritesUnknown
+        and state.writeAttemptedRegions == Regions
+        and state.writeKnownAppliedRegions == Regions
       )
-      .then(reconcileHomeDurable)
+      .then(reconcileDataParityWriteEffectDurable)
       .expect(
-        state.home == HomeDurable
-        and state.recovery == RecoveryDirty
+        state.dataParityWriteState == DataParityWritesDurable
+        and state.recoveryState == RecoveryDirty
       )
-      .then(2.reps(i => fence))
-      .then(checkpoint)
-      .then(release)
-      .expect(state.obligation == Unowned and state.rangeReleased)
+      .then(2.reps(i => observePersistenceEvidence))
+      .then(commitRecoveryClean)
+      .then(releaseRange)
+      .expect(state.writeLifecycle == Unowned and state.rangeReleased)
 
-  run partialHomeCannotBeDurableTest =
+  run partialDataParityWriteCannotBeDurableTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(mutate)
-      .then(loseHome)
-      .then(reconcileHomeIndeterminate)
-      .then(mutate)
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(attemptDataParityWrite)
+      .then(observeDataParityWriteEffectIndeterminate)
+      .then(reconcileDataParityWriteEffectIndeterminate)
+      .then(attemptDataParityWrite)
       .expect(
-        state.home == HomeUnknown
-        and state.attempted == Regions
-        and state.mutated != Regions
+        state.dataParityWriteState == DataParityWritesUnknown
+        and state.writeAttemptedRegions == Regions
+        and state.writeKnownAppliedRegions != Regions
       )
-      .then(reconcileHomeDurable.fail())
-
-
+      .then(reconcileDataParityWriteEffectDurable.fail())
 
   run repeatedAbandonBlockedTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(mutate)
-      .then(abandon)
-      .then(abandon.fail())
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(attemptDataParityWrite)
+      .then(enterInterruptedProcessing)
+      .then(enterInterruptedProcessing.fail())
 
-  run repeatedHomeReconciliationBlockedTest =
+  run repeatedDataParityWriteReconciliationBlockedTest =
     init
-      .then(begin)
-      .then(acceptIntent)
-      .then(mutate)
-      .then(loseHome)
-      .then(reconcileHomeIndeterminate)
-      .then(reconcileHomeIndeterminate.fail())
+      .then(startWrite)
+      .then(confirmWriteRecoveryRecordDurable)
+      .then(attemptDataParityWrite)
+      .then(observeDataParityWriteEffectIndeterminate)
+      .then(reconcileDataParityWriteEffectIndeterminate)
+      .then(reconcileDataParityWriteEffectIndeterminate.fail())
 }

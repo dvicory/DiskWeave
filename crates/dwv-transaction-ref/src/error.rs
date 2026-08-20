@@ -7,9 +7,9 @@ use std::fmt;
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum ErrorClass {
     RangeAcquisitionFailed,
-    RecoveryIntentRejected,
-    RecoveryIntentLost,
-    RecoveryIntentCorrupt,
+    WriteRecoveryRecordRejected,
+    WriteRecoveryRecordLost,
+    WriteRecoveryRecordCorrupt,
     ReadFailed,
     ReadUncertain,
     ParityComputationFailed,
@@ -17,7 +17,7 @@ pub enum ErrorClass {
     WriteUncertain,
     FenceIncomplete,
     FenceUncertain,
-    CheckpointFailed,
+    RecoveryCleanFailed,
     ReleaseFailed,
     DaemonCrash,
     ReconciliationRequired,
@@ -27,8 +27,8 @@ impl ErrorClass {
     pub const fn is_uncertain(self) -> bool {
         matches!(
             self,
-            Self::RecoveryIntentLost
-                | Self::RecoveryIntentCorrupt
+            Self::WriteRecoveryRecordLost
+                | Self::WriteRecoveryRecordCorrupt
                 | Self::ReadUncertain
                 | Self::WriteUncertain
                 | Self::FenceUncertain
@@ -41,9 +41,9 @@ impl fmt::Display for ErrorClass {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         let name = match self {
             Self::RangeAcquisitionFailed => "range acquisition failed",
-            Self::RecoveryIntentRejected => "recovery intent rejected",
-            Self::RecoveryIntentLost => "recovery intent lost",
-            Self::RecoveryIntentCorrupt => "recovery intent corrupt",
+            Self::WriteRecoveryRecordRejected => "write-recovery record rejected",
+            Self::WriteRecoveryRecordLost => "write-recovery record lost",
+            Self::WriteRecoveryRecordCorrupt => "write-recovery record corrupt",
             Self::ReadFailed => "read failed",
             Self::ReadUncertain => "read uncertain",
             Self::ParityComputationFailed => "parity computation failed",
@@ -51,7 +51,7 @@ impl fmt::Display for ErrorClass {
             Self::WriteUncertain => "write uncertain",
             Self::FenceIncomplete => "fence incomplete",
             Self::FenceUncertain => "fence uncertain",
-            Self::CheckpointFailed => "checkpoint failed",
+            Self::RecoveryCleanFailed => "recovery CLEAN commit failed",
             Self::ReleaseFailed => "release failed",
             Self::DaemonCrash => "daemon crashed",
             Self::ReconciliationRequired => "reconciliation required",

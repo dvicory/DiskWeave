@@ -43,7 +43,7 @@ The service SHALL preserve normalized request durability intent and compose acce
 #### Scenario: An owner rejects completion evidence
 
 - **WHEN** any required owner rejects missing, volatile, stale, partial, future, or mismatched evidence
-- **THEN** the service reports the conservative result and leaves affected state dirty, stale, or indeterminate
+- **THEN** the service reports the conservative result and leaves affected state dirty, stale, uncertain, or otherwise conservative according to its owning state dimension
 
 ### Requirement: Abandonment, restart, and failure preserve operation safety
 <!-- dwv:req req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety -->
@@ -54,7 +54,7 @@ The service SHALL preserve normalized request durability intent and compose acce
 
 The service SHALL compose frontend delivery interest, operation-slot lifetime, transaction outcome, and durable dirty/restart consequences without redefining them. It SHALL keep admitted work and resources under their owners until required reconciliation and release, preserve every conservative failure result, and never blindly retry an uncertain non-idempotent write.
 
-#### Scenario: Request is abandoned after intent
+#### Scenario: Request is abandoned after the write-recovery record is durable
 
 - **WHEN** the frontend abandons delivery interest after a durable write-recovery record but before operation completion
 - **THEN** the service continues owned drain and reconciliation, preserves dirty evidence as required, and releases resources only after the operation-lifetime owner permits it

@@ -72,9 +72,9 @@ A renderer success alone is not readiness.
 
 At the change boundary, the same command reports canonical local, relationship, and dependency-closure impact plus removed or reassigned implementation/evidence links from an available repository revision baseline. Implementation-link additions and edits with unchanged semantic relationships remain context only. Baseline absence is explicit; no persistent relationship-diff registry is maintained.
 
-## Human and agent projections
+## Guide and agent projections
 
-The Human Guide is causal and event-first: interrupted write, recovery uncertainty, parity versus integrity authority, then product/evidence boundary. Scenario pages render actual fixture facts and bounded outcomes. Assurance views preserve evidence tier, fault model, scope, and non-claims. Contributor and reference views derive package/source facts from Cargo metadata, CodeLinks, rustdoc, and current knowledge objects.
+The DiskWeave Guide is causal and event-first: interrupted write, recovery uncertainty, parity versus integrity authority, then product/evidence boundary. Scenario pages render actual fixture facts and bounded outcomes. Assurance views preserve evidence tier, fault model, scope, and non-claims. Contributor and reference views derive package/source facts from Cargo metadata, CodeLinks, rustdoc, and current knowledge objects.
 
 Agents begin with `.agents/skills/diskweave-knowledge/SKILL.md`, inspect exact semantic owners, request bounded graph-selected context when needed, and run `docs check` once at completion. The skill contains no revision-provider commands. Diagnostic `affected` and `knowledge doctor` commands are used only when the completion report identifies impact or an ID was lost. Payload bytes, credentials, private paths, runtime handles, and unbounded source text are excluded from interchange and context by default.
 

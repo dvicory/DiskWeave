@@ -5,7 +5,7 @@
 
 The envelope protocol SHALL represent enough session state to distinguish prepared/active, dirty/unknown, and clean/closed transitions. A clean state SHALL be publishable only after the required data/parity writes, persistence evidence, and recovery state `CLEAN` have completed according to the portable protocol. The envelope SHALL NOT independently authorize a clean state before its evidence gate is proven.
 
-#### Scenario: Dirty state precedes protected mutation
+#### Scenario: Dirty recovery state precedes data/parity writes
 
 - **WHEN** a writable session is about to write data or parity
 - **THEN** the durable recovery protocol records the dirty or indeterminate session state before the data/parity write

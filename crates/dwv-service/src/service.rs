@@ -13,10 +13,10 @@ use dwv_core::{
     DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
 };
 use dwv_recovery::{
-    BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent, ChecksumRecord,
-    ChecksumSetGeneration, ChecksumTarget, ContentGeneration, DIRTY_REGION_BYTES, FenceCertificate,
-    FenceEvidence as ChecksumFenceEvidence, IntegrityExtentId, IntegrityState, InvalidationTarget,
-    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
+    BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
+    ChecksumPersistenceEvidence, ChecksumRecord, ChecksumSetGeneration, ChecksumTarget,
+    ContentGeneration, DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, IntegrityState,
+    InvalidationTarget, RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
@@ -25,9 +25,10 @@ use dwv_store::{
     RandomAccessStore, StoreId, StoreWriteWatermark, WriteIntent,
 };
 use dwv_transaction_ref::{
-    ActionResult, CommittedRecoveryGeneration, ComputationResult, FenceEvidence, IntentRequirement,
-    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
-    SemanticIoResult, StoreWatermark, TransactionLimits, TransactionMachine, TransactionPlan,
+    ActionResult, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
+    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, SemanticIoResult, StoreWatermark,
+    TransactionLimits, TransactionMachine, TransactionPersistenceEvidence, TransactionPlan,
+    WriteRecoveryRecordRequirement,
 };
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
 pub struct MemberBinding<S: RandomAccessStore> {
@@ -613,7 +614,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             generation,
             request.ordering.fence_domain,
         )
-        .with_intent(IntentRequirement::FirstWrite)
+        .with_write_recovery_record(WriteRecoveryRecordRequirement::CommitRequired)
         .with_ranges(parity_ranges)
         .with_dirty_regions(regions.clone())
         .with_checksum_extents(checksum_extents.clone())
@@ -652,12 +653,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let target = InvalidationTarget::new(regions.clone(), checksum_extents.clone());
-        let intent = self
+        let write_recovery_record = self
             .checksums
-            .invalidate_with_intent(&mut self.recovery, target)
+            .invalidate_with_write_recovery_record(&mut self.recovery, target)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         machine
-            .apply(ActionResult::RecoveryIntentCommitted(intent.clone()))
+            .apply(ActionResult::WriteRecoveryRecordDurableWithEvidence(
+                write_recovery_record.clone(),
+            ))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
 
         let mut computed = Vec::with_capacity(plan.ranges.len());
@@ -810,43 +813,45 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 regions
                     .iter()
                     .copied()
-                    .map(|region| (region, intent.committed_generation))
+                    .map(|region| (region, write_recovery_record.committed_generation))
                     .collect(),
             ),
             |certificate, extent| {
-                certificate.with_integrity_extent(extent, intent.committed_generation)
+                certificate
+                    .with_integrity_extent(extent, write_recovery_record.committed_generation)
             },
         );
         machine
-            .apply(ActionResult::FlushSetComplete(FenceEvidence::durable(
-                certificate.clone(),
-            )))
+            .apply(ActionResult::FlushSetComplete(
+                TransactionPersistenceEvidence::durable(certificate.clone()),
+            ))
             .map_err(|error| ServiceError::io(FailureClass::Fence, error.to_string()))?;
         let current = self
             .recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        if current.generation != intent.committed_generation {
+        if current.generation != write_recovery_record.committed_generation {
             return Err(ServiceError::io(
                 FailureClass::Recovery,
                 "recovery generation changed during write",
             ));
         }
-        let mut checkpoint = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-        checkpoint.push(RecoveryMutation::RecordHomeFence { fence: certificate });
+        let mut recovery_clean =
+            RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        recovery_clean.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
         for region in regions {
-            checkpoint.push(RecoveryMutation::MarkRegionClean {
+            recovery_clean.push(RecoveryMutation::MarkRegionClean {
                 region,
-                through_generation: intent.committed_generation,
+                through_generation: write_recovery_record.committed_generation,
             });
         }
         let committed = self
             .recovery
-            .commit_durable(checkpoint)
+            .commit_durable(recovery_clean)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         self.checksums.recovery_generation = committed;
         machine
-            .apply(ActionResult::CheckpointCommitted(
+            .apply(ActionResult::RecoveryCleanCommitted(
                 CommittedRecoveryGeneration::new(committed, self.topology.topology_epoch()),
             ))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
@@ -1050,7 +1055,7 @@ fn persisted_checksum_authority(
             baseline.set_generation,
             ContentGeneration(*content_generation),
             digest,
-            ChecksumFenceEvidence {
+            ChecksumPersistenceEvidence {
                 fence: *durable_fence,
                 topology_epoch: baseline.topology_epoch,
                 recovery_generation: *content_generation,
@@ -1312,8 +1317,8 @@ mod tests {
         CodingProfile, FrontendId, OrderingIntent, ProtectedGeometry, RequestId, SlotId,
         SubmissionSequence, TopologyAssignment,
     };
-    use dwv_recovery::IntentCommit;
     use dwv_recovery::MemoryRecoveryStore;
+    use dwv_recovery::WriteRecoveryRecordCommit;
     use dwv_recovery::{Blake3Provider, DigestProvider};
     use dwv_store::{
         CapabilityEvidenceId, ChildOperationId, CompletedRangeSet, FenceId, IdentityObservation,
@@ -3176,7 +3181,7 @@ mod tests {
         drop(service);
         let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(4));
         let target = InvalidationTarget::new(vec![RegionId(99)], vec![]);
-        let _ = IntentCommit::new(
+        let _ = WriteRecoveryRecordCommit::new(
             &mut recovery,
             TopologyEpoch(4),
             RecoveryGeneration::ZERO,

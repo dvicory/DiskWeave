@@ -2,15 +2,33 @@
 
 ## Claim boundary
 
-This record covers the development-only documentation and knowledge workflow: canonical requirement identity, bounded context, sparse Rust/evidence/Markdown relationships, change-boundary impact, checked-in Human Guide prose, pinned offline Sphinx rendering, and clean-room reconstruction. It does not establish DiskWeave runtime correctness, a production frontend, platform installation, or physical durability.
+This record covers the development-only documentation and knowledge workflow: canonical requirement identity, bounded context, sparse Rust/evidence/Markdown relationships, change-boundary impact, checked-in DiskWeave Guide prose, pinned offline Sphinx rendering, and clean-room reconstruction. It does not establish DiskWeave runtime correctness, a production frontend, platform installation, or physical durability.
 
-## Human Guide exercise
+## DiskWeave Guide exercise
 
-A reader exercised the rendered Guide during the open-traceable-knowledge change. The first version failed acceptance: it was described as barely comprehensible, simultaneously too complex and insufficiently detailed. After the Guide was rewritten around concrete member files, byte examples, operational commands, and evidence boundaries, the reader found it much more broadly useful but reported that the parity chapter still jumped from “the equation is not enough” to four operation names without carrying the reader through the decisions.
+A reader exercised the rendered DiskWeave Guide during the open-traceable-knowledge
+change. The first version failed acceptance: it was described as barely
+comprehensible, simultaneously too complex and insufficiently detailed. After the
+Guide was rewritten around concrete member files, byte examples, operational
+commands, and evidence boundaries, the reader found it much more broadly useful
+but reported that the parity chapter still jumped from “the equation is not
+enough” to four operation names without carrying the reader through the
+decisions.
 
-The accepted revision adds validated ordered section briefs to `docs/curriculum.toml`. Each brief names a proposed heading, focus, must-answer questions, exact requirement/scenario sources, and non-claims. Chapter 3 now carries the same bytes through a known-erasure read, interrupted separate-target rebuild, ambiguous parity mismatch, independently authorized repair, and loss of authority requiring rebaseline before presenting the comparison table.
+The accepted revision adds validated ordered section briefs to
+`docs/curriculum.toml`. Each brief names a proposed heading, focus, must-answer
+questions, exact requirement/scenario sources, and non-claims. Chapter 3 now
+carries the same bytes through a known-erasure read, interrupted separate-target
+rebuild, ambiguous parity mismatch, independently authorized repair, and loss of
+authority requiring rebaseline before presenting the comparison table.
 
-**Human conclusion:** pass, with an explicit reservation: the reader did not love the TOML mechanism and questioned whether TOML is the best long-term medium for guiding prose toward pedagogical goals. This is a usability gap, not evidence that the accepted pages are incorrect. Revisit the representation only when another real Guide revision demonstrates that structured section briefs impede authorship or prose quality; do not add a template engine or generated-prose subsystem speculatively.
+**Reader conclusion:** pass, with an explicit reservation: the reader did not
+love the TOML mechanism and questioned whether TOML is the best long-term medium
+for guiding prose toward pedagogical goals. This is a usability gap, not
+evidence that the accepted pages are incorrect. Revisit the representation only
+when another real Guide revision demonstrates that structured section briefs
+impede authorship or prose quality; do not add a template engine or
+generated-prose subsystem speculatively.
 
 ## Fresh-agent implementation exercise
 

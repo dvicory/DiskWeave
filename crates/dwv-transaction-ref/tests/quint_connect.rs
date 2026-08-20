@@ -2,9 +2,9 @@ use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
 use dwv_recovery::{FenceCertificate, IntegrityExtentId, RecoveryGeneration, RegionId};
 use dwv_store::{CapabilityEvidenceId, FenceId, StoreId, StoreIncarnationId, StoreWriteWatermark};
 use dwv_transaction_ref::{
-    ActionResult, CommittedRecoveryGeneration, ComputationResult, FenceEvidence,
-    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
-    SemanticIoResult, Stage, StoreWatermark, TransactionMachine, TransactionPlan,
+    ActionResult, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
+    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, SemanticIoResult, Stage,
+    StoreWatermark, TransactionMachine, TransactionPersistenceEvidence, TransactionPlan,
 };
 use itf::Value;
 use quint_connect::{Config, Driver, Result, State, Step, quint_run};
@@ -12,25 +12,25 @@ use serde::Deserialize;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum Intent {
-    NoIntent,
-    IntentPending,
-    IntentDurable,
-    IntentUnknown,
+enum WriteRecoveryRecordState {
+    NoWriteRecoveryRecord,
+    WriteRecoveryRecordPending,
+    WriteRecoveryRecordDurable,
+    WriteRecoveryRecordUnknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum Home {
-    HomeUnmodified,
-    HomeVolatile,
-    HomeDurable,
-    HomeUnknown,
+enum DataParityWriteState {
+    NoDataParityWrites,
+    DataParityWritesAwaitingDurability,
+    DataParityWritesDurable,
+    DataParityWritesUnknown,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum Recovery {
+enum RecoveryState {
     RecoveryClean,
     RecoveryDirty,
     RecoveryIndeterminate,
@@ -38,79 +38,101 @@ enum Recovery {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum Obligation {
+enum WriteLifecycleState {
     Unowned,
-    InFlight,
-    Handoff,
-    Terminal,
-    Aborted,
+    NormalProcessing,
+    InterruptedProcessing,
+    CompletedAwaitingRelease,
+    AbortedAwaitingRelease,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum IntentObservation {
-    IntentCommitUnknown,
-    IntentCommitRejected,
-    IntentCommitDurable,
+enum WriteRecoveryRecordCommitObservation {
+    CommitUnknown,
+    CommitRejected,
+    CommitDurable,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
-enum HomeObservation {
-    HomeEffectUnknown,
-    HomeEffectIndeterminate,
-    HomeEffectDurable,
+enum DataParityWriteObservation {
+    NoDataParityWriteObservation,
+    DataParityWriteEffectIndeterminate,
+    DataParityWriteEffectDurable,
 }
 
 #[derive(Debug, Deserialize)]
 struct ModelState {
-    intent: Intent,
-    #[serde(rename = "intentObservation")]
-    intent_observation: IntentObservation,
-    home: Home,
-    #[serde(rename = "homeObservation")]
-    home_observation: HomeObservation,
-    #[serde(rename = "homeReconciled")]
-    home_reconciled: bool,
-    recovery: Recovery,
-    obligation: Obligation,
-    invalidated: bool,
-    #[serde(rename = "rangeHeld")]
-    range_held: bool,
-    #[serde(rename = "terminalPendingRelease")]
-    terminal_pending_release: bool,
+    #[serde(rename = "writeRecoveryRecord")]
+    write_recovery_record: WriteRecoveryRecordState,
+    #[serde(rename = "writeRecoveryRecordCommitObservation")]
+    write_recovery_record_commit_observation: WriteRecoveryRecordCommitObservation,
+    #[serde(rename = "dataParityWriteState")]
+    data_parity_write_state: DataParityWriteState,
+    #[serde(rename = "dataParityWriteObservation")]
+    data_parity_write_observation: DataParityWriteObservation,
+    #[serde(rename = "dataParityWriteObservationFinalized")]
+    data_parity_write_observation_finalized: bool,
+    #[serde(rename = "recoveryState")]
+    recovery_state: RecoveryState,
+    #[serde(rename = "writeLifecycle")]
+    write_lifecycle: WriteLifecycleState,
+    #[serde(rename = "integrityClaimsInvalidated")]
+    integrity_claims_invalidated: bool,
+    #[serde(rename = "writeKnownAppliedRegions")]
+    write_known_applied_regions: Vec<String>,
+    #[serde(rename = "writeAttemptedRegions")]
+    write_attempted_regions: Vec<String>,
+    #[serde(rename = "storesWithPersistenceEvidence")]
+    stores_with_persistence_evidence: Vec<String>,
+    #[serde(rename = "recoveryCleanRegions")]
+    recovery_clean_regions: Vec<String>,
+    #[serde(rename = "rangeOwned")]
+    range_owned: bool,
+    #[serde(rename = "releasePending")]
+    release_pending: bool,
     #[serde(rename = "rangeReleased")]
     range_released: bool,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct BridgeState {
-    intent: Intent,
-    intent_observation: IntentObservation,
-    home: Home,
-    home_observation: HomeObservation,
-    home_reconciled: bool,
-    recovery: Recovery,
-    obligation: Obligation,
-    invalidated: bool,
-    range_held: bool,
-    terminal_pending_release: bool,
+    write_recovery_record: WriteRecoveryRecordState,
+    write_recovery_record_commit_observation: WriteRecoveryRecordCommitObservation,
+    data_parity_write_state: DataParityWriteState,
+    data_parity_write_observation: DataParityWriteObservation,
+    data_parity_write_observation_finalized: bool,
+    recovery_state: RecoveryState,
+    write_lifecycle: WriteLifecycleState,
+    integrity_claims_invalidated: bool,
+    write_known_applied_regions: Vec<String>,
+    write_attempted_regions: Vec<String>,
+    stores_with_persistence_evidence: Vec<String>,
+    recovery_clean_regions: Vec<String>,
+    range_owned: bool,
+    release_pending: bool,
     range_released: bool,
 }
 
 impl From<ModelState> for BridgeState {
     fn from(state: ModelState) -> Self {
         Self {
-            intent: state.intent,
-            intent_observation: state.intent_observation,
-            home: state.home,
-            home_observation: state.home_observation,
-            home_reconciled: state.home_reconciled,
-            recovery: state.recovery,
-            obligation: state.obligation,
-            invalidated: state.invalidated,
-            range_held: state.range_held,
-            terminal_pending_release: state.terminal_pending_release,
+            write_recovery_record: state.write_recovery_record,
+            write_recovery_record_commit_observation: state
+                .write_recovery_record_commit_observation,
+            data_parity_write_state: state.data_parity_write_state,
+            data_parity_write_observation: state.data_parity_write_observation,
+            data_parity_write_observation_finalized: state.data_parity_write_observation_finalized,
+            recovery_state: state.recovery_state,
+            write_lifecycle: state.write_lifecycle,
+            integrity_claims_invalidated: state.integrity_claims_invalidated,
+            write_known_applied_regions: state.write_known_applied_regions,
+            write_attempted_regions: state.write_attempted_regions,
+            stores_with_persistence_evidence: state.stores_with_persistence_evidence,
+            recovery_clean_regions: state.recovery_clean_regions,
+            range_owned: state.range_owned,
+            release_pending: state.release_pending,
             range_released: state.range_released,
         }
     }
@@ -119,16 +141,21 @@ impl From<ModelState> for BridgeState {
 impl BridgeState {
     fn initial() -> Self {
         Self {
-            intent: Intent::NoIntent,
-            intent_observation: IntentObservation::IntentCommitUnknown,
-            home_reconciled: false,
-            home: Home::HomeUnmodified,
-            home_observation: HomeObservation::HomeEffectUnknown,
-            recovery: Recovery::RecoveryClean,
-            obligation: Obligation::Unowned,
-            invalidated: false,
-            range_held: false,
-            terminal_pending_release: false,
+            write_recovery_record: WriteRecoveryRecordState::NoWriteRecoveryRecord,
+            write_recovery_record_commit_observation:
+                WriteRecoveryRecordCommitObservation::CommitUnknown,
+            data_parity_write_state: DataParityWriteState::NoDataParityWrites,
+            data_parity_write_observation: DataParityWriteObservation::NoDataParityWriteObservation,
+            data_parity_write_observation_finalized: false,
+            recovery_state: RecoveryState::RecoveryClean,
+            write_lifecycle: WriteLifecycleState::Unowned,
+            integrity_claims_invalidated: false,
+            write_known_applied_regions: Vec::new(),
+            write_attempted_regions: Vec::new(),
+            stores_with_persistence_evidence: Vec::new(),
+            recovery_clean_regions: Vec::new(),
+            range_owned: false,
+            release_pending: false,
             range_released: false,
         }
     }
@@ -140,54 +167,107 @@ impl BridgeState {
         }
     }
 
-    fn from_machine(machine: &TransactionMachine, home_reconciled: bool) -> Self {
+    fn from_machine(
+        machine: &TransactionMachine,
+        data_parity_write_observation_finalized: bool,
+    ) -> Self {
         let stage = machine.stage();
-        let (intent, intent_observation) = match stage {
-            Stage::AcquireRange => (Intent::NoIntent, IntentObservation::IntentCommitUnknown),
-            Stage::IntentCommit => (
-                Intent::IntentPending,
-                IntentObservation::IntentCommitUnknown,
+        let (write_recovery_record, write_recovery_record_commit_observation) = match stage {
+            Stage::AcquireRange => (
+                WriteRecoveryRecordState::NoWriteRecoveryRecord,
+                WriteRecoveryRecordCommitObservation::CommitUnknown,
             ),
-            Stage::Aborted | Stage::Completed => {
-                (Intent::NoIntent, IntentObservation::IntentCommitUnknown)
-            }
+            Stage::WriteRecoveryRecordCommit => (
+                WriteRecoveryRecordState::WriteRecoveryRecordPending,
+                WriteRecoveryRecordCommitObservation::CommitUnknown,
+            ),
+            Stage::Aborted => (
+                WriteRecoveryRecordState::NoWriteRecoveryRecord,
+                WriteRecoveryRecordCommitObservation::CommitRejected,
+            ),
+            Stage::Completed => (
+                WriteRecoveryRecordState::NoWriteRecoveryRecord,
+                WriteRecoveryRecordCommitObservation::CommitUnknown,
+            ),
             _ => (
-                Intent::IntentDurable,
-                IntentObservation::IntentCommitDurable,
+                WriteRecoveryRecordState::WriteRecoveryRecordDurable,
+                WriteRecoveryRecordCommitObservation::CommitDurable,
             ),
         };
-        let (home, home_observation) = match stage {
-            Stage::WriteSet | Stage::FlushSet => {
-                (Home::HomeVolatile, HomeObservation::HomeEffectUnknown)
-            }
-            Stage::Checkpoint | Stage::Release => {
-                (Home::HomeDurable, HomeObservation::HomeEffectDurable)
-            }
-            Stage::ReconciliationRequired => {
-                (Home::HomeUnknown, HomeObservation::HomeEffectIndeterminate)
-            }
-            _ => (Home::HomeUnmodified, HomeObservation::HomeEffectUnknown),
+        let (data_parity_write_state, data_parity_write_observation) = match stage {
+            Stage::WriteSet | Stage::FlushSet => (
+                DataParityWriteState::DataParityWritesAwaitingDurability,
+                DataParityWriteObservation::NoDataParityWriteObservation,
+            ),
+            Stage::RecoveryClean | Stage::Release => (
+                DataParityWriteState::DataParityWritesDurable,
+                DataParityWriteObservation::DataParityWriteEffectDurable,
+            ),
+            Stage::AwaitingReconciliation => (
+                DataParityWriteState::DataParityWritesUnknown,
+                DataParityWriteObservation::DataParityWriteEffectIndeterminate,
+            ),
+            _ => (
+                DataParityWriteState::NoDataParityWrites,
+                DataParityWriteObservation::NoDataParityWriteObservation,
+            ),
         };
-        let (recovery, obligation, terminal_pending_release) = match stage {
-            Stage::ReconciliationRequired => {
-                (Recovery::RecoveryIndeterminate, Obligation::Handoff, false)
-            }
-            Stage::Aborted => (Recovery::RecoveryClean, Obligation::Aborted, true),
-            Stage::Release => (Recovery::RecoveryClean, Obligation::Terminal, true),
-            Stage::Completed => (Recovery::RecoveryClean, Obligation::Unowned, false),
-            _ => (Recovery::RecoveryDirty, Obligation::InFlight, false),
+        let (recovery_state, write_lifecycle, release_pending) = match stage {
+            Stage::AwaitingReconciliation => (
+                RecoveryState::RecoveryIndeterminate,
+                WriteLifecycleState::InterruptedProcessing,
+                false,
+            ),
+            Stage::Aborted => (
+                RecoveryState::RecoveryClean,
+                WriteLifecycleState::AbortedAwaitingRelease,
+                true,
+            ),
+            Stage::Release => (
+                RecoveryState::RecoveryClean,
+                WriteLifecycleState::CompletedAwaitingRelease,
+                true,
+            ),
+            Stage::Completed => (
+                RecoveryState::RecoveryClean,
+                WriteLifecycleState::Unowned,
+                false,
+            ),
+            _ => (
+                RecoveryState::RecoveryDirty,
+                WriteLifecycleState::NormalProcessing,
+                false,
+            ),
+        };
+        let data_regions = if matches!(
+            stage,
+            Stage::WriteSet | Stage::FlushSet | Stage::RecoveryClean | Stage::Release
+        ) {
+            vec!["data".to_owned()]
+        } else {
+            Vec::new()
+        };
+        let recovery_clean_regions = if stage == Stage::Release {
+            vec!["data".to_owned()]
+        } else {
+            Vec::new()
         };
         Self {
-            intent,
-            intent_observation,
-            home,
-            home_observation,
-            home_reconciled,
-            recovery,
-            obligation,
-            invalidated: machine.state().intent_durable,
-            range_held: machine.range_guard().is_some(),
-            terminal_pending_release,
+            write_recovery_record,
+            write_recovery_record_commit_observation,
+            data_parity_write_state,
+            data_parity_write_observation,
+            data_parity_write_observation_finalized,
+            recovery_state,
+            write_lifecycle,
+            integrity_claims_invalidated: machine.state().write_recovery_record_durable
+                && stage != Stage::Completed,
+            write_known_applied_regions: data_regions.clone(),
+            write_attempted_regions: data_regions,
+            stores_with_persistence_evidence: Vec::new(),
+            recovery_clean_regions,
+            range_owned: machine.range_guard().is_some(),
+            release_pending,
             range_released: false,
         }
     }
@@ -201,7 +281,9 @@ impl State<BridgeDriver> for BridgeState {
             driver
                 .machine
                 .as_ref()
-                .map(|machine| Self::from_machine(machine, driver.home_reconciled))
+                .map(|machine| {
+                    Self::from_machine(machine, driver.data_parity_write_observation_finalized)
+                })
                 .unwrap_or_else(Self::initial)
         })
     }
@@ -215,7 +297,7 @@ impl State<BridgeDriver> for BridgeState {
 struct BridgeDriver {
     machine: Option<TransactionMachine>,
     released: bool,
-    home_reconciled: bool,
+    data_parity_write_observation_finalized: bool,
 }
 
 impl Driver for BridgeDriver {
@@ -231,12 +313,12 @@ impl Driver for BridgeDriver {
     fn step(&mut self, step: &Step) -> Result {
         quint_connect::switch!(step {
             init => self.init(),
-            begin => self.begin()?,
-            acceptIntent => self.accept_intent()?,
-            mutate => self.mutate()?,
-            makeHomeDurable => self.make_home_durable()?,
-            checkpoint => self.checkpoint()?,
-            release => self.release()?,
+            startWrite => self.start_write()?,
+            confirmWriteRecoveryRecordDurable => self.confirm_write_recovery_record_durable()?,
+            attemptDataParityWrite => self.attempt_data_parity_write()?,
+            confirmDataParityWritesDurable => self.confirm_data_parity_writes_durable()?,
+            commitRecoveryClean => self.commit_recovery_clean()?,
+            releaseRange => self.release_range()?,
         })
     }
 }
@@ -245,25 +327,27 @@ impl BridgeDriver {
     fn init(&mut self) {
         self.machine = None;
         self.released = false;
-        self.home_reconciled = false;
+        self.data_parity_write_observation_finalized = false;
     }
-    fn begin(&mut self) -> Result {
+
+    fn start_write(&mut self) -> Result {
         let mut machine = TransactionMachine::new(plan())?;
         machine.apply(ActionResult::RangeAcquired(RangeGuardToken(1)))?;
         self.machine = Some(machine);
         self.released = false;
-        self.home_reconciled = false;
+        self.data_parity_write_observation_finalized = false;
         Ok(())
     }
 
-    fn accept_intent(&mut self) -> Result {
+    fn confirm_write_recovery_record_durable(&mut self) -> Result {
         self.machine_mut()?
-            .apply(ActionResult::RecoveryIntentDurable(
+            .apply(ActionResult::WriteRecoveryRecordDurable(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(3), TopologyEpoch(7)),
             ))?;
         Ok(())
     }
-    fn mutate(&mut self) -> Result {
+
+    fn attempt_data_parity_write(&mut self) -> Result {
         let stage = self.machine_mut()?.stage();
         if stage == Stage::ReadSet {
             let machine = self.machine_mut()?;
@@ -271,28 +355,28 @@ impl BridgeDriver {
             machine.apply(ActionResult::ParityComputed(ComputationResult::complete()))?;
             machine.apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))?;
         }
-        if stage == Stage::ReconciliationRequired {
-            self.home_reconciled = false;
+        if stage == Stage::AwaitingReconciliation {
+            self.data_parity_write_observation_finalized = false;
         }
         Ok(())
     }
 
-    fn make_home_durable(&mut self) -> Result {
+    fn confirm_data_parity_writes_durable(&mut self) -> Result {
         self.machine_mut()?
             .apply(ActionResult::FlushSetComplete(durable_fence()))?;
-        self.home_reconciled = true;
+        self.data_parity_write_observation_finalized = true;
         Ok(())
     }
 
-    fn checkpoint(&mut self) -> Result {
+    fn commit_recovery_clean(&mut self) -> Result {
         self.machine_mut()?
-            .apply(ActionResult::CheckpointCommitted(
+            .apply(ActionResult::RecoveryCleanCommitted(
                 CommittedRecoveryGeneration::new(RecoveryGeneration(4), TopologyEpoch(7)),
             ))?;
         Ok(())
     }
 
-    fn release(&mut self) -> Result {
+    fn release_range(&mut self) -> Result {
         let machine = self.machine_mut()?;
         machine.apply(ActionResult::RangeReleased)?;
         assert!(
@@ -327,11 +411,11 @@ fn plan() -> TransactionPlan {
         .with_watermarks(vec![StoreWatermark::new(store, StoreWriteWatermark(8))])
 }
 
-fn durable_fence() -> FenceEvidence {
+fn durable_fence() -> TransactionPersistenceEvidence {
     let topology = TopologyEpoch(7);
     let generation = RecoveryGeneration(3);
     let store = StoreId(1);
-    FenceEvidence::durable(
+    TransactionPersistenceEvidence::durable(
         FenceCertificate::new(
             topology,
             FenceDomain(9),

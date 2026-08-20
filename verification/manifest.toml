@@ -55,7 +55,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-007-parity-envelope-profiles"
+id = "evidence.parity-envelope-profile-comparison"
 path = "docs/verification/os-007-parity-envelope-profiles.md"
 claim = "The parity-envelope evidence compares bounded experimental profiles and preserves conservative disagreement handling."
 tier = "experimental-profile"
@@ -73,40 +73,40 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.ve-002-quint-recovery-model"
+id = "evidence.write-recovery-lifecycle-model"
 path = "docs/verification/portable-verification-evidence.md"
-claim = "The historical VE-002 canary records bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, fence, checkpoint, crash/loss, abandonment, reconciliation, and mutation boundaries."
+claim = "The historical write-recovery lifecycle canary records bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, persistence evidence, recovery CLEAN, crash/loss, abandonment, reconciliation, and mutation boundaries."
 tier = "portable-bounded-model"
-fault_model = ["uncertain intent commit", "uncertain home effect", "process loss", "abandonment", "missing durable intent", "missing fence coverage", "seeded guard mutation"]
-scope = ["single modeled write obligation", "two affected regions", "two stores", "model MaxDepth 8", "CLI --max-steps 12", "sampled Quint invariants and witnesses"]
+fault_model = ["unknown write-recovery-record commit", "indeterminate data/parity effect", "process loss", "abandonment", "missing durable write-recovery record", "missing persistence-evidence coverage", "seeded guard mutation"]
+scope = ["single modeled write lifecycle", "two affected regions", "two stores", "model finite analysis", "CLI --max-steps 12", "sampled Quint invariants and witnesses"]
 requirements = [
   "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
 ]
 non_claims = [
-  "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, typed fence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
+  "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, persistence-evidence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
   "It does not replace the current requirements that own those non-delegated decisions.",
 ]
 
 [[evidence]]
-id = "evidence.ve-002-quint-authority-repair"
+id = "evidence.write-lifecycle-ownership-repair"
 path = "docs/verification/portable-verification-evidence.md"
-claim = "The VE-002 delegated Quint authority records bounded executable evidence for explicit range release and reuse, pre-mutation abort, terminal ownership, conservative partial-home reconciliation, delegated-source review boundaries, and two seeded Quint Connect traces that each cover release followed by a new begin and second mapped lifecycle."
+claim = "The write-lifecycle ownership repair records bounded executable evidence for explicit range release and reuse, pre-write-recovery-record abort, completed ownership, conservative partial data/parity reconciliation, delegated-source review boundaries, and two seeded Quint Connect traces that each cover release followed by a new startWrite and second mapped lifecycle."
 tier = "portable-bounded-model"
 fault_model = [
-  "terminal begin before release",
+  "completed-write start before release",
   "missing range release",
   "released-range reuse",
-  "volatile home with incomplete mutation coverage",
+  "volatile data/parity write with incomplete coverage",
   "repeated or out-of-order result",
   "delegated-source review omission",
   "model-to-Rust lifecycle mismatch",
 ]
 scope = [
-  "one active write obligation at a time with sequential range reuse",
+  "one active write lifecycle at a time with sequential range reuse",
   "two affected regions and two stores for the finite analysis instance",
   "bounded checker depth 12",
   "sampled Quint invariants and witnesses",
-  "two seeded Quint Connect traces, each covering release followed by a new begin and second mapped lifecycle",
+  "two seeded Quint Connect traces, each covering release followed by a new startWrite and second mapped lifecycle",
   "disposable negative mutations",
 ]
 requirements = [
@@ -115,11 +115,11 @@ requirements = [
 ]
 non_claims = [
   "This is bounded evidence for the current delegated model, not a replacement for the current requirements that own non-delegated decisions.",
-  "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, typed fence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
+  "It does not claim exhaustive model checking, Rust implementation correctness, exact region or checksum mapping, persistence-evidence admissibility, topology, persistence-engine behavior, operation-slot lifetime, frontend behavior, physical durability, or unbounded recovery progress.",
 ]
 
 [[evidence]]
-id = "evidence.os-009-transaction-engine-evidence-comparison"
+id = "evidence.transaction-engine-comparison"
 path = "docs/verification/os-009-transaction-engine-evidence-comparison.md"
 claim = "The transaction comparison records normalized semantic actions and conservative terminal evidence."
 tier = "portable-reference-comparison"
@@ -135,17 +135,17 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-013-healthy-portable-io"
+id = "evidence.healthy-portable-io"
 path = "docs/verification/os-013-healthy-portable-io.md"
 claim = "The healthy portable I/O record covers bounded ordinary-file behavior and keeps frontend and hardware claims gated."
 tier = "portable-file-backed"
 fault_model = ["range I/O failure", "durability-fence uncertainty"]
-scope = ["healthy reads and writes", "flush and checkpoint evidence"]
+scope = ["healthy reads and writes", "flush and recovery CLEAN evidence"]
 requirements = [
   "req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe",
   "req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence",
   "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
-  "req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences",
+  "req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence",
   "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable",
 ]
 non_claims = [
@@ -154,7 +154,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-014-exhaustive-verification-repair"
+id = "evidence.parity-verification-repair"
 path = "docs/verification/os-014-exhaustive-verification-repair.md"
 claim = "The exhaustive verification record separates parity mismatch classification from independently authorized repair."
 tier = "portable-file-backed"
@@ -172,7 +172,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-015-metadata-loss-recovery"
+id = "evidence.metadata-loss-recovery"
 path = "docs/verification/os-015-metadata-loss-recovery.md"
 claim = "The current metadata-loss implementation enumerates the conservative matrix, rejects every certificate-receipt-gated case while no receipt capability exists, and creates audited fresh state only from authorized current evidence."
 tier = "portable-recovery-plus-evaluation-sqlite"
@@ -191,7 +191,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-016-degraded-reads-offline-rebuild"
+id = "evidence.degraded-read-offline-rebuild"
 path = "docs/verification/os-016-degraded-reads-offline-rebuild.md"
 claim = "The degraded-read and offline-rebuild record proves separate-target byte equality within the portable file-backed evidence boundary."
 tier = "portable-macos-file-backed"
@@ -210,7 +210,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-017-checksum-scrub-verified-repair"
+id = "evidence.checksum-scrub-repair"
 path = "docs/verification/os-017-checksum-scrub-verified-repair.md"
 claim = "The checksum scrub and repair record preserves conservative classification, unique-solution authorization, and verified separate targets."
 tier = "portable-file-backed"
@@ -227,7 +227,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-020-macos-bridge-feasibility"
+id = "evidence.macos-bridge-feasibility"
 path = "docs/verification/os-020-macos-bridge-feasibility.md"
 claim = "The macOS bridge spike records regular-file feasibility and explicitly leaves privileged bridge and hardware behavior unresolved."
 tier = "macos-host-feasibility"
@@ -246,7 +246,7 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.os-024-normalized-trace-replay"
+id = "evidence.normalized-trace-replay"
 path = "docs/verification/os-024-normalized-trace-replay.md"
 claim = "The normalized trace replay record demonstrates deterministic event and terminal-state reproduction from a bounded fixture."
 tier = "portable-normalized-trace"
@@ -325,7 +325,7 @@ requirements = [
   "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred",
   "req.volatile-media-simulator.media-state-separates-durable-and-process-visible-effects",
 ]
-evidence = ["evidence.os-009-transaction-engine-evidence-comparison"]
+evidence = ["evidence.transaction-engine-comparison"]
 required_events = ["submitted", "delivered"]
 claims = [
   "The bounded simulator separates acknowledged volatile effects from durable media state.",
@@ -343,16 +343,16 @@ runner = "dwv-trace"
 requirements = [
   "req.normalized-trace-replay.traces-use-a-bounded-canonical-semantic-format",
   "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
-  "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence",
+  "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
 ]
-evidence = ["evidence.os-024-normalized-trace-replay"]
+evidence = ["evidence.normalized-trace-replay"]
 required_events = [
   "open",
   "write",
   "flush",
   "read",
-  "recovery_intent",
-  "checkpoint",
+  "write_recovery_record",
+  "recovery_clean",
   "checksum",
   "degraded_read",
   "rebuild_chunk",
@@ -370,12 +370,12 @@ non_claims = [
 [[evidence]]
 id = "evidence.open-traceable-knowledge"
 path = "docs/verification/open-traceable-knowledge.md"
-claim = "The open-traceable-knowledge completion evidence records one observed Human Guide exercise, one fresh-agent implementation exercise, distinct bounded knowledge retrieval contracts, provider-neutral change impact, and deterministic offline reconstruction."
+claim = "The open-traceable-knowledge completion evidence records one observed DiskWeave Guide exercise, one fresh-agent implementation exercise, distinct bounded knowledge retrieval contracts, provider-neutral change impact, and deterministic offline reconstruction."
 tier = "documentation-acceptance"
 fault_model = ["reader incomprehension", "agent source hunting", "overlapping context retrieval", "whole-component overexpansion", "silent packet truncation", "missing revision baseline", "stale generated state"]
-scope = ["Human Guide sampled usefulness", "fresh-agent bounded context", "fixed knowledge command contracts", "multi-requirement context batching", "change-boundary impact", "offline documentation reconstruction"]
+scope = ["DiskWeave Guide sampled usefulness", "fresh-agent bounded context", "fixed knowledge command contracts", "multi-requirement context batching", "change-boundary impact", "offline documentation reconstruction"]
 requirements = [
-  "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority",
+  "req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority",
   "req.documentation-knowledge-architecture.provenance-is-claim-and-fragment-level",
   "req.documentation-knowledge-architecture.agent-context-is-graph-selected-and-reproducible",
   "req.documentation-knowledge-architecture.agent-knowledge-workflows-use-one-complete-retrieval-path",
@@ -390,10 +390,10 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.m8"
+id = "evidence.integrated-canonical-boundary-acceptance"
 path = "docs/verification/m8.md"
-claim = "The milestone-8 verification record integrates canonical ownership, non-forgeable metadata authorization, canonical request admission, planning isolation, bounded proofs, and a fresh Linux ublk/ext4 acceptance run."
-tier = "integrated-milestone-acceptance"
+claim = "The integrated canonical-boundary acceptance record covers canonical ownership, non-forgeable metadata authorization, canonical request admission, planning isolation, bounded proofs, and a fresh Linux ublk/ext4 acceptance run."
+ tier = "integrated-milestone-acceptance"
 fault_model = ["duplicate semantic ownership", "caller-forgeable recovery authority", "request identity weakening", "historical planning leakage", "frontend and recovery evidence drift"]
 scope = ["canonical semantic ownership", "metadata-loss authorization", "stable-slot request admission", "milestone planning isolation", "bounded model and proof", "ARM64 Linux ublk acceptance"]
 requirements = [
@@ -415,10 +415,10 @@ non_claims = [
 [[evidence]]
 id = "evidence.linux-ublk-ext4-acceptance"
 path = "docs/verification/linux-ublk-ext4-acceptance.md"
-claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, fence, ownership, and frontend-lifetime boundaries."
+claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, persistence-evidence, ownership, and frontend-lifetime boundaries."
 tier = "linux-arm64-file-backed-ublk"
-fault_model = ["unsupported kernel intent", "ownership conflict or process death", "stale publication state", "backing identity drift", "bounded resource exhaustion", "stale or duplicate completion", "trace divergence or abandonment", "incomplete shutdown", "missing recovery authority", "partial or cross-store fence evidence", "mutation crash point"]
-scope = ["ARM64 Linux ublk publication", "ext4 create and persistence workflow", "bounded normalized frontend trace replay", "clean shutdown and restart", "independent data-member readability", "deterministic recovery and fence models"]
+fault_model = ["unsupported kernel intent", "ownership conflict or process death", "stale publication state", "backing identity drift", "bounded resource exhaustion", "stale or duplicate completion", "trace divergence or abandonment", "incomplete shutdown", "missing recovery authority", "partial or cross-store persistence evidence", "mutation crash point"]
+scope = ["ARM64 Linux ublk publication", "ext4 create and persistence workflow", "bounded normalized frontend trace replay", "clean shutdown and restart", "independent data-member readability", "deterministic recovery and persistence-evidence models"]
 requirements = [
   "req.linux-ublk-frontend.linux-prerequisite-probing-is-executable-and-non-destructive",
   "req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics",
@@ -435,11 +435,11 @@ requirements = [
   "req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence",
   "req.store-operation-contracts.store-failures-are-conservative-and-testable",
   "req.dirty-integrity-invalidation.dirty-region-coverage-is-complete-and-checked",
-  "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation",
-  "req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence",
+  "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write",
+  "req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence",
   "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
   "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
-  "req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences",
+  "req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence",
   "req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety",
   "req.file-backed-stores.single-writer-ownership-and-endpoint-aliasing-are-explicit",
   "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
@@ -452,10 +452,10 @@ non_claims = [
 ]
 
 [[evidence]]
-id = "evidence.m9"
+id = "evidence.integrated-operator-publication-acceptance"
 path = "docs/verification/m9.md"
-claim = "The Milestone 9 record integrates bounded production operator observation, recovery preview and fail-closed apply, persisted checksum-baseline admission, exact outcome composition, and actual narrow Linux publication."
-tier = "integrated-milestone-acceptance"
+claim = "The integrated operator-publication acceptance record covers bounded production observation, recovery preview and fail-closed apply, persisted checksum-baseline admission, exact outcome composition, and narrow Linux publication."
+ tier = "integrated-milestone-acceptance"
 fault_model = ["stale operator policy", "missing or unreadable recovery state", "unresolved or uncertain recovery commit", "unavailable lost-custody authority", "incomplete checksum baseline", "ambiguous damage", "admission without publication"]
 scope = ["production operator CLI", "fail-closed metadata-loss assessment and baseline admission", "ordinary-file reopen behavior", "ARM64 Linux narrow ublk publication"]
 requirements = [

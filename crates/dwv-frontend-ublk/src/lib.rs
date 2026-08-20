@@ -345,7 +345,7 @@ pub enum LifecycleState {
     Published,
     AdmissionClosed,
     Draining,
-    ReconciliationRequired,
+    AwaitingReconciliation,
 }
 
 pub struct Lifecycle {
@@ -374,7 +374,7 @@ impl Lifecycle {
                 | (LifecycleState::Published, LifecycleState::AdmissionClosed)
                 | (LifecycleState::AdmissionClosed, LifecycleState::Draining)
                 | (LifecycleState::Draining, LifecycleState::Stopped)
-                | (_, LifecycleState::ReconciliationRequired)
+                | (_, LifecycleState::AwaitingReconciliation)
         );
         if !valid {
             return Err(AdapterError::Conflict(format!(
@@ -427,14 +427,14 @@ pub fn classify_control_access(
 
 pub fn validate_shutdown_evidence(
     drained: bool,
-    checkpointed: bool,
+    recovery_clean: bool,
     endpoint_removed: bool,
 ) -> Result<(), AdapterError> {
-    if drained && checkpointed && endpoint_removed {
+    if drained && recovery_clean && endpoint_removed {
         Ok(())
     } else {
         Err(AdapterError::ReconciliationRequired(
-            "shutdown lacks drain, checkpoint, or endpoint-removal evidence".into(),
+            "shutdown lacks drain, recovery CLEAN, or endpoint-removal evidence".into(),
         ))
     }
 }
@@ -945,6 +945,7 @@ mod tests {
         let first = log.reserve().unwrap();
         log.complete(first, successful_trace_record(1)).unwrap();
         log.mark_reclaimable(first).unwrap();
+
         log.set_retired_records_for_test(u64::MAX - 1);
 
         let renewed = log.reserve().unwrap();
