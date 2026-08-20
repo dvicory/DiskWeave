@@ -1,0 +1,187 @@
+schema = "dwv.semantic-vocabulary.scenario-renames.v1"
+
+# body_sha256 is computed from the approved post-delta scenario body, excluding the heading.
+
+[[scenario]]
+capability = "checksum-plane"
+requirement_id = "req.checksum-plane.validity-is-generation-bound"
+occurrence = 1
+old = "Fenced generation matches"
+new = "Persistence evidence matches the generation"
+body_sha256 = "47350b184442606c19be7bc169f5a8a93622418359162e32ea533a5aae372464"
+
+[[scenario]]
+capability = "checksum-plane"
+requirement_id = "req.checksum-plane.validity-is-generation-bound"
+occurrence = 2
+old = "Volatile or changed evidence"
+new = "Persistence evidence is missing or stale"
+body_sha256 = "7eaac6236ab65d45b4f4e3718ce81e278ec0ab6599705ef73cf2e1c37171a579"
+
+[[scenario]]
+capability = "checksum-plane"
+requirement_id = "req.checksum-plane.full-overwrite-hashing-is-equivalent-to-fenced-readback"
+occurrence = 2
+old = "Partial or volatile overwrite"
+new = "Partial or unproven overwrite"
+body_sha256 = "4b8fc7513501ef72cea846f0a86887a33ccdfd02d79769e762f59f1ba961d8c4"
+
+[[scenario]]
+capability = "architecture-contract"
+requirement_id = "req.architecture-contract.durable-authority-and-uncertainty-are-not-inferred"
+occurrence = 1
+old = "A protected write is acknowledged before a fence"
+new = "Caller observes completion before persistence evidence is available"
+body_sha256 = "8cf24c8c3575b0b10e3c132731cc10191cbed4ce795b95ee16c309d75449c4bc"
+
+[[scenario]]
+capability = "dirty-integrity-invalidation"
+requirement_id = "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write"
+occurrence = 1
+old = "First write crosses clean regions"
+new = "Write targets regions currently marked CLEAN"
+body_sha256 = "7f64511d704605c9f5177fee9ea90ea51f14ca07447ca15c8616359d9c9f3a17"
+
+[[scenario]]
+capability = "dirty-integrity-invalidation"
+requirement_id = "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write"
+occurrence = 2
+old = "Intent commit fails or is uncertain"
+new = "The write-recovery record fails to commit or its outcome is unknown"
+body_sha256 = "b247094b3240d3a0141cc89441abc2d91a25d4a2635d5867cc61ed065df5e34d"
+
+[[scenario]]
+capability = "dirty-integrity-invalidation"
+requirement_id = "req.dirty-integrity-invalidation.failures-and-restart-are-conservative"
+occurrence = 1
+old = "Home write fails after intent"
+new = "A data/parity write fails after the write-recovery record is durable"
+body_sha256 = "8c93789285a4844517d47452b272d4d14548630062af2dac4fbf7682d2e1812d"
+
+[[scenario]]
+capability = "dirty-integrity-invalidation"
+requirement_id = "req.dirty-integrity-invalidation.failures-and-restart-are-conservative"
+occurrence = 2
+old = "Process loss occurs before checkpoint"
+new = "Process exits before recovery state is committed CLEAN"
+body_sha256 = "1459e436e30ba70fc9f4523546bb978abdb6fb98b8843877cced1785036ab722"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.data-parity-write-requires-write-recovery-record"
+occurrence = 2
+old = "Recovery intent commit is rejected before authoritative commit"
+new = "The write-recovery record is rejected before it becomes durable"
+body_sha256 = "ad1f448b5d75d3eca5d327ae5edf84ddf49197701050c763c732758bef89ec6d"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.data-parity-write-requires-write-recovery-record"
+occurrence = 3
+old = "Recovery intent commit observation is lost, corrupt, or indeterminate"
+new = "The write-recovery record's commit outcome cannot be determined"
+body_sha256 = "4f036fbeab2f27009cd88821275716ea6fb3eda1b875fd689306525393e91d7f"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.evaluation-fixtures-cover-candidate-durability-and-reset-boundaries"
+occurrence = 1
+old = "A dirty-intent commit is rejected or uncertain"
+new = "The write-recovery record is rejected or its outcome is unknown"
+body_sha256 = "c028d91438685e5a177f769516bd53964eeb17f519290e8ed8702d1b1bf9351b"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence"
+occurrence = 1
+old = "A region is cleared after valid typed evidence"
+new = "A dirty region is cleared after persistence evidence"
+body_sha256 = "d392af38693bcd06ff2676ed65a87a3a2e48c02b56bf89d4bd3bb69e3b7e4093"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence"
+occurrence = 2
+old = "Volatile completion is supplied as durable authority"
+new = "I/O completion does not prove persistence"
+body_sha256 = "f8df310ac8b085153547b358e6c34f46953ab9498f25f9d1fc5b53f9323e9f38"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations"
+occurrence = 1
+old = "A checkpoint acknowledgement is lost"
+new = "Recovery CLEAN cannot be confirmed"
+body_sha256 = "2edb8769cb0d0b13580be3b55bf951b0e8fdf18252fd0819e578af04c0a15f63"
+
+[[scenario]]
+capability = "recovery-state-semantics"
+requirement_id = "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations"
+occurrence = 5
+old = "Inspection encounters unresolved commit intent"
+new = "Inspection finds an unresolved write-recovery record outcome"
+body_sha256 = "3d8a6c817795a9652bc686529515cd96781f25cb27557648c194ffd76add0330"
+
+[[scenario]]
+capability = "healthy-portable-io"
+requirement_id = "req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety"
+occurrence = 1
+old = "Request is abandoned after intent"
+new = "Request is abandoned after the write-recovery record is durable"
+body_sha256 = "13c48f4d9dee57b0faa63a11e9c6d77ff3996e3a264d78fbb32c34128f2ca01b"
+
+[[scenario]]
+capability = "explicit-transaction-machine"
+requirement_id = "req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions"
+occurrence = 3
+old = "A terminal result is produced"
+new = "A completed or aborted write still requires release"
+body_sha256 = "691c8e828ebf47ac5aeb987b69e33042aae1083f57fd368d375d349443397d84"
+
+[[scenario]]
+capability = "explicit-transaction-machine"
+requirement_id = "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
+occurrence = 2
+old = "A terminal obligation is started again before release"
+new = "A completed or aborted write cannot restart before release"
+body_sha256 = "99ac926a81f08b09fc11cb6f0903639c866bfaae1d7c6d8fa76a2df204a4c436"
+
+[[scenario]]
+capability = "explicit-transaction-machine"
+requirement_id = "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
+occurrence = 3
+old = "A released range starts another obligation"
+new = "A released range starts another write"
+body_sha256 = "43ad995c2fcaaf6b7994287142041f95aadbb9f7794ae9c3f4f5cfacf827df37"
+
+[[scenario]]
+capability = "explicit-transaction-machine"
+requirement_id = "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent"
+occurrence = 6
+old = "Volatile home work is abandoned"
+new = "Request is abandoned before data/parity durability is established"
+body_sha256 = "026a82e2b06b33b0725f54e95da35a7ee252ca5cd6f1e44fcc44e90b83753103"
+
+[[scenario]]
+capability = "documentation-knowledge-architecture"
+requirement_id = "req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority"
+occurrence = 1
+old = "A Human Guide chapter is drafted"
+new = "A DiskWeave Guide chapter is drafted"
+body_sha256 = "c3f13d5398471f7040d1100825b4c6829a36cd9227579d417805344c4f8cfec1"
+
+[[scenario]]
+capability = "transaction-engine-evidence-comparison"
+requirement_id = "req.transaction-engine-evidence-comparison.deterministic-fault-schedules-cover-irreversible-boundaries"
+occurrence = 1
+old = "Failure before durable intent"
+new = "Failure occurs before the write-recovery record is durable"
+body_sha256 = "75441c798823f84729511513d43cf81fbc617b06f3b5becc0ce61ea2d6bb53ee"
+
+[[scenario]]
+capability = "parity-envelope-profiles"
+requirement_id = "req.parity-envelope-profiles.session-transitions-have-ordered-recovery-semantics"
+occurrence = 1
+old = "Dirty state precedes protected mutation"
+new = "Dirty recovery state precedes data/parity writes"
+body_sha256 = "f9616ba427f2d531293945dbf5ebfe0a3c5f32deeb5553844a271afc632da896"

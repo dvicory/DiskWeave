@@ -1,0 +1,167 @@
+schema = "dwv.semantic-vocabulary.id-renames.v1"
+
+# These are one-time migration identities, not aliases accepted after cutover.
+
+[[requirement]]
+old = "req.dirty-integrity-invalidation.durable-intent-precedes-protected-mutation"
+new = "req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write"
+
+[[requirement]]
+old = "req.dirty-integrity-invalidation.checkpoint-and-clear-require-fence-evidence"
+new = "req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence"
+
+[[requirement]]
+old = "req.recovery-state-semantics.home-mutation-requires-durable-dirty-and-integrity-invalidation-intent"
+new = "req.recovery-state-semantics.data-parity-write-requires-write-recovery-record"
+
+[[requirement]]
+old = "req.recovery-state-semantics.clean-and-valid-claims-require-typed-fence-evidence"
+new = "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence"
+
+[[requirement]]
+old = "req.healthy-portable-io.durable-completion-and-clean-checkpoint-require-fences"
+new = "req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence"
+
+[[requirement]]
+old = "req.checksum-plane.invalidation-precedes-protected-mutation"
+new = "req.checksum-plane.invalidation-precedes-data-parity-write"
+
+[[requirement]]
+old = "req.documentation-knowledge-architecture.human-curriculum-is-pedagogical-intent-not-semantic-authority"
+new = "req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority"
+
+[[verification]]
+old = "VE-001"
+new = "verify.bounded-arithmetic"
+
+[[verification]]
+old = "VE-002"
+new = "verify.write-recovery-lifecycle"
+
+[[verification]]
+old = "VE-003"
+new = "verify.concurrency-schedules"
+
+[[verification]]
+old = "VE-004"
+new = "verify.production-io-simulation"
+
+[[verification]]
+old = "VE-005"
+new = "verify.sustained-fuzz-corpus"
+
+[[verification_claim]]
+old = "VP-001"
+new = "verify.claim.parity-exact"
+
+[[verification_claim]]
+old = "VP-002"
+new = "verify.claim.checked-addressing"
+
+[[verification_claim]]
+old = "VP-003"
+new = "verify.claim.write-recovery-before-data-parity-write"
+
+[[verification_claim]]
+old = "VP-004"
+new = "verify.claim.no-false-clean"
+
+[[verification_claim]]
+old = "VP-005"
+new = "verify.claim.uncertainty-remains-explicit"
+
+[[verification_claim]]
+old = "VP-006"
+new = "verify.claim.integrity-evidence-binds-generation"
+
+[[verification_claim]]
+old = "VP-007"
+new = "verify.claim.consequential-work-remains-owned"
+
+[[verification_claim]]
+old = "VP-008"
+new = "verify.claim.conservative-deterministic-recovery"
+
+[[verification_claim]]
+old = "VP-009"
+new = "verify.claim.topology-binding-stable"
+
+[[verification_claim]]
+old = "VP-010"
+new = "verify.claim.hostile-input-safe-formats"
+
+[[verification_claim]]
+old = "VP-011"
+new = "verify.claim.reproducible-failure-evidence"
+
+[[verification_claim]]
+old = "VP-012"
+new = "verify.claim.claims-stay-within-evidence"
+
+[[verification_claim]]
+old = "VP-013"
+new = "verify.claim.role-neutral-store-resources"
+
+[[verification_claim]]
+old = "VP-014"
+new = "verify.claim.topology-independent-codec"
+
+[[verification_claim]]
+old = "VP-015"
+new = "verify.claim.reject-unknown-formats"
+
+[[verification_claim]]
+old = "VP-016"
+new = "verify.claim.no-speculative-production-abstractions"
+
+[[evidence]]
+old = "evidence.os-007-parity-envelope-profiles"
+new = "evidence.parity-envelope-profile-comparison"
+
+[[evidence]]
+old = "evidence.ve-002-quint-recovery-model"
+new = "evidence.write-recovery-lifecycle-model"
+
+[[evidence]]
+old = "evidence.ve-002-quint-authority-repair"
+new = "evidence.write-lifecycle-ownership-repair"
+
+[[evidence]]
+old = "evidence.os-009-transaction-engine-evidence-comparison"
+new = "evidence.transaction-engine-comparison"
+
+[[evidence]]
+old = "evidence.os-013-healthy-portable-io"
+new = "evidence.healthy-portable-io"
+
+[[evidence]]
+old = "evidence.os-014-exhaustive-verification-repair"
+new = "evidence.parity-verification-repair"
+
+[[evidence]]
+old = "evidence.os-015-metadata-loss-recovery"
+new = "evidence.metadata-loss-recovery"
+
+[[evidence]]
+old = "evidence.os-016-degraded-reads-offline-rebuild"
+new = "evidence.degraded-read-offline-rebuild"
+
+[[evidence]]
+old = "evidence.os-017-checksum-scrub-verified-repair"
+new = "evidence.checksum-scrub-repair"
+
+[[evidence]]
+old = "evidence.os-020-macos-bridge-feasibility"
+new = "evidence.macos-bridge-feasibility"
+
+[[evidence]]
+old = "evidence.os-024-normalized-trace-replay"
+new = "evidence.normalized-trace-replay"
+
+[[evidence]]
+old = "evidence.m8"
+new = "evidence.integrated-canonical-boundary-acceptance"
+
+[[evidence]]
+old = "evidence.m9"
+new = "evidence.integrated-operator-publication-acceptance"

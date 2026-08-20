@@ -1,0 +1,19 @@
+schema = "dwv.semantic-vocabulary.canonical-text-renames.v1"
+
+# Exact one-time replacements for canonical explanatory text outside OpenSpec
+# requirement blocks. These are reviewed migration data, not permanent aliases.
+
+[[text]]
+path = "openspec/specs/dirty-integrity-invalidation/spec.md"
+old = "This capability provides the portable dirty-region protocol that atomically invalidates affected integrity evidence before protected home mutation and clears state only with generation-matched fence proof."
+new = "This capability provides the portable dirty-region protocol that invalidates affected integrity evidence before data/parity writes and clears recovery state only with matching persistence evidence."
+
+[[text]]
+path = "openspec/specs/explicit-transaction-machine/spec.md"
+old = "This capability provides an auditable reference state machine that orders protected home-media actions around durable recovery intent, fences, checkpoints, abandonment, and crash reconciliation."
+new = "This capability provides an auditable reference state machine for write-recovery records, data/parity writes, persistence evidence, recovery CLEAN, interrupted processing, reconciliation, and explicit release."
+
+[[text]]
+path = "openspec/specs/recovery-state-semantics/spec.md"
+old = "Recovery state is a durable protocol authority, not a mirror of home-media bytes. It records the evidence and generations needed to decide whether future writes, clean transitions, and integrity claims are allowed. SQLite may implement this interface later, but SQL tables and row IDs SHALL not define the portable semantics."
+new = "Recovery state is durable protocol authority, not a mirror of data/parity bytes. It records the evidence and generations needed to decide whether future writes, recovery CLEAN transitions, and integrity claims are allowed. SQLite may implement this interface later, but SQL tables and row IDs SHALL not define the portable semantics."

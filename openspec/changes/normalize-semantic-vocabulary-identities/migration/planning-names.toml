@@ -1,0 +1,772 @@
+schema = "dwv.semantic-vocabulary.planning-names.v1"
+
+# Historical codes remain only as migration/provenance keys. "name" is the descriptive current record name.
+
+[[roadmap_item]]
+old = "OS-000"
+name = "Terminology, invariants, accepted decisions, provisional implementation choices, validation questions, semantic boundaries, format candidates, verification claims, gate map, and implementation-agent contract."
+
+[[roadmap_item]]
+old = "OS-001"
+name = "Normalized block operations, frontend events, ordering/flush/FUA/abandonment semantics, limits, and conformance fixtures."
+
+[[roadmap_item]]
+old = "OS-002"
+name = "Role-neutral `RandomAccessStore`, capabilities/evidence levels, persistence-evidence vocabulary, identity observations, safety profiles, and adapter tests."
+
+[[roadmap_item]]
+old = "OS-003"
+name = "Reference XOR math, checked geometry, future P/Q seam, independent golden/property vectors, and topology-free dependency tests."
+
+[[roadmap_item]]
+old = "OS-004"
+name = "Deterministic durable/volatile/pending/completion simulator, crash/power distinction, fault schedules, minimization, and core invariants."
+
+[[roadmap_item]]
+old = "OS-005"
+name = "`RecoveryStateStore` mutation vocabulary, guarded atomic groups, session/topology/maintenance semantics, SQLite alternatives/configuration evidence, migration/corruption behavior, and control-state separation."
+
+[[roadmap_item]]
+old = "OS-006"
+name = "Anchorless topology/identity-evidence model, clone refusal, immutable snapshots, assignment generations, and transition plans."
+
+[[roadmap_item]]
+old = "OS-007"
+name = "Bare/envelope/envelope+bitmap parity-profile comparison, exact-capacity accounting, independent decoder, hostile/torn/disagreeing copies, migration, and measured choice/fallback."
+
+[[roadmap_item]]
+old = "OS-008"
+name = "Small explicit parity-write transaction oracle with normalized actions, failures, crash schedules, and final lifecycle states."
+
+[[roadmap_item]]
+old = "OS-009"
+name = "Real pinned `procmachines` implementation of the same protocol, trace/state equivalence, mutation detection, resource benchmark, and selection/fallback ADR."
+
+[[roadmap_item]]
+old = "OS-010"
+name = "Dirty-region, checksum invalidation, write generations, scoped persistence evidence, guarded recovery CLEAN, abandonment, uncertainty, and recovery protocol."
+
+[[roadmap_item]]
+old = "OS-011"
+name = "Data/P/Q checksum targets, profile/generation records, persistence-evidence validity, asynchronous revalidation, migration, and repair-evidence semantics."
+
+[[roadmap_item]]
+old = "OS-012"
+name = "File-backed data/parity stores, locks, stable identity, sparse/capability characterization, recovery/control DB placement, and injected failures."
+
+[[roadmap_item]]
+old = "OS-013"
+name = "End-to-end healthy read/write/flush/reopen through normalized requests, transaction machine, executor, stores, recovery, integrity, and bounded resources."
+
+[[roadmap_item]]
+old = "OS-014"
+name = "Exhaustive parity verification, mismatch classification, independent evidence, zero-write matching ranges, and evidence-gated selective candidate generation."
+
+[[roadmap_item]]
+old = "OS-015"
+name = "Formal metadata-loss matrix, all-data recovery, envelope/manifest use, clone/parity ambiguity, new-baseline workflow, and safe refusal."
+
+[[roadmap_item]]
+old = "OS-016"
+name = "Proven-clean degraded reads, resumable separate-target rebuild, target readback verification, and topology promotion."
+
+[[roadmap_item]]
+old = "OS-017"
+name = "CLI scrub, data/parity/ambiguous/conflicting classification, identity/generation-bound repair plans, source preservation, failure/interruption/stale-plan evidence."
+
+[[roadmap_item]]
+old = "OS-020"
+name = "FSKit/macFUSE/DiskImages fixed-size virtual-file feasibility, operation/sync/cache/disconnect trace, entitlements, and ADR."
+
+[[roadmap_item]]
+old = "OS-021"
+name = "macOS frontend translating virtual-file operations to normalized requests with fixed size, backpressure, alias prevention, and clean detach/restart."
+
+[[roadmap_item]]
+old = "OS-022"
+name = "Full APFS healthy/degraded/rebuild/direct-attach/metadata-loss/clone/mismatch acceptance suite."
+
+[[roadmap_item]]
+old = "OS-023"
+name = "macOS synchronization and durability characterization with exact `portable-demo` claims and unsupported semantics."
+
+[[roadmap_item]]
+old = "OS-024"
+name = "Bounded versioned privacy-safe trace export/render/replay through `dwv demo`, deterministic final states, malformed/oversized rejection, migration, and minimized failures."
+
+[[roadmap_item]]
+old = "OS-030"
+name = "ublk UAPI/library feasibility, supported kernels, operation/flag/limit/recovery conformance, resource baseline, and mount-namespace proof."
+
+[[roadmap_item]]
+old = "OS-031"
+name = "Linux operation-slot/io_uring executor, generational buffers, fanout, CQE aggregation, cancellation/drain/uncertainty, and fallback adapter."
+
+[[roadmap_item]]
+old = "OS-032"
+name = "Coherent multi-slot ublk group, all-or-nothing assembly, quiescence, daemon recovery, and no unsafe reissue."
+
+[[roadmap_item]]
+old = "OS-033"
+name = "Sanitized Linux trace capture from fio/fsx, ext4/XFS, dm-crypt, mergerfs, databases, sparse/media workloads, and fixture promotion."
+
+[[roadmap_item]]
+old = "OS-034"
+name = "ext4/XFS, encryption, mergerfs, sparse/mmap/fsync, workload, UUID/automount, and direct-recovery certification."
+
+[[roadmap_item]]
+old = "OS-035"
+name = "NixOS/systemd/udev/mount-namespace lifecycle, boot/shutdown/recovery ordering, resource caps, and failure drills."
+
+[[roadmap_item]]
+old = "OS-036"
+name = "Linux and physical flush/FUA/cache/identity probes with persisted evidence and safety-profile gating."
+
+[[roadmap_item]]
+old = "OS-037"
+name = "Production single-parity release candidate with sustained verified workloads, security/observability, and support matrix."
+
+[[roadmap_item]]
+old = "OS-040"
+name = "Optional recovery-state replica protocol and replica-set transitions, only if required."
+
+[[roadmap_item]]
+old = "OS-041"
+name = "Journal versus PPL ADR and formal/simulator model."
+
+[[roadmap_item]]
+old = "OS-042"
+name = "Selected journal/PPL implementation, replay/checkpoint/migration, and destructive evidence."
+
+[[roadmap_item]]
+old = "OS-043"
+name = "Expanded checksum/scrub/repair profiles and storage policy."
+
+[[roadmap_item]]
+old = "OS-044"
+name = "Degraded writes with every missing-role case, durable absent-slot representation, replay/rebuild, and extra-failure policy."
+
+[[roadmap_item]]
+old = "OS-045"
+name = "Dual P/Q field/profile/position/tail mapping, independent vectors/decoder, capacity, and migration."
+
+[[roadmap_item]]
+old = "OS-046"
+name = "Online build/check/scrub/rebuild with concurrent-write reconciliation, resumable checkpoints, and QoS."
+
+[[roadmap_item]]
+old = "OS-050"
+name = "Namespace semantics contract."
+
+[[roadmap_item]]
+old = "OS-051"
+name = "Pure whole-file policy matching and logical-slot selection."
+
+[[roadmap_item]]
+old = "OS-052"
+name = "FUSE adapter and filesystem conformance."
+
+[[roadmap_item]]
+old = "OS-053"
+name = "Passthrough/transport benchmark and claim boundaries."
+
+[[roadmap_item]]
+old = "OS-054"
+name = "Safe mover/rebalance, staging/protection states, and crash recovery."
+
+[[capability]]
+old = "C0a"
+name = "Assess post-gap authority without mutation"
+
+[[capability]]
+old = "C0b"
+name = "Explain full recovery and claim status"
+
+[[capability]]
+old = "C1"
+name = "Use ordinary members through one mediated service"
+
+[[capability]]
+old = "C2"
+name = "Restart a complete array after a custody gap"
+
+[[capability]]
+old = "C3"
+name = "Restore current protection in background"
+
+[[capability]]
+old = "C4"
+name = "Read or rebuild after a known loss"
+
+[[capability]]
+old = "C5"
+name = "Repair or change an array safely"
+
+[[capability]]
+old = "C6"
+name = "Adopt selected present data into a new lineage"
+
+[[capability]]
+old = "C7"
+name = "Retain, restore, or retire historical claims"
+
+[[capability]]
+old = "C8"
+name = "Recover and verify with independent tools"
+
+[[capability]]
+old = "C8a"
+name = "Inspect recovery state independently without mutation"
+
+[[capability]]
+old = "C8b"
+name = "Verify a bounded parity equation independently"
+
+[[semantic_boundary]]
+old = "U01"
+name = "Read-only post-gap lineage/custody/basis assessment"
+
+[[semantic_boundary]]
+old = "U02"
+name = "Broader epoch/basis/history/unknown/claim-lifetime status"
+
+[[semantic_boundary]]
+old = "U03"
+name = "Typed store-scoped stabilization, durable epoch admission, and scan-independent publication"
+
+[[semantic_boundary]]
+old = "U04"
+name = "Fresh-basis foreground write/currentization for `Prior` or `Unprotected` ranges"
+
+[[semantic_boundary]]
+old = "U05"
+name = "Proof-based reconciliation of `Indeterminate` basis"
+
+[[semantic_boundary]]
+old = "U06"
+name = "Separately authorized present-data rebaseline of `Indeterminate` basis"
+
+[[semantic_boundary]]
+old = "U07"
+name = "Global coded-range coordination across different member operations"
+
+[[semantic_boundary]]
+old = "U08"
+name = "Concurrent recovery-state clearing over a closed write set"
+
+[[semantic_boundary]]
+old = "U09"
+name = "Background rollover lifecycle, progress, restart, failure, and completion"
+
+[[semantic_boundary]]
+old = "U10"
+name = "Cross-operation fairness and starvation limits"
+
+[[semantic_boundary]]
+old = "U11"
+name = "Portable shutdown, endpoint withdrawal, and claim-release ordering"
+
+[[semantic_boundary]]
+old = "U12"
+name = "Long-running job identity, resume/cancel, and correctness cursor"
+
+[[semantic_boundary]]
+old = "U13"
+name = "Historical artifact roles and coherent named recovery points"
+
+[[semantic_boundary]]
+old = "U14"
+name = "Baseline rule that an advertised recovery claim cannot outlive required material"
+
+[[semantic_boundary]]
+old = "U15"
+name = "Positive retention extent, replication, expiry, and garbage-collection defaults"
+
+[[semantic_boundary]]
+old = "U16"
+name = "Authorization classes and exact plans for exceptional destructive authority changes"
+
+[[semantic_boundary]]
+old = "U17"
+name = "Historical restore, named views, and provenance-preserving salvage release scope"
+
+[[semantic_boundary]]
+old = "U18"
+name = "Explicit new-lineage adoption"
+
+[[semantic_boundary]]
+old = "U19"
+name = "Prior-lineage recovery authority after metadata loss"
+
+[[semantic_boundary]]
+old = "U20"
+name = "Topology/profile transitions under range-local basis"
+
+[[semantic_boundary]]
+old = "U21"
+name = "Whole-file namespace and placement semantics"
+
+[[semantic_boundary]]
+old = "U22"
+name = "Cross-member mover transaction"
+
+[[semantic_boundary]]
+old = "U23"
+name = "Staging/tier protection-status semantics"
+
+[[semantic_boundary]]
+old = "U24"
+name = "Optional encryption integration surface"
+
+[[semantic_boundary]]
+old = "U25"
+name = "Baseline deployment/startup/shutdown dependency ordering"
+
+[[semantic_boundary]]
+old = "U26a"
+name = "Independent read-only recovery-state inspection"
+
+[[semantic_boundary]]
+old = "U26b"
+name = "Independent equation verification, current parity build, candidate export, recovery-plan explanation, migration, and damaged/unknown drills"
+
+[[semantic_boundary]]
+old = "U27"
+name = "Stable-format graduation claim gate"
+
+[[semantic_boundary]]
+old = "U28"
+name = "P/Q production profile and exact codeword coherence"
+
+[[semantic_boundary]]
+old = "U29"
+name = "Strict pre-publication verification/currentization"
+
+[[semantic_boundary]]
+old = "U30"
+name = "Managed-member profile"
+
+[[semantic_boundary]]
+old = "U31"
+name = "Certified custody-continuity profile"
+
+[[semantic_boundary]]
+old = "U32"
+name = "Shadow-history profile"
+
+[[semantic_boundary]]
+old = "U33"
+name = "Mediated standalone read/write sessions"
+
+[[semantic_boundary]]
+old = "U34"
+name = "Production degraded writes"
+
+[[semantic_boundary]]
+old = "U35"
+name = "Live macOS bridge"
+
+[[semantic_boundary]]
+old = "U36"
+name = "Offline-rebuild record capacity, retirement, and lifetime exhaustion"
+
+[[semantic_boundary]]
+old = "U37"
+name = "Mounted-service trace continuity and renewable diagnostic retention"
+
+[[semantic_boundary]]
+old = "U38"
+name = "Data/parity persistence-evidence capacity, compacted coverage, and retirement"
+
+[[semantic_boundary]]
+old = "U39"
+name = "Finite reusable identity exhaustion and reset domains"
+
+[[semantic_boundary]]
+old = "U40"
+name = "Recovery-manifest representability under retained semantic state"
+
+[[semantic_review_result]]
+old = "R1"
+name = "Post-gap observational authority"
+
+[[semantic_review_result]]
+old = "R2"
+name = "Shared coded-range coordination"
+
+[[semantic_review_result]]
+old = "R3"
+name = "Concurrent recovery-state clearing"
+
+[[semantic_review_result]]
+old = "R4"
+name = "Long-running job lifecycle"
+
+[[semantic_review_result]]
+old = "R5"
+name = "Independent recovery-state inspection"
+
+[[semantic_review_result]]
+old = "R6"
+name = "Offline-rebuild record capacity and retirement"
+
+[[semantic_review_result]]
+old = "R7"
+name = "Long-horizon finite-resource audit"
+
+[[architecture_invariant]]
+old = "A01"
+name = "arch.diskweave.conventional-member-block-parity"
+
+[[architecture_invariant]]
+old = "A02"
+name = "arch.diskweave.portable-semantics-use-role-neutral-substrates"
+
+[[architecture_invariant]]
+old = "A03"
+name = "arch.diskweave.authority-dimensions-remain-distinct"
+
+[[architecture_invariant]]
+old = "A04"
+name = "arch.diskweave.identity-ambiguity-fails-closed"
+
+[[architecture_invariant]]
+old = "A05"
+name = "arch.diskweave.writable-service-has-one-mediated-writer"
+
+[[architecture_invariant]]
+old = "A06"
+name = "arch.diskweave.custody-gaps-open-new-protection-epochs"
+
+[[architecture_invariant]]
+old = "A07"
+name = "arch.diskweave.unproved-lineage-requires-explicit-new-lineage"
+
+[[architecture_invariant]]
+old = "A08"
+name = "arch.diskweave.protection-basis-is-range-local-and-role-specific"
+
+[[architecture_invariant]]
+old = "A09"
+name = "arch.diskweave.current-protection-gates-cross-member-propagation"
+
+[[architecture_invariant]]
+old = "A10"
+name = "arch.diskweave.recovery-meaning-is-explicit-and-unmixed"
+
+[[architecture_invariant]]
+old = "A11"
+name = "arch.diskweave.historical-evidence-remains-generation-bound"
+
+[[architecture_invariant]]
+old = "A12"
+name = "arch.diskweave.algebraic-possibility-is-not-authority"
+
+[[architecture_invariant]]
+old = "A13"
+name = "arch.diskweave.recovery-preserves-source-evidence"
+
+[[architecture_invariant]]
+old = "A14"
+name = "arch.diskweave.recovery-claims-do-not-outlive-required-material"
+
+[[architecture_invariant]]
+old = "A15"
+name = "arch.diskweave.crash-safety-is-evidence-ordered"
+
+[[architecture_invariant]]
+old = "A16"
+name = "arch.diskweave.abandonment-does-not-end-operation-ownership"
+
+[[architecture_invariant]]
+old = "A17"
+name = "arch.diskweave.correctness-resources-are-bounded-and-observable"
+
+[[architecture_invariant]]
+old = "A18"
+name = "arch.diskweave.semantic-granularities-remain-independent"
+
+[[architecture_invariant]]
+old = "A19"
+name = "arch.diskweave.claims-remain-evidence-tier-specific"
+
+[[architecture_invariant]]
+old = "A20"
+name = "arch.diskweave.format-interpretation-fails-closed"
+
+[[architecture_invariant]]
+old = "A21"
+name = "arch.diskweave.stable-format-claims-require-independent-recovery"
+
+[[accepted_decision]]
+old = "D-001"
+name = "DiskWeave is a portable parity block engine below conventional per-member filesystems, not a custom filesystem."
+
+[[accepted_decision]]
+old = "D-002"
+name = "Each healthy data payload remains an ordinary independently readable image."
+
+[[accepted_decision]]
+old = "D-003"
+name = "Data members contain no required DiskWeave metadata, sidecar, or partition."
+
+[[accepted_decision]]
+old = "D-004"
+name = "ublk, FSKit, io_uring, SQLite, `procmachines`, runtimes, codecs, and checksum crates remain behind replaceable seams."
+
+[[accepted_decision]]
+old = "D-005"
+name = "Array, slot, physical store, coding position, assignment, and topology epoch identities are distinct."
+
+[[accepted_decision]]
+old = "D-006"
+name = "Identity uses multiple observations; clone/assignment ambiguity blocks writes."
+
+[[accepted_decision]]
+old = "D-007"
+name = "Logical transaction and backend resource lifetimes are separate."
+
+[[accepted_decision]]
+old = "D-008"
+name = "Write-recovery coverage precedes data/parity writes; persistence evidence precedes recovery CLEAN."
+
+[[accepted_decision]]
+old = "D-009"
+name = "Data and every parity role are checksum targets; parity cleanliness and integrity coverage are separate."
+
+[[accepted_decision]]
+old = "D-010"
+name = "Checksum validity is generation-bound and requires matching persistence evidence."
+
+[[accepted_decision]]
+old = "D-011"
+name = "Sampling never establishes `CLEAN`."
+
+[[accepted_decision]]
+old = "D-012"
+name = "Automatic repair requires a unique result from verified-good evidence and target readback."
+
+[[accepted_decision]]
+old = "D-013"
+name = "`array.sqlite3` loss never destroys intact data; all-data recovery can establish a new topology/baseline."
+
+[[accepted_decision]]
+old = "D-014"
+name = "The first production release prohibits writes when a required data/parity role is unavailable."
+
+[[accepted_decision]]
+old = "D-015"
+name = "Runtime and persistent granularities remain independent."
+
+[[accepted_decision]]
+old = "D-016"
+name = "Full verification is distinct from parity rewrite; matching ranges require no writes."
+
+[[accepted_decision]]
+old = "D-017"
+name = "Backing and exported endpoints cannot alias while active."
+
+[[accepted_decision]]
+old = "D-018"
+name = "Simulator, file-backed, macOS, Linux, and hardware evidence establish different claims."
+
+[[accepted_decision]]
+old = "D-019"
+name = "No stable format without independent recovery tools and migration evidence."
+
+[[accepted_decision]]
+old = "D-020"
+name = "Routine reversible implementation choices are delegated to agents."
+
+[[accepted_decision]]
+old = "D-021"
+name = "Consequential work remains owned until final resolution, reconciliation, or durable transfer of recovery responsibility."
+
+[[accepted_decision]]
+old = "D-022"
+name = "Task, future, or frontend disappearance is not rollback or a final result."
+
+[[accepted_decision]]
+old = "D-023"
+name = "`dwv-sim` remains the domain simulator; general deterministic I/O runtimes only complement it."
+
+[[accepted_decision]]
+old = "D-024"
+name = "Normalized semantic traces are the common portable regression artifact; producer witnesses remain tool-scoped and retained."
+
+[[accepted_decision]]
+old = "D-025"
+name = "Verification tools may not force a general runtime/effect system, transaction rewrite, CLI redesign, or format change."
+
+[[accepted_decision]]
+old = "D-026"
+name = "The primary abstract model is independent of production Rust, records bounds and fairness, translates counterexamples to simulator scenarios, and uses the maintained write-recovery lifecycle model as delegated authority."
+
+[[accepted_decision]]
+old = "D-027"
+name = "Persistence durability and logical protection policy are distinct; current `BlockRequest` carries only durability semantics."
+
+[[accepted_decision]]
+old = "D-028"
+name = "Physical stores are role-neutral; logical roles and coding positions are topology bindings."
+
+[[accepted_decision]]
+old = "D-029"
+name = "Codec primitives consume explicit profiles/positions/shards and are independent of topology, stores, and placement."
+
+[[accepted_decision]]
+old = "D-030"
+name = "Operation-slot/executor ownership is role-neutral."
+
+[[accepted_decision]]
+old = "D-031"
+name = "The low-level durable/volatile/completion media model is independent of parity/SQLite policy; a physical crate split is optional."
+
+[[accepted_decision]]
+old = "D-032"
+name = "Namespace placement is deterministic whole-file logical-slot selection, not an extent allocator or per-object protection mechanism."
+
+[[accepted_decision]]
+old = "D-033"
+name = "Persistent formats identify the DiskWeave block-parity family and reject incompatible interpretation."
+
+[[accepted_decision]]
+old = "D-034"
+name = "No speculative allocator, object graph, universal transaction framework, protection API, or placeholder crate is introduced without a concrete accepted consumer."
+
+[[accepted_decision]]
+old = "D-035"
+name = "Any product that owns filesystem namespace or allocation and changes the recoverability contract requires a separate approved architecture and format; it is not a hidden mode of DiskWeave block parity."
+
+[[provisional_choice]]
+old = "P-001"
+name = "ublk Linux frontend"
+
+[[provisional_choice]]
+old = "P-002"
+name = "io_uring Linux executor"
+
+[[provisional_choice]]
+old = "P-003"
+name = "`procmachines` transaction implementation"
+
+[[provisional_choice]]
+old = "P-004"
+name = "SQLite `array.sqlite3`"
+
+[[provisional_choice]]
+old = "P-005"
+name = "Small redundant parity envelope"
+
+[[provisional_choice]]
+old = "P-006"
+name = "BLAKE3-256 integrity profile"
+
+[[provisional_choice]]
+old = "P-007"
+name = "FSKit-first macOS raw-file bridge"
+
+[[provisional_choice]]
+old = "P-008"
+name = "mergerfs initial namespace"
+
+[[provisional_choice]]
+old = "P-009"
+name = "Module-level substrate/protocol separation"
+
+[[provisional_choice]]
+old = "P-010"
+name = "Parameterized Quint model for the bounded abstract transaction/recovery relation"
+
+[[validation_question]]
+old = "V-001"
+name = "Which parity-envelope/reserve profile is justified?"
+
+[[validation_question]]
+old = "V-002"
+name = "Which SQLite configuration meets the selected profile?"
+
+[[validation_question]]
+old = "V-003"
+name = "Does `procmachines` earn production use?"
+
+[[validation_question]]
+old = "V-004"
+name = "Which macOS bridge correctly supports DiskImages/APFS?"
+
+[[validation_question]]
+old = "V-005"
+name = "Which ublk/io_uring topology is efficient and safe?"
+
+[[validation_question]]
+old = "V-006"
+name = "Which P/Q profile/mapping becomes stable?"
+
+[[validation_question]]
+old = "V-007"
+name = "Is journal/PPL worth its complexity?"
+
+[[validation_question]]
+old = "V-008"
+name = "Is application-level recovery replication needed?"
+
+[[validation_question]]
+old = "V-009"
+name = "Do current store, codec, executor, and simulator dependencies violate the accepted role-neutral substrate boundaries?"
+
+[[validation_question]]
+old = "V-010"
+name = "Which checksum extent/profile is operationally best?"
+
+[[validation_question]]
+old = "V-011"
+name = "What exact ownership-continuity evidence permits scan-free clean-envelope recovery?"
+
+[[format_candidate]]
+old = "F-001"
+name = "data payload mapping"
+
+[[format_candidate]]
+old = "F-002"
+name = "identity semantics"
+
+[[format_candidate]]
+old = "F-003"
+name = "XOR parity mapping"
+
+[[format_candidate]]
+old = "F-004"
+name = "P/Q profile"
+
+[[format_candidate]]
+old = "F-005"
+name = "parity payload boundaries"
+
+[[format_candidate]]
+old = "F-006"
+name = "parity envelope"
+
+[[format_candidate]]
+old = "F-007"
+name = "recovery-state semantics"
+
+[[format_candidate]]
+old = "F-008"
+name = "exported recovery manifest"
+
+[[format_candidate]]
+old = "F-009"
+name = "integrity profile"
+
+[[format_candidate]]
+old = "F-010"
+name = "journal/PPL"
+
+[[format_candidate]]
+old = "F-011"
+name = "normalized trace/scenario"
+
+[[format_candidate]]
+old = "F-012"
+name = "product-format family discriminator"
+
