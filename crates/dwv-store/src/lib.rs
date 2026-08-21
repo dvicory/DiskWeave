@@ -1043,17 +1043,114 @@ impl AdmissionController {
         *usage += 1;
         Ok(())
     }
+    fn try_acquire_exact(&mut self, requested: ResourceUsage) -> Result<(), AdmissionError> {
+        for (resource, needed, limit, in_use) in [
+            (
+                ResourceKind::OperationSlots,
+                requested.operation_slots,
+                self.limits.operation_slots,
+                self.usage.operation_slots,
+            ),
+            (
+                ResourceKind::Buffers,
+                requested.buffers,
+                self.limits.buffers,
+                self.usage.buffers,
+            ),
+            (
+                ResourceKind::BackendSubmissions,
+                requested.backend_submissions,
+                self.limits.backend_submissions,
+                self.usage.backend_submissions,
+            ),
+            (
+                ResourceKind::Retries,
+                requested.retries,
+                self.limits.retries,
+                self.usage.retries,
+            ),
+            (
+                ResourceKind::RangeLocks,
+                requested.range_locks,
+                self.limits.range_locks,
+                self.usage.range_locks,
+            ),
+            (
+                ResourceKind::BackgroundWork,
+                requested.background_work,
+                self.limits.background_work,
+                self.usage.background_work,
+            ),
+        ] {
+            if needed > limit.saturating_sub(in_use) {
+                return Err(AdmissionError::Exhausted {
+                    resource,
+                    limit,
+                    in_use,
+                });
+            }
+        }
+        self.usage.operation_slots += requested.operation_slots;
+        self.usage.buffers += requested.buffers;
+        self.usage.backend_submissions += requested.backend_submissions;
+        self.usage.retries += requested.retries;
+        self.usage.range_locks += requested.range_locks;
+        self.usage.background_work += requested.background_work;
+        Ok(())
+    }
 
     pub fn release(&mut self, resource: ResourceKind) -> Result<(), AdmissionError> {
-        let (usage, _) = self.usage_limit(resource);
-        if *usage == 0 {
-            return Err(AdmissionError::ReleaseUnderflow {
-                resource,
-                in_use: 0,
-                requested: 1,
-            });
+        let mut requested = ResourceUsage::empty();
+        match resource {
+            ResourceKind::OperationSlots => requested.operation_slots = 1,
+            ResourceKind::Buffers => requested.buffers = 1,
+            ResourceKind::BackendSubmissions => requested.backend_submissions = 1,
+            ResourceKind::Retries => requested.retries = 1,
+            ResourceKind::RangeLocks => requested.range_locks = 1,
+            ResourceKind::BackgroundWork => requested.background_work = 1,
         }
-        *usage -= 1;
+        self.release_exact(requested)
+    }
+
+    fn release_exact(&mut self, requested: ResourceUsage) -> Result<(), AdmissionError> {
+        for (resource, needed, in_use) in [
+            (
+                ResourceKind::OperationSlots,
+                requested.operation_slots,
+                self.usage.operation_slots,
+            ),
+            (ResourceKind::Buffers, requested.buffers, self.usage.buffers),
+            (
+                ResourceKind::BackendSubmissions,
+                requested.backend_submissions,
+                self.usage.backend_submissions,
+            ),
+            (ResourceKind::Retries, requested.retries, self.usage.retries),
+            (
+                ResourceKind::RangeLocks,
+                requested.range_locks,
+                self.usage.range_locks,
+            ),
+            (
+                ResourceKind::BackgroundWork,
+                requested.background_work,
+                self.usage.background_work,
+            ),
+        ] {
+            if needed > in_use {
+                return Err(AdmissionError::ReleaseUnderflow {
+                    resource,
+                    in_use,
+                    requested: needed,
+                });
+            }
+        }
+        self.usage.operation_slots -= requested.operation_slots;
+        self.usage.buffers -= requested.buffers;
+        self.usage.backend_submissions -= requested.backend_submissions;
+        self.usage.retries -= requested.retries;
+        self.usage.range_locks -= requested.range_locks;
+        self.usage.background_work -= requested.background_work;
         Ok(())
     }
 
@@ -1286,17 +1383,12 @@ impl OperationSlotTable {
             .ok_or(SlotError::GenerationExhausted {
                 index: index as u32,
             })?;
+        let mut resources = ResourceUsage::empty();
+        resources.operation_slots = 1;
+        resources.buffers = if request.buffer.is_some() { 1 } else { 0 };
         self.admission
-            .try_acquire(ResourceKind::OperationSlots)
+            .try_acquire_exact(resources)
             .map_err(SlotError::Admission)?;
-        if request.buffer.is_some()
-            && let Err(error) = self.admission.try_acquire(ResourceKind::Buffers)
-        {
-            self.admission
-                .release(ResourceKind::OperationSlots)
-                .expect("operation slot acquisition must be balanced");
-            return Err(SlotError::Admission(error));
-        }
         self.next_generations[index] = next;
         let token = OperationSlotToken::new(index as u32, generation);
         self.slots[index] = Some(SlotRecord {
@@ -1599,32 +1691,26 @@ impl OperationSlotTable {
 
     pub fn release(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
         let index = self.active_index(token)?;
-        let slot = self.slots[index].as_ref().expect("active index has a slot");
-        if slot.state != SlotState::Reclaimable {
-            return Err(SlotError::InvalidState {
-                token,
-                state: slot.state,
-            });
-        }
-        let slot = self.slots[index].take().expect("active index has a slot");
+        let resources = {
+            let slot = self.slots[index].as_ref().expect("active index has a slot");
+            if slot.state != SlotState::Reclaimable {
+                return Err(SlotError::InvalidState {
+                    token,
+                    state: slot.state,
+                });
+            }
+            let mut resources = ResourceUsage::empty();
+            resources.operation_slots = 1;
+            resources.buffers = slot.buffers.len();
+            resources.backend_submissions = slot.children.len();
+            resources.retries = slot.retry_count;
+            resources
+        };
+        // Preflight every obligation before changing accounting or dropping evidence.
         self.admission
-            .release(ResourceKind::OperationSlots)
+            .release_exact(resources)
             .map_err(SlotError::Admission)?;
-        for _ in slot.buffers {
-            self.admission
-                .release(ResourceKind::Buffers)
-                .map_err(SlotError::Admission)?;
-        }
-        for _ in slot.children {
-            self.admission
-                .release(ResourceKind::BackendSubmissions)
-                .map_err(SlotError::Admission)?;
-        }
-        for _ in 0..slot.retry_count {
-            self.admission
-                .release(ResourceKind::Retries)
-                .map_err(SlotError::Admission)?;
-        }
+        self.slots[index] = None;
         Ok(())
     }
 
@@ -1691,6 +1777,20 @@ mod tests {
 
     fn limits() -> ResourceLimits {
         ResourceLimits::new(1, 1, 1, 1, 1, 1)
+    }
+    fn reclaimable_table() -> (OperationSlotTable, OperationSlotToken) {
+        let mut table = OperationSlotTable::new(limits());
+        let token = table.reserve(request(1, 1)).unwrap();
+        let operation_id = table.register_child(token, RANGE).unwrap();
+        table.mark_submitted(token).unwrap();
+        table
+            .apply_completion(token, full_success(operation_id))
+            .unwrap();
+        table.record_retry(token).unwrap();
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        (table, token)
     }
 
     #[test]
@@ -1929,6 +2029,113 @@ mod tests {
             Err(SlotError::StaleGeneration { .. })
         ));
     }
+    #[test]
+    fn release_failures_preserve_reclaimable_slot_and_accounting() {
+        for resource in [
+            ResourceKind::OperationSlots,
+            ResourceKind::Buffers,
+            ResourceKind::BackendSubmissions,
+            ResourceKind::Retries,
+        ] {
+            let (mut table, token) = reclaimable_table();
+            match resource {
+                ResourceKind::OperationSlots => table.admission.usage.operation_slots = 0,
+                ResourceKind::Buffers => table.admission.usage.buffers = 0,
+                ResourceKind::BackendSubmissions => {
+                    table.admission.usage.backend_submissions = 0;
+                }
+                ResourceKind::Retries => table.admission.usage.retries = 0,
+                ResourceKind::RangeLocks | ResourceKind::BackgroundWork => unreachable!(),
+            }
+            let before = table.snapshot(token).unwrap();
+            let usage = table.usage();
+            assert!(matches!(
+                table.release(token),
+                Err(SlotError::Admission(AdmissionError::ReleaseUnderflow {
+                    resource: actual,
+                    ..
+                })) if actual == resource
+            ));
+            assert_eq!(table.snapshot(token).unwrap(), before);
+            assert_eq!(table.usage(), usage);
+            assert!(matches!(
+                table.reserve(request(2, 1)),
+                Err(SlotError::Admission(AdmissionError::Exhausted {
+                    resource: ResourceKind::OperationSlots,
+                    ..
+                }))
+            ));
+            match resource {
+                ResourceKind::OperationSlots => table.admission.usage.operation_slots = 1,
+                ResourceKind::Buffers => table.admission.usage.buffers = 1,
+                ResourceKind::BackendSubmissions => {
+                    table.admission.usage.backend_submissions = 1;
+                }
+                ResourceKind::Retries => table.admission.usage.retries = 1,
+                ResourceKind::RangeLocks | ResourceKind::BackgroundWork => unreachable!(),
+            }
+            table.release(token).unwrap();
+            assert_eq!(table.usage(), ResourceUsage::empty());
+        }
+    }
+
+    #[test]
+    fn successful_reclaim_releases_exact_resources_before_reuse() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 2, 1, 1));
+        let token = table.reserve(request(1, 1)).unwrap();
+        let first = table.register_child(token, RANGE).unwrap();
+        let second = table.register_child(token, RANGE).unwrap();
+        table.mark_submitted(token).unwrap();
+        table.apply_completion(token, full_success(first)).unwrap();
+        table.apply_completion(token, full_success(second)).unwrap();
+        table.record_retry(token).unwrap();
+        table.record_retry(token).unwrap();
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        assert_eq!(
+            table.usage(),
+            ResourceUsage {
+                operation_slots: 1,
+                buffers: 1,
+                backend_submissions: 2,
+                retries: 2,
+                range_locks: 0,
+                background_work: 0,
+            }
+        );
+        table.release(token).unwrap();
+        assert_eq!(table.usage(), ResourceUsage::empty());
+        let replacement = table.reserve(request(2, 1)).unwrap();
+        assert_eq!(replacement.index, token.index);
+        assert_ne!(replacement.generation, token.generation);
+        assert!(matches!(
+            table.apply_completion(token, full_success(first)),
+            Err(SlotError::StaleGeneration { .. })
+        ));
+    }
+
+    #[test]
+    fn partial_child_registration_retains_owned_child_for_reconciliation() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 1, 1, 1, 1));
+        let token = table.reserve(request(1, 1)).unwrap();
+        let child = table.register_child(token, RANGE).unwrap();
+        assert!(matches!(
+            table.register_child(token, RANGE),
+            Err(SlotError::Admission(AdmissionError::Exhausted {
+                resource: ResourceKind::BackendSubmissions,
+                ..
+            }))
+        ));
+        assert_eq!(table.snapshot(token).unwrap().children.len(), 1);
+        table.mark_submitted(token).unwrap();
+        table.apply_completion(token, full_success(child)).unwrap();
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        table.release(token).unwrap();
+        assert_eq!(table.usage(), ResourceUsage::empty());
+    }
 
     #[test]
     fn equal_numeric_request_ids_from_distinct_frontends_do_not_collide() {
@@ -1984,7 +2191,7 @@ mod tests {
             }))
         ));
         let mut buffer_table = OperationSlotTable::new(ResourceLimits::new(2, 1, 1, 1, 1, 1));
-        buffer_table.reserve(request(3, 1)).unwrap();
+        let buffered = buffer_table.reserve(request(3, 1)).unwrap();
         assert!(matches!(
             buffer_table.reserve(request(4, 1)),
             Err(SlotError::Admission(AdmissionError::Exhausted {
@@ -1992,6 +2199,13 @@ mod tests {
                 ..
             }))
         ));
+        assert_eq!(buffer_table.usage().operation_slots, 1);
+        assert_eq!(buffer_table.usage().buffers, 1);
+        buffer_table
+            .record_reconciliation(buffered, ReconciliationOutcome::Durable)
+            .unwrap();
+        buffer_table.release(buffered).unwrap();
+        assert_eq!(buffer_table.usage(), ResourceUsage::empty());
         table.register_child(token, RANGE).unwrap();
         assert!(matches!(
             table.register_child(token, RANGE),

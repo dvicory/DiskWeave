@@ -39,6 +39,11 @@ pub enum ServiceError {
         detail: String,
         completion: Option<Box<StoreCompletion>>,
     },
+    Terminalization {
+        request: Box<BlockRequest>,
+        primary: Option<Box<Self>>,
+        cleanup: Box<Self>,
+    },
 }
 
 impl ServiceError {
@@ -93,6 +98,20 @@ impl ServiceError {
         }
     }
 
+    pub(crate) fn terminalization(
+        request: BlockRequest,
+        primary: Option<Self>,
+        cleanup: Self,
+    ) -> Self {
+        Self::Terminalization {
+            request: Box::new(request),
+            primary: primary.map(Box::new),
+            cleanup: Box::new(cleanup),
+        }
+    }
+}
+
+impl ServiceError {
     pub(crate) fn with_request(self, request: BlockRequest) -> Self {
         match self {
             Self::IncompleteRead {
@@ -118,6 +137,13 @@ impl ServiceError {
                 detail,
                 completion,
             },
+            Self::Terminalization {
+                primary, cleanup, ..
+            } => Self::Terminalization {
+                request: Box::new(request),
+                primary: primary.map(|error| Box::new((*error).with_request(request))),
+                cleanup: Box::new((*cleanup).with_request(request)),
+            },
             error => error,
         }
     }
@@ -126,7 +152,22 @@ impl ServiceError {
         match self {
             Self::IncompleteRead { request, .. } => Some(**request),
             Self::Invalid { request, .. } | Self::Io { request, .. } => request.as_deref().copied(),
+            Self::Terminalization { request, .. } => Some(**request),
             Self::NotServing | Self::Blocked(_) => None,
+        }
+    }
+
+    pub fn primary_error(&self) -> Option<&Self> {
+        match self {
+            Self::Terminalization { primary, .. } => primary.as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn cleanup_error(&self) -> Option<&Self> {
+        match self {
+            Self::Terminalization { cleanup, .. } => Some(cleanup),
+            _ => None,
         }
     }
 }
@@ -156,6 +197,22 @@ impl fmt::Display for ServiceError {
                 completion.persistence
             ),
             Self::Io { class, detail, .. } => write!(formatter, "{class:?}: {detail}"),
+            Self::Terminalization {
+                primary: Some(primary),
+                cleanup,
+                ..
+            } => write!(
+                formatter,
+                "operation failed: {primary}; terminalization failed: {cleanup}"
+            ),
+            Self::Terminalization {
+                primary: None,
+                cleanup,
+                ..
+            } => write!(
+                formatter,
+                "operation completed but terminalization failed: {cleanup}"
+            ),
         }
     }
 }

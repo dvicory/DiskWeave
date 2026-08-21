@@ -22,7 +22,7 @@ use dwv_recovery::{
 use dwv_store::{
     CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
     IdentityObservationSet, IdentitySourceKind, OperationSlotToken, PersistenceEvidence,
-    RandomAccessStore, StoreId, StoreWriteWatermark, WriteIntent,
+    RandomAccessStore, SlotSnapshot, StoreId, StoreWriteWatermark, WriteIntent,
 };
 use dwv_transaction_ref::{
     ActionResult, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
@@ -235,6 +235,14 @@ pub fn assess_writable_start(
     }
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TerminalizationFault {
+    Snapshot,
+    Reconciliation,
+    Reclaim,
+}
+
 pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     topology: TopologySnapshot,
     members: Vec<MemberBinding<S>>,
@@ -243,6 +251,8 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     admission: OperationAdmission,
     config: ServiceConfig,
     state: ServiceState,
+    #[cfg(test)]
+    terminalization_fault: Option<TerminalizationFault>,
 }
 
 impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
@@ -315,6 +325,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             admission: OperationAdmission::new(config.admission),
             config,
             state,
+            #[cfg(test)]
+            terminalization_fault: None,
         })
     }
 
@@ -365,6 +377,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     pub fn admission_usage(&self) -> dwv_store::ResourceUsage {
         self.admission.usage()
     }
+    #[cfg(test)]
+    fn inject_terminalization_failure(&mut self, fault: TerminalizationFault) {
+        self.terminalization_fault = Some(fault);
+    }
 
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
     pub fn read(
@@ -400,8 +416,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         );
         match result {
             Ok((bytes, completion)) => {
-                self.finish(token, false)
-                    .map_err(|error| error.with_request(request))?;
+                if let Err(cleanup) = self.finish(token, false) {
+                    return Err(self.cleanup_error(request, cleanup));
+                }
                 let generation = self
                     .recovery_generation()
                     .map_err(|error| error.with_request(request))?;
@@ -416,10 +433,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     },
                 ))
             }
-            Err(error) => {
-                let _ = self.finish(token, true);
-                Err(error.with_request(request))
-            }
+            Err(error) => Err(self.finish_error(token, request, error)),
         }
     }
 
@@ -459,14 +473,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.execute_write(member_index, coding_position, request, bytes, &plan, token);
         match result {
             Ok(evidence) => {
-                self.finish(token, false)
-                    .map_err(|error| error.with_request(request))?;
+                if let Err(cleanup) = self.finish(token, false) {
+                    return Err(self.cleanup_error(request, cleanup));
+                }
                 Ok(evidence)
             }
             Err(error) => {
                 self.state = ServiceState::Recovering;
-                let _ = self.finish(token, true);
-                Err(error.with_request(request))
+                Err(self.finish_error(token, request, error))
             }
         }
     }
@@ -539,8 +553,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         })();
         match result {
             Ok(evidence) => {
-                self.finish(token, false)
-                    .map_err(|error| error.with_request(request))?;
+                if let Err(cleanup) = self.finish(token, false) {
+                    return Err(self.cleanup_error(request, cleanup));
+                }
                 Ok(evidence)
             }
             Err(error) => {
@@ -553,8 +568,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ) {
                     self.state = ServiceState::Recovering;
                 }
-                let _ = self.finish(token, true);
-                Err(error.with_request(request))
+                Err(self.finish_error(token, request, error))
             }
         }
     }
@@ -877,19 +891,89 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
 
     fn finish(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), ServiceError> {
         if uncertain {
-            let children = self
-                .admission
-                .snapshot(token)
-                .map_err(slot_error)?
-                .children
-                .into_iter()
-                .map(|child| (child.operation_id, child.requested))
-                .collect::<Vec<_>>();
-            self.admission
-                .reconcile_children(token, &children)
-                .map_err(slot_error)?;
+            #[cfg(test)]
+            if self.take_terminalization_fault(TerminalizationFault::Snapshot) {
+                return Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "injected terminalization snapshot failure",
+                ));
+            }
+            let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
+            self.finish_uncertain(token, snapshot)
+        } else {
+            self.reclaim(token, false)
+        }
+    }
+
+    fn finish_after_error(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
+        #[cfg(test)]
+        if self.take_terminalization_fault(TerminalizationFault::Snapshot) {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "injected terminalization snapshot failure",
+            ));
+        }
+        let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
+        if needs_uncertain_reconciliation(&snapshot) {
+            self.finish_uncertain(token, snapshot)
+        } else {
+            self.reclaim(token, false)
+        }
+    }
+
+    fn finish_uncertain(
+        &mut self,
+        token: OperationSlotToken,
+        snapshot: SlotSnapshot,
+    ) -> Result<(), ServiceError> {
+        #[cfg(test)]
+        if self.take_terminalization_fault(TerminalizationFault::Reconciliation) {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "injected terminalization reconciliation failure",
+            ));
+        }
+        let children = snapshot
+            .children
+            .into_iter()
+            .map(|child| (child.operation_id, child.requested))
+            .collect::<Vec<_>>();
+        self.admission
+            .reconcile_children(token, &children)
+            .map_err(slot_error)?;
+        self.reclaim(token, true)
+    }
+
+    fn reclaim(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), ServiceError> {
+        #[cfg(test)]
+        if self.take_terminalization_fault(TerminalizationFault::Reclaim) {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "injected terminalization reclaim failure",
+            ));
         }
         self.admission.reclaim(token, uncertain).map_err(slot_error)
+    }
+
+    fn finish_error(
+        &mut self,
+        token: OperationSlotToken,
+        request: BlockRequest,
+        primary: ServiceError,
+    ) -> ServiceError {
+        let primary = primary.with_request(request);
+        match self.finish_after_error(token) {
+            Ok(()) => primary,
+            Err(cleanup) => {
+                self.state = ServiceState::Recovering;
+                ServiceError::terminalization(request, Some(primary), cleanup.with_request(request))
+            }
+        }
+    }
+
+    fn cleanup_error(&mut self, request: BlockRequest, cleanup: ServiceError) -> ServiceError {
+        self.state = ServiceState::Recovering;
+        ServiceError::terminalization(request, None, cleanup.with_request(request))
     }
 
     fn maximum_transfer(&self) -> u64 {
@@ -957,6 +1041,27 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             }
         }
         Ok(())
+    }
+}
+
+fn needs_uncertain_reconciliation(snapshot: &SlotSnapshot) -> bool {
+    snapshot.children.iter().any(|child| {
+        !child.terminal
+            || child.completion.as_ref().is_some_and(|completion| {
+                completion.disposition == CompletionDisposition::Uncertain
+            })
+    })
+}
+
+#[cfg(test)]
+impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
+    fn take_terminalization_fault(&mut self, fault: TerminalizationFault) -> bool {
+        if self.terminalization_fault == Some(fault) {
+            self.terminalization_fault = None;
+            true
+        } else {
+            false
+        }
     }
 }
 
@@ -2740,6 +2845,123 @@ mod tests {
         assert_eq!(service.admission_usage().backend_submissions, 0);
         drop(service);
         fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn terminalization_failures_preserve_primary_read_evidence_and_slot() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let config = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: ResourceLimits::new(1, 1, 8, 1, 1, 1),
+            },
+            maximum_transfer: Some(u64::from(BLOCK)),
+            ..ServiceConfig::default()
+        };
+
+        for fault in [
+            TerminalizationFault::Snapshot,
+            TerminalizationFault::Reconciliation,
+        ] {
+            let read = match fault {
+                TerminalizationFault::Snapshot => FakeRead::Failed,
+                TerminalizationFault::Reconciliation => FakeRead::Uncertain,
+                TerminalizationFault::Reclaim => unreachable!(),
+            };
+            let mut service = fake_service(read, config);
+            service.inject_terminalization_failure(fault);
+            let admitted = request(
+                RequestId(50 + fault as u64),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            );
+            let error = service.read(admitted).unwrap_err();
+            match error.primary_error() {
+                Some(ServiceError::IncompleteRead {
+                    request, evidence, ..
+                }) => {
+                    assert_eq!(**request, admitted);
+                    assert_eq!(evidence.requested, range);
+                    match fault {
+                        TerminalizationFault::Snapshot => assert_eq!(
+                            evidence.disposition,
+                            CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 })
+                        ),
+                        TerminalizationFault::Reconciliation => {
+                            assert_eq!(evidence.disposition, CompletionDisposition::Uncertain)
+                        }
+                        TerminalizationFault::Reclaim => unreachable!(),
+                    }
+                }
+                other => panic!("expected preserved primary read evidence, got {other:?}"),
+            }
+            assert!(matches!(
+                error.cleanup_error(),
+                Some(ServiceError::Io {
+                    class: FailureClass::ReconciliationRequired,
+                    ..
+                })
+            ));
+            assert_eq!(service.state(), ServiceState::Recovering);
+            assert_eq!(service.admission_usage().operation_slots, 1);
+            assert_eq!(service.admission_usage().backend_submissions, 1);
+        }
+    }
+
+    #[test]
+    fn successful_terminalization_reclaims_once_and_surfaces_reclaim_failure() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let config = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: ResourceLimits::new(1, 1, 8, 1, 1, 1),
+            },
+            ..ServiceConfig::default()
+        };
+        let admitted = request(
+            RequestId(52),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service(FakeRead::Exact, config);
+        service.inject_terminalization_failure(TerminalizationFault::Reclaim);
+        let error = service.read(admitted).unwrap_err();
+        assert_eq!(error.request(), Some(admitted));
+        assert!(error.primary_error().is_none());
+        assert!(matches!(
+            error.cleanup_error(),
+            Some(ServiceError::Io {
+                class: FailureClass::ReconciliationRequired,
+                ..
+            })
+        ));
+        assert_eq!(service.state(), ServiceState::Recovering);
+        assert_eq!(service.admission_usage().operation_slots, 1);
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+
+        let mut service = fake_service(FakeRead::Exact, config);
+        service
+            .read(admitted)
+            .expect("successful read terminalizes and releases once");
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+        let second = request(
+            RequestId(53),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        service
+            .read(second)
+            .expect("released slot can be reused with a new generation");
+        assert_eq!(service.admission_usage().operation_slots, 0);
     }
 
     #[test]

@@ -1744,6 +1744,7 @@ fn service_error(error: ServiceError) -> OperatorError {
                 _ => OperatorError::Invalid(detail),
             }
         }
+        ServiceError::Terminalization { .. } => OperatorError::Reconciliation(error.to_string()),
         ServiceError::IncompleteRead { .. } => OperatorError::Invalid(error.to_string()),
     }
 }

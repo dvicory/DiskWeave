@@ -1,8 +1,8 @@
 use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{
     AdmissionError, CompletedRangeSet, CompletionDisposition, OperationSlotTable,
-    OperationSlotToken, PersistenceEvidence, ResourceLimits, ResourceUsage, SlotError,
-    StoreCompletion,
+    OperationSlotToken, PersistenceEvidence, ResourceKind, ResourceLimits, ResourceUsage,
+    SlotError, SlotState, StoreCompletion, StoreError,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +47,34 @@ impl OperationAdmission {
         token: OperationSlotToken,
         ranges: &[ByteRange],
     ) -> Result<Vec<dwv_store::ChildOperationId>, SlotError> {
+        let snapshot = self.table.snapshot(token)?;
+        if snapshot.state == SlotState::Reclaimable {
+            return Err(SlotError::InvalidState {
+                token,
+                state: snapshot.state,
+            });
+        }
+        for range in ranges {
+            if range.offset.checked_add(range.length).is_none() {
+                return Err(SlotError::Completion(StoreError::RangeOverflow {
+                    offset: range.offset,
+                    length: range.length,
+                }));
+            }
+        }
+        let limits = self.table.limits();
+        let usage = self.table.usage();
+        let available = limits
+            .backend_submissions
+            .saturating_sub(usage.backend_submissions);
+        let child_index_capacity = (u32::MAX as usize).saturating_sub(snapshot.children.len());
+        if ranges.len() > available || ranges.len() > child_index_capacity {
+            return Err(SlotError::Admission(AdmissionError::Exhausted {
+                resource: ResourceKind::BackendSubmissions,
+                limit: limits.backend_submissions,
+                in_use: usage.backend_submissions,
+            }));
+        }
         ranges
             .iter()
             .map(|range| self.table.register_child(token, *range))
@@ -185,6 +213,28 @@ mod tests {
         assert_ne!(first, second);
         assert_eq!(admission.usage().operation_slots, 1);
         admission.reclaim(second, false).unwrap();
+        assert_eq!(admission.usage().operation_slots, 0);
+    }
+    #[test]
+    fn child_batch_admission_fails_before_any_child_is_registered() {
+        let mut admission = OperationAdmission::new(AdmissionConfig {
+            limits: ResourceLimits::new(1, 1, 1, 1, 1, 1),
+        });
+        let token = admission.reserve(request(3)).unwrap();
+        let ranges = [ByteRange::new(0, 4).unwrap(), ByteRange::new(4, 4).unwrap()];
+
+        assert!(matches!(
+            admission.children(token, &ranges),
+            Err(SlotError::Admission(AdmissionError::Exhausted {
+                resource: ResourceKind::BackendSubmissions,
+                ..
+            }))
+        ));
+        let snapshot = admission.snapshot(token).unwrap();
+        assert_eq!(snapshot.state, SlotState::Reserved);
+        assert!(snapshot.children.is_empty());
+        assert_eq!(admission.usage().backend_submissions, 0);
+        admission.reclaim(token, false).unwrap();
         assert_eq!(admission.usage().operation_slots, 0);
     }
 
