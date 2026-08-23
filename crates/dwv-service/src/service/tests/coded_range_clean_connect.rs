@@ -272,7 +272,12 @@ impl BridgeDriver {
         let outcome = self
             .service_mut()?
             .coded_admit(hidden, CodedClaimInput::complete([CodedUnitId(0)]))?;
-        if !matches!(outcome, CodedAdmissionOutcome::Contended) {
+        if !matches!(outcome, CodedAdmissionOutcome::Contended)
+            || self.service()?.operation_readiness(hidden)
+                != Some(OperationReadiness::Waiting(
+                    PendingReason::AdmissionContended,
+                ))
+        {
             bail!("overlapping coded claim did not remain pending as contention");
         }
         self.service_mut()?.admission.reclaim(hidden, false)?;
@@ -423,7 +428,10 @@ impl BridgeDriver {
     fn probe_effect_before_later_cut(&mut self) -> Result<()> {
         let token = self.token("opC")?;
         let result = self.service_mut()?.coded_permit_effect(token)?;
-        if result != CodedEffectOutcome::BlockedByCapture {
+        if result != CodedEffectOutcome::BlockedByCapture
+            || self.service()?.operation_readiness(token)
+                != Some(OperationReadiness::Waiting(PendingReason::CaptureBlocked))
+        {
             bail!("effect was permitted before a later cut");
         }
         Ok(())
@@ -432,7 +440,10 @@ impl BridgeDriver {
     fn probe_effect_after_later_rejection(&mut self) -> Result<()> {
         let token = self.token("opC")?;
         let result = self.service_mut()?.coded_permit_effect(token)?;
-        if result != CodedEffectOutcome::BlockedByCapture {
+        if result != CodedEffectOutcome::BlockedByCapture
+            || self.service()?.operation_readiness(token)
+                != Some(OperationReadiness::Waiting(PendingReason::CaptureBlocked))
+        {
             bail!("effect was permitted after a rejected later cut");
         }
         Ok(())

@@ -1,9 +1,11 @@
 use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{
-    AdmissionError, CompletedRangeSet, CompletionDisposition, OperationSlotTable,
-    OperationSlotToken, PersistenceEvidence, ReconciliationOutcome, ResourceKind, ResourceLimits,
-    ResourceUsage, SlotError, SlotState, StoreCompletion, StoreError,
+    AdmissionError, OperationSlotTable, OperationSlotToken, ReconciliationOutcome, ResourceKind,
+    ResourceLimits, ResourceUsage, SlotError, SlotState, StoreCompletionDelivery, StoreError,
+    StoreId, StoreIncarnationId, StoreSubmissionIdentity, StoreWriteWatermark,
 };
+#[cfg(test)]
+use dwv_store::{CompletedRangeSet, CompletionDisposition, PersistenceEvidence, StoreCompletion};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AdmissionConfig {
@@ -89,13 +91,86 @@ impl OperationAdmission {
         }
         Ok(())
     }
+    /// Test-only convenience that still exercises checked delivery ingress.
+    #[cfg(test)]
     pub fn complete(
         &mut self,
         token: OperationSlotToken,
         completion: StoreCompletion,
     ) -> Result<(), SlotError> {
-        self.table.apply_completion(token, completion).map(|_| ())
+        let operation_id = completion.operation_id;
+        let snapshot = self.table.snapshot(token)?;
+        let identity = snapshot
+            .children
+            .iter()
+            .find(|child| child.operation_id == operation_id)
+            .and_then(|child| child.submission)
+            .unwrap_or_else(|| {
+                StoreSubmissionIdentity::new(
+                    operation_id,
+                    StoreId(0),
+                    StoreIncarnationId(0),
+                    snapshot.request.topology_epoch,
+                )
+            });
+        if !snapshot
+            .children
+            .iter()
+            .any(|child| child.operation_id == operation_id && child.submission.is_some())
+        {
+            self.table.accept_submission(token, identity)?;
+        }
+        self.deliver(StoreCompletionDelivery {
+            identity,
+            completion,
+        })
     }
+    /// Register physical acceptance for any read, write, or flush child.
+    /// The same identity can be retained by a future semantic continuation.
+    pub fn accept(
+        &mut self,
+        token: OperationSlotToken,
+        child: dwv_store::ChildOperationId,
+        store_id: StoreId,
+        store_incarnation: StoreIncarnationId,
+        topology_epoch: dwv_core::TopologyEpoch,
+    ) -> Result<StoreSubmissionIdentity, SlotError> {
+        let identity =
+            StoreSubmissionIdentity::new(child, store_id, store_incarnation, topology_epoch);
+        self.table.accept_submission(token, identity)?;
+        Ok(identity)
+    }
+    pub fn record_submitted_watermark(
+        &mut self,
+        token: OperationSlotToken,
+        watermark: StoreWriteWatermark,
+    ) -> Result<(), SlotError> {
+        self.table.record_submitted_watermark(token, watermark)
+    }
+    /// The operation driver explicitly abandons only planned children that
+    /// never crossed the physical acceptance boundary.
+    pub fn refuse_unaccepted(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
+        let children = self
+            .table
+            .snapshot(token)?
+            .children
+            .into_iter()
+            .filter(|child| !child.terminal && child.submission.is_none())
+            .map(|child| child.operation_id)
+            .collect::<Vec<_>>();
+        for child in children {
+            self.table.refuse_submission(token, child)?;
+        }
+        Ok(())
+    }
+
+    /// Deliver a normalized result after any physical delay or reordering.
+    pub fn deliver(&mut self, delivery: StoreCompletionDelivery) -> Result<(), SlotError> {
+        self.table
+            .apply_delivery(delivery.identity.operation_id.slot, delivery)
+            .map(|_| ())
+    }
+    #[cfg(test)]
     pub fn reconcile_children(
         &mut self,
         token: OperationSlotToken,
@@ -146,7 +221,7 @@ impl OperationAdmission {
         self.table.snapshot(token)
     }
 }
-
+#[cfg(test)]
 pub(crate) fn completion(
     operation_id: dwv_store::ChildOperationId,
     range: ByteRange,
@@ -260,6 +335,7 @@ mod tests {
             ByteRange::new(8, 4).unwrap(),
         ];
         let children = admission.children(token, &ranges).unwrap();
+
         admission.submit_all(token, children.len()).unwrap();
         for (&child, &range) in children.iter().zip(&ranges).rev() {
             admission
@@ -291,6 +367,47 @@ mod tests {
             admission.snapshot(token).unwrap().state,
             dwv_store::SlotState::AwaitingReconciliation
         );
+        admission.reclaim(token, false).unwrap();
+        assert_eq!(admission.usage().backend_submissions, 0);
+    }
+    #[test]
+    fn refusing_planned_children_preserves_accepted_outstanding_resources() {
+        let mut admission = OperationAdmission::new(AdmissionConfig {
+            limits: ResourceLimits::new(1, 1, 2, 1, 1, 1),
+        });
+        let token = admission.reserve(request(24)).unwrap();
+        let ranges = [ByteRange::new(0, 4).unwrap(), ByteRange::new(4, 4).unwrap()];
+        let children = admission.children(token, &ranges).unwrap();
+        admission.submit_all(token, children.len()).unwrap();
+        let accepted_identity = admission
+            .accept(
+                token,
+                children[0],
+                StoreId(7),
+                StoreIncarnationId(3),
+                TopologyEpoch(2),
+            )
+            .unwrap();
+
+        admission.refuse_unaccepted(token).unwrap();
+        let snapshot = admission.snapshot(token).unwrap();
+        assert!(!snapshot.children[0].terminal);
+        assert!(snapshot.children[1].terminal);
+        assert!(snapshot.children[1].refused_before_acceptance);
+        assert_eq!(admission.usage().backend_submissions, 1);
+
+        admission
+            .deliver(StoreCompletionDelivery {
+                identity: accepted_identity,
+                completion: completion(
+                    children[0],
+                    ranges[0],
+                    ranges[0].length,
+                    CompletionDisposition::Success,
+                    PersistenceEvidence::VolatileOrUnknown,
+                ),
+            })
+            .unwrap();
         admission.reclaim(token, false).unwrap();
         assert_eq!(admission.usage().backend_submissions, 0);
     }

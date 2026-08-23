@@ -64,6 +64,29 @@ pub struct ChildOperationId {
     pub slot: OperationSlotToken,
     pub index: u32,
 }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StoreSubmissionIdentity {
+    pub operation_id: ChildOperationId,
+    pub store_id: StoreId,
+    pub store_incarnation: StoreIncarnationId,
+    pub topology_epoch: TopologyEpoch,
+}
+
+impl StoreSubmissionIdentity {
+    pub const fn new(
+        operation_id: ChildOperationId,
+        store_id: StoreId,
+        store_incarnation: StoreIncarnationId,
+        topology_epoch: TopologyEpoch,
+    ) -> Self {
+        Self {
+            operation_id,
+            store_id,
+            store_incarnation,
+            topology_epoch,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreOperation {
@@ -503,6 +526,32 @@ impl StoreCompletion {
                 StoreError::InvalidCompletion(CompletionError::ShortCompletionCoversFullRequest),
             ),
             _ => Ok(()),
+        }
+    }
+}
+/// Delivery envelope for a delayed normalized completion. The identity is
+/// captured at acceptance and is checked before the slot sees the completion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StoreCompletionDelivery {
+    pub identity: StoreSubmissionIdentity,
+    pub completion: StoreCompletion,
+}
+
+impl StoreCompletionDelivery {
+    pub const fn new(
+        store_id: StoreId,
+        store_incarnation: StoreIncarnationId,
+        topology_epoch: TopologyEpoch,
+        completion: StoreCompletion,
+    ) -> Self {
+        Self {
+            identity: StoreSubmissionIdentity::new(
+                completion.operation_id,
+                store_id,
+                store_incarnation,
+                topology_epoch,
+            ),
+            completion,
         }
     }
 }
@@ -1252,6 +1301,13 @@ pub enum SlotError {
     UnexpectedDuplicate {
         operation_id: ChildOperationId,
     },
+    ChildNotAccepted {
+        operation_id: ChildOperationId,
+    },
+    SubmissionIdentityMismatch {
+        expected: StoreSubmissionIdentity,
+        delivered: StoreSubmissionIdentity,
+    },
     Completion(StoreError),
     Admission(AdmissionError),
     ChildrenNotTerminal,
@@ -1277,6 +1333,19 @@ impl fmt::Display for SlotError {
                     "duplicate completion arrived before terminal completion for {operation_id:?}"
                 )
             }
+            Self::ChildNotAccepted { operation_id } => {
+                write!(
+                    formatter,
+                    "child operation {operation_id:?} was not accepted"
+                )
+            }
+            Self::SubmissionIdentityMismatch {
+                expected,
+                delivered,
+            } => write!(
+                formatter,
+                "completion delivery identity {delivered:?} does not match accepted submission {expected:?}"
+            ),
             Self::Completion(error) => write!(formatter, "completion rejected: {error}"),
             Self::Admission(error) => write!(formatter, "admission rejected: {error}"),
             Self::ChildrenNotTerminal => write!(formatter, "child operations are not terminal"),
@@ -1300,6 +1369,8 @@ pub struct ChildOperationSnapshot {
     pub terminal: bool,
     pub duplicate_deliveries: u32,
     pub completion: Option<StoreCompletion>,
+    pub submission: Option<StoreSubmissionIdentity>,
+    pub refused_before_acceptance: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1326,6 +1397,8 @@ struct ChildRecord {
     terminal: bool,
     duplicate_deliveries: u32,
     completion: Option<StoreCompletion>,
+    submission: Option<StoreSubmissionIdentity>,
+    refused_before_acceptance: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -1463,8 +1536,107 @@ impl OperationSlotTable {
             terminal: false,
             duplicate_deliveries: 0,
             completion: None,
+            submission: None,
+            refused_before_acceptance: false,
         });
         Ok(operation_id)
+    }
+
+    pub fn accept_submission(
+        &mut self,
+        token: OperationSlotToken,
+        identity: StoreSubmissionIdentity,
+    ) -> Result<(), SlotError> {
+        let index = self.active_index(token)?;
+        if identity.operation_id.slot != token {
+            return Err(SlotError::StaleGeneration { token });
+        }
+        let state = self.slots[index]
+            .as_ref()
+            .expect("active index has a slot")
+            .state;
+        if state == SlotState::Reclaimable {
+            return Err(SlotError::InvalidState { token, state });
+        }
+        let child_index =
+            usize::try_from(identity.operation_id.index).map_err(|_| SlotError::ChildUnknown {
+                operation_id: identity.operation_id,
+            })?;
+        let slot = self.slots[index].as_mut().expect("active index has a slot");
+        let child = slot
+            .children
+            .get_mut(child_index)
+            .ok_or(SlotError::ChildUnknown {
+                operation_id: identity.operation_id,
+            })?;
+        if child.operation_id != identity.operation_id {
+            return Err(SlotError::ChildUnknown {
+                operation_id: identity.operation_id,
+            });
+        }
+        if child.refused_before_acceptance {
+            return Err(SlotError::ChildNotAccepted {
+                operation_id: identity.operation_id,
+            });
+        }
+        if let Some(expected) = child.submission {
+            return if expected == identity {
+                Ok(())
+            } else {
+                Err(SlotError::SubmissionIdentityMismatch {
+                    expected,
+                    delivered: identity,
+                })
+            };
+        }
+        child.submission = Some(identity);
+        slot.state = SlotState::Submitted;
+        Ok(())
+    }
+
+    pub fn refuse_submission(
+        &mut self,
+        token: OperationSlotToken,
+        operation_id: ChildOperationId,
+    ) -> Result<(), SlotError> {
+        let index = self.active_index(token)?;
+        if operation_id.slot != token {
+            return Err(SlotError::StaleGeneration { token });
+        }
+        let child_index = usize::try_from(operation_id.index)
+            .map_err(|_| SlotError::ChildUnknown { operation_id })?;
+        {
+            let slot = self.slots[index].as_ref().expect("active index has a slot");
+            let child = slot
+                .children
+                .get(child_index)
+                .ok_or(SlotError::ChildUnknown { operation_id })?;
+            if child.operation_id != operation_id {
+                return Err(SlotError::ChildUnknown { operation_id });
+            }
+            if child.refused_before_acceptance {
+                return Ok(());
+            }
+            if child.submission.is_some() {
+                return Err(SlotError::InvalidState {
+                    token,
+                    state: slot.state,
+                });
+            }
+        }
+        let mut resources = ResourceUsage::empty();
+        resources.backend_submissions = 1;
+        self.admission
+            .release_exact(resources)
+            .map_err(SlotError::Admission)?;
+        let slot = self.slots[index].as_mut().expect("active index has a slot");
+        let child = &mut slot.children[child_index];
+        child.refused_before_acceptance = true;
+        child.terminal = true;
+        if slot.children.iter().all(|child| child.terminal) {
+            slot.state = SlotState::AwaitingReconciliation;
+        }
+        Ok(())
     }
 
     pub fn mark_submitted(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
@@ -1551,7 +1723,49 @@ impl OperationSlotTable {
         Ok(())
     }
 
-    pub fn apply_completion(
+    pub fn apply_delivery(
+        &mut self,
+        token: OperationSlotToken,
+        delivery: StoreCompletionDelivery,
+    ) -> Result<CompletionHandling, SlotError> {
+        let index = self.active_index(token)?;
+        if delivery.identity.operation_id.slot != token {
+            return Err(SlotError::StaleGeneration { token });
+        }
+        if delivery.identity.operation_id != delivery.completion.operation_id {
+            return Err(SlotError::SubmissionIdentityMismatch {
+                expected: delivery.identity,
+                delivered: StoreSubmissionIdentity {
+                    operation_id: delivery.completion.operation_id,
+                    ..delivery.identity
+                },
+            });
+        }
+        let child_index = usize::try_from(delivery.identity.operation_id.index).map_err(|_| {
+            SlotError::ChildUnknown {
+                operation_id: delivery.identity.operation_id,
+            }
+        })?;
+        let slot = self.slots[index].as_ref().expect("active index has a slot");
+        let child = slot
+            .children
+            .get(child_index)
+            .ok_or(SlotError::ChildUnknown {
+                operation_id: delivery.identity.operation_id,
+            })?;
+        let expected = child.submission.ok_or(SlotError::ChildNotAccepted {
+            operation_id: delivery.identity.operation_id,
+        })?;
+        if expected != delivery.identity {
+            return Err(SlotError::SubmissionIdentityMismatch {
+                expected,
+                delivered: delivery.identity,
+            });
+        }
+        self.apply_completion(token, delivery.completion)
+    }
+
+    fn apply_completion(
         &mut self,
         token: OperationSlotToken,
         completion: StoreCompletion,
@@ -1677,6 +1891,8 @@ impl OperationSlotTable {
                     terminal: child.terminal,
                     duplicate_deliveries: child.duplicate_deliveries,
                     completion: child.completion.clone(),
+                    submission: child.submission,
+                    refused_before_acceptance: child.refused_before_acceptance,
                 })
                 .collect(),
             submitted_watermark: slot.submitted_watermark,
@@ -1702,7 +1918,11 @@ impl OperationSlotTable {
             let mut resources = ResourceUsage::empty();
             resources.operation_slots = 1;
             resources.buffers = slot.buffers.len();
-            resources.backend_submissions = slot.children.len();
+            resources.backend_submissions = slot
+                .children
+                .iter()
+                .filter(|child| !child.refused_before_acceptance)
+                .count();
             resources.retries = slot.retry_count;
             resources
         };
@@ -1867,6 +2087,254 @@ mod tests {
                 .authorize(SafetyProfile::ProductionWriteSafe)
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn correlated_delivery_accepts_delayed_reordered_and_duplicate_children() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 1, 1, 1));
+        let token = table.reserve(request(21, 2)).unwrap();
+        let first = table.register_child(token, RANGE).unwrap();
+        let second = table
+            .register_child(token, ByteRange::new(4, 4).unwrap())
+            .unwrap();
+        table.mark_submitted(token).unwrap();
+        let first_identity = StoreSubmissionIdentity::new(
+            first,
+            StoreId(11),
+            StoreIncarnationId(3),
+            TopologyEpoch(2),
+        );
+        let second_identity = StoreSubmissionIdentity::new(
+            second,
+            StoreId(12),
+            StoreIncarnationId(4),
+            TopologyEpoch(2),
+        );
+        table.accept_submission(token, first_identity).unwrap();
+        table.accept_submission(token, second_identity).unwrap();
+        let mut second_completion = full_success(second);
+        second_completion.requested = ByteRange::new(4, 4).unwrap();
+        second_completion.completed =
+            CompletedRangeSet::new(vec![second_completion.requested]).unwrap();
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: second_identity,
+                    completion: second_completion.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            table.snapshot(token).unwrap().state,
+            SlotState::PartiallyCompleted
+        );
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: first_identity,
+                    completion: full_success(first),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            table.snapshot(token).unwrap().state,
+            SlotState::AwaitingReconciliation
+        );
+        assert_eq!(
+            table
+                .apply_delivery(
+                    token,
+                    StoreCompletionDelivery {
+                        identity: second_identity,
+                        completion: second_completion,
+                    },
+                )
+                .unwrap(),
+            CompletionHandling::DuplicateIgnored
+        );
+        assert_eq!(table.usage().backend_submissions, 2);
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        table.release(token).unwrap();
+    }
+
+    #[test]
+    fn correlated_delivery_rejects_wrong_store_incarnation_epoch_and_child() {
+        let mut table = OperationSlotTable::new(limits());
+        let token = table.reserve(request(22, 7)).unwrap();
+        let operation_id = table.register_child(token, RANGE).unwrap();
+        table.mark_submitted(token).unwrap();
+        let identity = StoreSubmissionIdentity::new(
+            operation_id,
+            StoreId(5),
+            StoreIncarnationId(8),
+            TopologyEpoch(7),
+        );
+        assert!(matches!(
+            table.apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: StoreSubmissionIdentity::new(
+                        operation_id,
+                        StoreId(6),
+                        StoreIncarnationId(8),
+                        TopologyEpoch(7),
+                    ),
+                    completion: full_success(operation_id),
+                },
+            ),
+            Err(SlotError::ChildNotAccepted { .. })
+        ));
+        table.accept_submission(token, identity).unwrap();
+        for wrong in [
+            StoreSubmissionIdentity::new(
+                operation_id,
+                StoreId(6),
+                StoreIncarnationId(8),
+                TopologyEpoch(7),
+            ),
+            StoreSubmissionIdentity::new(
+                operation_id,
+                StoreId(5),
+                StoreIncarnationId(9),
+                TopologyEpoch(7),
+            ),
+            StoreSubmissionIdentity::new(
+                operation_id,
+                StoreId(5),
+                StoreIncarnationId(8),
+                TopologyEpoch(9),
+            ),
+        ] {
+            assert!(matches!(
+                table.apply_delivery(
+                    token,
+                    StoreCompletionDelivery {
+                        identity: wrong,
+                        completion: full_success(operation_id),
+                    },
+                ),
+                Err(SlotError::SubmissionIdentityMismatch { .. })
+            ));
+            assert!(!table.snapshot(token).unwrap().children[0].terminal);
+        }
+        let wrong_child = ChildOperationId {
+            slot: token,
+            index: 9,
+        };
+        assert!(matches!(
+            table.apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: StoreSubmissionIdentity::new(
+                        wrong_child,
+                        StoreId(5),
+                        StoreIncarnationId(8),
+                        TopologyEpoch(7),
+                    ),
+                    completion: full_success(wrong_child),
+                },
+            ),
+            Err(SlotError::ChildUnknown { .. })
+        ));
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity,
+                    completion: full_success(operation_id),
+                },
+            )
+            .unwrap();
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        table.release(token).unwrap();
+        let reused = table.reserve(request(24, 7)).unwrap();
+        assert_ne!(reused, token);
+        assert!(matches!(
+            table.apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity,
+                    completion: full_success(operation_id),
+                },
+            ),
+            Err(SlotError::StaleGeneration { .. })
+        ));
+    }
+
+    #[test]
+    fn correlated_delivery_rejects_envelope_completion_child_mismatch_without_mutation() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 1, 1, 1));
+        let token = table.reserve(request(25, 7)).unwrap();
+        let first = table.register_child(token, RANGE).unwrap();
+        let second = table.register_child(token, RANGE).unwrap();
+        table.mark_submitted(token).unwrap();
+        let first_identity = StoreSubmissionIdentity::new(
+            first,
+            StoreId(5),
+            StoreIncarnationId(8),
+            TopologyEpoch(7),
+        );
+        table.accept_submission(token, first_identity).unwrap();
+
+        assert!(matches!(
+            table.apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: first_identity,
+                    completion: full_success(second),
+                },
+            ),
+            Err(SlotError::SubmissionIdentityMismatch { .. })
+        ));
+        let snapshot = table.snapshot(token).unwrap();
+        assert!(!snapshot.children[0].terminal);
+        assert!(!snapshot.children[1].terminal);
+        assert_eq!(table.usage().backend_submissions, 2);
+    }
+
+    #[test]
+    fn accepted_child_survives_abandonment_and_refused_submission_is_distinct() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 1, 1, 1));
+        let token = table.reserve(request(23, 1)).unwrap();
+        let accepted = table.register_child(token, RANGE).unwrap();
+        let refused = table
+            .register_child(token, ByteRange::new(4, 4).unwrap())
+            .unwrap();
+        table.mark_submitted(token).unwrap();
+        let accepted_identity = StoreSubmissionIdentity::new(
+            accepted,
+            StoreId(5),
+            StoreIncarnationId(1),
+            TopologyEpoch(1),
+        );
+        table.accept_submission(token, accepted_identity).unwrap();
+        table.mark_abandoned(token).unwrap();
+        assert_eq!(table.usage().backend_submissions, 2);
+        table.refuse_submission(token, refused).unwrap();
+        assert!(table.snapshot(token).unwrap().children[1].refused_before_acceptance);
+        assert_eq!(table.usage().backend_submissions, 1);
+        table.refuse_submission(token, refused).unwrap();
+        assert_eq!(table.usage().backend_submissions, 1);
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: accepted_identity,
+                    completion: full_success(accepted),
+                },
+            )
+            .unwrap();
+        assert_eq!(table.usage().backend_submissions, 1);
+        table
+            .record_reconciliation(token, ReconciliationOutcome::UncertainRetained)
+            .unwrap();
+        table.release(token).unwrap();
     }
 
     #[test]

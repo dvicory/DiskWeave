@@ -5,7 +5,10 @@ use crate::{
     range::RangePlan,
 };
 use dwv_core::{BlockRequest, ByteRange};
-use dwv_store::{CompletedRangeSet, CompletionDisposition, OperationSlotToken, RandomAccessStore};
+use dwv_store::{
+    CompletedRangeSet, CompletionDisposition, OperationSlotToken, RandomAccessStore,
+    StoreCompletionDelivery,
+};
 
 pub(crate) fn read_member<S: RandomAccessStore>(
     store: &mut S,
@@ -28,26 +31,37 @@ pub(crate) fn read_member<S: RandomAccessStore>(
     let children = admission
         .children(token, &plan.ranges)
         .map_err(slot_error)?;
-    admission
-        .submit_all(token, children.len())
-        .map_err(slot_error)?;
     for (range, child) in plan.ranges.iter().zip(children) {
         let length = usize::try_from(range.length).map_err(|_| {
             ServiceError::io(FailureClass::Range, "child range does not fit memory")
         })?;
+        let identity = admission
+            .accept(
+                token,
+                child,
+                store.store_id(),
+                store.incarnation(),
+                store.topology_epoch(),
+            )
+            .map_err(slot_error)?;
         let completion =
             store.read_at(child, *range, &mut bytes[byte_cursor..byte_cursor + length]);
         let reported = completion.clone();
         let child_completed = completion.completed.as_slice().to_vec();
         let disposition = completion.disposition.clone();
         all_durable &= completion.persistence.is_durable();
-        admission.complete(token, completion).map_err(|error| {
-            ServiceError::rejected_completion(
-                FailureClass::Admission,
-                reported.clone(),
-                error.to_string(),
-            )
-        })?;
+        admission
+            .deliver(StoreCompletionDelivery {
+                identity,
+                completion,
+            })
+            .map_err(|error| {
+                ServiceError::rejected_completion(
+                    FailureClass::Admission,
+                    reported.clone(),
+                    error.to_string(),
+                )
+            })?;
         completed_ranges.extend(child_completed);
         if !matches!(disposition, CompletionDisposition::Success) {
             let completed = CompletedRangeSet::new(completed_ranges)

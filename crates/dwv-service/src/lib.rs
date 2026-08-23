@@ -1,8 +1,9 @@
 //! Healthy, single-parity portable I/O over mechanism-neutral stores.
 //!
-//! This crate is deliberately synchronous and runtime-independent. It owns
-//! portable service semantics; file, FSKit, DiskImages, Linux, and other
-//! mechanism adapters remain outside its boundary.
+//! This crate is runtime-independent. It owns portable service semantics;
+//! physical acceptance and normalized completion delivery cross an explicit
+//! boundary, while file, FSKit, DiskImages, Linux, and other mechanism
+//! adapters remain outside its semantic ownership.
 
 mod admission;
 mod degraded;
@@ -38,6 +39,9 @@ pub use rebuild::{
     commit_verified_rebuild_completion, validate_rebuild_resume,
 };
 pub use service::{
-    HealthyPortableService, MemberBinding, PublicationIdentity, PublicationIdentityError,
-    ServiceConfig, WritableStartAssessment, assess_writable_start, publication_identity,
+    BasisReadPermission, HealthyPortableService, MemberBinding, PortableOperationSubmission,
+    PortableReadPayload, PortableWriteAction, PortableWriteDrive, PortableWriteResult,
+    PortableWriteSubmission, PortableWriteWait, PortableWriteWork, PublicationIdentity,
+    PublicationIdentityError, ServiceConfig, WritableStartAssessment, assess_writable_start,
+    publication_identity,
 };

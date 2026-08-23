@@ -9,7 +9,7 @@ use crate::{
     lifecycle::ServiceState,
     range::split_range,
     read::read_member,
-    write::{update_parity, write_member},
+    write::update_parity,
 };
 use dwv_codec::Geometry as CodecGeometry;
 use dwv_core::{
@@ -22,21 +22,38 @@ use dwv_recovery::{
     CodedCaptureCoordinator, CodedCaptureId, CodedCaptureScopeInput, ContentGeneration,
     DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, IntegrityState, InvalidationTarget,
     RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
-    RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
+    RecoveryStoreHealth, RecoveryTxn, RegionId, WriteRecoveryRecordEvidence,
+    assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
-    CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
-    IdentityObservationSet, IdentitySourceKind, OperationSlotToken, PersistenceEvidence,
-    RandomAccessStore, ReconciliationOutcome, SlotSnapshot, SlotState, StoreId,
+    ChildOperationId, CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment,
+    IdentityComparison, IdentityObservationSet, IdentitySourceKind, OperationSlotToken,
+    PersistenceEvidence, RandomAccessStore, ReconciliationOutcome, SlotSnapshot, SlotState,
+    StoreCompletion, StoreCompletionDelivery, StoreId, StoreSubmissionIdentity,
     StoreWriteWatermark, WriteIntent,
 };
 use dwv_transaction_ref::{
     ActionKind, ActionResult, CodedAdmissionOutcome, CodedClaimInput, CodedClaimRelease,
-    CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
-    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind, SemanticIoResult,
-    StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
+    CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult, ErrorClass,
+    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
+    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
+use std::sync::Arc;
+/// Runnable/waiting bookkeeping stays in the service driver. It records why
+/// an operation is waiting without assigning wakeup, retry, or fairness policy.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PendingReason {
+    AdmissionContended,
+    CaptureBlocked,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OperationReadiness {
+    Runnable,
+    Waiting(PendingReason),
+}
+
 #[cfg_attr(not(test), allow(dead_code))]
 /// Normalized coordination result; scheduler and wakeup policy remain external.
 #[must_use = "coded effect permission may remain blocked and must be handled explicitly"]
@@ -210,6 +227,178 @@ impl Default for ServiceConfig {
         }
     }
 }
+
+/// Accepted physical work retained across the submitting call.
+///
+/// The normalized request carries the exact logical operation, range,
+/// ordering, durability, and buffer identity. `identity` binds that request
+/// to one child, store incarnation, and topology epoch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PortableOperationSubmission {
+    pub operation: OperationSlotToken,
+    pub child: ChildOperationId,
+    pub identity: StoreSubmissionIdentity,
+    pub request: BlockRequest,
+}
+
+/// Handle for one retained protected-write transaction. The driver owns the
+/// input bytes; the request carries the buffer identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PortableWriteSubmission {
+    pub operation: OperationSlotToken,
+    pub request: BlockRequest,
+}
+
+/// Permission supplied by the caller before basis reads may be emitted.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BasisReadPermission {
+    Pending,
+    Granted,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PortableWriteWait {
+    BasisReadPermission,
+    PhysicalResults,
+    OwnerReconciliation,
+}
+
+/// One normalized physical action. It is only a description: no store method
+/// is called until the executor accepts this exact work.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PortableWriteAction {
+    BasisRead {
+        destination: ChildOperationId,
+    },
+    Write {
+        payload: Arc<[u8]>,
+        intent: WriteIntent,
+    },
+    Flush {
+        through: StoreWriteWatermark,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortableWriteWork {
+    pub submission: PortableWriteSubmission,
+    pub identity: StoreSubmissionIdentity,
+    pub range: ByteRange,
+    pub action: PortableWriteAction,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PortableWriteResult {
+    pub work: PortableWriteWork,
+    pub completion: StoreCompletion,
+    pub read_payload: Option<Vec<u8>>,
+}
+
+impl PortableWriteResult {
+    pub fn new(
+        work: PortableWriteWork,
+        completion: StoreCompletion,
+        read_payload: Option<Vec<u8>>,
+    ) -> Self {
+        Self {
+            work,
+            completion,
+            read_payload,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PortableWriteDrive {
+    Wait(PortableWriteWait),
+    Work(PortableWriteWork),
+    Complete(OperationEvidence),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteWorkState {
+    Planned,
+    Emitted,
+    Accepted,
+    Completed,
+}
+
+struct PendingWriteWork {
+    work: PortableWriteWork,
+    state: WriteWorkState,
+    result: Option<PortableWriteResult>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WritePhase {
+    BasisReads,
+    Writes,
+    Flushes,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WriteFinalizationPhase {
+    Pending,
+    WatermarksSet,
+    WritesCompleted,
+    FlushesCompleted,
+    RecoveryCommitted,
+    RangeReleased,
+    EvidenceReady,
+}
+
+struct WriteDriver {
+    operation: OperationSlotToken,
+    request: BlockRequest,
+    payload: Vec<u8>,
+    machine: TransactionMachine,
+    member_index: usize,
+    parity_index: usize,
+    coding_position: CodingPosition,
+    ranges: Vec<ByteRange>,
+    basis_reads: Vec<[usize; 2]>,
+    data_write_children: Vec<ChildOperationId>,
+    parity_write_children: Vec<ChildOperationId>,
+    flush_children: [ChildOperationId; 2],
+    write_intent: WriteIntent,
+    basis_permission: BasisReadPermission,
+    phase: WritePhase,
+    finalization: WriteFinalizationPhase,
+    write_watermarks: Option<[(StoreSubmissionIdentity, StoreWriteWatermark); 2]>,
+    certificate: Option<FenceCertificate>,
+    recovery_committed: Option<RecoveryGeneration>,
+    work: Vec<PendingWriteWork>,
+    regions: Vec<RegionId>,
+    checksum_extents: Vec<IntegrityExtentId>,
+    write_recovery_record: WriteRecoveryRecordEvidence,
+    failed: bool,
+    evidence: Option<OperationEvidence>,
+}
+
+/// Read bytes correlated with the accepted request's owned buffer.
+#[derive(Debug, Eq, PartialEq)]
+pub struct PortableReadPayload {
+    buffer: dwv_core::BufferToken,
+    bytes: Vec<u8>,
+}
+
+impl PortableReadPayload {
+    pub fn new(buffer: dwv_core::BufferToken, bytes: Vec<u8>) -> Self {
+        Self { buffer, bytes }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingOperation {
+    request: BlockRequest,
+    child: ChildOperationId,
+    identity: StoreSubmissionIdentity,
+}
+
+impl PendingOperation {
+    const fn operation(self) -> OperationSlotToken {
+        self.child.slot
+    }
+}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WritableStartAssessment {
     Available,
@@ -258,10 +447,36 @@ enum TerminalizationFault {
     Reclaim,
 }
 
+enum FinishCleanupError {
+    Outstanding,
+    Failed(ServiceError),
+}
+
+impl FinishCleanupError {
+    fn into_service_error(self) -> ServiceError {
+        match self {
+            Self::Outstanding => ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "accepted child work remains outstanding",
+            ),
+            Self::Failed(error) => error,
+        }
+    }
+}
+
+impl From<ServiceError> for FinishCleanupError {
+    fn from(error: ServiceError) -> Self {
+        Self::Failed(error)
+    }
+}
+
 pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     topology: TopologySnapshot,
     members: Vec<MemberBinding<S>>,
     recovery: R,
+    pending_operations: Vec<Option<PendingOperation>>,
+    write_drivers: Vec<Option<WriteDriver>>,
+    operation_readiness: Vec<Option<(OperationSlotToken, OperationReadiness)>>,
     checksums: ChecksumAuthority,
     admission: OperationAdmission,
     config: ServiceConfig,
@@ -340,12 +555,17 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             topology,
             members,
             recovery,
+            pending_operations: vec![None; config.admission.limits.operation_slots],
+            write_drivers: std::iter::repeat_with(|| None)
+                .take(config.admission.limits.operation_slots)
+                .collect(),
             checksums,
             admission: OperationAdmission::new(config.admission),
             config,
             state,
             release_authorizations: vec![None; config.admission.limits.operation_slots],
             release_scopes: vec![None; config.admission.limits.operation_slots],
+            operation_readiness: vec![None; config.admission.limits.operation_slots],
             basis_observations: vec![None; config.admission.limits.operation_slots],
             coded_authority: CodedRangeAuthority::new(),
             coded_captures: CodedCaptureCoordinator::new(),
@@ -422,6 +642,28 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &mut self.coded_captures
     }
 
+    fn set_readiness(&mut self, operation: OperationSlotToken, readiness: OperationReadiness) {
+        if let Ok(index) = usize::try_from(operation.index)
+            && let Some(entry) = self.operation_readiness.get_mut(index)
+        {
+            *entry = Some((operation, readiness));
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn operation_readiness(
+        &self,
+        operation: OperationSlotToken,
+    ) -> Option<OperationReadiness> {
+        usize::try_from(operation.index)
+            .ok()
+            .and_then(|index| self.operation_readiness.get(index).copied())
+            .and_then(|entry| {
+                let (token, readiness) = entry?;
+                (token == operation).then_some(readiness)
+            })
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn coded_admit(
         &mut self,
@@ -442,19 +684,28 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .coded_authority
             .admit(operation, claim)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
-        if outcome == CodedAdmissionOutcome::Admitted {
-            let units = self
-                .coded_authority
-                .active_claim(operation)
-                .map(|claim| claim.units().clone())
-                .ok_or_else(|| {
-                    ServiceError::io(
-                        FailureClass::Admission,
-                        "coded authority lost an admitted claim",
-                    )
-                })?;
-            self.coded_captures
-                .observe_admitted_claim(operation, &units);
+        match outcome {
+            CodedAdmissionOutcome::Contended => {
+                self.set_readiness(
+                    operation,
+                    OperationReadiness::Waiting(PendingReason::AdmissionContended),
+                );
+            }
+            CodedAdmissionOutcome::Admitted => {
+                let units = self
+                    .coded_authority
+                    .active_claim(operation)
+                    .map(|claim| claim.units().clone())
+                    .ok_or_else(|| {
+                        ServiceError::io(
+                            FailureClass::Admission,
+                            "coded authority lost an admitted claim",
+                        )
+                    })?;
+                self.coded_captures
+                    .observe_admitted_claim(operation, &units);
+                self.set_readiness(operation, OperationReadiness::Runnable);
+            }
         }
         Ok(outcome)
     }
@@ -482,11 +733,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     ) -> Result<CodedEffectOutcome, ServiceError> {
         self.admission.snapshot(operation).map_err(slot_error)?;
         if !self.coded_captures.effect_allowed(operation) {
+            self.set_readiness(
+                operation,
+                OperationReadiness::Waiting(PendingReason::CaptureBlocked),
+            );
             return Ok(CodedEffectOutcome::BlockedByCapture);
         }
         self.coded_authority
             .permit_effect(operation)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
+        self.set_readiness(operation, OperationReadiness::Runnable);
         Ok(CodedEffectOutcome::Permitted)
     }
 
@@ -554,6 +810,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             }
             ReleaseScope::InScope => {}
         }
+        if let Some(authorization) = self.release_authorization(observation.operation).cloned() {
+            self.release_after_reclaim(observation.operation)?;
+            return Ok(Some(authorization));
+        }
         if matches!(observation.operation_effect, OperationEffect::Unresolved)
             || matches!(observation.recovery, RecoveryReconciliation::Unresolved)
         {
@@ -575,6 +835,179 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     #[cfg(test)]
     fn inject_terminalization_failure(&mut self, fault: TerminalizationFault) {
         self.terminalization_fault = Some(fault);
+    }
+
+    /// Accept one physical read child and retain its continuation for later delivery.
+    ///
+    /// The blocking/file path calls this method and then immediately delivers the
+    /// store result. Other adapters may retain the returned identity and call
+    /// `complete_read` after this method returns.
+    pub fn submit_read(
+        &mut self,
+        request: BlockRequest,
+    ) -> Result<PortableOperationSubmission, ServiceError> {
+        self.state.require_reads()?;
+        let (member_index, role, _) = validate_request(
+            &self.topology,
+            &self.members,
+            request,
+            self.maximum_transfer(),
+        )?;
+        if request.op != BlockOp::Read || role != MemberRole::Data {
+            return Err(ServiceError::invalid(
+                FailureClass::InvalidRequest,
+                "read endpoint requires a data-member read request",
+            ));
+        }
+        self.ensure_identities()?;
+        let plan = split_range(
+            request.range,
+            self.topology.geometry(),
+            self.maximum_transfer(),
+        )?;
+        let [range] = plan.ranges.as_slice() else {
+            return Err(ServiceError::invalid(
+                FailureClass::Range,
+                "deferred read requires one physical child",
+            ));
+        };
+        let token = self.reserve(request)?;
+        let result = (|| {
+            let child = self.admission.child(token, *range).map_err(slot_error)?;
+            let store = &self.members[member_index].store;
+            let identity = self
+                .admission
+                .accept(
+                    token,
+                    child,
+                    store.store_id(),
+                    store.incarnation(),
+                    store.topology_epoch(),
+                )
+                .map_err(slot_error)?;
+            let pending = PendingOperation {
+                request,
+                child,
+                identity,
+            };
+            let index = usize::try_from(token.index)
+                .map_err(|_| slot_error(dwv_store::SlotError::StaleGeneration { token }))?;
+            self.pending_operations[index] = Some(pending);
+            Ok(PortableOperationSubmission {
+                operation: token,
+                child,
+                identity,
+                request,
+            })
+        })();
+        match result {
+            Ok(submission) => Ok(submission),
+            Err(error) => {
+                Err(self.finish_error(token, request, error, ReleaseRequirement::NotApplicable))
+            }
+        }
+    }
+
+    /// Deliver a previously accepted read and resume normal service completion.
+    pub fn complete_read(
+        &mut self,
+        submission: PortableOperationSubmission,
+        payload: PortableReadPayload,
+        delivery: StoreCompletionDelivery,
+    ) -> Result<(Vec<u8>, OperationEvidence), ServiceError> {
+        let index = usize::try_from(submission.operation.index)
+            .map_err(|_| ServiceError::io(FailureClass::Admission, "stale read submission"))?;
+        let pending = self
+            .pending_operations
+            .get(index)
+            .and_then(|entry| *entry)
+            .filter(|pending| {
+                pending.child.slot == submission.operation
+                    && pending.child == submission.child
+                    && pending.identity == submission.identity
+                    && pending.request == submission.request
+            })
+            .ok_or_else(|| {
+                ServiceError::io(
+                    FailureClass::Admission,
+                    "stale or unknown read continuation",
+                )
+            })?;
+        let expected_length = usize::try_from(pending.request.range.length)
+            .map_err(|_| ServiceError::io(FailureClass::Range, "read range does not fit memory"))?;
+        if Some(payload.buffer) != pending.request.buffer
+            || payload.bytes.len() != expected_length
+            || delivery.identity != pending.identity
+        {
+            return Err(ServiceError::rejected_completion(
+                FailureClass::Admission,
+                delivery.completion,
+                "read result does not match its accepted physical work",
+            )
+            .with_request(pending.request));
+        }
+        let bytes = payload.bytes;
+        let reported = delivery.completion.clone();
+        self.admission.deliver(delivery).map_err(|error| {
+            ServiceError::rejected_completion(
+                FailureClass::Admission,
+                reported.clone(),
+                error.to_string(),
+            )
+            .with_request(pending.request)
+        })?;
+        let completion = CompletionEvidence {
+            requested: pending.request.range,
+            completed: reported.completed.clone(),
+            disposition: reported.disposition.clone(),
+            persistence: if reported.persistence.is_durable() {
+                PersistenceClaim::HostFenceOnly
+            } else {
+                PersistenceClaim::VolatileOrUnknown
+            },
+        };
+        let result = if matches!(reported.disposition, CompletionDisposition::Success) {
+            let generation = self
+                .recovery_generation()
+                .map_err(|error| error.with_request(pending.request))?;
+            let trace = empty_trace(self.topology.topology_epoch(), generation)
+                .map_err(|error| error.with_request(pending.request))?;
+            let release_authorization = self
+                .finish(
+                    pending.operation(),
+                    false,
+                    ReleaseRequirement::NotApplicable,
+                )
+                .map_err(|cleanup| self.cleanup_error(pending.request, cleanup))?;
+            Ok((
+                bytes,
+                OperationEvidence {
+                    request: pending.request,
+                    completion,
+                    trace,
+                    release_authorization,
+                },
+            ))
+        } else {
+            let primary = ServiceError::incomplete_read(pending.request, bytes, completion);
+            Err(self.finish_error(
+                pending.operation(),
+                pending.request,
+                primary,
+                ReleaseRequirement::NotApplicable,
+            ))
+        };
+        self.clear_pending_operation(submission.operation);
+        result
+    }
+
+    fn clear_pending_operation(&mut self, operation: OperationSlotToken) {
+        if let Ok(index) = usize::try_from(operation.index)
+            && let Some(entry) = self.pending_operations.get_mut(index)
+            && entry.is_some_and(|pending| pending.operation() == operation)
+        {
+            *entry = None;
+        }
     }
 
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
@@ -601,6 +1034,29 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.topology.geometry(),
             self.maximum_transfer(),
         )?;
+        if plan.ranges.len() == 1 {
+            let submission = self.submit_read(request)?;
+            let length = usize::try_from(request.range.length).map_err(|_| {
+                ServiceError::io(FailureClass::Range, "read range does not fit memory")
+            })?;
+            let mut bytes = vec![0; length];
+            let completion = self.members[member_index].store.read_at(
+                submission.child,
+                request.range,
+                &mut bytes,
+            );
+            return self.complete_read(
+                submission,
+                PortableReadPayload::new(
+                    request.buffer.expect("validated read request has a buffer"),
+                    bytes,
+                ),
+                StoreCompletionDelivery {
+                    identity: submission.identity,
+                    completion,
+                },
+            );
+        }
         let token = self.reserve(request)?;
         let result = read_member(
             &mut self.members[member_index].store,
@@ -636,11 +1092,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     /// dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity
-    pub fn write(
+    pub fn submit_write(
         &mut self,
         request: BlockRequest,
         bytes: &[u8],
-    ) -> Result<OperationEvidence, ServiceError> {
+    ) -> Result<PortableWriteSubmission, ServiceError> {
         self.state.require_writes()?;
         let (member_index, role, coding_position) = validate_request(
             &self.topology,
@@ -667,16 +1123,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.maximum_transfer(),
         )?;
         let token = self.reserve(request)?;
-        let result =
-            self.execute_write(member_index, coding_position, request, bytes, &plan, token);
-        match result {
-            Ok(mut evidence) => {
-                self.set_basis_conformance(token, BasisConformance::Consumed);
-                let release_authorization = self
-                    .finish(token, false, transaction_requirement(Some(&evidence.trace)))
-                    .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
-                evidence.release_authorization = release_authorization;
-                Ok(evidence)
+        let index = usize::try_from(token.index)
+            .map_err(|_| slot_error(dwv_store::SlotError::StaleGeneration { token }))?;
+        match self.prepare_write(member_index, coding_position, request, bytes, &plan, token) {
+            Ok(driver) => {
+                self.write_drivers[index] = Some(driver);
+                Ok(PortableWriteSubmission {
+                    operation: token,
+                    request,
+                })
             }
             Err(error) => {
                 self.state = ServiceState::Recovering;
@@ -685,6 +1140,652 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
     }
 
+    /// Grant the generic pre-basis permission. No store call occurs here.
+    pub fn grant_basis_read_permission(
+        &mut self,
+        submission: &PortableWriteSubmission,
+    ) -> Result<(), ServiceError> {
+        let index = self.write_index(submission)?;
+        let mut driver = self.write_drivers[index]
+            .take()
+            .expect("validated write driver remains retained");
+        driver.basis_permission = BasisReadPermission::Granted;
+        self.write_drivers[index] = Some(driver);
+        Ok(())
+    }
+
+    /// Advance the retained transaction without executing physical work.
+    pub fn drive_write(
+        &mut self,
+        submission: &PortableWriteSubmission,
+    ) -> Result<PortableWriteDrive, ServiceError> {
+        let index = self.write_index(submission)?;
+        let mut driver = self.write_drivers[index]
+            .take()
+            .expect("validated write driver remains retained");
+        let request = driver.request;
+        let result = self.drive_write_driver(&mut driver);
+        match result {
+            Ok(PortableWriteDrive::Complete(evidence)) => {
+                match self.release_write_driver(index, driver, evidence) {
+                    Ok(evidence) => Ok(PortableWriteDrive::Complete(evidence)),
+                    Err(error) => {
+                        self.state = ServiceState::Recovering;
+                        Err(error.with_request(request))
+                    }
+                }
+            }
+            Ok(result) => {
+                self.write_drivers[index] = Some(driver);
+                Ok(result)
+            }
+            Err(error) => {
+                self.state = ServiceState::Recovering;
+                let class = Self::write_failure_class(&driver);
+                let error = self.fail_write_driver(&mut driver, class, error);
+                self.write_drivers[index] = Some(driver);
+                Err(error.with_request(request))
+            }
+        }
+    }
+
+    /// Tell the slot table that the executor accepted exactly this emitted
+    /// work. Store execution must happen only after this method succeeds.
+    pub fn accept_write_work(&mut self, work: &PortableWriteWork) -> Result<(), ServiceError> {
+        let index = self.write_index(&work.submission)?;
+        let mut driver = self.write_drivers[index]
+            .take()
+            .expect("validated write driver remains retained");
+        if driver.failed {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "failed write cannot accept additional physical work",
+            ));
+        }
+        if self.write_work_member_index(work).is_none() {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(
+                FailureClass::Identity,
+                "physical work store identity is no longer current",
+            ));
+        }
+        let Some(pending) = driver.work.iter_mut().find(|pending| pending.work == *work) else {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "physical work is stale or mismatched",
+            ));
+        };
+        if pending.state != WriteWorkState::Emitted {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "physical work was not emitted exactly once",
+            ));
+        }
+        if let Err(error) = self.admission.accept(
+            work.identity.operation_id.slot,
+            work.identity.operation_id,
+            work.identity.store_id,
+            work.identity.store_incarnation,
+            work.identity.topology_epoch,
+        ) {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(FailureClass::Admission, error.to_string()));
+        }
+        pending.state = WriteWorkState::Accepted;
+        self.write_drivers[index] = Some(driver);
+        Ok(())
+    }
+
+    /// Deliver a checked result for previously accepted work and resume the
+    /// same retained transaction machine.
+    pub fn deliver_write_result(
+        &mut self,
+        result: PortableWriteResult,
+    ) -> Result<Option<OperationEvidence>, ServiceError> {
+        let index = self.write_index(&result.work.submission)?;
+        let mut driver = self.write_drivers[index]
+            .take()
+            .expect("validated write driver remains retained");
+        let request = driver.request;
+        let Some(pending_index) = driver
+            .work
+            .iter()
+            .position(|pending| pending.work == result.work)
+        else {
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                "physical result is stale or mismatched",
+            );
+        };
+        let pending_state = driver.work[pending_index].state;
+        if pending_state == WriteWorkState::Completed
+            && driver.work[pending_index].result.as_ref() == Some(&result)
+        {
+            let completion = result.completion.clone();
+            if let Err(error) = self.admission.deliver(StoreCompletionDelivery {
+                identity: result.work.identity,
+                completion: result.completion,
+            }) {
+                return self.reject_write_result(
+                    index,
+                    driver,
+                    completion,
+                    request,
+                    error.to_string(),
+                );
+            }
+            self.write_drivers[index] = Some(driver);
+            return Ok(None);
+        }
+        if let Some(evidence) = driver.evidence.clone() {
+            if pending_state != WriteWorkState::Completed
+                || driver.work[pending_index].result.as_ref() != Some(&result)
+            {
+                return self.reject_write_result(
+                    index,
+                    driver,
+                    result.completion,
+                    request,
+                    "physical result is stale, duplicate, or mismatched",
+                );
+            }
+            if driver.failed {
+                return self.reject_write_result(
+                    index,
+                    driver,
+                    result.completion,
+                    request,
+                    "abandoned or failed write cannot report normal completion",
+                );
+            }
+            return match self.release_write_driver(index, driver, evidence) {
+                Ok(evidence) => Ok(Some(evidence)),
+                Err(error) => {
+                    self.state = ServiceState::Recovering;
+                    Err(error.with_request(request))
+                }
+            };
+        }
+        if pending_state != WriteWorkState::Accepted {
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                "physical result was not accepted or was already delivered",
+            );
+        }
+        if result.completion.operation_id != result.work.identity.operation_id
+            || result.completion.requested != result.work.range
+        {
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                "physical result identity does not match emitted work",
+            );
+        }
+        if let Err(error) = result.completion.validate() {
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                error.to_string(),
+            );
+        }
+        let is_read = matches!(result.work.action, PortableWriteAction::BasisRead { .. });
+        if matches!(
+            result.completion.disposition,
+            CompletionDisposition::Success
+        ) && is_read
+        {
+            let Some(payload) = result.read_payload.as_ref() else {
+                return self.reject_write_result(
+                    index,
+                    driver,
+                    result.completion,
+                    request,
+                    "successful basis read omitted its destination payload",
+                );
+            };
+            if payload.len() != usize::try_from(result.work.range.length).unwrap_or(usize::MAX)
+                || !result
+                    .completion
+                    .completed
+                    .covers(result.work.range)
+                    .unwrap_or(false)
+            {
+                return self.reject_write_result(
+                    index,
+                    driver,
+                    result.completion,
+                    request,
+                    "successful basis read payload does not cover its destination",
+                );
+            }
+        } else if !is_read && result.read_payload.is_some() {
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                "non-read physical result carried a read payload",
+            );
+        }
+        if matches!(result.work.action, PortableWriteAction::Write { .. })
+            && matches!(
+                result.completion.disposition,
+                CompletionDisposition::Success
+            )
+            && let Some(watermark) = result.completion.write_watermark
+            && let Err(error) = self
+                .admission
+                .record_submitted_watermark(result.work.identity.operation_id.slot, watermark)
+        {
+            self.state = ServiceState::Recovering;
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                error.to_string(),
+            );
+        }
+        if let Err(error) = self.admission.deliver(StoreCompletionDelivery {
+            identity: result.work.identity,
+            completion: result.completion.clone(),
+        }) {
+            self.state = ServiceState::Recovering;
+            return self.reject_write_result(
+                index,
+                driver,
+                result.completion,
+                request,
+                error.to_string(),
+            );
+        }
+        driver.work[pending_index].state = WriteWorkState::Completed;
+        driver.work[pending_index].result = Some(result.clone());
+        if !matches!(
+            result.completion.disposition,
+            CompletionDisposition::Success
+        ) {
+            let failure_class = if is_read {
+                if matches!(
+                    result.completion.disposition,
+                    CompletionDisposition::Uncertain
+                ) {
+                    ErrorClass::ReadUncertain
+                } else {
+                    ErrorClass::ReadFailed
+                }
+            } else if matches!(result.work.action, PortableWriteAction::Flush { .. }) {
+                if matches!(
+                    result.completion.disposition,
+                    CompletionDisposition::Uncertain
+                ) {
+                    ErrorClass::FenceUncertain
+                } else {
+                    ErrorClass::FenceIncomplete
+                }
+            } else if matches!(
+                result.completion.disposition,
+                CompletionDisposition::Uncertain
+            ) {
+                ErrorClass::WriteUncertain
+            } else {
+                ErrorClass::WriteFailed
+            };
+            let error = ServiceError::store_completion(
+                if is_read {
+                    FailureClass::StoreRead
+                } else if matches!(result.work.action, PortableWriteAction::Flush { .. }) {
+                    FailureClass::Fence
+                } else {
+                    FailureClass::StoreWrite
+                },
+                result.completion,
+            );
+            self.state = ServiceState::Recovering;
+            let error = self.fail_write_driver(&mut driver, failure_class, error);
+            self.write_drivers[index] = Some(driver);
+            return Err(error.with_request(request));
+        }
+        if driver.failed {
+            self.write_drivers[index] = Some(driver);
+            return Ok(None);
+        }
+        let final_flush = driver.phase == WritePhase::Flushes
+            && driver
+                .work
+                .iter()
+                .filter(|pending| matches!(pending.work.action, PortableWriteAction::Flush { .. }))
+                .all(|pending| pending.state == WriteWorkState::Completed);
+        if !final_flush {
+            self.write_drivers[index] = Some(driver);
+            return Ok(None);
+        }
+        let evidence = match self.finish_write_driver(&mut driver) {
+            Ok(evidence) => evidence,
+            Err(error) => {
+                self.state = ServiceState::Recovering;
+                let class = Self::write_failure_class(&driver);
+                let error = self.fail_write_driver(&mut driver, class, error);
+                self.write_drivers[index] = Some(driver);
+                return Err(error.with_request(request));
+            }
+        };
+        match self.release_write_driver(index, driver, evidence) {
+            Ok(evidence) => Ok(Some(evidence)),
+            Err(error) => {
+                self.state = ServiceState::Recovering;
+                Err(error.with_request(request))
+            }
+        }
+    }
+
+    /// Execute the same normalized work port used by external executors.
+    pub fn write(
+        &mut self,
+        request: BlockRequest,
+        bytes: &[u8],
+    ) -> Result<OperationEvidence, ServiceError> {
+        let submission = self.submit_write(request, bytes)?;
+        let result: Result<OperationEvidence, ServiceError> = (|| {
+            self.grant_basis_read_permission(&submission)?;
+            loop {
+                match self.drive_write(&submission)? {
+                    PortableWriteDrive::Wait(wait) => {
+                        return Err(ServiceError::io(
+                            FailureClass::ReconciliationRequired,
+                            format!("blocking write stopped at {wait:?}"),
+                        ));
+                    }
+                    PortableWriteDrive::Complete(evidence) => return Ok(evidence),
+                    PortableWriteDrive::Work(work) => {
+                        self.accept_write_work(&work)?;
+                        let result = self.execute_write_work(&work)?;
+                        if let Some(evidence) = self.deliver_write_result(result)? {
+                            return Ok(evidence);
+                        }
+                    }
+                }
+            }
+        })();
+        match result {
+            Ok(evidence) => Ok(evidence),
+            Err(error) => {
+                self.state = ServiceState::Recovering;
+                let error = error.with_request(request);
+                match self.abandon(submission.operation) {
+                    Ok(()) => Err(error),
+                    Err(cleanup) => Err(ServiceError::terminalization(
+                        request,
+                        Some(error),
+                        cleanup.with_request(request),
+                    )),
+                }
+            }
+        }
+    }
+    fn write_failure_class(driver: &WriteDriver) -> ErrorClass {
+        match driver.machine.pending_action().map(|action| action.kind()) {
+            Some(ActionKind::AcquireRange) => ErrorClass::RangeAcquisitionFailed,
+            Some(ActionKind::PersistDirtyAndInvalidateIntegrity) => {
+                ErrorClass::WriteRecoveryRecordLost
+            }
+            Some(ActionKind::ReadSet) => ErrorClass::ReadUncertain,
+            Some(ActionKind::ComputeParity) => ErrorClass::ParityComputationFailed,
+            Some(ActionKind::WriteSet) => ErrorClass::WriteUncertain,
+            Some(ActionKind::FlushSet) => ErrorClass::FenceUncertain,
+            Some(ActionKind::CommitRecoveryClean) => ErrorClass::RecoveryCleanFailed,
+            Some(ActionKind::ReleaseRange) => ErrorClass::ReleaseFailed,
+            None => ErrorClass::ReconciliationRequired,
+        }
+    }
+    fn fail_write_driver(
+        &mut self,
+        driver: &mut WriteDriver,
+        class: ErrorClass,
+        error: ServiceError,
+    ) -> ServiceError {
+        if !driver.failed {
+            let _ = driver.machine.apply(ActionResult::failure(class));
+            driver.failed = true;
+        }
+        match self.admission.refuse_unaccepted(driver.operation) {
+            Ok(()) => error,
+            Err(cleanup) => ServiceError::terminalization(
+                driver.request,
+                Some(error.with_request(driver.request)),
+                slot_error(cleanup).with_request(driver.request),
+            ),
+        }
+    }
+    fn reject_write_result(
+        &mut self,
+        index: usize,
+        driver: WriteDriver,
+        completion: StoreCompletion,
+        request: BlockRequest,
+        message: impl Into<String>,
+    ) -> Result<Option<OperationEvidence>, ServiceError> {
+        self.state = ServiceState::Recovering;
+        self.write_drivers[index] = Some(driver);
+        Err(
+            ServiceError::rejected_completion(FailureClass::Admission, completion, message)
+                .with_request(request),
+        )
+    }
+    fn write_index(&self, submission: &PortableWriteSubmission) -> Result<usize, ServiceError> {
+        let index = usize::try_from(submission.operation.index)
+            .map_err(|_| ServiceError::io(FailureClass::Admission, "stale write submission"))?;
+        let Some(driver) = self.write_drivers.get(index).and_then(Option::as_ref) else {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown write continuation",
+            ));
+        };
+        if driver.operation != submission.operation || driver.request != submission.request {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or mismatched write submission",
+            ));
+        }
+        Ok(index)
+    }
+
+    fn drive_write_driver(
+        &mut self,
+        driver: &mut WriteDriver,
+    ) -> Result<PortableWriteDrive, ServiceError> {
+        if let Some(evidence) = driver.evidence.clone() {
+            return Ok(PortableWriteDrive::Complete(evidence));
+        }
+        if driver.failed {
+            let snapshot = self
+                .admission
+                .snapshot(driver.operation)
+                .map_err(slot_error)?;
+            let has_outstanding_physical_work = snapshot
+                .children
+                .iter()
+                .any(|child| child.submission.is_some() && !child.terminal);
+            return Ok(PortableWriteDrive::Wait(if has_outstanding_physical_work {
+                PortableWriteWait::PhysicalResults
+            } else {
+                PortableWriteWait::OwnerReconciliation
+            }));
+        }
+        if driver.basis_permission != BasisReadPermission::Granted {
+            return Ok(PortableWriteDrive::Wait(
+                PortableWriteWait::BasisReadPermission,
+            ));
+        }
+        if driver
+            .work
+            .iter()
+            .any(|pending| pending.state == WriteWorkState::Emitted)
+        {
+            return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
+        }
+        match driver.phase {
+            WritePhase::BasisReads => {
+                if let Some(pending) = driver.work.iter_mut().find(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::BasisRead { .. })
+                        && pending.state == WriteWorkState::Planned
+                }) {
+                    pending.state = WriteWorkState::Emitted;
+                    return Ok(PortableWriteDrive::Work(pending.work.clone()));
+                }
+                if driver.work.iter().any(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::BasisRead { .. })
+                        && pending.state != WriteWorkState::Completed
+                }) {
+                    return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
+                }
+                self.prepare_write_actions(driver)?;
+                self.drive_write_driver(driver)
+            }
+            WritePhase::Writes => {
+                if let Some(pending) = driver.work.iter_mut().find(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::Write { .. })
+                        && pending.state == WriteWorkState::Planned
+                }) {
+                    pending.state = WriteWorkState::Emitted;
+                    return Ok(PortableWriteDrive::Work(pending.work.clone()));
+                }
+                if driver.work.iter().any(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::Write { .. })
+                        && pending.state != WriteWorkState::Completed
+                }) {
+                    return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
+                }
+                self.prepare_flush_actions(driver)?;
+                self.drive_write_driver(driver)
+            }
+            WritePhase::Flushes => {
+                if let Some(pending) = driver.work.iter_mut().find(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::Flush { .. })
+                        && pending.state == WriteWorkState::Planned
+                }) {
+                    pending.state = WriteWorkState::Emitted;
+                    return Ok(PortableWriteDrive::Work(pending.work.clone()));
+                }
+                if driver.work.iter().any(|pending| {
+                    matches!(pending.work.action, PortableWriteAction::Flush { .. })
+                        && pending.state != WriteWorkState::Completed
+                }) {
+                    return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
+                }
+                let evidence = self.finish_write_driver(driver)?;
+                Ok(PortableWriteDrive::Complete(evidence))
+            }
+        }
+    }
+    fn release_write_driver(
+        &mut self,
+        index: usize,
+        mut driver: WriteDriver,
+        mut evidence: OperationEvidence,
+    ) -> Result<OperationEvidence, ServiceError> {
+        if driver.evidence.is_some()
+            && let Some(authorization) = self.release_authorization(driver.operation).cloned()
+        {
+            evidence.release_authorization = Some(authorization);
+            return match self.release_after_reclaim(driver.operation) {
+                Ok(()) => {
+                    self.write_drivers[index] = None;
+                    Ok(evidence)
+                }
+                Err(cleanup) => {
+                    let error = self.cleanup_error(driver.request, cleanup);
+                    driver.evidence = Some(evidence);
+                    self.write_drivers[index] = Some(driver);
+                    Err(error)
+                }
+            };
+        }
+        self.set_basis_conformance(driver.operation, BasisConformance::Consumed);
+        match self
+            .finish(
+                driver.operation,
+                false,
+                transaction_requirement(Some(&evidence.trace)),
+            )
+            .map_err(|cleanup| self.cleanup_error(driver.request, cleanup))
+        {
+            Ok(release_authorization) => {
+                evidence.release_authorization = release_authorization;
+                self.write_drivers[index] = None;
+                Ok(evidence)
+            }
+            Err(error) => {
+                let class = Self::write_failure_class(&driver);
+                let error = self.fail_write_driver(&mut driver, class, error);
+                driver.evidence = Some(evidence);
+                self.write_drivers[index] = Some(driver);
+                Err(error)
+            }
+        }
+    }
+    fn write_work_member_index(&self, work: &PortableWriteWork) -> Option<usize> {
+        self.members.iter().position(|member| {
+            member.store_id == work.identity.store_id
+                && member.store.store_id() == work.identity.store_id
+                && member.store.incarnation() == work.identity.store_incarnation
+                && member.store.topology_epoch() == work.identity.topology_epoch
+        })
+    }
+    fn execute_write_work(
+        &mut self,
+        work: &PortableWriteWork,
+    ) -> Result<PortableWriteResult, ServiceError> {
+        let Some(member_index) = self.write_work_member_index(work) else {
+            return Err(ServiceError::io(
+                FailureClass::Identity,
+                "physical work store identity is no longer current",
+            ));
+        };
+        let member = &mut self.members[member_index];
+        let mut read_payload = None;
+        let completion = match &work.action {
+            PortableWriteAction::BasisRead { .. } => {
+                let length = usize::try_from(work.range.length).map_err(|_| {
+                    ServiceError::io(FailureClass::Range, "read range is too large")
+                })?;
+                let mut destination = vec![0; length];
+                let completion =
+                    member
+                        .store
+                        .read_at(work.identity.operation_id, work.range, &mut destination);
+                read_payload = Some(destination);
+                completion
+            }
+            PortableWriteAction::Write { payload, intent } => member.store.write_at(
+                work.identity.operation_id,
+                work.range,
+                payload.as_ref(),
+                *intent,
+            ),
+            PortableWriteAction::Flush { through } => {
+                member.store.flush(work.identity.operation_id, *through)
+            }
+        };
+        Ok(PortableWriteResult::new(
+            work.clone(),
+            completion,
+            read_payload,
+        ))
+    }
     pub fn flush(&mut self, request: BlockRequest) -> Result<OperationEvidence, ServiceError> {
         self.state.require_reads()?;
         let (_, role, _) = validate_request(
@@ -707,19 +1808,29 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 .admission
                 .children(token, &flush_ranges)
                 .map_err(slot_error)?;
-            self.admission
-                .submit_all(token, flush_children.len())
-                .map_err(slot_error)?;
             let mut incomplete = None;
             for (member, child) in self.members.iter_mut().zip(&flush_children) {
                 let through = member
                     .store
                     .highest_accepted_watermark()
                     .unwrap_or(StoreWriteWatermark(0));
+                let identity = self
+                    .admission
+                    .accept(
+                        token,
+                        *child,
+                        member.store.store_id(),
+                        member.store.incarnation(),
+                        member.store.topology_epoch(),
+                    )
+                    .map_err(slot_error)?;
                 let completion = member.store.flush(*child, through);
                 let reported = completion.clone();
                 self.admission
-                    .complete(token, completion)
+                    .deliver(StoreCompletionDelivery {
+                        identity,
+                        completion,
+                    })
                     .map_err(|error| {
                         ServiceError::rejected_completion(
                             FailureClass::Admission,
@@ -776,10 +1887,36 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     pub fn abandon(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
+        if let Ok(index) = usize::try_from(token.index)
+            && let Some(existing) = self.write_drivers.get(index).and_then(Option::as_ref)
+            && existing.operation == token
+        {
+            let mut driver = self.write_drivers[index]
+                .take()
+                .expect("matching write driver remains retained");
+            if let Err(error) = driver.machine.abandon()
+                && !driver.machine.is_terminal()
+            {
+                self.write_drivers[index] = Some(driver);
+                return Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    error.to_string(),
+                ));
+            }
+            driver.failed = true;
+            self.write_drivers[index] = Some(driver);
+            // Every protected write has already persisted its write-recovery
+            // record before the driver is retained. Abandonment therefore
+            // requires owner reconciliation before normal admission resumes.
+            self.state = ServiceState::Recovering;
+        }
+        self.admission
+            .refuse_unaccepted(token)
+            .map_err(slot_error)?;
         self.admission.abandon(token).map_err(slot_error)
     }
 
-    fn execute_write(
+    fn prepare_write(
         &mut self,
         member_index: usize,
         coding_position: CodingPosition,
@@ -787,7 +1924,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         bytes: &[u8],
         plan: &crate::range::RangePlan,
         token: OperationSlotToken,
-    ) -> Result<OperationEvidence, ServiceError> {
+    ) -> Result<WriteDriver, ServiceError> {
         let generation = self.recovery_generation()?;
         if generation != self.checksums.recovery_generation {
             return Err(ServiceError::io(
@@ -861,16 +1998,13 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 })
                 .collect(),
         )
-        .with_stores(stores.clone());
+        .with_stores(stores);
         tx_plan.limits = TransactionLimits::default();
         let mut machine = TransactionMachine::new(tx_plan)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        // RangeAcquired is the transaction owner's first releasable-scope result.
-        // Keep this explicit and generation-bound; do not infer scope from the
-        // request kind, child registration, frontend completion, or cleanup.
         self.set_release_scope(token, ReleaseScope::InScope);
         let target = InvalidationTarget::new(regions.clone(), checksum_extents.clone());
         let write_recovery_record = self
@@ -883,7 +2017,116 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             ))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
 
-        let mut computed = Vec::with_capacity(plan.ranges.len());
+        let child_ranges = plan
+            .ranges
+            .iter()
+            .flat_map(|range| [*range, *range, *range, *range])
+            .chain([ByteRange::empty(), ByteRange::empty()])
+            .collect::<Vec<_>>();
+        let children = self
+            .admission
+            .children(token, &child_ranges)
+            .map_err(slot_error)?;
+        let mut basis_reads = Vec::with_capacity(plan.ranges.len());
+        let mut work = Vec::with_capacity(plan.ranges.len() * 2);
+        let mut data_write_children = Vec::with_capacity(plan.ranges.len());
+        let mut parity_write_children = Vec::with_capacity(plan.ranges.len());
+        let submission = PortableWriteSubmission {
+            operation: token,
+            request,
+        };
+        for (index, range) in plan.ranges.iter().enumerate() {
+            let chunk = &children[index * 4..index * 4 + 4];
+            let read_data = self.make_write_work(
+                &submission,
+                chunk[0],
+                member_index,
+                *range,
+                PortableWriteAction::BasisRead {
+                    destination: chunk[0],
+                },
+            );
+            let read_parity = self.make_write_work(
+                &submission,
+                chunk[1],
+                parity_index,
+                *range,
+                PortableWriteAction::BasisRead {
+                    destination: chunk[1],
+                },
+            );
+            basis_reads.push([work.len(), work.len() + 1]);
+            work.extend([
+                PendingWriteWork {
+                    work: read_data,
+                    state: WriteWorkState::Planned,
+                    result: None,
+                },
+                PendingWriteWork {
+                    work: read_parity,
+                    state: WriteWorkState::Planned,
+                    result: None,
+                },
+            ]);
+            data_write_children.push(chunk[2]);
+            parity_write_children.push(chunk[3]);
+        }
+        let flush_children = [children[children.len() - 2], children[children.len() - 1]];
+        let write_intent = if request.durability == DurabilityIntent::Ordinary {
+            WriteIntent::Ordinary
+        } else {
+            WriteIntent::Preflush
+        };
+        Ok(WriteDriver {
+            operation: token,
+            request,
+            payload: bytes.to_vec(),
+            machine,
+            member_index,
+            parity_index,
+            coding_position,
+            ranges: plan.ranges.clone(),
+            basis_reads,
+            data_write_children,
+            parity_write_children,
+            flush_children,
+            write_intent,
+            basis_permission: BasisReadPermission::Pending,
+            phase: WritePhase::BasisReads,
+            finalization: WriteFinalizationPhase::Pending,
+            write_watermarks: None,
+            certificate: None,
+            recovery_committed: None,
+            work,
+            regions,
+            checksum_extents,
+            write_recovery_record,
+            failed: false,
+            evidence: None,
+        })
+    }
+    fn make_write_work(
+        &self,
+        submission: &PortableWriteSubmission,
+        child: ChildOperationId,
+        member_index: usize,
+        range: ByteRange,
+        action: PortableWriteAction,
+    ) -> PortableWriteWork {
+        PortableWriteWork {
+            submission: *submission,
+            identity: StoreSubmissionIdentity::new(
+                child,
+                self.members[member_index].store.store_id(),
+                self.members[member_index].store.incarnation(),
+                self.members[member_index].store.topology_epoch(),
+            ),
+            range,
+            action,
+        }
+    }
+
+    fn prepare_write_actions(&self, driver: &mut WriteDriver) -> Result<(), ServiceError> {
         let codec_geometry = CodecGeometry::new(
             vec![
                 self.topology.geometry().protected_length();
@@ -892,52 +2135,35 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.topology.geometry().parity_length(),
         )
         .map_err(|error| ServiceError::io(FailureClass::Range, error.to_string()))?;
-        let mut child_ranges = Vec::new();
-        for range in &plan.ranges {
-            child_ranges.extend([*range, *range, *range, *range]);
-        }
-        child_ranges.extend([ByteRange::empty(), ByteRange::empty()]);
-        let children = self
-            .admission
-            .children(token, &child_ranges)
-            .map_err(slot_error)?;
-        self.admission
-            .submit_all(token, children.len())
-            .map_err(slot_error)?;
-        let mut read_children = Vec::new();
-        let mut data_write_children = Vec::new();
-        let mut parity_write_children = Vec::new();
-        for chunk in children.chunks_exact(4) {
-            read_children.push((chunk[0], chunk[1]));
-            data_write_children.push(chunk[2]);
-            parity_write_children.push(chunk[3]);
-        }
-        let flush_children = [children[children.len() - 2], children[children.len() - 1]];
+        let mut computed = Vec::with_capacity(driver.ranges.len());
         let mut byte_cursor = 0_usize;
-        for (index, range) in plan.ranges.iter().enumerate() {
-            let old_data = read_child(
-                &mut self.members[member_index].store,
-                &mut self.admission,
-                token,
-                read_children[index].0,
-                *range,
-                FailureClass::StoreRead,
-            )?;
-            let old_parity = read_child(
-                &mut self.members[parity_index].store,
-                &mut self.admission,
-                token,
-                read_children[index].1,
-                *range,
-                FailureClass::StoreRead,
-            )?;
+        for (index, range) in driver.ranges.iter().enumerate() {
+            let old_data = driver.work[driver.basis_reads[index][0]]
+                .result
+                .as_ref()
+                .and_then(|result| result.read_payload.clone())
+                .ok_or_else(|| {
+                    ServiceError::io(FailureClass::StoreRead, "basis data is missing")
+                })?;
+            let old_parity = driver.work[driver.basis_reads[index][1]]
+                .result
+                .as_ref()
+                .and_then(|result| result.read_payload.clone())
+                .ok_or_else(|| {
+                    ServiceError::io(FailureClass::StoreRead, "basis parity is missing")
+                })?;
             let length = usize::try_from(range.length)
                 .map_err(|_| ServiceError::io(FailureClass::Range, "range does not fit memory"))?;
-            let new_data = &bytes[byte_cursor..byte_cursor + length];
+            let new_data = driver
+                .payload
+                .get(byte_cursor..byte_cursor + length)
+                .ok_or_else(|| {
+                    ServiceError::io(FailureClass::Range, "write payload is too short")
+                })?;
             let new_parity = update_parity(
                 &codec_geometry,
                 *range,
-                usize::from(coding_position.0),
+                usize::from(driver.coding_position.0),
                 &old_data,
                 new_data,
                 &old_parity,
@@ -945,151 +2171,300 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             computed.push((*range, new_data.to_vec(), new_parity));
             byte_cursor += length;
         }
-        machine
+        driver
+            .machine
             .apply(ActionResult::ReadSetComplete(SemanticIoResult::complete()))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        machine
+        driver
+            .machine
             .apply(ActionResult::ParityComputed(ComputationResult::complete()))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-
-        let write_intent = if request.durability == DurabilityIntent::Ordinary {
-            WriteIntent::Ordinary
-        } else {
-            WriteIntent::Preflush
+        let submission = PortableWriteSubmission {
+            operation: driver.operation,
+            request: driver.request,
         };
-        let mut data_watermark = None;
-        let mut parity_watermark = None;
-        for (index, (range, new_data, new_parity)) in computed.iter().enumerate() {
-            data_watermark = Some(write_member(
-                &mut self.members[member_index].store,
-                &mut self.admission,
-                token,
-                data_write_children[index],
-                *range,
-                new_data,
-                write_intent,
-            )?);
-            parity_watermark = Some(write_member(
-                &mut self.members[parity_index].store,
-                &mut self.admission,
-                token,
-                parity_write_children[index],
-                *range,
-                new_parity,
-                write_intent,
-            )?);
-        }
-        let data_watermark = data_watermark
-            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "data write lacks watermark"))?;
-        let parity_watermark = parity_watermark
-            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "parity write lacks watermark"))?;
-        machine
-            .set_write_watermarks(vec![
-                StoreWatermark::for_incarnation(
-                    self.members[member_index].store_id,
-                    self.members[member_index].store.incarnation(),
-                    data_watermark,
+        for (index, (range, data, parity)) in computed.into_iter().enumerate() {
+            driver.work.push(PendingWriteWork {
+                work: self.make_write_work(
+                    &submission,
+                    driver.data_write_children[index],
+                    driver.member_index,
+                    range,
+                    PortableWriteAction::Write {
+                        payload: Arc::from(data.into_boxed_slice()),
+                        intent: driver.write_intent,
+                    },
                 ),
-                StoreWatermark::for_incarnation(
-                    self.members[parity_index].store_id,
-                    self.members[parity_index].store.incarnation(),
-                    parity_watermark,
+                state: WriteWorkState::Planned,
+                result: None,
+            });
+            driver.work.push(PendingWriteWork {
+                work: self.make_write_work(
+                    &submission,
+                    driver.parity_write_children[index],
+                    driver.parity_index,
+                    range,
+                    PortableWriteAction::Write {
+                        payload: Arc::from(parity.into_boxed_slice()),
+                        intent: driver.write_intent,
+                    },
                 ),
-            ])
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        machine
-            .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-
-        let data_fence = flush_member(
-            &mut self.members[member_index].store,
-            &mut self.admission,
-            token,
-            flush_children[0],
-            data_watermark,
-        )?;
-        let parity_fence = flush_member(
-            &mut self.members[parity_index].store,
-            &mut self.admission,
-            token,
-            flush_children[1],
-            parity_watermark,
-        )?;
-        let mut store_fences = Vec::new();
-        for evidence in [data_fence, parity_fence] {
-            let PersistenceEvidence::DurableByFence { fence } = evidence else {
-                return Err(ServiceError::io(
-                    FailureClass::Fence,
-                    "flush returned volatile or unknown evidence",
-                ));
-            };
-            store_fences.push(fence);
-        }
-        let certificate = checksum_extents.iter().copied().fold(
-            FenceCertificate::new(
-                self.topology.topology_epoch(),
-                request.ordering.fence_domain,
-                store_fences,
-                regions
-                    .iter()
-                    .copied()
-                    .map(|region| (region, write_recovery_record.committed_generation))
-                    .collect(),
-            ),
-            |certificate, extent| {
-                certificate
-                    .with_integrity_extent(extent, write_recovery_record.committed_generation)
-            },
-        );
-        machine
-            .apply(ActionResult::FlushSetComplete(
-                TransactionPersistenceEvidence::durable(certificate.clone()),
-            ))
-            .map_err(|error| ServiceError::io(FailureClass::Fence, error.to_string()))?;
-        let current = self
-            .recovery
-            .load_assembly_snapshot()
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        if current.generation != write_recovery_record.committed_generation {
-            return Err(ServiceError::io(
-                FailureClass::Recovery,
-                "recovery generation changed during write",
-            ));
-        }
-        let mut recovery_clean =
-            RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-        recovery_clean.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
-        for region in regions {
-            recovery_clean.push(RecoveryMutation::MarkRegionClean {
-                region,
-                through_generation: write_recovery_record.committed_generation,
+                state: WriteWorkState::Planned,
+                result: None,
             });
         }
-        let committed = self
-            .recovery
-            .commit_durable(recovery_clean)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        self.checksums.recovery_generation = committed;
-        machine
-            .apply(ActionResult::RecoveryCleanCommitted(
-                CommittedRecoveryGeneration::new(committed, self.topology.topology_epoch()),
-            ))
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        machine
-            .apply(ActionResult::RangeReleased)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        Ok(OperationEvidence {
-            request,
-            completion: CompletionEvidence {
-                requested: request.range,
-                completed: CompletedRangeSet::new(vec![request.range])
-                    .expect("validated write range is a completion range"),
-                disposition: CompletionDisposition::Success,
-                persistence: PersistenceClaim::HostFenceOnly,
+        driver.phase = WritePhase::Writes;
+        Ok(())
+    }
+
+    fn prepare_flush_actions(&self, driver: &mut WriteDriver) -> Result<(), ServiceError> {
+        let data = driver
+            .work
+            .iter()
+            .filter(|pending| {
+                driver
+                    .data_write_children
+                    .contains(&pending.work.identity.operation_id)
+            })
+            .filter_map(|pending| {
+                pending
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.completion.write_watermark)
+                    .map(|watermark| (pending.work.identity, watermark))
+            })
+            .max_by_key(|(_, watermark)| watermark.0)
+            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "data write lacks watermark"))?;
+        let parity = driver
+            .work
+            .iter()
+            .filter(|pending| {
+                driver
+                    .parity_write_children
+                    .contains(&pending.work.identity.operation_id)
+            })
+            .filter_map(|pending| {
+                pending
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.completion.write_watermark)
+                    .map(|watermark| (pending.work.identity, watermark))
+            })
+            .max_by_key(|(_, watermark)| watermark.0)
+            .ok_or_else(|| ServiceError::io(FailureClass::Fence, "parity write lacks watermark"))?;
+        driver.write_watermarks = Some([data, parity]);
+        let submission = PortableWriteSubmission {
+            operation: driver.operation,
+            request: driver.request,
+        };
+        driver.work.extend([
+            PendingWriteWork {
+                work: self.make_write_work(
+                    &submission,
+                    driver.flush_children[0],
+                    driver.member_index,
+                    ByteRange::empty(),
+                    PortableWriteAction::Flush { through: data.1 },
+                ),
+                state: WriteWorkState::Planned,
+                result: None,
             },
-            trace: machine.trace().clone(),
-            release_authorization: None,
-        })
+            PendingWriteWork {
+                work: self.make_write_work(
+                    &submission,
+                    driver.flush_children[1],
+                    driver.parity_index,
+                    ByteRange::empty(),
+                    PortableWriteAction::Flush { through: parity.1 },
+                ),
+                state: WriteWorkState::Planned,
+                result: None,
+            },
+        ]);
+        driver.phase = WritePhase::Flushes;
+        Ok(())
+    }
+
+    fn finish_write_driver(
+        &mut self,
+        driver: &mut WriteDriver,
+    ) -> Result<OperationEvidence, ServiceError> {
+        if let Some(evidence) = driver.evidence.clone() {
+            return Ok(evidence);
+        }
+        if driver.finalization == WriteFinalizationPhase::Pending {
+            let [
+                (data_identity, data_watermark),
+                (parity_identity, parity_watermark),
+            ] = driver.write_watermarks.ok_or_else(|| {
+                ServiceError::io(FailureClass::Fence, "write watermarks are missing")
+            })?;
+            driver
+                .machine
+                .set_write_watermarks(vec![
+                    StoreWatermark::for_incarnation(
+                        data_identity.store_id,
+                        data_identity.store_incarnation,
+                        data_watermark,
+                    ),
+                    StoreWatermark::for_incarnation(
+                        parity_identity.store_id,
+                        parity_identity.store_incarnation,
+                        parity_watermark,
+                    ),
+                ])
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            driver.finalization = WriteFinalizationPhase::WatermarksSet;
+        }
+        if driver.finalization == WriteFinalizationPhase::WatermarksSet {
+            driver
+                .machine
+                .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            driver.finalization = WriteFinalizationPhase::WritesCompleted;
+        }
+        if driver.finalization == WriteFinalizationPhase::WritesCompleted {
+            let certificate = if let Some(certificate) = driver.certificate.clone() {
+                certificate
+            } else {
+                let data_fence = driver
+                    .work
+                    .iter()
+                    .find(|pending| pending.work.identity.operation_id == driver.flush_children[0])
+                    .and_then(|pending| pending.result.as_ref())
+                    .map(|result| result.completion.persistence)
+                    .ok_or_else(|| {
+                        ServiceError::io(FailureClass::Fence, "data flush is missing")
+                    })?;
+                let parity_fence = driver
+                    .work
+                    .iter()
+                    .find(|pending| pending.work.identity.operation_id == driver.flush_children[1])
+                    .and_then(|pending| pending.result.as_ref())
+                    .map(|result| result.completion.persistence)
+                    .ok_or_else(|| {
+                        ServiceError::io(FailureClass::Fence, "parity flush is missing")
+                    })?;
+                let mut store_fences = Vec::new();
+                for evidence in [data_fence, parity_fence] {
+                    let PersistenceEvidence::DurableByFence { fence } = evidence else {
+                        return Err(ServiceError::io(
+                            FailureClass::Fence,
+                            "flush returned volatile or unknown evidence",
+                        ));
+                    };
+                    store_fences.push(fence);
+                }
+                let certificate = driver.checksum_extents.iter().copied().fold(
+                    FenceCertificate::new(
+                        self.topology.topology_epoch(),
+                        driver.request.ordering.fence_domain,
+                        store_fences,
+                        driver
+                            .regions
+                            .iter()
+                            .copied()
+                            .map(|region| {
+                                (region, driver.write_recovery_record.committed_generation)
+                            })
+                            .collect(),
+                    ),
+                    |certificate, extent| {
+                        certificate.with_integrity_extent(
+                            extent,
+                            driver.write_recovery_record.committed_generation,
+                        )
+                    },
+                );
+                driver.certificate = Some(certificate.clone());
+                certificate
+            };
+            driver
+                .machine
+                .apply(ActionResult::FlushSetComplete(
+                    TransactionPersistenceEvidence::durable(certificate),
+                ))
+                .map_err(|error| ServiceError::io(FailureClass::Fence, error.to_string()))?;
+            if driver.machine.is_terminal() {
+                driver.failed = true;
+                return Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "transaction machine entered reconciliation during flush finalization",
+                ));
+            }
+            driver.finalization = WriteFinalizationPhase::FlushesCompleted;
+        }
+        if driver.finalization == WriteFinalizationPhase::FlushesCompleted {
+            let committed = if let Some(committed) = driver.recovery_committed {
+                committed
+            } else {
+                let current = self
+                    .recovery
+                    .load_assembly_snapshot()
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                if current.generation != driver.write_recovery_record.committed_generation {
+                    return Err(ServiceError::io(
+                        FailureClass::Recovery,
+                        "recovery generation changed during write",
+                    ));
+                }
+                let mut recovery_clean =
+                    RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+                recovery_clean.push(RecoveryMutation::RecordDataParityFence {
+                    fence: driver
+                        .certificate
+                        .clone()
+                        .expect("flush finalization retains its certificate"),
+                });
+                for region in driver.regions.iter().copied() {
+                    recovery_clean.push(RecoveryMutation::MarkRegionClean {
+                        region,
+                        through_generation: driver.write_recovery_record.committed_generation,
+                    });
+                }
+                let committed = self
+                    .recovery
+                    .commit_durable(recovery_clean)
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                self.checksums.recovery_generation = committed;
+                driver.recovery_committed = Some(committed);
+                committed
+            };
+            driver
+                .machine
+                .apply(ActionResult::RecoveryCleanCommitted(
+                    CommittedRecoveryGeneration::new(committed, self.topology.topology_epoch()),
+                ))
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            driver.finalization = WriteFinalizationPhase::RecoveryCommitted;
+        }
+        if driver.finalization == WriteFinalizationPhase::RecoveryCommitted {
+            driver
+                .machine
+                .apply(ActionResult::RangeReleased)
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            driver.finalization = WriteFinalizationPhase::RangeReleased;
+        }
+        if driver.finalization == WriteFinalizationPhase::RangeReleased {
+            let evidence = OperationEvidence {
+                request: driver.request,
+                completion: CompletionEvidence {
+                    requested: driver.request.range,
+                    completed: CompletedRangeSet::new(vec![driver.request.range])
+                        .expect("validated write range is a completion range"),
+                    disposition: CompletionDisposition::Success,
+                    persistence: PersistenceClaim::HostFenceOnly,
+                },
+                trace: driver.machine.trace().clone(),
+                release_authorization: None,
+            };
+            driver.evidence = Some(evidence);
+            driver.finalization = WriteFinalizationPhase::EvidenceReady;
+        }
+        driver
+            .evidence
+            .clone()
+            .ok_or_else(|| ServiceError::io(FailureClass::Recovery, "write finalization stopped"))
     }
 
     fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, ServiceError> {
@@ -1114,7 +2489,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ));
             }
             let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
-            self.finish_uncertain(token, snapshot)?;
+            self.finish_uncertain(token, snapshot)
+                .map_err(FinishCleanupError::into_service_error)?;
             match self.release_scope(token) {
                 ReleaseScope::Outside => self.release(token)?,
                 ReleaseScope::InScope => {}
@@ -1145,13 +2521,20 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &mut self,
         token: OperationSlotToken,
         requirement: ReleaseRequirement,
-    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
+    ) -> Result<Option<ReleaseAuthorization>, FinishCleanupError> {
+        if matches!(self.release_scope(token), ReleaseScope::InScope)
+            && matches!(requirement, ReleaseRequirement::TransactionUnresolved)
+        {
+            // The transaction owner has not supplied its release fact. Keep
+            // the exact slot and primary error; this is not cleanup failure.
+            return Err(FinishCleanupError::Outstanding);
+        }
         #[cfg(test)]
         if self.take_terminalization_fault(TerminalizationFault::Snapshot) {
-            return Err(ServiceError::io(
+            return Err(FinishCleanupError::Failed(ServiceError::io(
                 FailureClass::ReconciliationRequired,
                 "injected terminalization snapshot failure",
-            ));
+            )));
         }
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
         let operation_effect = operation_effect_from_snapshot(token, &snapshot);
@@ -1164,7 +2547,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     return Err(ServiceError::io(
                         FailureClass::ReconciliationRequired,
                         "operation lacks a release applicability observation",
-                    ));
+                    )
+                    .into());
                 }
             }
             Ok(None)
@@ -1172,12 +2556,13 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             let observation =
                 self.current_release_observation(token, operation_effect.effect, requirement);
             match self.release_scope(token) {
-                ReleaseScope::Outside => self.reclaim_with_authorization(&observation),
-                ReleaseScope::InScope => self.reconcile_release_authorization(observation),
+                ReleaseScope::Outside => Ok(self.reclaim_with_authorization(&observation)?),
+                ReleaseScope::InScope => Ok(self.reconcile_release_authorization(observation)?),
                 ReleaseScope::Unknown => Err(ServiceError::io(
                     FailureClass::ReconciliationRequired,
                     "operation lacks a release applicability observation",
-                )),
+                )
+                .into()),
             }
         }
     }
@@ -1186,23 +2571,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &mut self,
         token: OperationSlotToken,
         snapshot: SlotSnapshot,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<(), FinishCleanupError> {
         #[cfg(test)]
         if self.take_terminalization_fault(TerminalizationFault::Reconciliation) {
-            return Err(ServiceError::io(
+            return Err(FinishCleanupError::Failed(ServiceError::io(
                 FailureClass::ReconciliationRequired,
                 "injected terminalization reconciliation failure",
-            ));
+            )));
         }
-        let children = snapshot
-            .children
-            .into_iter()
-            .map(|child| (child.operation_id, child.requested))
-            .collect::<Vec<_>>();
-        self.admission
-            .reconcile_children(token, &children)
-            .map_err(slot_error)?;
+        if snapshot.children.iter().any(|child| !child.terminal) {
+            return Err(FinishCleanupError::Outstanding);
+        }
         self.mark_reclaimable(token, ReconciliationOutcome::UncertainRetained)
+            .map_err(FinishCleanupError::Failed)
     }
 
     fn mark_reclaimable(
@@ -1238,7 +2619,21 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "release authorization lacks authoritative owner evidence",
             ));
         }
+        if !observation.requirement.is_satisfied() {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release authorization lacks transaction release evidence",
+            ));
+        }
+        if !observation.basis.is_conformant() {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release authorization lacks basis conformance",
+            ));
+        }
         self.set_basis_conformance(token, observation.basis);
+        // Recovery observations do not certify missing physical children.
+        // The slot owner must observe every child terminal before reclaiming.
         self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
         let authorization = self.authorization_candidate(token, &snapshot, observation);
@@ -1253,6 +2648,20 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         if result.is_ok() {
             self.clear_release_scope(token);
             self.clear_basis_observation(token);
+            if let Ok(index) = usize::try_from(token.index)
+                && let Some(entry) = self.operation_readiness.get_mut(index)
+                && entry.is_some_and(|(operation, _)| operation == token)
+            {
+                *entry = None;
+            }
+            if let Ok(index) = usize::try_from(token.index)
+                && let Some(driver) = self.write_drivers.get_mut(index)
+                && driver
+                    .as_ref()
+                    .is_some_and(|driver| driver.operation == token)
+            {
+                *driver = None;
+            }
         }
         result
     }
@@ -1454,9 +2863,17 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         requirement: ReleaseRequirement,
     ) -> ServiceError {
         let primary = primary.with_request(request);
+        if let Err(error) = self.admission.refuse_unaccepted(token) {
+            self.state = ServiceState::Recovering;
+            return ServiceError::terminalization(request, Some(primary), slot_error(error));
+        }
         match self.finish_after_error(token, requirement) {
             Ok(_) => primary,
-            Err(cleanup) => {
+            Err(FinishCleanupError::Outstanding) => {
+                self.state = ServiceState::Recovering;
+                primary
+            }
+            Err(FinishCleanupError::Failed(cleanup)) => {
                 self.state = ServiceState::Recovering;
                 ServiceError::terminalization(request, Some(primary), cleanup.with_request(request))
             }
@@ -1703,62 +3120,6 @@ fn persisted_checksum_authority(
     Ok(authority)
 }
 
-fn read_child<S: RandomAccessStore>(
-    store: &mut S,
-    admission: &mut OperationAdmission,
-    token: OperationSlotToken,
-    child: dwv_store::ChildOperationId,
-    range: ByteRange,
-    class: FailureClass,
-) -> Result<Vec<u8>, ServiceError> {
-    let length = usize::try_from(range.length)
-        .map_err(|_| ServiceError::io(FailureClass::Range, "range does not fit memory"))?;
-    let mut bytes = vec![0; length];
-    let result = store.read_at(child, range, &mut bytes);
-    let reported = result.clone();
-    admission.complete(token, result).map_err(|error| {
-        ServiceError::rejected_completion(
-            FailureClass::Admission,
-            reported.clone(),
-            error.to_string(),
-        )
-    })?;
-    if matches!(reported.disposition, CompletionDisposition::Success) {
-        Ok(bytes)
-    } else {
-        Err(ServiceError::store_completion(class, reported))
-    }
-}
-
-fn flush_member<S: RandomAccessStore>(
-    store: &mut S,
-    admission: &mut OperationAdmission,
-    token: OperationSlotToken,
-    child: dwv_store::ChildOperationId,
-    through: StoreWriteWatermark,
-) -> Result<PersistenceEvidence, ServiceError> {
-    let result = store.flush(child, through);
-    let reported = result.clone();
-    let persistence = result.persistence;
-    admission.complete(token, result).map_err(|error| {
-        ServiceError::rejected_completion(
-            FailureClass::Admission,
-            reported.clone(),
-            error.to_string(),
-        )
-    })?;
-    if matches!(reported.disposition, CompletionDisposition::Success)
-        && reported.persistence.is_durable()
-    {
-        Ok(persistence)
-    } else {
-        Err(ServiceError::store_completion(
-            FailureClass::Fence,
-            reported,
-        ))
-    }
-}
-
 /// dwv:req req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments
 fn validate_assembly<S: RandomAccessStore>(
     topology: &TopologySnapshot,
@@ -1960,8 +3321,8 @@ mod tests {
     use dwv_recovery::{Blake3Provider, DigestProvider};
     use dwv_store::{
         CapabilityEvidenceId, ChildOperationId, CompletedRangeSet, FenceId, IdentityObservation,
-        ResourceLimits, StoreCapabilities, StoreCompletion, StoreError, StoreFenceRef,
-        StoreIncarnationId,
+        ResourceLimits, StoreCapabilities, StoreCompletion, StoreCompletionDelivery, StoreError,
+        StoreFenceRef, StoreIncarnationId,
     };
     use dwv_store_file::{ControlProjection, FileStore, FileStoreConfig, FileSyncMode};
     use dwv_verify::{
@@ -2048,6 +3409,9 @@ mod tests {
         watermark: StoreWriteWatermark,
         write: FakeEffect,
         flush: FakeEffect,
+        physical_reads: usize,
+        physical_writes: usize,
+        physical_flushes: usize,
     }
 
     impl FakeStore {
@@ -2057,9 +3421,12 @@ mod tests {
                 epoch,
                 bytes: vec![0; LENGTH as usize],
                 read,
+                physical_reads: 0,
+                watermark: StoreWriteWatermark(0),
                 write: FakeEffect::Success,
                 flush: FakeEffect::Success,
-                watermark: StoreWriteWatermark(0),
+                physical_writes: 0,
+                physical_flushes: 0,
             }
         }
 
@@ -2132,6 +3499,7 @@ mod tests {
             range: ByteRange,
             destination: &mut [u8],
         ) -> StoreCompletion {
+            self.physical_reads += 1;
             let start = range.offset as usize;
             let half = range.length / 2;
             let (completed, completed_range) = match self.read {
@@ -2178,6 +3546,7 @@ mod tests {
             source: &[u8],
             _intent: WriteIntent,
         ) -> StoreCompletion {
+            self.physical_writes += 1;
             let start = range.offset as usize;
             if matches!(self.write, FakeEffect::StaleToken) {
                 operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
@@ -2226,6 +3595,7 @@ mod tests {
             mut operation_id: ChildOperationId,
             through: StoreWriteWatermark,
         ) -> StoreCompletion {
+            self.physical_flushes += 1;
             if matches!(self.flush, FakeEffect::StaleToken) {
                 operation_id.slot.generation = operation_id.slot.generation.wrapping_add(1);
             }
@@ -2383,6 +3753,71 @@ mod tests {
             .unwrap()
     }
 
+    struct DeterministicWriteHarness<S: RandomAccessStore, R: RecoveryStateStore> {
+        service: HealthyPortableService<S, R>,
+        submission: PortableWriteSubmission,
+        accepted: Vec<PortableWriteWork>,
+        ready: Vec<PortableWriteResult>,
+    }
+
+    impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R> {
+        fn new(
+            mut service: HealthyPortableService<S, R>,
+            request: BlockRequest,
+            bytes: &[u8],
+        ) -> Result<Self, ServiceError> {
+            let submission = service.submit_write(request, bytes)?;
+            Ok(Self {
+                service,
+                submission,
+                accepted: Vec::new(),
+                ready: Vec::new(),
+            })
+        }
+
+        fn grant_basis(&mut self) -> Result<(), ServiceError> {
+            self.service.grant_basis_read_permission(&self.submission)
+        }
+
+        fn emit_without_execution(&mut self) -> Result<PortableWriteDrive, ServiceError> {
+            let turn = self.service.drive_write(&self.submission)?;
+            if let PortableWriteDrive::Work(work) = &turn {
+                self.service.accept_write_work(work)?;
+                self.accepted.push(work.clone());
+            }
+            Ok(turn)
+        }
+
+        fn execute_accepted(&mut self, index: usize) -> Result<(), ServiceError> {
+            let work = self.accepted.swap_remove(index);
+            self.ready.push(self.service.execute_write_work(&work)?);
+            Ok(())
+        }
+
+        fn emit_one(&mut self) -> Result<PortableWriteDrive, ServiceError> {
+            let turn = self.emit_without_execution()?;
+            if matches!(&turn, PortableWriteDrive::Work(_)) {
+                self.execute_accepted(self.accepted.len() - 1)?;
+            }
+            Ok(turn)
+        }
+
+        fn emit_available(&mut self) -> Result<(), ServiceError> {
+            loop {
+                match self.emit_one()? {
+                    PortableWriteDrive::Work(_) => {}
+                    PortableWriteDrive::Wait(_) => return Ok(()),
+                    PortableWriteDrive::Complete(_) => return Ok(()),
+                }
+            }
+        }
+
+        fn deliver(&mut self, index: usize) -> Result<Option<OperationEvidence>, ServiceError> {
+            let result = self.ready.swap_remove(index);
+            self.service.deliver_write_result(result)
+        }
+    }
+
     fn reported_store_completion(
         error: ServiceError,
         request: BlockRequest,
@@ -2400,6 +3835,683 @@ mod tests {
             }
             other => panic!("expected exact store completion evidence, got {other:?}"),
         }
+    }
+    #[test]
+    fn accepted_read_continuation_survives_submit_return_and_later_delivery() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(40),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let submission = service.submit_read(request).unwrap();
+        assert_eq!(service.admission_usage().operation_slots, 1);
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+        assert!(
+            !service
+                .admission
+                .snapshot(submission.operation)
+                .unwrap()
+                .children[0]
+                .terminal
+        );
+        let completion = FakeStore::completion(
+            submission.child,
+            range,
+            Some(range),
+            CompletionDisposition::Success,
+            PersistenceEvidence::VolatileOrUnknown,
+        );
+        let wrong_delivery = StoreCompletionDelivery::new(
+            StoreId(2),
+            StoreIncarnationId(1),
+            epoch,
+            completion.clone(),
+        );
+        assert!(
+            service
+                .complete_read(
+                    submission,
+                    PortableReadPayload::new(
+                        dwv_core::BufferToken::new(99, 1),
+                        vec![0; BLOCK as usize],
+                    ),
+                    StoreCompletionDelivery::new(
+                        StoreId(1),
+                        StoreIncarnationId(1),
+                        epoch,
+                        completion.clone(),
+                    ),
+                )
+                .is_err()
+        );
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+        assert!(
+            service
+                .complete_read(
+                    submission,
+                    PortableReadPayload::new(
+                        request.buffer.expect("read request has buffer"),
+                        vec![0; BLOCK as usize],
+                    ),
+                    wrong_delivery,
+                )
+                .is_err()
+        );
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+        let delivery =
+            StoreCompletionDelivery::new(StoreId(1), StoreIncarnationId(1), epoch, completion);
+        let (bytes, evidence) = service
+            .complete_read(
+                submission,
+                PortableReadPayload::new(
+                    request.buffer.expect("read request has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                delivery,
+            )
+            .unwrap();
+        assert_eq!(bytes.len(), BLOCK as usize);
+        assert_eq!(evidence.completion.completed.as_slice(), &[range]);
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+    }
+
+    #[test]
+    fn deferred_read_child_admission_failure_releases_reserved_operation() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let config = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: ResourceLimits::new(1, 1, 0, 1, 1, 1),
+            },
+            ..ServiceConfig::default()
+        };
+        let mut service = fake_service(FakeRead::Exact, config);
+        let request = request(
+            RequestId(41),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+
+        assert!(matches!(
+            service.submit_read(request),
+            Err(ServiceError::Io {
+                class: FailureClass::Admission,
+                ..
+            })
+        ));
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().buffers, 0);
+        assert_eq!(service.admission_usage().backend_submissions, 0);
+        assert_eq!(service.state(), ServiceState::Serving);
+    }
+
+    #[test]
+    fn write_driver_start_has_no_physical_io_until_executor_acceptance() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(42),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x3c; BLOCK as usize];
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let submission = service.submit_write(request, &bytes).unwrap();
+        assert!(service.members.iter().all(|member| {
+            member.store.physical_reads == 0
+                && member.store.physical_writes == 0
+                && member.store.physical_flushes == 0
+        }));
+        assert!(matches!(
+            service.drive_write(&submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::BasisReadPermission)
+        ));
+        service.grant_basis_read_permission(&submission).unwrap();
+        let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+            panic!("basis permission should make the first read runnable");
+        };
+        assert!(service.members.iter().all(|member| {
+            member.store.physical_reads == 0
+                && member.store.physical_writes == 0
+                && member.store.physical_flushes == 0
+        }));
+        service.accept_write_work(&work).unwrap();
+        assert!(service.members.iter().all(|member| {
+            member.store.physical_reads == 0
+                && member.store.physical_writes == 0
+                && member.store.physical_flushes == 0
+        }));
+    }
+
+    #[test]
+    fn write_acceptance_revalidates_current_store_identity_before_io() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(142),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let submission = service
+            .submit_write(request, &[0x3d; BLOCK as usize])
+            .unwrap();
+        service.grant_basis_read_permission(&submission).unwrap();
+        let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+            panic!("basis read should be emitted");
+        };
+        let member_index = service
+            .members
+            .iter()
+            .position(|member| member.store_id == work.identity.store_id)
+            .unwrap();
+        service.members[member_index].store.id = StoreId(99);
+
+        assert!(matches!(
+            service.accept_write_work(&work),
+            Err(ServiceError::Io {
+                class: FailureClass::Identity,
+                ..
+            })
+        ));
+        assert_eq!(service.members[member_index].store.physical_reads, 0);
+        let snapshot = service.admission.snapshot(submission.operation).unwrap();
+        let child = &snapshot.children[usize::try_from(work.identity.operation_id.index).unwrap()];
+        assert!(child.submission.is_none());
+        assert!(!child.terminal);
+    }
+
+    #[test]
+    fn deterministic_harness_delivers_basis_and_siblings_out_of_order() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(43),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x4d; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        assert!(matches!(
+            harness.emit_one().unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::BasisReadPermission)
+        ));
+        harness.grant_basis().unwrap();
+        assert!(matches!(
+            harness.emit_one().unwrap(),
+            PortableWriteDrive::Work(_)
+        ));
+        assert!(matches!(
+            harness.emit_one().unwrap(),
+            PortableWriteDrive::Work(_)
+        ));
+        assert_eq!(harness.ready.len(), 2);
+        assert_eq!(harness.service.members[0].store.physical_reads, 1);
+        assert_eq!(harness.service.members[2].store.physical_reads, 1);
+        assert_eq!(harness.service.members[0].store.physical_writes, 0);
+        assert!(harness.deliver(1).unwrap().is_none());
+        assert!(harness.deliver(0).unwrap().is_none());
+        harness.emit_available().unwrap();
+        assert_eq!(harness.ready.len(), 2);
+        assert_eq!(harness.service.members[0].store.physical_writes, 1);
+        assert_eq!(harness.service.members[2].store.physical_writes, 1);
+        assert!(harness.deliver(1).unwrap().is_none());
+        assert!(harness.deliver(0).unwrap().is_none());
+        assert!(
+            harness
+                .service
+                .admission
+                .snapshot(harness.submission.operation)
+                .unwrap()
+                .submitted_watermark
+                .is_some()
+        );
+        harness.emit_available().unwrap();
+        assert_eq!(harness.ready.len(), 2);
+        let mut evidence = None;
+        while !harness.ready.is_empty() {
+            evidence = harness.deliver(harness.ready.len() - 1).unwrap();
+        }
+        let evidence = evidence.expect("flush results complete the retained transaction");
+        assert_eq!(evidence.request, request);
+        assert_eq!(harness.service.members[0].store.physical_flushes, 1);
+        assert_eq!(harness.service.members[2].store.physical_flushes, 1);
+        assert_eq!(harness.service.admission_usage().operation_slots, 0);
+        assert_eq!(harness.service.admission_usage().backend_submissions, 0);
+    }
+
+    #[test]
+    fn partial_result_delivery_retains_accepted_siblings_and_delays_writes() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(44),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x5e; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        assert!(harness.deliver(0).unwrap().is_none());
+        assert_eq!(harness.service.members[0].store.physical_writes, 0);
+        assert_eq!(harness.service.admission_usage().operation_slots, 1);
+        assert!(harness.deliver(0).unwrap().is_none());
+        harness.emit_available().unwrap();
+        let duplicate = harness.ready[0].clone();
+        let duplicate_child = duplicate.work.identity.operation_id;
+        assert!(harness.deliver(0).unwrap().is_none());
+        assert!(
+            harness
+                .service
+                .deliver_write_result(duplicate)
+                .unwrap()
+                .is_none()
+        );
+        let snapshot = harness
+            .service
+            .admission
+            .snapshot(harness.submission.operation)
+            .unwrap();
+        assert_eq!(
+            snapshot.children[usize::try_from(duplicate_child.index).unwrap()].duplicate_deliveries,
+            1
+        );
+        assert_eq!(harness.service.admission_usage().operation_slots, 1);
+        assert_eq!(harness.service.admission_usage().backend_submissions, 6);
+    }
+
+    #[test]
+    fn mismatched_result_identity_rejects_without_mutating_retained_work() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(45),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x6f; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        let snapshot = harness
+            .service
+            .admission
+            .snapshot(harness.submission.operation)
+            .unwrap();
+        let mut wrong = harness.ready[0].clone();
+        wrong.work.identity.store_id = StoreId(99);
+        assert!(harness.service.deliver_write_result(wrong).is_err());
+        assert_eq!(harness.service.state(), ServiceState::Recovering);
+        assert_eq!(
+            harness
+                .service
+                .admission
+                .snapshot(harness.submission.operation)
+                .unwrap(),
+            snapshot
+        );
+        assert!(harness.deliver(0).unwrap().is_none());
+        let mut stale = harness.submission;
+        stale.request.request_id = RequestId(999);
+        assert!(harness.service.drive_write(&stale).is_err());
+    }
+
+    #[test]
+    fn short_failed_and_uncertain_results_fail_closed_with_resources_retained() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(48),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x70; BLOCK as usize];
+        let service = fake_service(FakeRead::Short, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_available().unwrap();
+        assert!(harness.deliver(0).is_err());
+        assert!(
+            harness
+                .service
+                .write_drivers
+                .get(usize::try_from(harness.submission.operation.index).unwrap())
+                .and_then(Option::as_ref)
+                .is_some_and(|driver| driver.machine.is_terminal())
+        );
+        assert_eq!(harness.service.admission_usage().operation_slots, 1);
+        assert!(matches!(
+            harness.service.drive_write(&harness.submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults)
+        ));
+        assert!(harness.deliver(0).is_err());
+        assert!(matches!(
+            harness.service.drive_write(&harness.submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+        ));
+        let service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::Failed,
+            FakeEffect::Success,
+            ServiceConfig::default(),
+        );
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        harness.deliver(0).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_one().unwrap();
+        let PortableWriteDrive::Work(unaccepted) =
+            harness.service.drive_write(&harness.submission).unwrap()
+        else {
+            panic!("second write should be emitted");
+        };
+        assert!(harness.deliver(0).is_err());
+        assert!(harness.service.accept_write_work(&unaccepted).is_err());
+        let snapshot = harness
+            .service
+            .admission
+            .snapshot(harness.submission.operation)
+            .unwrap();
+        let refused =
+            &snapshot.children[usize::try_from(unaccepted.identity.operation_id.index).unwrap()];
+        assert!(refused.terminal);
+        assert!(refused.refused_before_acceptance);
+        assert_eq!(harness.service.admission_usage().backend_submissions, 3);
+        let service = fake_service(FakeRead::Uncertain, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_available().unwrap();
+        assert!(harness.deliver(0).is_err());
+        assert_eq!(harness.service.admission_usage().operation_slots, 1);
+    }
+
+    #[test]
+    fn abandonment_refuses_unaccepted_children_but_retains_accepted_work() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(49),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x71; BLOCK as usize];
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let submission = service.submit_write(request, &bytes).unwrap();
+        service.grant_basis_read_permission(&submission).unwrap();
+        let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+            panic!("basis read should be emitted");
+        };
+        service.accept_write_work(&work).unwrap();
+        let result = service.execute_write_work(&work).unwrap();
+        service.abandon(submission.operation).unwrap();
+        assert_eq!(service.state(), ServiceState::Recovering);
+        assert!(service.submit_write(request, &bytes).is_err());
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+        assert!(service.deliver_write_result(result).unwrap().is_none());
+        assert!(matches!(
+            service.drive_write(&submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+        ));
+        assert_eq!(service.members[0].store.physical_writes, 0);
+        assert_eq!(service.members[2].store.physical_writes, 0);
+        assert_eq!(service.members[0].store.physical_flushes, 0);
+        assert_eq!(service.members[2].store.physical_flushes, 0);
+        let snapshot = service.admission.snapshot(submission.operation).unwrap();
+        assert!(
+            snapshot
+                .children
+                .iter()
+                .any(|child| child.submission.is_some() && child.terminal)
+        );
+    }
+
+    #[test]
+    fn terminal_duplicate_result_is_rejected_after_release() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(50),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x72; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        harness.deliver(0).unwrap();
+        let duplicate = harness.ready[0].clone();
+        let evidence = harness.deliver(0).unwrap().expect("terminal result");
+        assert_eq!(evidence.request, request);
+        assert!(harness.service.deliver_write_result(duplicate).is_err());
+        assert!(harness.service.drive_write(&harness.submission).is_err());
+    }
+    #[test]
+    fn finalization_cleanup_failure_retries_from_drive_without_duplicate_result() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(51),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x73; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        harness
+            .service
+            .inject_terminalization_failure(TerminalizationFault::Reclaim);
+        harness.deliver(0).unwrap();
+        assert!(harness.deliver(0).is_err());
+        assert_eq!(harness.service.state(), ServiceState::Recovering);
+        assert!(
+            harness
+                .service
+                .write_drivers
+                .get(usize::try_from(harness.submission.operation.index).unwrap())
+                .and_then(Option::as_ref)
+                .is_some_and(|driver| driver.failed)
+        );
+        assert!(harness.ready.is_empty());
+        let authorization = harness
+            .service
+            .release_authorization(harness.submission.operation)
+            .cloned()
+            .expect("release authorization survives cleanup failure");
+        let generation = harness
+            .service
+            .recovery
+            .load_assembly_snapshot()
+            .unwrap()
+            .generation;
+        harness.service.checksums.recovery_generation = generation
+            .checked_next()
+            .expect("fixture generation is bounded");
+        assert!(!harness.service.recovery_topology_generation_coherent());
+        let PortableWriteDrive::Complete(evidence) =
+            harness.service.drive_write(&harness.submission).unwrap()
+        else {
+            panic!("semantic finalization should resume without another result");
+        };
+        assert_eq!(evidence.request, request);
+        assert_eq!(evidence.release_authorization, Some(authorization));
+        assert_eq!(harness.service.admission_usage().operation_slots, 0);
+        assert_eq!(harness.service.admission_usage().backend_submissions, 0);
+    }
+
+    #[test]
+    fn volatile_flush_failure_reconciles_retained_machine_once() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(52),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x74; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        let mut volatile = harness.ready.swap_remove(0);
+        volatile.completion.persistence = PersistenceEvidence::VolatileOrUnknown;
+        assert!(
+            harness
+                .service
+                .deliver_write_result(volatile)
+                .unwrap()
+                .is_none()
+        );
+        let durable = harness.ready.swap_remove(0);
+        assert!(harness.service.deliver_write_result(durable).is_err());
+        assert_eq!(harness.service.state(), ServiceState::Recovering);
+        assert!(
+            harness
+                .service
+                .write_drivers
+                .get(usize::try_from(harness.submission.operation.index).unwrap())
+                .and_then(Option::as_ref)
+                .is_some_and(|driver| driver.failed)
+        );
+        assert!(matches!(
+            harness.service.drive_write(&harness.submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+        ));
+    }
+
+    #[test]
+    fn missing_write_watermark_fails_retained_machine_once() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(53),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x75; BLOCK as usize];
+        let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+        harness.grant_basis().unwrap();
+        harness.emit_one().unwrap();
+        harness.emit_one().unwrap();
+        harness.deliver(1).unwrap();
+        harness.deliver(0).unwrap();
+        harness.emit_available().unwrap();
+        for result in &mut harness.ready {
+            result.completion.write_watermark = None;
+        }
+        while !harness.ready.is_empty() {
+            assert!(harness.deliver(0).unwrap().is_none());
+        }
+        assert!(harness.service.drive_write(&harness.submission).is_err());
+        assert_eq!(harness.service.state(), ServiceState::Recovering);
+        assert!(
+            harness
+                .service
+                .write_drivers
+                .get(usize::try_from(harness.submission.operation.index).unwrap())
+                .and_then(Option::as_ref)
+                .is_some_and(|driver| driver.failed)
+        );
+        assert!(matches!(
+            harness.service.drive_write(&harness.submission).unwrap(),
+            PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+        ));
+    }
+    #[test]
+    fn blocking_write_facade_uses_retained_split_boundary() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(46),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x71; BLOCK as usize];
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let evidence = service.write(request, &bytes).unwrap();
+        assert_eq!(evidence.request, request);
+        assert_eq!(service.members[0].store.physical_writes, 1);
+        assert_eq!(service.members[2].store.physical_writes, 1);
+        assert_eq!(service.members[0].store.physical_flushes, 1);
+        assert_eq!(service.members[2].store.physical_flushes, 1);
+        assert_eq!(service.admission_usage().operation_slots, 0);
     }
 
     #[test]
@@ -2482,8 +4594,10 @@ mod tests {
         let completion = reported_store_completion(error, admitted, FailureClass::Admission);
         assert_eq!(completion.disposition, CompletionDisposition::Success);
         assert_eq!(completion.completed.as_slice(), &[range]);
-        assert_eq!(stale.admission_usage().operation_slots, 0);
-        assert_eq!(stale.admission_usage().backend_submissions, 0);
+        // A rejected stale delivery retains the accepted owner for real
+        // reconciliation; it is not converted into synchronous failure cleanup.
+        assert_eq!(stale.admission_usage().operation_slots, 1);
+        assert_eq!(stale.admission_usage().backend_submissions, 1);
 
         let exhausted = ServiceConfig {
             admission: AdmissionConfig {
@@ -2584,7 +4698,7 @@ mod tests {
             );
             assert_eq!(service.state(), ServiceState::Recovering);
             assert_eq!(service.admission_usage().operation_slots, 1);
-            assert_eq!(service.admission_usage().backend_submissions, 6);
+            assert_eq!(service.admission_usage().backend_submissions, 3);
         }
 
         for effect in [FakeEffect::Failed, FakeEffect::Uncertain] {
@@ -2639,7 +4753,7 @@ mod tests {
         assert_eq!(completion.completed.as_slice(), &[range]);
         assert_eq!(service.state(), ServiceState::Recovering);
         assert_eq!(service.admission_usage().operation_slots, 1);
-        assert_eq!(service.admission_usage().backend_submissions, 6);
+        assert_eq!(service.admission_usage().backend_submissions, 3);
 
         let mut service = fake_service_with_effects(
             FakeRead::Exact,
@@ -2660,8 +4774,10 @@ mod tests {
         assert_eq!(completion.disposition, CompletionDisposition::Success);
         assert!(completion.persistence.is_durable());
         assert_eq!(service.state(), ServiceState::Recovering);
-        assert_eq!(service.admission_usage().operation_slots, 0);
-        assert_eq!(service.admission_usage().backend_submissions, 0);
+        // The stale accepted child remains owned; later unaccepted children
+        // are refused before physical submission.
+        assert_eq!(service.admission_usage().operation_slots, 1);
+        assert_eq!(service.admission_usage().backend_submissions, 1);
     }
 
     #[test]
@@ -3555,6 +5671,37 @@ mod tests {
             basis: BasisConformance::Reconciled,
         }
     }
+    #[test]
+    fn authoritative_recovery_observation_cannot_terminalize_outstanding_child() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let request = request(
+            RequestId(621),
+            epoch,
+            0,
+            BlockOp::Read,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let submission = service.submit_read(request).unwrap();
+
+        assert!(
+            service
+                .reconcile_release_authorization(authoritative_release(submission.operation))
+                .is_err()
+        );
+        assert_eq!(service.admission_usage().operation_slots, 1);
+        assert_eq!(service.admission_usage().backend_submissions, 1);
+        assert!(
+            !service
+                .admission
+                .snapshot(submission.operation)
+                .unwrap()
+                .children[0]
+                .terminal
+        );
+    }
 
     #[test]
     fn routine_read_and_flush_do_not_establish_release_authorization() {
@@ -3663,11 +5810,35 @@ mod tests {
         let token = OperationSlotToken::new(0, 1);
         assert_eq!(service.admission_usage().operation_slots, 1);
 
+        service.inject_terminalization_failure(TerminalizationFault::Reclaim);
+        assert!(
+            service
+                .reconcile_release_authorization(authoritative_release(token))
+                .is_err()
+        );
         let authorization = service
-            .reconcile_release_authorization(authoritative_release(token))
+            .release_authorization(token)
+            .cloned()
+            .expect("authorization is monotonic across cleanup failure");
+        let generation = service
+            .recovery()
+            .load_assembly_snapshot()
+            .unwrap()
+            .generation;
+        service.checksums.recovery_generation = generation
+            .checked_next()
+            .expect("fixture generation is bounded");
+        let retained = service
+            .reconcile_release_authorization(ReleaseReconciliation {
+                operation: token,
+                operation_effect: OperationEffect::Unresolved,
+                requirement: ReleaseRequirement::TransactionUnresolved,
+                recovery: RecoveryReconciliation::Unresolved,
+                basis: BasisConformance::Unresolved,
+            })
             .unwrap()
             .unwrap();
-        assert_eq!(authorization.operation, token);
+        assert_eq!(retained, authorization);
         assert_eq!(service.release_authorization(token), Some(&authorization));
         assert_eq!(service.admission_usage().operation_slots, 0);
     }
@@ -3819,12 +5990,17 @@ mod tests {
             BasisConformance::Consumed,
             "normal write provider must publish exact-generation basis consumption before cleanup"
         );
+        let stale_submission = PortableWriteSubmission {
+            operation: token,
+            request: admitted,
+        };
         let authorization = service.release_authorization(token).unwrap().clone();
         assert_eq!(service.admission_usage().operation_slots, 1);
 
         service.release(token).unwrap();
         assert_eq!(service.release_authorization(token), Some(&authorization));
         assert_eq!(service.admission_usage().operation_slots, 0);
+        assert!(service.drive_write(&stale_submission).is_err());
         let generation = service
             .recovery()
             .load_assembly_snapshot()
@@ -4023,7 +6199,7 @@ mod tests {
     }
 
     #[test]
-    fn failed_child_admission_reconciles_registered_children_before_reclaim() {
+    fn failed_child_admission_retains_primary_error_until_owner_release() {
         let config = ServiceConfig {
             admission: AdmissionConfig {
                 limits: dwv_store::ResourceLimits::new(1, 2, 1, 1, 1, 1),
@@ -4044,8 +6220,8 @@ mod tests {
         assert_eq!(result.as_ref().unwrap_err().request(), Some(admitted));
         assert!(matches!(
             result,
-            Err(ServiceError::Terminalization {
-                primary: Some(_),
+            Err(ServiceError::Io {
+                class: FailureClass::Admission,
                 ..
             })
         ));
@@ -4054,6 +6230,14 @@ mod tests {
         assert_eq!(service.state(), ServiceState::Recovering);
         let token = OperationSlotToken::new(0, 1);
         assert_eq!(service.release_scope(token), ReleaseScope::InScope);
+        assert!(
+            service
+                .admission
+                .snapshot(token)
+                .unwrap()
+                .children
+                .is_empty()
+        );
         let authorization = service
             .reconcile_release_authorization(authoritative_release(token))
             .unwrap()
