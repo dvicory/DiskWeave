@@ -1,0 +1,1065 @@
+use super::*;
+use crate::evidence::ReleaseAuthorization;
+use anyhow::{Context, bail};
+use dwv_core::{BlockOp, ByteRange, CodedUnitId, DurabilityIntent, RequestId, TopologyEpoch};
+use dwv_recovery::{
+    CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership, CodedCapturePhase,
+    CodedCaptureScopeInput, CodedCleanCommitObservation, CodedCleanReconciliation,
+    CodedLaterCutObservation, CodedLaterCutReconciliation, MemoryRecoveryStore,
+};
+use dwv_store::OperationSlotToken;
+use dwv_transaction_ref::{
+    CodedAdmissionOutcome, CodedAuthorityError, CodedClaimInput, CodedOperationPhase,
+};
+use quint_connect::{Config, Driver, Result, State, Step, quint_run};
+use serde::Deserialize;
+use std::collections::{BTreeSet, HashMap, HashSet};
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ModelClaim {
+    units: HashSet<String>,
+    complete: bool,
+    validated: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+enum ModelOperationPhase {
+    Unadmitted,
+    Held,
+    EffectPossible,
+    Released,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ModelOperation {
+    phase: ModelOperationPhase,
+    claim: ModelClaim,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
+enum ModelCapturePhase {
+    CaptureAbsent,
+    CaptureOpen,
+    CaptureCommitPending,
+    CaptureCommitUnknown,
+    CaptureCleanKnown,
+    CaptureRefused,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
+enum ModelMembership {
+    CaptureNotMember,
+    CaptureIncluded,
+    CaptureLater,
+    CaptureLaterDurableAfterClean,
+    CaptureLaterDurableStalesClean,
+    CaptureLaterRejected,
+    CaptureLaterUnknown,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
+#[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
+enum ModelSatisfaction {
+    CaptureSatisfactionNotObserved,
+    CaptureSatisfactionAccepted,
+    CaptureSatisfactionRejected,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct ModelCapture {
+    phase: ModelCapturePhase,
+    scope: HashSet<String>,
+    membership: HashMap<String, ModelMembership>,
+    satisfaction: ModelSatisfaction,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+struct BridgeState {
+    operations: HashMap<String, ModelOperation>,
+    captures: HashMap<String, ModelCapture>,
+}
+
+struct BridgeDriver {
+    service: Option<HealthyPortableService<FakeStore, MemoryRecoveryStore>>,
+    tokens: HashMap<String, OperationSlotToken>,
+    claims: HashMap<String, BTreeSet<CodedUnitId>>,
+    release_observations: HashMap<String, OperationSlotToken>,
+}
+
+impl BridgeDriver {
+    fn new() -> Self {
+        Self {
+            service: None,
+            tokens: HashMap::new(),
+            claims: HashMap::new(),
+            release_observations: HashMap::new(),
+        }
+    }
+
+    fn init(&mut self) {
+        self.service = Some(fake_service(FakeRead::Exact, ServiceConfig::default()));
+        self.tokens.clear();
+        self.claims.clear();
+        self.release_observations.clear();
+    }
+
+    fn service(&self) -> Result<&HealthyPortableService<FakeStore, MemoryRecoveryStore>> {
+        self.service
+            .as_ref()
+            .context("coded Connect driver has no service")
+    }
+
+    fn service_mut(
+        &mut self,
+    ) -> Result<&mut HealthyPortableService<FakeStore, MemoryRecoveryStore>> {
+        self.service
+            .as_mut()
+            .context("coded Connect driver has no mutable service")
+    }
+
+    fn token(&self, operation: &str) -> Result<OperationSlotToken> {
+        self.tokens
+            .get(operation)
+            .copied()
+            .with_context(|| format!("operation {operation} has no production token"))
+    }
+
+    fn admit(&mut self, operation: &str, units: &[u32]) -> Result<()> {
+        if self.tokens.contains_key(operation) {
+            bail!("operation {operation} was admitted twice");
+        }
+        let data_slot = match operation {
+            "opA" => 0,
+            "opB" => 1,
+            "opC" => 2,
+            _ => bail!("unknown model operation {operation}"),
+        };
+        let request = request(
+            RequestId(100 + data_slot as u64),
+            TopologyEpoch(4),
+            data_slot,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded coded range"),
+            DurabilityIntent::Ordinary,
+        );
+        let token = self.service_mut()?.reserve(request)?;
+        let claim = units
+            .iter()
+            .copied()
+            .map(CodedUnitId)
+            .collect::<BTreeSet<_>>();
+        let outcome = self
+            .service_mut()?
+            .coded_admit(token, CodedClaimInput::complete(claim.iter().copied()))?;
+        if outcome != CodedAdmissionOutcome::Admitted {
+            bail!("model admission mapped to production contention");
+        }
+        self.tokens.insert(operation.to_owned(), token);
+        self.claims.insert(operation.to_owned(), claim);
+        Ok(())
+    }
+
+    fn start_capture(&mut self) -> Result<()> {
+        self.service_mut()?.coded_start_capture(
+            CodedCaptureId(0),
+            CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]),
+        )?;
+        Ok(())
+    }
+
+    fn accept_capture(&mut self) -> Result<()> {
+        self.service_mut()?
+            .coded_captures_mut()
+            .observe_decision(CodedCaptureId(0), CodedCaptureDecision::Accepted)?;
+        Ok(())
+    }
+
+    fn reject_capture(&mut self) -> Result<()> {
+        self.service_mut()?
+            .coded_captures_mut()
+            .observe_decision(CodedCaptureId(0), CodedCaptureDecision::Rejected)?;
+        Ok(())
+    }
+
+    fn request_clean(&mut self) -> Result<()> {
+        self.service_mut()?
+            .coded_captures_mut()
+            .request_clean(CodedCaptureId(0))?;
+        Ok(())
+    }
+
+    fn clean_commit(&mut self, observation: CodedCleanCommitObservation) -> Result<()> {
+        self.service_mut()?
+            .coded_captures_mut()
+            .observe_clean_commit(CodedCaptureId(0), observation)?;
+        Ok(())
+    }
+
+    fn reconcile_clean(&mut self, reconciliation: CodedCleanReconciliation) -> Result<()> {
+        self.service_mut()?
+            .coded_captures_mut()
+            .reconcile_clean_commit(CodedCaptureId(0), reconciliation)?;
+        Ok(())
+    }
+
+    fn later_cut(&mut self, observation: CodedLaterCutObservation) -> Result<()> {
+        let operation = self.token("opC")?;
+        self.service_mut()?.coded_captures_mut().observe_later_cut(
+            CodedCaptureId(0),
+            operation,
+            observation,
+        )?;
+        Ok(())
+    }
+
+    fn later_cut_reconcile(&mut self, observation: CodedLaterCutReconciliation) -> Result<()> {
+        let operation = self.token("opC")?;
+        self.service_mut()?
+            .coded_captures_mut()
+            .reconcile_later_cut(CodedCaptureId(0), operation, observation)?;
+        Ok(())
+    }
+
+    fn permit_effect(&mut self, operation: &str) -> Result<()> {
+        let token = self.token(operation)?;
+        if self.service_mut()?.coded_permit_effect(token)? != CodedEffectOutcome::Permitted {
+            bail!("model effect permission remained blocked in production");
+        }
+        Ok(())
+    }
+
+    fn release_operation(&mut self, operation: &str) -> Result<()> {
+        let token = self.token(operation)?;
+        // LifecycleRelease owns and separately Connect-proves this certificate.
+        // This bounded bridge consumes it as an opaque typed input; it does not
+        // reconstruct media, child, transaction, recovery, basis, or cleanup
+        // predicates.
+        let authorization = ReleaseAuthorization { operation: token };
+        let release = self
+            .service_mut()?
+            .coded_release_claim(token, &authorization)?;
+        if release.operation != token {
+            bail!("coded release returned the wrong generation");
+        }
+        if self
+            .service()?
+            .coded_authority()
+            .active_claim(token)
+            .is_some()
+        {
+            bail!("coded release left the production claim active");
+        }
+        self.release_observations
+            .insert(operation.to_owned(), release.operation);
+        Ok(())
+    }
+
+    fn probe_conflict(&mut self) -> Result<()> {
+        let hidden = self.service_mut()?.reserve(request(
+            RequestId(900),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        let outcome = self
+            .service_mut()?
+            .coded_admit(hidden, CodedClaimInput::complete([CodedUnitId(0)]))?;
+        if !matches!(outcome, CodedAdmissionOutcome::Contended) {
+            bail!("overlapping coded claim did not remain pending as contention");
+        }
+        self.service_mut()?.admission.reclaim(hidden, false)?;
+        Ok(())
+    }
+
+    fn probe_incomplete_claim(&mut self) -> Result<()> {
+        let hidden = self.service_mut()?.reserve(request(
+            RequestId(904),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        let result = self
+            .service_mut()?
+            .coded_admit(hidden, CodedClaimInput::new([CodedUnitId(0)], false, true));
+        if !result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("coded claim is incomplete"))
+        {
+            bail!("incomplete claim did not fail at the service seam");
+        }
+        self.service_mut()?.admission.reclaim(hidden, false)?;
+        Ok(())
+    }
+
+    fn probe_unvalidated_claim(&mut self) -> Result<()> {
+        let hidden = self.service_mut()?.reserve(request(
+            RequestId(905),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        let result = self
+            .service_mut()?
+            .coded_admit(hidden, CodedClaimInput::new([CodedUnitId(0)], true, false));
+        if !result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.to_string().contains("coded claim is not validated"))
+        {
+            bail!("unvalidated claim did not fail at the service seam");
+        }
+        self.service_mut()?.admission.reclaim(hidden, false)?;
+        Ok(())
+    }
+
+    fn probe_unauthorized_removal(&mut self) -> Result<()> {
+        let operation = self.token("opA")?;
+        let result = self
+            .service_mut()?
+            .coded_authority_mut()
+            .release(operation, None);
+        if !matches!(
+            result,
+            Err(CodedAuthorityError::ReleaseAuthorizationMissing(_))
+        ) {
+            bail!("coded removal succeeded without ReleaseAllowed");
+        }
+        Ok(())
+    }
+
+    fn probe_stale_generation(&mut self) -> Result<()> {
+        let old = self.service_mut()?.reserve(request(
+            RequestId(901),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        self.service_mut()?.admission.reclaim(old, false)?;
+        let current = self.service_mut()?.reserve(request(
+            RequestId(902),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        if old.index != current.index || old.generation == current.generation {
+            bail!("hidden stale-generation probe did not reuse one slot with a new generation");
+        }
+        if self
+            .service_mut()?
+            .coded_admit(current, CodedClaimInput::complete([CodedUnitId(1)]))?
+            != CodedAdmissionOutcome::Admitted
+        {
+            bail!("stale-generation probe failed to admit its current generation");
+        }
+        let result = self
+            .service_mut()?
+            .coded_authority_mut()
+            .release(current, Some(old));
+        if !matches!(
+            result,
+            Err(CodedAuthorityError::ReleaseAuthorizationMismatch { .. })
+        ) {
+            bail!("stale authorization removed a current coded claim");
+        }
+        self.service_mut()?
+            .coded_authority_mut()
+            .release(current, Some(current))?;
+        self.service_mut()?.admission.reclaim(current, false)?;
+        Ok(())
+    }
+
+    fn probe_non_transitive(&mut self) -> Result<()> {
+        let hidden = self.service_mut()?.reserve(request(
+            RequestId(903),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        let outcome = self.service_mut()?.coded_admit(
+            hidden,
+            CodedClaimInput::complete([CodedUnitId(0), CodedUnitId(1)]),
+        )?;
+        if !matches!(outcome, CodedAdmissionOutcome::Contended) {
+            bail!("non-transitive coded overlap did not report contention");
+        }
+        let op_a = self.token("opA")?;
+        let op_c = self.token("opC")?;
+        if self
+            .service()?
+            .coded_authority()
+            .active_claim(op_a)
+            .is_none()
+            || self
+                .service()?
+                .coded_authority()
+                .active_claim(op_c)
+                .is_none()
+        {
+            bail!("non-transitive conflict disturbed an admitted claim");
+        }
+        self.service_mut()?.admission.reclaim(hidden, false)?;
+        Ok(())
+    }
+
+    fn probe_effect_before_later_cut(&mut self) -> Result<()> {
+        let token = self.token("opC")?;
+        let result = self.service_mut()?.coded_permit_effect(token)?;
+        if result != CodedEffectOutcome::BlockedByCapture {
+            bail!("effect was permitted before a later cut");
+        }
+        Ok(())
+    }
+
+    fn probe_effect_after_later_rejection(&mut self) -> Result<()> {
+        let token = self.token("opC")?;
+        let result = self.service_mut()?.coded_permit_effect(token)?;
+        if result != CodedEffectOutcome::BlockedByCapture {
+            bail!("effect was permitted after a rejected later cut");
+        }
+        Ok(())
+    }
+
+    fn probe_rejected_future_admission(&mut self) -> Result<()> {
+        let hidden = self.service_mut()?.reserve(request(
+            RequestId(906),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            DurabilityIntent::Ordinary,
+        ))?;
+        if self
+            .service_mut()?
+            .coded_admit(hidden, CodedClaimInput::complete([CodedUnitId(0)]))?
+            != CodedAdmissionOutcome::Admitted
+        {
+            bail!("future admission unexpectedly contended after capture refusal");
+        }
+        let snapshot = self
+            .service()?
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .context("rejected capture disappeared")?;
+        if !snapshot.membership.is_empty() {
+            bail!("rejected capture retained a future membership obligation");
+        }
+        self.service_mut()?
+            .coded_authority_mut()
+            .release(hidden, Some(hidden))?;
+        self.service_mut()?.admission.reclaim(hidden, false)?;
+        Ok(())
+    }
+
+    fn probe_clean_before_later_reconciliation(&mut self) -> Result<()> {
+        let result = self
+            .service_mut()?
+            .coded_captures_mut()
+            .request_clean(CodedCaptureId(0));
+        if result.is_ok() {
+            bail!("CLEAN became eligible while later uncertainty was unresolved");
+        }
+        Ok(())
+    }
+
+    fn probe_clean_before_decision(&mut self) -> Result<()> {
+        let result = self
+            .service_mut()?
+            .coded_captures_mut()
+            .request_clean(CodedCaptureId(0));
+        if result.is_ok() {
+            bail!("CLEAN became eligible before a decision was observed");
+        }
+        Ok(())
+    }
+
+    fn bridge_state(&self) -> Result<BridgeState> {
+        let mut operations = HashMap::new();
+        for id in ["opA", "opB", "opC"] {
+            let phase = if matches!(
+                (
+                    self.release_observations.get(id).copied(),
+                    self.tokens.get(id).copied(),
+                ),
+                (Some(released), Some(token)) if released == token
+            ) {
+                ModelOperationPhase::Released
+            } else if let Some(token) = self.tokens.get(id) {
+                match self.service()?.coded_authority().operation_phase(*token) {
+                    Some(CodedOperationPhase::Held) => ModelOperationPhase::Held,
+                    Some(CodedOperationPhase::EffectPossible) => {
+                        ModelOperationPhase::EffectPossible
+                    }
+                    None => ModelOperationPhase::Unadmitted,
+                }
+            } else {
+                ModelOperationPhase::Unadmitted
+            };
+            let claim_units = if matches!(phase, ModelOperationPhase::Unadmitted) {
+                HashSet::new()
+            } else if let Some(token) = self.tokens.get(id) {
+                if let Some(claim) = self.service()?.coded_authority().active_claim(*token) {
+                    claim.units().iter().map(|unit| unit_name(*unit)).collect()
+                } else {
+                    self.claims
+                        .get(id)
+                        .into_iter()
+                        .flat_map(|units| units.iter().map(|unit| unit_name(*unit)))
+                        .collect()
+                }
+            } else {
+                HashSet::new()
+            };
+            operations.insert(
+                id.to_owned(),
+                ModelOperation {
+                    claim: ModelClaim {
+                        complete: !matches!(phase, ModelOperationPhase::Unadmitted),
+                        validated: !matches!(phase, ModelOperationPhase::Unadmitted),
+                        units: claim_units,
+                    },
+                    phase,
+                },
+            );
+        }
+
+        let capture = self
+            .service()?
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0));
+        let mut membership = [
+            ("opA".to_owned(), ModelMembership::CaptureNotMember),
+            ("opB".to_owned(), ModelMembership::CaptureNotMember),
+            ("opC".to_owned(), ModelMembership::CaptureNotMember),
+        ]
+        .into_iter()
+        .collect::<HashMap<_, _>>();
+        let (phase, scope, satisfaction) = if let Some(snapshot) = capture {
+            let reverse = self
+                .tokens
+                .iter()
+                .map(|(id, token)| (*token, id.as_str()))
+                .collect::<HashMap<_, _>>();
+            for (operation, status) in snapshot.membership {
+                let id = reverse
+                    .get(&operation)
+                    .with_context(|| format!("model has no operation for {operation:?}"))?;
+                membership.insert((*id).to_owned(), model_membership(status));
+            }
+            let scope = snapshot.scope.into_iter().map(unit_name).collect();
+            let satisfaction = snapshot
+                .decision
+                .map(model_decision)
+                .unwrap_or(ModelSatisfaction::CaptureSatisfactionNotObserved);
+            (model_capture_phase(snapshot.phase), scope, satisfaction)
+        } else {
+            (
+                ModelCapturePhase::CaptureAbsent,
+                HashSet::new(),
+                ModelSatisfaction::CaptureSatisfactionNotObserved,
+            )
+        };
+        let mut captures = HashMap::new();
+        captures.insert(
+            "capture0".to_owned(),
+            ModelCapture {
+                phase,
+                scope,
+                membership,
+                satisfaction,
+            },
+        );
+        Ok(BridgeState {
+            operations,
+            captures,
+        })
+    }
+}
+
+impl State<BridgeDriver> for BridgeState {
+    fn from_driver(driver: &BridgeDriver) -> Result<Self> {
+        driver.bridge_state()
+    }
+}
+
+impl Driver for BridgeDriver {
+    type State = BridgeState;
+
+    fn config() -> Config {
+        Config {
+            state: &["CodedRangeCleanConnect::CodedRangeClean::state"],
+            ..Config::default()
+        }
+    }
+
+    fn step(&mut self, step: &Step) -> Result {
+        quint_connect::switch!(step {
+            connectInit => self.init(),
+            admitOpA => self.admit("opA", &[0])?,
+            admitOpB => self.admit("opB", &[0, 1])?,
+            admitOpC => self.admit("opC", &[1])?,
+            startCapturePath => self.start_capture()?,
+            acceptCapture => self.accept_capture()?,
+            rejectCapture => self.reject_capture()?,
+            requestCleanPath => self.request_clean()?,
+            cleanDurable => self.clean_commit(CodedCleanCommitObservation::Durable)?,
+            cleanUnknown => self.clean_commit(CodedCleanCommitObservation::Unknown)?,
+            cleanRejected => self.clean_commit(CodedCleanCommitObservation::Rejected)?,
+            cleanReconciledDurable => {
+                self.reconcile_clean(CodedCleanReconciliation::Durable)?
+            },
+            cleanReconciledRejected => {
+                self.reconcile_clean(CodedCleanReconciliation::Rejected)?
+            },
+            laterAfterClean => self.later_cut(CodedLaterCutObservation::DurableAfterClean)?,
+            laterStalesClean => self.later_cut(CodedLaterCutObservation::DurableStalesClean)?,
+            laterUnknown => self.later_cut(CodedLaterCutObservation::Unknown)?,
+            laterRejected => self.later_cut_reconcile(CodedLaterCutReconciliation::Rejected)?,
+            laterRejectedObservation => {
+                self.later_cut(CodedLaterCutObservation::Rejected)?
+            },
+            laterStalesCleanReconciled => {
+                self.later_cut_reconcile(CodedLaterCutReconciliation::StalesClean)?
+            },
+            laterAfterCleanReconciled => {
+                self.later_cut_reconcile(CodedLaterCutReconciliation::DurableAfterClean)?
+            },
+            permitOpA => self.permit_effect("opA")?,
+            permitOpB => self.permit_effect("opB")?,
+            permitOpC => self.permit_effect("opC")?,
+            probeEffectAfterLaterRejection => self.probe_effect_after_later_rejection()?,
+            removeOpA => self.release_operation("opA")?,
+            removeOpB => self.release_operation("opB")?,
+            removeOpC => self.release_operation("opC")?,
+            probeConflict => self.probe_conflict()?,
+            probeIncompleteClaim => self.probe_incomplete_claim()?,
+            probeUnvalidatedClaim => self.probe_unvalidated_claim()?,
+            probeUnauthorizedRemoval => self.probe_unauthorized_removal()?,
+            probeStaleGeneration => self.probe_stale_generation()?,
+            probeNonTransitive => self.probe_non_transitive()?,
+            probeEffectBeforeLaterCut => self.probe_effect_before_later_cut()?,
+            probeRejectedFutureAdmission => self.probe_rejected_future_admission()?,
+            probeCleanBeforeLaterReconciliation => self.probe_clean_before_later_reconciliation()?,
+            probeCleanBeforeDecision => self.probe_clean_before_decision()?,
+        })
+    }
+}
+
+fn unit_name(unit: CodedUnitId) -> String {
+    format!("u{}", unit.0)
+}
+
+fn model_capture_phase(phase: CodedCapturePhase) -> ModelCapturePhase {
+    match phase {
+        CodedCapturePhase::Open => ModelCapturePhase::CaptureOpen,
+        CodedCapturePhase::CleanCommitPending => ModelCapturePhase::CaptureCommitPending,
+        CodedCapturePhase::CleanCommitUnknown => ModelCapturePhase::CaptureCommitUnknown,
+        CodedCapturePhase::CleanKnown => ModelCapturePhase::CaptureCleanKnown,
+        CodedCapturePhase::Refused => ModelCapturePhase::CaptureRefused,
+    }
+}
+
+fn model_membership(membership: CodedCaptureMembership) -> ModelMembership {
+    match membership {
+        CodedCaptureMembership::Included => ModelMembership::CaptureIncluded,
+        CodedCaptureMembership::Later => ModelMembership::CaptureLater,
+        CodedCaptureMembership::LaterDurableAfterClean => {
+            ModelMembership::CaptureLaterDurableAfterClean
+        }
+        CodedCaptureMembership::LaterDurableStalesClean => {
+            ModelMembership::CaptureLaterDurableStalesClean
+        }
+        CodedCaptureMembership::LaterRejected => ModelMembership::CaptureLaterRejected,
+        CodedCaptureMembership::LaterUnknown => ModelMembership::CaptureLaterUnknown,
+    }
+}
+
+fn model_decision(decision: CodedCaptureDecision) -> ModelSatisfaction {
+    match decision {
+        CodedCaptureDecision::Accepted => ModelSatisfaction::CaptureSatisfactionAccepted,
+        CodedCaptureDecision::Rejected => ModelSatisfaction::CaptureSatisfactionRejected,
+    }
+}
+
+#[test]
+fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let range = ByteRange::new(0, BLOCK as u64).expect("bounded coded release range");
+    let old = service
+        .reserve(request(
+            RequestId(950),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert_eq!(
+        service
+            .coded_admit(old, CodedClaimInput::complete([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted
+    );
+    // External typed LifecycleRelease input; provider correctness is separate evidence.
+    let old_authorization = ReleaseAuthorization { operation: old };
+
+    service.admission.reclaim(old, false).unwrap();
+    assert!(
+        service
+            .coded_admit(old, CodedClaimInput::complete([CodedUnitId(1)]))
+            .is_err()
+    );
+    assert_eq!(
+        service
+            .coded_release_claim(old, &old_authorization)
+            .unwrap()
+            .operation,
+        old
+    );
+
+    let current = service
+        .reserve(request(
+            RequestId(951),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert_eq!(old.index, current.index);
+    assert_ne!(old.generation, current.generation);
+    assert_eq!(
+        service
+            .coded_admit(current, CodedClaimInput::complete([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted
+    );
+    let error = service
+        .coded_release_claim(current, &old_authorization)
+        .unwrap_err();
+    assert!(error.to_string().contains("does not match operation"));
+    assert!(service.coded_authority().active_claim(current).is_some());
+}
+#[test]
+fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let range = ByteRange::new(0, BLOCK as u64).expect("bounded coded re-admission range");
+    let operation = service
+        .reserve(request(
+            RequestId(952),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert_eq!(
+        service
+            .coded_admit(operation, CodedClaimInput::complete([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted
+    );
+
+    // A real lifecycle certificate is established only after the operation slot
+    // is Reclaimable. Keep the slot live to exercise the pre-cleanup window.
+    service
+        .admission
+        .record_reconciliation(operation, ReconciliationOutcome::Durable)
+        .unwrap();
+    let authorization = ReleaseAuthorization { operation };
+    service
+        .coded_release_claim(operation, &authorization)
+        .unwrap();
+
+    let error = service
+        .coded_admit(operation, CodedClaimInput::complete([CodedUnitId(1)]))
+        .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("coded admission requires a reserved operation slot")
+    );
+    assert!(service.coded_authority().active_claim(operation).is_none());
+}
+
+#[test]
+fn coded_capture_and_admission_linearize_at_service_boundary() {
+    let scope = CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]);
+    let range = ByteRange::new(0, BLOCK as u64).expect("bounded coded range");
+
+    let mut capture_first = fake_service(FakeRead::Exact, ServiceConfig::default());
+    capture_first
+        .coded_start_capture(CodedCaptureId(0), scope.clone())
+        .unwrap();
+    let later = capture_first
+        .reserve(request(
+            RequestId(960),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert_eq!(
+        capture_first
+            .coded_admit(later, CodedClaimInput::complete([CodedUnitId(1)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted
+    );
+    assert_eq!(
+        capture_first
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&later),
+        Some(&CodedCaptureMembership::Later)
+    );
+
+    let mut admit_first = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let included = admit_first
+        .reserve(request(
+            RequestId(961),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert_eq!(
+        admit_first
+            .coded_admit(included, CodedClaimInput::complete([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted
+    );
+    admit_first
+        .coded_start_capture(CodedCaptureId(0), scope)
+        .unwrap();
+    assert_eq!(
+        admit_first
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&included),
+        Some(&CodedCaptureMembership::Included)
+    );
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "admissionStep",
+    max_samples = 1,
+    max_steps = 6,
+    seed = "22082026"
+)]
+fn coded_range_connect_admission() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "wideClaimStep",
+    max_samples = 1,
+    max_steps = 3,
+    seed = "22082026"
+)]
+fn coded_range_connect_wide_claim() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "captureStep",
+    max_samples = 1,
+    max_steps = 9,
+    seed = "22082026"
+)]
+fn coded_range_connect_capture() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "unknownCleanStep",
+    max_samples = 1,
+    max_steps = 11,
+    seed = "22082026"
+)]
+fn coded_range_connect_unknown_clean() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "rejectedCaptureStep",
+    max_samples = 1,
+    max_steps = 3,
+    seed = "22082026"
+)]
+fn coded_range_connect_rejected_capture() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "staleLaterCutStep",
+    max_samples = 1,
+    max_steps = 6,
+    seed = "22082026"
+)]
+fn coded_range_connect_stale_later_cut() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "preCleanUnknownStep",
+    max_samples = 1,
+    max_steps = 7,
+    seed = "22082026"
+)]
+fn coded_range_connect_pre_clean_unknown() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "laterRejectedStep",
+    max_samples = 1,
+    max_steps = 6,
+    seed = "22082026"
+)]
+fn coded_range_connect_later_rejected() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "nonTransitiveStep",
+    max_samples = 1,
+    max_steps = 3,
+    seed = "22082026"
+)]
+fn coded_range_connect_non_transitive() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "cleanReconcileStep",
+    max_samples = 1,
+    max_steps = 7,
+    seed = "22082026"
+)]
+fn coded_range_connect_clean_reconcile() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "cleanReconcileRejectedStep",
+    max_samples = 1,
+    max_steps = 6,
+    seed = "22082026"
+)]
+fn coded_range_connect_clean_reconcile_rejected() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "unknownAfterCleanReconcileStep",
+    max_samples = 1,
+    max_steps = 10,
+    seed = "22082026"
+)]
+fn coded_range_connect_later_reconcile_after_clean() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "cleanRejectedStep",
+    max_samples = 1,
+    max_steps = 5,
+    seed = "22082026"
+)]
+fn coded_range_connect_clean_rejected() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "noCleanStep",
+    max_samples = 1,
+    max_steps = 3,
+    seed = "22082026"
+)]
+fn coded_range_connect_clean_requires_decision() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
+    step = "negativeStep",
+    max_samples = 1,
+    max_steps = 6,
+    seed = "90210"
+)]
+fn coded_range_connect_negative_paths() -> impl Driver {
+    BridgeDriver::new()
+}

@@ -657,3 +657,47 @@ non_claims = [
   "RecoveryProtocol.qnt and its existing analysis/Connect evidence remain separate and are not evidence for this relation.",
   "Finite bounds are evidence-only and do not define production cardinality, lock, counter, frontier, or mechanism.",
 ]
+
+[[evidence]]
+id = "evidence.coded-range-clean-connect"
+path = "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs"
+claim = "The bounded in-crate Connect bridge projects every delegated CodedRangeClean distinction through production service/coordinator seams while consuming explicitly typed owner decisions and evidence for complete claims, capture scope, CLEAN commits, later cuts, and exact generation-qualified release; lifecycle and basis policy remain external."
+tier = "portable-reference-comparison"
+fault_model = [
+  "model-shaped shadow coordinator",
+  "operation-generation mismatch",
+  "overlapping coded claims admitted instead of remaining contended",
+  "non-transitive conflict incorrectly serialized",
+  "incomplete or unvalidated claim admitted",
+  "capture scope incomplete or lower frontier uncovered",
+  "CLEAN without capture-wide decision",
+  "unknown CLEAN commit treated as durable",
+  "later effect without durable cut",
+  "later-cut ordering reversed",
+  "rejected later cut incorrectly permits effect",
+  "unauthorized or stale coded-claim removal",
+]
+scope = [
+  "verification/quint/CodedRangeCleanConnect.qnt",
+  "production HealthyPortableService and OperationAdmission seams",
+  "production CodedRangeAuthority and CodedCaptureCoordinator seams",
+  "15 deterministic Connect profiles",
+  "complete/disjoint/overlapping/non-transitive coded claims",
+  "coded admission restricted to an exact live Reserved operation generation",
+  "post-cleanup release, same-generation re-admission rejection, and capture/admission linearization unit tests",
+  "later-cut durable ordering, rejection, Unknown, and reconciliation",
+  "exact generation-qualified external release certificate and unresolved-capture coexistence",
+]
+requirements = [
+  "req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts",
+  "req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set",
+  "req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+  "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+  "req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts",
+]
+non_claims = [
+  "This is bounded correspondence evidence, not arbitrary-width model checking, production concurrency or throughput evidence, or hardware durability proof.",
+  "Typed owner decisions and evidence are consumed at exact seams but do not prove the underlying owner semantics; LifecycleRelease provider correctness, physical cleanup ordering, and basis coherence remain separate evidence.",
+  "It does not establish topology/profile mapping, request/store/dirty/checksum geometry, persistence admissibility, startup, shutdown, publication, currentization, or Linux behavior.",
+]

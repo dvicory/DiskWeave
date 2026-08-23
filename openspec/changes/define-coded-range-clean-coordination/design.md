@@ -96,7 +96,7 @@ The semantic result boundary preserves these dispositions:
 
 | Boundary | Accepted result paths | Conservative non-success paths |
 |---|---|---|
-| Coded-range admission | admitted complete coded scope; claim removal eligible only after exact external release/disposition authorization | bounded conflict/exhaustion refusal; stale topology/profile/generation refusal; failure, frontend abandonment without terminal/reconciled release, unknown operation effect, or unreconciled basis while claims remain owned |
+| Coded-range admission | admitted complete coded scope; ordinary overlap remains pending/backpressured until held authority clears; claim removal eligible only after exact external release/disposition authorization | actual bounded authority/resource exhaustion refusal; stale topology/profile/generation refusal; failure, frontend abandonment without terminal/reconciled release, unknown operation effect, or unreconciled basis while claims remain owned |
 | Relevant read | exact completed range correlated to its consuming unit and held coherently through the consuming mutation under complete authority | short, failed, uncertain, or stale result without a coherent-basis claim; no release-then-use gap |
 | Mutation release | exact external `ReleaseAllowed` from the canonical lifecycle-release owner authorizes coded-claim removal independently of CLEAN-capture state | no removal while that owner withholds `ReleaseAllowed`; coded/CLEAN logic does not reconstruct lifecycle predicates or redefine `RecoveryProtocol.releaseRange` |
 | `CLEAN` capture/commit | exact selected-region clear after closed-set completion, one exact CLEAN-owner capture decision, durable post-capture cut, and all evidence owners accept | deferred/dirty later mutation; bounded capture refusal; stale generation/topology/evidence refusal; `Rejected` or CLEAN-commit `Unknown` requiring reconciliation while bounded capture evidence remains effective |
@@ -127,13 +127,13 @@ projected; they do not create a second production authority.
 
 | Actual declaration(s) | Delegated meaning | Production seam or external owner/evidence |
 |---|---|---|
-| `OperationPhase`, `Operations` map key, `CodedClaim`, `claimOverlap`, `admitComplete`, `permitMutationEffect`, `noHeldOverlap`, `NoHeldCodedOverlap`, `CompleteAdmissionPrecedesEffect` | One model operation identity is one exact generation-qualified production operation-slot/assignment identity. Complete validated coded claims conflict exactly when their coded-unit sets intersect; disjoint claims may coexist; dependent effects require admitted complete authority and every applicable later cut. | A future Connect bridge observes the production slot generation/assignment identity represented by the model key beside the complete validated claim, admission/refusal result, and effect boundary. Topology/profile mapping, member identity, basis coherence, and physical I/O remain external transaction/healthy-service evidence. |
-| `CaptureScope`, `startCapture`, `capturesAfterAdmission`, `CaptureOperationStatus`, `CaptureMembershipExhaustive`, `CaptureMembershipExclusive` | For an active capture, membership is exhaustive and exclusive over the bounded operation domain: intersecting operations held at capture start are `CaptureIncluded`; later admissions are `CaptureLater`; definitive refusal stops future obligations. | The bridge observes capture identity, complete scope, `lowerFrontierCovered`, generation-qualified membership, and refusal/classification. Dirty-integrity owns frontier meaning and the bounded summary. |
-| `CaptureSatisfactionObservation`, `observeCaptureSatisfaction`, `captureCleanEligible`, `requestClean`, `NoFalseClean`, `RejectedSatisfactionRefusesCapture` | The CLEAN owner supplies one capture-wide accepted/rejected decision after evaluating lifecycle, dirty/checksum, persistence, and selected-state facts. The relation consumes that fact and never derives it from a generic handoff or a per-operation map. Rejection preserves conservative dirty state and refuses the capture. | The bridge observes the capture identity, closed membership, and externally supplied CLEAN-owner decision; dirty-integrity and lifecycle owners supply the decision inputs. |
-| `CleanCommitObservation`, `CaptureCommitUnknown`, `observeCleanCommit`, `reconcileCleanCommit`, `UnknownCleanRequiresReconciliation` | CLEAN-commit `Unknown` is represented only by `CaptureCommitUnknown`; the action input is not stored separately. It cannot become `CaptureCleanKnown` without the separate authoritative reconciliation action and does not itself negate independent coded release. | Recovery adapters supply exact durable/rejected/unknown commit and reopen/reconciliation facts; the relation preserves capture uncertainty separately from operation release. |
-| `LaterCutObservation`, `CaptureOperationStatus`, `observeLaterCut`, `LaterCutReconciliationObservation`, `reconcileLaterCut`, `allLaterCutsSatisfied`, `LaterEffectRequiresDurableCut` | A later mutation may affect media only after an owner-supplied durable post-capture cut. Later-cut `Unknown` is a distinct blocking membership status. If CLEAN is already durable, reconciliation may establish only the durable-after-CLEAN cut or rejection and preserves `CaptureCleanKnown`; before durable CLEAN, reconciliation may establish only the stale/refusal cut or rejection. | The bridge observes the exact operation/capture/generation boundary, its ordering relative to durable CLEAN, and the reconciliation result. Dirty-integrity and recovery owners supply durability and stale-generation meaning; the model never creates the boundary. |
-| `CaptureRefused`, `captureTracksFutureAdmission`, `RejectedSatisfactionRefusesCapture` | Definitively refused captures retain dirty/stale consequences but do not classify future admissions or impose an impossible durable-cut obligation. No retirement/compaction state is modeled because no current/proposed owner requirement establishes one. | The bridge observes refusal and exact final capture facts. Dirty-integrity owns conservative dirty/stale meaning; lifecycle and recovery owners supply finality and reconciliation facts. |
-| `removeCodedClaim`, `ReleaseAuthorization` | Exact external `ReleaseAllowed` is consumed directly by coded removal and is the sole coded-removal authority. CLEAN capture state and later-cut reconciliation do not add a second release policy. | The bridge binds the model operation key to the exact production operation generation, observes `ReleaseAllowed` from the canonical lifecycle-release owner for that same identity, then observes coordinator removal. The seven lifecycle predicates and `RecoveryProtocol.releaseRange` remain external and are not reconstructed here. |
+| `OperationPhase`, `Operations` map key, `CodedClaim`, `claimOverlap`, `admitComplete`, `permitMutationEffect`, `noHeldOverlap`, `NoHeldCodedOverlap`, `CompleteAdmissionPrecedesEffect` | One model operation identity is one exact generation-qualified production operation-slot identity. Complete validated coded claims conflict exactly when their coded-unit sets intersect; disjoint claims may coexist; dependent effects require admitted complete authority and every applicable later cut. Ordinary overlap maps to non-terminal `CodedAdmissionOutcome::Contended`, not terminal I/O failure. | `BridgeDriver::admit` calls `HealthyPortableService::reserve` and `coded_admit`; the service accepts coded admission only while the exact operation slot remains `Reserved`; `BridgeDriver::bridge_state` projects phases from exact tokens and active claims from `CodedRangeAuthority`, retaining admitted claim evidence only for the model's post-release field. Complete/validated mapping inputs are typed external facts; holder identity and scheduler policy are outside this claim. |
+| `CaptureScope`, `startCapture`, `capturesAfterAdmission`, `CaptureOperationStatus`, `CaptureMembershipExhaustive`, `CaptureMembershipExclusive` | For an active capture, membership is exhaustive and exclusive over the bounded operation domain: intersecting operations held at capture start are `CaptureIncluded`; later admissions are `CaptureLater`; definitive refusal stops future obligations. | `BridgeDriver::start_capture` calls `coded_start_capture` with a complete validated `CodedCaptureScopeInput`; `BridgeDriver::bridge_state` projects `CodedCaptureSnapshot` scope, generation-qualified membership, phase, and decision. |
+| `CaptureSatisfactionObservation`, `observeCaptureSatisfaction`, `captureCleanEligible`, `requestClean`, `NoFalseClean`, `RejectedSatisfactionRefusesCapture` | The CLEAN owner supplies one capture-wide accepted/rejected decision after evaluating lifecycle, dirty/checksum, persistence, and selected-state facts. The relation consumes that fact and never derives it from a generic handoff or a per-operation map. Rejection preserves conservative dirty state and refuses the capture. | `accept_capture`/`reject_capture` consume typed `CodedCaptureDecision` inputs at `CodedCaptureCoordinator::observe_decision`; `request_clean` calls the production coordinator. Decision inputs remain external owner facts. |
+| `CleanCommitObservation`, `CaptureCommitUnknown`, `observeCleanCommit`, `reconcileCleanCommit`, `UnknownCleanRequiresReconciliation` | CLEAN-commit `Unknown` is represented only by `CaptureCommitUnknown`; the action input is not stored separately. It cannot become `CaptureCleanKnown` without the separate authoritative reconciliation action and does not itself negate independent coded release. | `clean_commit` calls `observe_clean_commit`; `reconcile_clean` calls `reconcile_clean_commit`; the Connect profiles exercise `Durable`, `Rejected`, `Unknown`, and authoritative `Durable` reconciliation. Recovery commit/reopen meaning is external typed evidence. |
+| `LaterCutObservation`, `CaptureOperationStatus`, `observeLaterCut`, `LaterCutReconciliationObservation`, `reconcileLaterCut`, `allLaterCutsSatisfied`, `LaterEffectRequiresDurableCut` | A later mutation may affect media only after an owner-supplied durable post-capture cut. Later-cut `Unknown` is a distinct blocking membership status. If CLEAN is already durable, reconciliation may establish only the durable-after-CLEAN cut or rejection and preserves `CaptureCleanKnown`; before durable CLEAN, reconciliation may establish only the stale/refusal cut or rejection. | `later_cut`/`later_cut_reconcile` call the production coordinator with typed commit/reconciliation observations; the profiles exercise both durable orderings, Unknown blocking, rejection, and both before/after-CLEAN reconciliation paths. |
+| `CaptureRefused`, `captureTracksFutureAdmission`, `RejectedSatisfactionRefusesCapture` | Definitively refused captures retain dirty/stale consequences but do not classify future admissions or impose an impossible durable-cut obligation. No retirement/compaction state is modeled because no current/proposed owner requirement establishes one. | `bridge_state` projects `CodedCapturePhase::Refused`; `rejectedCaptureStep` and `cleanRejectedStep` verify future admissions are not retained as capture obligations. Dirty-integrity owns conservative dirty/stale meaning. |
+| `removeCodedClaim`, `ReleaseAuthorization` | Exact external `ReleaseAllowed` is consumed directly by coded removal and is the sole coded-removal authority. CLEAN capture state and later-cut reconciliation do not add a second release policy. | The Connect bridge consumes an external typed `ReleaseAuthorization` for the exact model operation token and calls `coded_release_claim`; LifecycleRelease provider correctness, physical cleanup ordering, and lifecycle predicates remain separate evidence. Coded removal does not require the slot to remain live. |
 
 The model does not synthesize topology/profile mapping, request/store/dirty/
 checksum geometry, lifecycle terminality, persistence admissibility, recovery
@@ -146,55 +146,54 @@ The verification lane contains bounded exhaustive-invariant commands, non-vacuou
 
 The delegated relation retains every valid coded conflict, complete-scope admission, CLEAN membership, durable-cut, refusal, uncertainty, reconciliation, and externally authorized removal behavior named above. The owner delta requirements retain product meaning, ownership, assumptions, external facts, claims, and non-claims; `models/quint/CodedRangeClean.qnt` is the sole authority only for the bounded exact relation declared in the projection map, and `models/quint/RecoveryProtocol.qnt` remains separate and unchanged.
 
-### 8. Implementation boundary and unresolved blockers
+### 8. Implementation boundary and Connect correspondence
 
-The focused repair and projection-feasibility gate is approved. This apply
-slice creates the Connect-ready canonical relation and its bounded analysis,
-replay, and mutant evidence only; it does not implement coded/CLEAN Rust or
-Connect. `RecoveryProtocol.qnt` and its analysis/Connect artifacts remain
-separate and unchanged. The operation-lifecycle prerequisite lane is complete:
-`ReleaseAllowed` is canonical, generation-qualified, implemented, and
-LifecycleRelease-Connect-backed. Coded-clean implementation is now gated on
-the coded/CLEAN bridge seams below.
+The first Connect bridge candidate uses the actual production service and
+coordinator seams in
+`crates/dwv-service/src/service/tests/coded_range_clean_connect.rs`; it does not
+create a model-shaped shadow coordinator. `RecoveryProtocol.qnt` and its
+analysis/Connect artifacts remain separate and unchanged. Fresh external review
+passed the contention, pre-cleanup admission, and opaque lifecycle-release
+consumption repairs; task 4.1 is complete.
 
-The first Rust pass SHALL build the actual Connect bridge for every delegated
-projection with an observable correspondence; it SHALL NOT build a full
-driver before those seams exist. Bridge/correspondence evidence and this
-refined map are required before implementation completion. The future bridge
-must bind complete claims, capture membership/frontiers, basis-read lifetime,
-owner disposition/evidence, durable post-capture cuts, CLEAN commit
-observations, reconciliation, and exact `ReleaseAllowed` to implementation
-observables. This change imposes no ordering on startup, shutdown, session,
-publication, currentization, or scan-independent work.
+The candidate projects production `OperationSlotToken` identity, coded claim
+admission and effect permission, capture scope and membership, capture-wide
+decisions, `CLEAN` commit uncertainty and reconciliation, later-cut ordering
+and reconciliation, conservative refusal, and exact generation-qualified coded
+removal. Ordinary overlap is a normalized non-terminal result; capture
+exclusion is a normalized blocked result. Basis coherence is intentionally not
+a delegated `CodedRangeClean` state distinction and is not injected by this
+bridge; protected-write evidence remains task 4.2/conformance work.
 
-The following remain deliberately unresolved implementation choices, not
-semantic alternatives:
+The correspondence table is the implementation record. Direct rows use
+production service/coordinator results. Typed-external rows consume
+owner-approved decisions, observations, or the exact lifecycle certificate
+without reconstructing its provider predicates. LifecycleRelease provider
+correctness and physical cleanup are outside this Connect claim.
+
+The implementation deliberately does not model or claim topology/profile
+mapping, request/store/dirty/checksum geometry construction, persistence
+admissibility, lifecycle terminality, recovery correctness, resource limits,
+sessions, startup, shutdown, publication, currentization, physical locking,
+or hardware durability. Those remain owned by the current requirements and
+their separate evidence.
+
+The following remain implementation choices rather than semantic alternatives:
 
 - the concrete authority primitive and its storage/lifetime representation;
-- finite capacity values and whether bounded refusal is surfaced as
-  backpressure or a named conflict result;
-- production coding profiles beyond the externally captured profile;
-- the coded/CLEAN implementation seams and Connect bindings named by the
-  projection map.
+- finite capacity values and the exact resource-exhaustion result;
+- the mechanism used to keep ordinary coded contention pending/backpressured
+  until the conflicting claim releases;
+- production coding profiles beyond the externally captured profile.
 
-The analysis bound is evidence-only: three operation identities, two capture
-identities, two coded units, finite valid/invalid claim and scope inputs, and
-the declared CLI depth/seed in the evidence record. The completed end-to-end
-profile bounds are conflict depth 3, capture depth 5, uncertainty-prefix depth
-4, and composition depth 6. Both `CleanCommitUnknown` and
-`LaterCutUnknown` are witnessed from canonical `init` at completed depth 4.
-Their deeper reconciliation continuations are covered by the canonical-prefix
-phase-cut profiles, which complete depth 6 from canonical `init` through their
-modeled prefixes but do not establish external lifecycle preconditions or
-end-to-end production coverage. Timed-out deeper attempts are recorded only
-as non-claims in the evidence record. These bounds are not production
-cardinality, a global counter, lock, frontier, or arbitrary-width proof.
+The analysis bound remains evidence-only: finite model operation/capture/unit
+sets and the declared CLI depth/seed. Connect profiles are deterministic
+correspondence witnesses, not arbitrary-width proof or production concurrency
+benchmarks. Any implementation choice that changes the conflict domain,
+admits a post-capture mutation into an old `CLEAN`, releases uncertain or
+unreconciled work early, manufactures a lifecycle/recovery fact, or omits a
+listed correspondence is non-conforming.
 
-Any implementation choice must preserve the exact owner decisions and return
-paths above. A choice that changes the conflict domain, admits a post-capture
-mutation into an old `CLEAN`, releases uncertain or unreconciled work early,
-manufactures a lifecycle/recovery fact, omits the Connect bridge/correspondence
-evidence, or starts Rust work before the required seams is non-conforming.
 ## Risks / Trade-offs
 
 - Coded-range authority may reduce concurrency relative to per-member coordination. That is intentional: parity correctness is shared at the codeword boundary, and the mechanism can optimize disjoint ranges later without changing the semantic key.

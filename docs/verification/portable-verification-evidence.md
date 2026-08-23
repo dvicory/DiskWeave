@@ -688,8 +688,9 @@ Semantic and delegation repairs:
 
 The declaration-level projection map in
 `openspec/changes/define-coded-range-clean-coordination/design.md` names every
-remaining model distinction and its future Connect seam or external owner.
-It does not claim a Connect or Rust implementation exists.
+model distinction and its implemented Connect seam or external owner. The
+Connect bridge is covered by the separate projection record below; it does
+not promote the bounded model into a second production authority.
 
 Static checks:
 
@@ -874,8 +875,8 @@ quint run verification/quint/CodedRangeCleanReplay.qnt --main CodedRangeCleanRep
 quint run verification/quint/CodedRangeCleanReplay.qnt --main CodedRangeCleanReplay \
   --max-steps 12 --max-samples 1 --n-traces 1 --seed 22082026 \
   --out-itf /tmp/coded-range-clean-replay-b.itf.json --verbosity 0
-=> normalized traces byte-identical; both SHA-256 =
-   e5ebeb0ed9e749c26e9f238179546d26e4207b4e97294b78d0cdef2ea46ff935
+=> normalized traces byte-identical after generated metadata removal; both
+   SHA-256 = 3d52891d2c5c52b639dd0e622b08ab76d24a658690ea7c0240b2364e4e3b19ad
 ```
 
 Negative mutants:
@@ -912,7 +913,83 @@ Non-claims and unresolved seams:
   durability.
 - `RecoveryProtocol.qnt` and its existing analysis/Connect evidence remain
   separate and are not evidence for this relation.
-- No Rust or Connect implementation was added. OpenSpec tasks 2.4 and 2.5
-  are complete: the delegated relation is synchronized into the active change
-  deltas and adversarial review found no blocker or high findings. Sections
-  4-5 remain the implementation, verification, and canonicalization gates.
+The model evidence remains bounded delegated-model evidence; the Connect
+correspondence and Rust focused tests are recorded in the next section.
+OpenSpec tasks 2.4 and 2.5 are complete. Task 4.1 is complete: the repaired
+coded/CLEAN Connect candidate preserves non-terminal contention, consumes
+opaque lifecycle authorization, and binds coded admission to a live pre-I/O
+operation generation without reconstructing lifecycle predicates.
+
+# CodedRangeClean Connect projection (focused, bounded)
+
+Date: 2026-08-23
+
+Source:
+
+- `crates/dwv-service/src/service/tests/coded_range_clean_connect.rs`
+- `verification/quint/CodedRangeCleanConnect.qnt`
+- `crates/dwv-transaction-ref/src/coded.rs`
+- `crates/dwv-recovery/src/coded_clean.rs`
+Canonical `models/quint/CodedRangeClean.qnt` SHA-256:
+`dc75a93cba0724d12235e5a73a2c7b237b45330aa9a715714ceb75cbd8cf3b9d`.
+
+The in-crate driver uses production `HealthyPortableService`,
+`OperationAdmission`, `CodedRangeAuthority`, and
+`CodedCaptureCoordinator` instances. `BridgeState` projects model state from
+exact generation-qualified operation tokens and production coordinator
+snapshots. Ordinary overlap and capture exclusion are normalized
+non-terminal outcomes. Lifecycle authorization is an external typed input;
+basis coherence remains separate provider/conformance evidence and is not a
+CodedRangeClean bridge input. The bridge does not reconstruct either policy,
+retain a model-shaped coordinator, or use a second semantic state machine.
+
+Projection table:
+
+| Model distinction | Direct provider correspondence | Typed external owner input |
+|---|---|---|
+| Exact operation identity, complete coded claim admission, disjoint coexistence, and effect phase | `BridgeDriver::admit` → `reserve` → `coded_admit`; the service requires the exact slot to remain `Reserved` at coded admission; active phase/claims project from exact-token `CodedRangeAuthority`; released model claim fields retain only admitted claim evidence needed for the model comparison; `permit_effect` → `coded_permit_effect` | Complete validated claims are typed external mapping inputs; ordinary overlap is `CodedAdmissionOutcome::Contended`; blocker identity and scheduling are not part of this result |
+| Capture scope, Included/Later membership, and capture phase | `start_capture` → `coded_start_capture`; `bridge_state` → `CodedCaptureSnapshot` | Complete validated `CodedCaptureScopeInput` with covered lower frontier |
+| Capture-wide accepted/rejected decision and no-false-CLEAN gating | `request_clean` → `CodedCaptureCoordinator::request_clean` | `accept_capture`/`reject_capture` supply `CodedCaptureDecision` |
+| CLEAN Durable/Rejected/Unknown and authoritative reconciliation | `clean_commit` → `observe_clean_commit`; `reconcile_clean` → `reconcile_clean_commit` | `CodedCleanCommitObservation` and `CodedCleanReconciliation` are recovery-owner observations |
+| Later durable-cut ordering, Unknown blocking, and reconciliation | `later_cut`/`later_cut_reconcile` call the production coordinator; effect attempts call `coded_permit_effect` and return `BlockedByCapture` when excluded | Later-cut commit and reconciliation observations are typed owner evidence |
+| Exact release authorization and coded claim removal | `release_operation` passes an exact typed `ReleaseAuthorization` to `coded_release_claim`; the returned exact generation is retained as bounded observed ledger evidence | LifecycleRelease provider correctness, physical cleanup ordering, lifecycle predicates, and basis coherence are external evidence; this bridge does not reconstruct them |
+
+The profiles cover complete/disjoint/overlapping and non-transitive coded
+claims; ordinary overlap as non-terminal contention; incomplete and
+unvalidated admission; stale-generation and unauthorized removal; capture
+refusal; missing decision; CLEAN Durable/Rejected/Unknown and reconciliation;
+later-cut ordering, direct and reconciled rejection, Unknown blocking, both
+durable orderings, and independent release under unresolved capture state.
+
+Focused checks:
+
+```text
+quint typecheck verification/quint/CodedRangeCleanConnect.qnt
+=> exited 0 with no output
+
+cargo test -p dwv-recovery coded_clean -- --nocapture
+=> 4 passed
+
+cargo test -p dwv-service coded_range_connect -- --nocapture
+=> 15 passed
+
+cargo test -p dwv-service coded_release_certificate -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service coded_capture_and_admission -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup -- --nocapture
+=> 1 passed
+```
+
+Non-claims:
+
+- This is bounded model-to-production correspondence evidence, not arbitrary-
+  width concurrency proof, production throughput evidence, or hardware
+  durability evidence.
+- Typed external owner inputs do not prove the owner semantics they represent.
+  LifecycleRelease provider correctness, physical cleanup ordering, basis
+  coherence, topology/profile mapping, request/store/dirty/checksum geometry,
+  persistence admissibility, startup, shutdown, publication, currentization,
+  and Linux behavior remain separate evidence or later work.

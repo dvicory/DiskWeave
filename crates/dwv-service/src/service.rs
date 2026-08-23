@@ -19,8 +19,9 @@ use dwv_core::{
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
     ChecksumPersistenceEvidence, ChecksumRecord, ChecksumSetGeneration, ChecksumTarget,
-    ContentGeneration, DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, IntegrityState,
-    InvalidationTarget, RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
+    CodedCaptureCoordinator, CodedCaptureId, CodedCaptureScopeInput, ContentGeneration,
+    DIRTY_REGION_BYTES, FenceCertificate, IntegrityExtentId, IntegrityState, InvalidationTarget,
+    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
     RecoveryStoreHealth, RecoveryTxn, RegionId, assess_checksum_baseline, dirty_regions_for_range,
 };
 use dwv_store::{
@@ -30,11 +31,20 @@ use dwv_store::{
     StoreWriteWatermark, WriteIntent,
 };
 use dwv_transaction_ref::{
-    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult,
-    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
-    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
+    ActionKind, ActionResult, CodedAdmissionOutcome, CodedClaimInput, CodedClaimRelease,
+    CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
+    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind, SemanticIoResult,
+    StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
+#[cfg_attr(not(test), allow(dead_code))]
+/// Normalized coordination result; scheduler and wakeup policy remain external.
+#[must_use = "coded effect permission may remain blocked and must be handled explicitly"]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum CodedEffectOutcome {
+    Permitted,
+    BlockedByCapture,
+}
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
 pub struct MemberBinding<S: RandomAccessStore> {
     slot_id: SlotId,
@@ -259,10 +269,11 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     release_authorizations: Vec<Option<ReleaseAuthorization>>,
     release_scopes: Vec<Option<(OperationSlotToken, ReleaseScope)>>,
     basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
+    coded_authority: CodedRangeAuthority,
+    coded_captures: CodedCaptureCoordinator,
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
 }
-
 impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
     /// dwv:req req.checksum-plane.current-baseline-completion-is-persisted-and-exact
@@ -336,6 +347,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             release_authorizations: vec![None; config.admission.limits.operation_slots],
             release_scopes: vec![None; config.admission.limits.operation_slots],
             basis_observations: vec![None; config.admission.limits.operation_slots],
+            coded_authority: CodedRangeAuthority::new(),
+            coded_captures: CodedCaptureCoordinator::new(),
             #[cfg(test)]
             terminalization_fault: None,
         })
@@ -387,6 +400,111 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
     pub fn admission_usage(&self) -> dwv_store::ResourceUsage {
         self.admission.usage()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_authority(&self) -> &CodedRangeAuthority {
+        &self.coded_authority
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_authority_mut(&mut self) -> &mut CodedRangeAuthority {
+        &mut self.coded_authority
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_captures(&self) -> &CodedCaptureCoordinator {
+        &self.coded_captures
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_captures_mut(&mut self) -> &mut CodedCaptureCoordinator {
+        &mut self.coded_captures
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn coded_admit(
+        &mut self,
+        operation: OperationSlotToken,
+        claim: CodedClaimInput,
+    ) -> Result<CodedAdmissionOutcome, ServiceError> {
+        let snapshot = self.admission.snapshot(operation).map_err(slot_error)?;
+        if snapshot.state != SlotState::Reserved {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                format!(
+                    "coded admission requires a reserved operation slot, found {:?}",
+                    snapshot.state
+                ),
+            ));
+        }
+        let outcome = self
+            .coded_authority
+            .admit(operation, claim)
+            .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
+        if outcome == CodedAdmissionOutcome::Admitted {
+            let units = self
+                .coded_authority
+                .active_claim(operation)
+                .map(|claim| claim.units().clone())
+                .ok_or_else(|| {
+                    ServiceError::io(
+                        FailureClass::Admission,
+                        "coded authority lost an admitted claim",
+                    )
+                })?;
+            self.coded_captures
+                .observe_admitted_claim(operation, &units);
+        }
+        Ok(outcome)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn coded_start_capture(
+        &mut self,
+        capture: CodedCaptureId,
+        scope: CodedCaptureScopeInput,
+    ) -> Result<(), ServiceError> {
+        let active_claims = self
+            .coded_authority
+            .active_claims()
+            .map(|(operation, claim)| (operation, claim.units().clone()))
+            .collect::<Vec<_>>();
+        self.coded_captures
+            .start_capture(capture, scope, active_claims)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn coded_permit_effect(
+        &mut self,
+        operation: OperationSlotToken,
+    ) -> Result<CodedEffectOutcome, ServiceError> {
+        self.admission.snapshot(operation).map_err(slot_error)?;
+        if !self.coded_captures.effect_allowed(operation) {
+            return Ok(CodedEffectOutcome::BlockedByCapture);
+        }
+        self.coded_authority
+            .permit_effect(operation)
+            .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
+        Ok(CodedEffectOutcome::Permitted)
+    }
+
+    /// Consume one exact lifecycle-owned release certificate.
+    ///
+    /// Coded claim removal does not require the operation slot to remain live.
+    /// The lifecycle owner supplies the exact generation-qualified certificate.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn coded_release_claim(
+        &mut self,
+        operation: OperationSlotToken,
+        authorization: &ReleaseAuthorization,
+    ) -> Result<CodedClaimRelease, ServiceError> {
+        self.coded_authority
+            .release(operation, Some(authorization.operation))
+            .map_err(|error| {
+                ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
+            })
     }
     /// Observe authorization only for the exact generation that produced it.
     pub fn release_authorization(
@@ -1097,6 +1215,39 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .map_err(slot_error)
     }
 
+    /// Establish the exact lifecycle authorization before physical cleanup.
+    ///
+    /// Coded claim removal consumes this fact independently. The caller owns
+    /// the later physical slot cleanup and must retain the exact token.
+    pub(crate) fn establish_release_authorization(
+        &mut self,
+        observation: &ReleaseReconciliation,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
+        let token = observation.operation;
+        if !self.release_scope(token).is_in_scope() {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "coded release requires an in-scope lifecycle operation",
+            ));
+        }
+        if matches!(observation.operation_effect, OperationEffect::Unresolved)
+            || matches!(observation.recovery, RecoveryReconciliation::Unresolved)
+        {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release authorization lacks authoritative owner evidence",
+            ));
+        }
+        self.set_basis_conformance(token, observation.basis);
+        self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
+        let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
+        let authorization = self.authorization_candidate(token, &snapshot, observation);
+        if let Some(authorization) = authorization.as_ref() {
+            self.remember_release_authorization(authorization.clone());
+        }
+        Ok(authorization)
+    }
+
     fn release(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
         let result = self.admission.release(token).map_err(slot_error);
         if result.is_ok() {
@@ -1128,18 +1279,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "operation lacks a release applicability observation",
             ));
         }
-        self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
-        let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
         if matches!(scope, ReleaseScope::Outside) {
+            self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
             self.release_after_reclaim(token)?;
             return Ok(None);
         }
-        let authorization = self.authorization_candidate(token, &snapshot, observation);
+        let authorization = self.establish_release_authorization(observation)?;
         if authorization.is_none() {
             return Ok(None);
-        }
-        if let Some(authorization) = authorization.as_ref() {
-            self.remember_release_authorization(authorization.clone());
         }
         self.release_after_reclaim(token).map(|()| authorization)
     }
@@ -4600,6 +4747,8 @@ mod tests {
             publication_identity(&topology, &changed_assessment).unwrap()
         );
     }
+    #[path = "coded_range_clean_connect.rs"]
+    mod coded_range_clean_connect;
     #[path = "lifecycle_connect.rs"]
     mod lifecycle_connect;
 }

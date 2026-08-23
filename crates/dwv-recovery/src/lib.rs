@@ -10,6 +10,7 @@ use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
 mod baseline;
+mod coded_clean;
 mod extent;
 mod generation;
 mod inspection;
@@ -29,6 +30,12 @@ pub use baseline::{
     ChecksumBaseline, ChecksumBaselineInvalidReason, ChecksumBaselineProvenance,
     ChecksumBaselineStatus, assess_checksum_baseline, expected_checksum_extents,
     new_checksum_baseline, pending_checksum_baseline_extents,
+};
+pub use coded_clean::{
+    CodedCaptureCoordinator, CodedCaptureDecision, CodedCaptureError, CodedCaptureId,
+    CodedCaptureMembership, CodedCapturePhase, CodedCaptureScopeInput, CodedCaptureSnapshot,
+    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutObservation,
+    CodedLaterCutReconciliation,
 };
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};

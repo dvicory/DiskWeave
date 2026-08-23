@@ -20,6 +20,11 @@ pub struct FrontendId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SubmissionSequence(pub u64);
 
+/// Opaque identifier for one protected parity/codeword unit within an externally
+/// validated captured mapping.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct CodedUnitId(pub u32);
+
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]

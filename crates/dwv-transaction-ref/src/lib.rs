@@ -6,6 +6,7 @@
 //! operating-system dependency.
 
 mod action;
+mod coded;
 mod error;
 mod machine;
 mod trace;
@@ -15,6 +16,10 @@ pub use action::{
     ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
     SemanticFailure, SemanticIoResult, StoreWatermark, StoreWatermarks, TransactionAction,
     TransactionIdentity, TransactionPersistenceEvidence, WriteRecoveryRecordRequirement,
+};
+pub use coded::{
+    CodedAdmissionOutcome, CodedAuthorityError, CodedClaim, CodedClaimInput, CodedClaimRelease,
+    CodedOperationPhase, CodedRangeAuthority,
 };
 pub use error::{ErrorClass, PlanError, TransactionError};
 pub use machine::{
