@@ -1,0 +1,27 @@
+## 1. Recovery-Owned Lifecycle
+
+- [ ] 1.1 After `dwv-hg0.5`, `dwv-hg0.6`, and the coded-range/CLEAN delegated-model gate complete, implement the recovery-owned durable writable-session begin transition with a fresh session identity and the accepted array, topology, assignment, store-incarnation, geometry, recovery-generation, session-generation, ordering-domain, capability/profile, and optional current baseline bindings required by `req.recovery-state-semantics.durable-writable-session-lifecycle-binds-authority-and-close-evidence`; this is the only active Rust implementation slice.
+- [ ] 1.2 After 1.1 completes, make begin durability an explicit prerequisite for writable endpoint publication, writable request admission, and protected payload mutation; preserve definite precondition rejection with the exact prior state authoritative, and preserve lost, corrupt, or unclassifiable observations as prior-versus-proposed reconciliation without inferring session or claim state.
+- [ ] 1.3 After 1.2 completes, implement clean-close admission as a composition of exact-generation operation-slot evidence for every operation still owned at the close frontier showing safe `Reclaimable` with terminal children and recorded required reconciliation, applicable operation/media-effect terminal or authoritative-reconciled evidence, the closed-set owner's exact bounded lower-frontier coverage for already released mutation history, exact owner-approved store/fence persistence evidence, `req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set`, recovery/dirty/integrity acceptance, and parity-envelope CLEAN-before-clean-close ordering; do not retain unbounded historical slot evidence, let closed-set/CLEAN/session evidence manufacture operation-slot or effect facts, invent generic durable handoff, or redefine closed-set construction or fence supersession.
+- [ ] 1.4 After 1.3 completes, persist and reconcile close outcomes by session identity and captured bindings, preserving definite close rejection as exact prior-state authority and lost, corrupt, or unclassifiable close observation as unresolved prior-versus-proposed authority; keep clean close distinct from service stop, endpoint withdrawal, recovery `CLEAN`, and store or recovery claim release.
+- [ ] 1.5 After 1.4 completes, preserve conservative restart behavior: a prior closed session is evidence only, a new writable service requires a new durable begin, and open, partial, uncertain, or mismatched sessions require owner-approved reconciliation before writable admission.
+
+## 2. Downstream Composition
+
+- [ ] 2.1 Record the healthy-service startup dependency and affected-owner review for durable begin; leave service admission, publication, identity, topology, capability, operation, dirty, and store-claim policy in that downstream owner.
+- [ ] 2.2 Record the `add-portable-shutdown-claim-release` dependency and affected-owner review for clean-close evidence; leave admission closure, quiescence, drain, endpoint withdrawal, and claim-release ordering in that downstream change.
+- [ ] 2.3 Record the active `add-scan-independent-writable-startup` dependency and affected-owner review for durable begin; leave authority, stabilization, epoch admission, and publication policy in that downstream change.
+- [ ] 2.4 Keep store and recovery claim acquisition, alias prevention, endpoint ownership, and process-death claim release in their existing ownership boundaries; prove that clean close neither acquires nor releases those claims.
+- [ ] 2.5 After 1.5 completes, implement the parity-envelope refinement as a representation-owner consumer of the lifecycle contract, allowing only prepared/closing state before accepted recovery `CLEAN` and clean/closed state after or atomically with that evidence; do not run this implementation in parallel with the recovery lifecycle.
+
+## 3. Model and Evidence
+
+- [ ] 3.1 Hand the settled lifecycle observations and outcomes to the existing portable shutdown model work in `dwv-hg0.7`; do not create a new Quint module or a second session model in this change.
+- [ ] 3.2 Establish correspondence evidence for durable-before-publication, exact owner-approved clean close, incomplete or uncertain close, forced/process-loss outcomes, and the non-implications among stop, endpoint withdrawal, session close, recovery `CLEAN`, and claim release.
+- [ ] 3.3 Add focused portable scenarios showing a matching begin, rejected or uncertain begin, exact clean close, missing or mismatched evidence, endpoint withdrawal without closure, forced/process-loss recovery, and restart reconciliation; keep claims within the exercised evidence tier.
+
+## 4. Verification and Canonicalization
+
+- [ ] 4.1 Run focused product, model, and evidence checks plus strict OpenSpec verification for this change and every downstream composition; resolve any semantic or ownership mismatch without expanding into shutdown ordering or scan-independent startup admission.
+- [ ] 4.2 Review every affected recovery, parity-envelope, healthy-service, operator-start, durability/fence, dirty/restart, store/ownership, shutdown, model, and evidence dependent individually with a concrete reason and no bulk acceptance.
+- [ ] 4.3 Archive and sync the verified lifecycle requirement and parity-envelope refinement into their canonical capabilities, add implementation/model/evidence links, and leave the existing shutdown change and unrelated campaign work untouched until their own prerequisites complete.

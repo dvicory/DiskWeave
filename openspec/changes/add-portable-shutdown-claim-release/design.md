@@ -1,6 +1,6 @@
 ## Context
 
-The bounded current context for **portable shutdown, endpoint withdrawal, and claim-release ordering** contains canonical frontend lifecycle, operation-slot, transaction, dirty/restart, store-watermark, persistence-evidence, portable-service, and Linux assembly/shutdown owners. Those owners define abandonment, terminal ownership, conservative failure, and evidence predicates. They do not yet compose a service-owned durable writable-session begin/close path: `RecoveryMutation` exposes `BeginWritableSession` and `CloseWritableSession`, but `HealthyPortableService` does not invoke them. The target ordering remains useful, but implementation cannot prove owner-approved close-session evidence until that ownership path is reconciled.
+The bounded current context for **portable shutdown, endpoint withdrawal, and claim-release ordering** contains canonical frontend lifecycle, operation-slot, operation/media-effect, transaction, dirty/restart, store-watermark, persistence-evidence, release-authorization, portable-service, and Linux assembly/shutdown owners. Those owners define abandonment, safe generation-qualified `Reclaimable`, terminal or authoritatively reconciled effects, conservative failure, and evidence predicates. They do not currently include the durable writable-session lifecycle defined by the recovered `define-portable-writable-session-lifecycle` target. That target remains non-canonical until its normal authority transition completes, so this shutdown change records it as an explicit external prerequisite without adding a false current `requires` edge.
 
 See `proposal.md` for the capability selection, rejected candidates, and the post-planning blocker. This change remains planning-only: current canonical specs, product implementation, evidence, and the independent recovery-inspection capability remain untouched.
 
@@ -28,13 +28,13 @@ Add `req.healthy-portable-io.portable-shutdown-preserves-operation-ownership-and
 
 1. close admission;
 2. quiesce frontends and namespace writers;
-3. drain or durably hand off admitted operations;
-4. reconcile indeterminate completions where possible;
-5. obtain owner-approved exact recovery CLEAN and close-session evidence;
+3. establish the shutdown close frontier and require every operation generation still owned at that frontier to reach the operation-slot owner's safe `Reclaimable` state after every child is terminal and required reconciliation is recorded;
+4. require each applicable operation or media effect to be terminal or authoritatively reconciled under its existing owner;
+5. obtain owner-approved exact recovery `CLEAN` and durable session-close evidence from owners that consume, but do not manufacture, those operation-slot and effect facts;
 6. withdraw every exported writable endpoint;
-7. release claims only when no writable alias remains.
+7. release each claim only when its independent owner permits release and no writable alias remains.
 
-The existing operation-slot, frontend lifecycle, transaction, dirty/restart, store-watermark, and persistence-evidence requirements remain owners of their predicates. The new owner composes them and does not repeat their internal transitions.
+The existing operation-slot, operation/media-effect, frontend lifecycle, transaction, dirty/restart, store-watermark, persistence-evidence, and generation-qualified release-authorization requirements remain owners of their predicates. After its normal authority transition, the recovered writable-session lifecycle remains owner of durable begin/close meaning and consumes those predicates without redefining them. The new shutdown owner composes the predicates only into service-level ordering and result meaning.
 
 The existing Linux requirement is modified to reference the portable owner and retain only Linux-specific validation, OS descriptor claims, owned ublk endpoint removal, stale-endpoint handling, process-death behavior, and platform failure mapping. This is an ownership-preserving refinement, not a second portable shutdown policy.
 
@@ -46,9 +46,9 @@ No new enum or wire format is prescribed here. The implementation must expose th
 
 ### Implementation readiness blocker
 
-Bead `dwv-hg0.4` owns one prerequisite reconciliation: identify the canonical owner and durable OpenSpec boundary for beginning a writable session before service, closing it only with exact admissible evidence, and preserving open/dirty or indeterminate consequences after failure or process loss. It may amend this change or produce a separate bounded prerequisite change as repository authority requires.
+The recovered `define-portable-writable-session-lifecycle` change is the explicit external target prerequisite under Bead `dwv-hg0.4`. It defines durable writable-session begin/close meaning, accepts close only for the same captured authority and exact owner evidence, and preserves open/dirty or indeterminate consequences after failure or process loss. Until that target completes its normal canonical transition, this shutdown change records no current `requires` edge to its proposed requirement.
 
-The blocker does not preselect an implementation shape or declare another campaign boundary to be the owner. Typed stabilization and durable epoch admission, closed-mutation-set recovery CLEAN, and baseline deployment ordering are review inputs because they touch adjacent transitions; none is hard-coded as an unblocker. `dwv-hg0.1` remains blocked until this reconciliation is implementation-ready.
+The blocker does not preselect an implementation shape or declare another campaign boundary to be the owner. Typed stabilization and durable epoch admission, closed-mutation-set recovery `CLEAN`, and baseline deployment ordering are review inputs because they touch adjacent transitions; none is hard-coded as an unblocker. `dwv-hg0.1` remains blocked until the recovered lifecycle is canonical and implementation-ready.
 
 ### Transition inheritance
 
@@ -61,7 +61,9 @@ The change-local reconciliation is:
 | Current owner | Disposition | Semantic effect |
 |---|---|---|
 | `req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics` | Requires; preserve | Supplies quiescence, loss, and abandonment meaning; no shutdown policy relocation. |
-| `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations` | Requires; preserve | Retains admitted resources until terminal/reconciliation state. |
+| `req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations` | Requires; preserve | Owns exact operation generations, terminal children, recorded required reconciliation, and safe `Reclaimable`; no shutdown or recovery fact may manufacture them. |
+| `req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts` | Requires; preserve | Keeps operation/media-effect disposition, child terminality, recorded reconciliation, safe `Reclaimable`, and other applicable release observations independent before exact-generation `ReleaseAllowed`. |
+| `req.recovery-state-semantics.durable-writable-session-lifecycle-binds-authority-and-close-evidence` from `define-portable-writable-session-lifecycle` | External target prerequisite pending normal canonical transition | Owns durable session begin/close meaning after transition; close consumes exact operation-slot and effect facts and cannot create them. |
 | `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent` | Requires; preserve | Supplies the canonical bounded transaction relation and normalized comparison boundary; exact states, outcomes, ordering, and release sequencing remain in Quint. |
 | `req.dirty-integrity-invalidation.failures-and-restart-are-conservative` | Requires; preserve | Keeps dirty/indeterminate consequences after incomplete stop. |
 | `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence` and `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence` | Requires; preserve | Continue to decide whether recovery CLEAN or close-session claims are admissible. |
@@ -71,8 +73,7 @@ The change-local reconciliation is:
 The dependent-review task must inspect every direct dependent of the new owner and the modified Linux requirement individually. No bulk reviewed-state acceptance is allowed.
 
 ### Focused evidence boundary
-
-Evidence must observe the portable contract rather than prove unrelated recovery meaning: clean completion only after endpoint withdrawal and exact evidence; no clean result after incomplete drain/recovery-CLEAN/withdrawal; operation ownership retained after abandonment; forced/process-loss conservative state; and Linux-specific owned-endpoint/descriptor behavior where the platform is available. It must not claim custody continuity, current protection, historical continuity, payload integrity, or hardware durability.
+Evidence must observe the portable contract rather than prove unrelated recovery meaning: clean completion only after every operation generation still owned when the shutdown close frontier is established is safely `Reclaimable`, every child is terminal, required reconciliation is recorded, and each such operation's applicable operation/media effect is terminal or authoritatively reconciled; already released mutation history is covered by the closed-mutation-set owner's exact bounded lower-frontier/coverage evidence rather than an unbounded retained operation-slot ledger; exact recovery-`CLEAN` and session-close evidence is accepted; endpoint withdrawal completes; and independent claim-release predicates hold. It must also observe conservative outcomes when any predicate is missing and Linux-specific owned-endpoint/descriptor behavior where the platform is available. It must not claim custody continuity, current protection, historical continuity, payload integrity, or hardware durability.
 
 ## Risks / Trade-offs
 
@@ -80,4 +81,4 @@ Evidence must observe the portable contract rather than prove unrelated recovery
 - A forced stop may leave stale endpoint or indeterminate state. That is intentional: underclaiming is safer than fabricating clean ownership, and later reconciliation remains explicit.
 - Some frontends may lack a native endpoint-withdrawal primitive. They must report unsupported or reconciliation-required shutdown rather than silently release claims; interface-specific choices remain implementation work.
 - The change does not settle startup/deployment ordering or recovery mutation. Those remain visible campaign rows rather than hidden dependencies of shutdown.
-- Treating flush completion, unmount, process exit, endpoint removal, or an in-memory state transition as close-session evidence would manufacture a clean claim. The explicit prerequisite prevents that shortcut.
+- Treating a generic handoff, recovery fact, flush completion, unmount, process exit, endpoint removal, or in-memory state transition as terminal children, safe `Reclaimable`, an authoritatively reconciled effect, or close-session evidence would manufacture an owner fact. The explicit owner composition and external lifecycle prerequisite prevent that shortcut.
