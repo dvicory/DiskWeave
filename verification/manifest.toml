@@ -527,7 +527,7 @@ scope = [
   "sampled profile --max-steps 26 --max-samples 100000 --seed 22082026; no invariant violation",
   "deterministic Quint analysis scenarios (11) and mutant-failure scenarios (12)",
   "sampled witnesses: AuthorizationReachable 728/100000 CleanupRequestReachable 52/100000 CleanupFailureReachable 2/100000 CleanupSuccessReachable 2/100000 AuthoritativeReconciliationReachable 91116/100000 GenerationIsolationReachable 494/100000 UnrelatedOperationReachable 727/100000",
-  "focused Rust scope, missing-evidence, zero-child, and unrelated-authorization retention tests in crates/dwv-service/src/service.rs",
+  "focused Rust scope, missing-evidence, zero-child, and unrelated-authorization retention tests in crates/dwv-service/src/service/tests.rs",
   "unconstrained two-generation verification at max-steps 10 did not complete within 1200 seconds; only the verification profile uses the phase cut",
 ]
 requirements = [
