@@ -491,3 +491,99 @@ non_claims = [
   "The evidence is file-backed/model tier and does not establish hardware durability, current or historical protection, identity, custody, clean state, checksum authority, repair, recovery, publication, migration, or stable-format compatibility.",
   "The verifier's unavailable-file and incomplete-file cases do not claim arbitrary filesystem fault injection.",
 ]
+
+[[evidence]]
+id = "evidence.lifecycle-release-composition-model"
+path = "verification/quint/LifecycleReleaseAnalysis.qnt"
+claim = "The bounded LifecycleRelease model composes an external finite applicability domain and seven owner-approved observations into an exact-generation, monotonic ReleaseAllowed fact; bounded cleanup requests, failures, and successes retain authorization and generation ownership, while deterministic and negative scenarios exercise conservative withholding, reconciliation, cleanup, unrelated work, and generation isolation."
+tier = "portable-bounded-model"
+fault_model = [
+  "missing transaction-satisfaction observation",
+  "raw RangeReleased proxy",
+  "release applicability inferred from operation kind or child count",
+  "missing or generation-mismatched release applicability evidence",
+  "Reclaimable-only proxy",
+  "missing basis-conformance observation",
+  "cleanup request treated as observed success",
+  "cleanup failure authorization erasure",
+  "cleanup success authorization erasure",
+  "unrelated admission authorization erasure",
+  "late result generation confusion",
+  "unresolved prerequisite acceptance",
+]
+scope = [
+  "canonical model models/quint/LifecycleRelease.qnt",
+  "finite analysis verification/quint/LifecycleReleaseAnalysis.qnt",
+  "mutant evidence verification/quint/LifecycleReleaseMutants.qnt",
+  "one-generation exhaustive profile verification/quint/LifecycleReleasePrefix.qnt",
+  "two-generation exact-identity profile verification/quint/LifecycleReleaseTwoGenerationPrefix.qnt",
+  "two-operation independence profile verification/quint/LifecycleReleaseIndependentPrefix.qnt",
+  "four exact operation generations across two operation identities and two generations each for sampled analysis",
+  "external applicability domain containing three of the four exact generations; out-of-scope generations cannot enter the canonical relation",
+  "exhaustive Quint invariant profile on LifecycleReleasePrefix.qnt --max-steps 9 and 11; both returned NoError",
+  "two-generation phase-cut profile LifecycleReleaseTwoGenerationPrefix.qnt --init profileInit --step profileStep --max-steps 10 and 18; both returned NoError",
+  "two-operation phase-cut profile LifecycleReleaseIndependentPrefix.qnt --init profileInit --step profileStep --max-steps 12; returned NoError",
+  "profile witnesses authorizationSurvivesSecondGeneration and authorizationSurvivesUnrelatedProgress each passed 1/1 with --max-samples 1",
+  "sampled profile --max-steps 26 --max-samples 100000 --seed 22082026; no invariant violation",
+  "deterministic Quint analysis scenarios (11) and mutant-failure scenarios (12)",
+  "sampled witnesses: AuthorizationReachable 728/100000 CleanupRequestReachable 52/100000 CleanupFailureReachable 2/100000 CleanupSuccessReachable 2/100000 AuthoritativeReconciliationReachable 91116/100000 GenerationIsolationReachable 494/100000 UnrelatedOperationReachable 727/100000",
+  "focused Rust scope, missing-evidence, zero-child, and unrelated-authorization retention tests in crates/dwv-service/src/service.rs",
+  "unconstrained two-generation verification at max-steps 10 did not complete within 1200 seconds; only the verification profile uses the phase cut",
+]
+requirements = [
+  "req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts",
+]
+non_claims = [
+  "This is finite model evidence, not Rust or implementation-conformance proof.",
+  "Applicability is supplied externally; the model does not infer a releasable claim from completion or cleanup.",
+  "It does not model transaction, recovery, store, operation-slot, basis, cleanup-I/O, scheduling, topology, payload, parity, locks, queues, startup, shutdown, or OperationSlotLifecycle policy.",
+  "Basis conformance is an explicit typed observation here and is not recovery, topology, or checksum-generation coherence.",
+  "Dirty-integrity capture and its independent exclusion obligations remain outside this model.",
+  "The exhaustive profiles cover only the declared finite prefixes; the depth-26 run is sampled, and no claim of unbounded progress or full implementation behavior is made.",
+  "Two-generation coexistence is abstract exact-identity correlation evidence, not physical slot-reuse ordering or simultaneous production slot ownership.",
+]
+
+[[evidence]]
+id = "evidence.lifecycle-release-connect-projection"
+path = "crates/dwv-service/src/service/tests/lifecycle_connect.rs"
+claim = "A bounded in-crate Connect driver compares LifecycleRelease with a documented mix of directly provider-corresponded exact-generation observations and explicitly external typed owner inputs, including real media-effect projection, transaction-release mapping, child completion, authorization, cleanup success/failure, and negative stale or unresolved paths, without retaining production lifecycle state."
+tier = "portable-reference-comparison"
+fault_model = [
+  "release scope missing or generation mismatch",
+  "nonterminal child snapshot",
+  "missing required reconciliation",
+  "unresolved transaction, recovery, or basis observation",
+  "cleanup failure",
+  "stale generation observation",
+  "out-of-scope operation",
+  "ledger fact manufactured from model action",
+]
+scope = [
+  "verification/quint/LifecycleReleaseConnect.qnt",
+  "cfg(test) dwv-service in-crate observer and normalized ledger",
+  "successful in-scope authorization and cleanup with a registered/submitted/completed child",
+  "separate in-scope zero-child reconciled path",
+  "normal media terminality through exact-token operation_effect_observation",
+  "normal transaction satisfaction through production transaction_requirement(trace)",
+  "typed authoritative-reconciliation and basis inputs with named focused provider evidence",
+  "injected cleanup failure with retained exact-generation certificate",
+  "incomplete owner facts and isolated unresolved recovery/basis withholding",
+  "pre-acquisition write and routine out-of-scope read rejection",
+  "stale exact-generation rejection after same-slot reuse",
+  "three deterministic Connect paths with one sample each",
+]
+requirements = [
+  "req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety",
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+  "req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence",
+  "req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions",
+  "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
+]
+non_claims = [
+  "The ledger is bounded verification state and is not a production lifecycle-observation database.",
+  "A model action alone is never implementation evidence; each mapped fact requires a real service result, store snapshot, typed owner observation, or retained cleanup result.",
+  "Passing an external typed owner enum into lifecycle composition is not claimed as proof of that upstream provider; direct-provider and external-input rows are documented separately.",
+  "Successful cleanup facts are not re-derived after live scope, basis, and slot state disappear.",
+  "Abstract simultaneous same-operation generation coexistence and historical authorization retention after physical slot reuse remain outside this Connect claim.",
+  "The projection does not change LifecycleRelease.qnt, CodedRangeClean.qnt, RecoveryProtocol.qnt, or downstream integration behavior.",
+]

@@ -18,7 +18,7 @@ mod write;
 
 pub use admission::{AdmissionConfig, OperationAdmission};
 pub use degraded::{OfflineAuthorizationError, RebuildSource, authorize_known_erasure_from_stores};
-pub use evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim};
+pub use evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim, ReleaseAuthorization};
 pub use failure::{FailureClass, ServiceError};
 pub use lifecycle::ServiceState;
 pub use metadata_loss::classify_metadata_loss_verification;

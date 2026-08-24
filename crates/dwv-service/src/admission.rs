@@ -1,8 +1,8 @@
 use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{
     AdmissionError, CompletedRangeSet, CompletionDisposition, OperationSlotTable,
-    OperationSlotToken, PersistenceEvidence, ResourceKind, ResourceLimits, ResourceUsage,
-    SlotError, SlotState, StoreCompletion, StoreError,
+    OperationSlotToken, PersistenceEvidence, ReconciliationOutcome, ResourceKind, ResourceLimits,
+    ResourceUsage, SlotError, SlotState, StoreCompletion, StoreError,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -118,16 +118,26 @@ impl OperationAdmission {
     pub fn abandon(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
         self.table.mark_abandoned(token)
     }
+    pub fn record_reconciliation(
+        &mut self,
+        token: OperationSlotToken,
+        outcome: ReconciliationOutcome,
+    ) -> Result<(), SlotError> {
+        self.table.record_reconciliation(token, outcome)
+    }
+    pub fn release(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
+        self.table.release(token)
+    }
     pub fn reclaim(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), SlotError> {
-        self.table.record_reconciliation(
+        self.record_reconciliation(
             token,
             if uncertain {
-                dwv_store::ReconciliationOutcome::UncertainRetained
+                ReconciliationOutcome::UncertainRetained
             } else {
-                dwv_store::ReconciliationOutcome::Durable
+                ReconciliationOutcome::Durable
             },
         )?;
-        self.table.release(token)
+        self.release(token)
     }
     pub fn snapshot(
         &self,

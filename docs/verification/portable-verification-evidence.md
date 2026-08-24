@@ -441,3 +441,199 @@ trace-render/replay equivalence remained intact. The output continued to
 bound claims to portable ordinary-file behavior and explicitly exclude live
 bridges, Linux frontends, physical power-loss durability, P/Q, and degraded
 writes.
+
+## LifecycleRelease model-to-Rust projection
+
+This table records the production source for each of the seven delegated
+observations. The exact generation is always the
+`OperationSlotToken { index, generation }` carried by
+`ReleaseReconciliation.operation` and `ReleaseAuthorization.operation`.
+Applicability is a separate admission-scope binding, not one of the seven observations.
+`HealthyPortableService` records `ReleaseScope::Outside` for the exact reserved
+generation and changes it to `ReleaseScope::InScope` only after the transaction
+machine accepts its explicit `RangeAcquired` owner result; routine reads and
+flushes never make that transition. The current portable service supplies the
+typed transaction result at this composition seam and does not claim a concrete
+range-lock implementation. Missing or generation-mismatched scope state is
+`Unknown` and fails closed.
+
+| Model observation | Final owner | Exact-generation binding | Production observation/type/path | Missing or uncertain evidence | Why the model consumes it |
+| --- | --- | --- | --- | --- | --- |
+| Operation/media effect terminal or authoritatively reconciled | `dwv-store::OperationSlotTable` plus service reconciliation | `OperationEffectObservation.operation` / `SlotSnapshot.token` | Normal terminality comes from `HealthyPortableService::operation_effect_observation`, which projects the exact-token slot snapshot to `Terminal` or `Unresolved`; `AuthoritativelyReconciled` remains an explicit external reconciliation input | Nonterminal or uncertain child evidence yields `Unresolved`; stale generation lookup fails; missing authoritative reconciliation cannot be promoted to terminality | The normal service and Connect paths consume one named owner projection instead of inferring terminality from frontend success or injecting `Terminal` |
+| Children terminal | `store-operation-contracts` / `OperationSlotTable` | `SlotSnapshot.token` and each `ChildOperationSnapshot.operation_id` | `SlotSnapshot.children[*].terminal`, set by `OperationSlotTable::apply_completion` and exposed through `OperationAdmission::snapshot` | Any nonterminal, unknown, stale, or uncertain child remains unresolved | The lifecycle seam consumes child terminal evidence rather than counting children or inferring completion from a parent result |
+| Required reconciliation recorded | `store-operation-contracts` | `SlotSnapshot.token` | `SlotSnapshot.reconciliation` from `OperationAdmission::record_reconciliation` | `None`, `UncertainRetained`, or `Invalidated` is not the required durable observation | `authorization_candidate` consumes the exact `ReconciliationOutcome::Durable` record |
+| Safe generation-qualified `Reclaimable` | `store-operation-contracts` | `SlotSnapshot.token` | `SlotSnapshot.state == SlotState::Reclaimable`, established by `OperationSlotTable::record_reconciliation` | Any other slot state, required drain, or stale token fails closed; zero children are valid when the operation entered release scope before child registration | The service consumes the owner state; physical `release()` is separate and cannot create or revoke authorization |
+| Applicable transaction-release requirement satisfied | `explicit-transaction-machine` / `RecoveryProtocol` where applicable | The typed requirement is bound to `ReleaseReconciliation.operation`; only an exact generation already marked `ReleaseScope::InScope` can consume it | `ReleaseRequirement`; successful traces pass through `transaction_requirement` and affirmative `transaction_release_complete`; authoritative reconciliation supplies `TransactionSatisfied` | `TransactionUnresolved`, missing trace, reconciliation-required trace, or absent affirmative release result withholds authorization; `NotApplicable` is used only by operations outside the lifecycle-release scope | The model consumes an owner-approved satisfaction value, not raw trace presence, operation kind, child count, or a generic `transaction_required` flag |
+| Authoritative recovery-owned reconciliation | `recovery-state-semantics` | `ReleaseReconciliation.operation` plus the retained slot snapshot | `RecoveryReconciliation::Authoritative` from `recovery_reconciliation_observation` or an explicit owner-approved reconciliation input | Unhealthy recovery, failed snapshot, topology/generation mismatch, or `RecoveryReconciliation::Unresolved` fails closed | Recovery authority is supplied at the lifecycle seam; the consumer does not inspect recovery internals or reconstruct the decision |
+| Healthy-service basis conformance | healthy-service composition | Stored as `(OperationSlotToken, BasisConformance)` in the bounded service observation table | `BasisConformance::{Consumed, Discarded, Reconciled}`; successful write records `Consumed`, and authoritative reconciliation supplies the typed observation; `basis_conformance_observation` performs exact-token lookup | No recorded observation or `BasisConformance::Unresolved` withholds authorization; recovery/topology/checksum-generation coherence remains a separate fact | The model consumes an explicit basis-lifetime observation rather than deriving it from synchronous control flow or recovery-generation equality |
+
+Focused service evidence covers routine out-of-scope operations, missing and
+generation-mismatched scope state, in-scope zero-child reconciliation, failed
+pre-child admission, and authorization retention during unrelated work.
+This table is a bounded owner-observation projection record, not an
+implementation-conformance claim by itself. The Connect projection below
+compares the same facts with real service results without manufacturing any
+missing owner fact.
+### LifecycleRelease Connect projection
+
+`crates/dwv-service/src/service/tests/lifecycle_connect.rs` is a
+`cfg(test)` in-crate correspondence driver. It keeps a normalized
+exact-generation ledger only for facts already witnessed during its bounded
+trace. The ledger is verification state, not a production lifecycle store.
+
+The driver maps `enterApplicable` to a real transaction-owner
+`RangeAcquired` result followed by the exact-token `ReleaseScope::InScope`
+observation. On normal paths it retains that exact transaction machine through
+`ReleaseRange` and derives `TransactionSatisfied` through the production
+`transaction_requirement(trace)` mapping. It completes a registered/submitted
+child before observing normal media terminality through
+`operation_effect_observation`; child terminality itself is checked from the
+store-owned `SlotSnapshot`. Required reconciliation is recorded through the
+real admission table, and `Reclaimable` is observed only from a later
+exact-token snapshot. `establishReleaseAllowed` invokes the real reconciliation
+path and requires the returned or retained `ReleaseAuthorization` to carry the
+same exact token.
+
+The Connect boundary distinguishes direct provider correspondence from external
+typed owner inputs:
+
+| LifecycleRelease input | Connect classification |
+| --- | --- |
+| applicability / acquisition | direct provider correspondence from `RangeAcquired` plus exact-token `ReleaseScope` |
+| normal media terminality | direct provider correspondence through exact-token `operation_effect_observation` |
+| authoritative media reconciliation | external typed owner input; this bridge does not claim its upstream proof |
+| children terminal | direct provider correspondence from registered/submitted/completed child state and `SlotSnapshot`; a separate reconciled path proves zero children remain valid |
+| required reconciliation / `Reclaimable` | direct provider correspondence from `OperationAdmission` and exact-token `SlotSnapshot` |
+| transaction release satisfied | direct provider correspondence from the retained transaction trace on normal paths; external typed owner input after authoritative reconciliation |
+| recovery authoritative | direct provider correspondence from `recovery_reconciliation_observation` on the normal service seam |
+| basis conformance | typed owner input consumed by Connect; focused service evidence separately proves normal successful write records exact-token `BasisConsumed` |
+| `ReleaseAuthorization` | direct provider correspondence from the real lifecycle composition path |
+| cleanup request/result | direct provider correspondence from the real cleanup call/result, retained only in the bounded verification ledger |
+
+Passing an external enum into lifecycle composition is not treated as proof that
+the upstream owner produced that enum correctly.
+
+The service currently combines authorization with the physical cleanup call.
+The driver retains that actual success or failure result, then reveals cleanup
+request and result as separate model observations. A successful cleanup is not
+re-queried after the live slot, scope, and basis disappear. A failed cleanup
+rechecks only the still-live exact token, slot, and retained certificate.
+
+The projection includes successful in-scope authorization and cleanup with
+a non-vacuous registered/submitted/completed child, separate zero-child
+reconciliation, incomplete owner facts, isolated unresolved-recovery and
+unresolved-basis probes, a pre-acquisition write, a genuinely out-of-scope
+routine read, and stale-generation rejection. It excludes abstract simultaneous
+same-operation generation coexistence and historical authorization retention
+after physical slot reuse. Those remain canonical-model and focused-Rust
+evidence; they are not production claims made by this Connect projection.
+
+## LifecycleRelease bounded evidence
+
+Commands:
+
+```text
+quint typecheck models/quint/LifecycleRelease.qnt
+quint typecheck verification/quint/LifecycleReleaseAnalysis.qnt
+quint typecheck verification/quint/LifecycleReleaseMutants.qnt
+quint typecheck verification/quint/LifecycleReleasePrefix.qnt
+quint typecheck verification/quint/LifecycleReleaseTwoGenerationPrefix.qnt
+quint typecheck verification/quint/LifecycleReleaseIndependentPrefix.qnt
+quint typecheck verification/quint/LifecycleReleaseConnect.qnt
+cargo test -p dwv-service --lib lifecycle_release_connect
+quint test verification/quint/LifecycleReleaseAnalysis.qnt
+quint test verification/quint/LifecycleReleaseMutants.qnt
+quint test verification/quint/LifecycleReleaseTwoGenerationPrefix.qnt \
+  --main LifecycleReleaseTwoGenerationPrefix \
+  --match '^authorizationSurvivesSecondGeneration$' --max-samples 1
+quint test verification/quint/LifecycleReleaseIndependentPrefix.qnt \
+  --main LifecycleReleaseIndependentPrefix \
+  --match '^authorizationSurvivesUnrelatedProgress$' --max-samples 1
+quint verify verification/quint/LifecycleReleasePrefix.qnt \
+  --main LifecycleReleasePrefix --max-steps 9 \
+  --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity
+quint verify verification/quint/LifecycleReleasePrefix.qnt \
+  --main LifecycleReleasePrefix --max-steps 11 \
+  --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity
+quint verify verification/quint/LifecycleReleaseTwoGenerationPrefix.qnt \
+  --main LifecycleReleaseTwoGenerationPrefix --init profileInit \
+  --step profileStep --max-steps 10 \
+  --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity
+quint verify verification/quint/LifecycleReleaseTwoGenerationPrefix.qnt \
+  --main LifecycleReleaseTwoGenerationPrefix --init profileInit \
+  --step profileStep --max-steps 18 \
+  --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity
+quint verify verification/quint/LifecycleReleaseIndependentPrefix.qnt \
+  --main LifecycleReleaseIndependentPrefix --init profileInit \
+  --step profileStep --max-steps 12 \
+  --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity
+quint run verification/quint/LifecycleReleaseAnalysis.qnt \
+  --main LifecycleReleaseAnalysis --max-steps 26 --max-samples 100000 \
+  --seed 22082026 --invariants TypeInvariant AuthorizationRequiresApplicability \
+    AuthorizationRequiresAllOwnerFacts MissingOrIncompleteEvidenceWithholds \
+    CleanupRequestPreservesAuthorization CleanupFailurePreservesAuthorization \
+    CleanupSuccessPreservesAuthorization CleanupResultsRequireAuthorization \
+    AuthorizationUsesExactIdentity \
+  --witnesses AuthorizationReachable CleanupRequestReachable \
+    CleanupFailureReachable CleanupSuccessReachable \
+    AuthoritativeReconciliationReachable GenerationIsolationReachable \
+    UnrelatedOperationReachable
+```
+
+Observed:
+
+- The analysis suite passed 11/11 scenarios; the mutant suite passed 12/12
+  negative scenarios. Each focused phase-cut profile witness passed 1/1
+  deterministic run.
+- Both existing one-generation exhaustive profiles returned `NoError` at
+  max-steps 9 and 11.
+- The unconstrained two-generation profile did not complete at max-steps 10
+  within 1,200 seconds. The replacement profile constrains only verification
+  reachability with `profileInit`/`profileStep`, starts from canonical `init`,
+  and reaches the prefix through imported model actions. It returned `NoError`
+  at max-steps 10 (one authorization plus the second active generation) and
+  18 (both exact generations authorized). The two-operation phase-cut profile
+  returned `NoError` at max-steps 12 after unrelated work entered and
+  progressed.
+- The sampled run returned no invariant violation across 100,000 traces.
+  Witness counts were: authorization 728/100,000; cleanup request
+  52/100,000; cleanup failure 2/100,000; cleanup success 2/100,000;
+  authoritative reconciliation 91,116/100,000; generation isolation
+  494/100,000; unrelated operation 727/100,000.
+- The repaired LifecycleRelease Connect projection passed all three
+  deterministic paths (one sample each): successful in-scope authorization
+  and cleanup with a registered/submitted/completed child; injected cleanup
+  failure with retained exact-generation authorization; and negative probes
+  for pre-acquisition write, routine out-of-scope read, stale generation,
+  incomplete facts, isolated unresolved recovery, and isolated unresolved
+  basis.
+- Focused provider regressions distinguish a known failed terminal child
+  (`OperationEffect::Terminal`) from an uncertain child
+  (`OperationEffect::Unresolved`). The normal successful write path publishes
+  exact-generation `OperationEffect::Terminal` and `BasisConsumed`; normal
+  Connect transaction satisfaction comes from the retained machine trace
+  through `transaction_requirement(trace)`.
+- The model evidence is portable bounded-model evidence. It is not Rust
+  implementation-conformance or hardware/durability proof. Abstract
+  same-operation generation coexistence tests exact correlation only; it does
+  not model physical slot reuse ordering.

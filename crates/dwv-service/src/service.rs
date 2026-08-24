@@ -1,6 +1,10 @@
 use crate::{
     admission::{AdmissionConfig, OperationAdmission, slot_error},
-    evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim},
+    evidence::{
+        BasisConformance, CompletionEvidence, OperationEffect, OperationEffectObservation,
+        OperationEvidence, PersistenceClaim, RecoveryReconciliation, ReleaseAuthorization,
+        ReleaseReconciliation, ReleaseRequirement, ReleaseScope,
+    },
     failure::{FailureClass, ServiceError},
     lifecycle::ServiceState,
     range::split_range,
@@ -22,13 +26,14 @@ use dwv_recovery::{
 use dwv_store::{
     CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment, IdentityComparison,
     IdentityObservationSet, IdentitySourceKind, OperationSlotToken, PersistenceEvidence,
-    RandomAccessStore, SlotSnapshot, StoreId, StoreWriteWatermark, WriteIntent,
+    RandomAccessStore, ReconciliationOutcome, SlotSnapshot, SlotState, StoreId,
+    StoreWriteWatermark, WriteIntent,
 };
 use dwv_transaction_ref::{
-    ActionResult, CommittedRecoveryGeneration, ComputationResult, ParityComputationPlan,
-    ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, SemanticIoResult, StoreWatermark,
-    TransactionLimits, TransactionMachine, TransactionPersistenceEvidence, TransactionPlan,
-    WriteRecoveryRecordRequirement,
+    ActionKind, ActionResult, CommittedRecoveryGeneration, ComputationResult,
+    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
+    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
+    TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
 pub struct MemberBinding<S: RandomAccessStore> {
@@ -251,6 +256,9 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     admission: OperationAdmission,
     config: ServiceConfig,
     state: ServiceState,
+    release_authorizations: Vec<Option<ReleaseAuthorization>>,
+    release_scopes: Vec<Option<(OperationSlotToken, ReleaseScope)>>,
+    basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
 }
@@ -325,6 +333,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             admission: OperationAdmission::new(config.admission),
             config,
             state,
+            release_authorizations: vec![None; config.admission.limits.operation_slots],
+            release_scopes: vec![None; config.admission.limits.operation_slots],
+            basis_observations: vec![None; config.admission.limits.operation_slots],
             #[cfg(test)]
             terminalization_fault: None,
         })
@@ -377,6 +388,72 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     pub fn admission_usage(&self) -> dwv_store::ResourceUsage {
         self.admission.usage()
     }
+    /// Observe authorization only for the exact generation that produced it.
+    pub fn release_authorization(
+        &self,
+        operation: OperationSlotToken,
+    ) -> Option<&ReleaseAuthorization> {
+        self.release_authorizations
+            .iter()
+            .filter_map(Option::as_ref)
+            .find(|authorization| authorization.operation == operation)
+    }
+
+    /// Reconcile one exact retained generation from owner-approved observations.
+    ///
+    /// A missing observation leaves the slot retained and fails closed. A valid
+    /// applicable observation establishes the authorization before cleanup.
+    pub(crate) fn reconcile_release_authorization(
+        &mut self,
+        observation: ReleaseReconciliation,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
+        let snapshot = match self.admission.snapshot(observation.operation) {
+            Ok(snapshot) => snapshot,
+            Err(dwv_store::SlotError::StaleGeneration { .. }) => {
+                return Err(ServiceError::io(
+                    FailureClass::StaleSlot,
+                    "release reconciliation generation is stale",
+                ));
+            }
+            Err(error) => return Err(slot_error(error)),
+        };
+        if observation.operation != snapshot.token {
+            return Err(ServiceError::io(
+                FailureClass::StaleSlot,
+                "release reconciliation generation does not match the retained slot",
+            ));
+        }
+        match self.release_scope(observation.operation) {
+            ReleaseScope::Outside => {
+                self.release(observation.operation)?;
+                return Ok(None);
+            }
+            ReleaseScope::Unknown => {
+                return Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "release reconciliation lacks an applicability observation",
+                ));
+            }
+            ReleaseScope::InScope => {}
+        }
+        if matches!(observation.operation_effect, OperationEffect::Unresolved)
+            || matches!(observation.recovery, RecoveryReconciliation::Unresolved)
+        {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release reconciliation lacks authoritative owner evidence",
+            ));
+        }
+        self.set_basis_conformance(observation.operation, observation.basis);
+        let authorization = self.reclaim_with_authorization(&observation)?;
+        if self.release_scope(observation.operation).is_in_scope() && authorization.is_none() {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release reconciliation lacks a satisfied owner fact",
+            ));
+        }
+        Ok(authorization)
+    }
     #[cfg(test)]
     fn inject_terminalization_failure(&mut self, fault: TerminalizationFault) {
         self.terminalization_fault = Some(fault);
@@ -416,24 +493,27 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         );
         match result {
             Ok((bytes, completion)) => {
-                if let Err(cleanup) = self.finish(token, false) {
-                    return Err(self.cleanup_error(request, cleanup));
-                }
                 let generation = self
                     .recovery_generation()
                     .map_err(|error| error.with_request(request))?;
                 let trace = empty_trace(self.topology.topology_epoch(), generation)
                     .map_err(|error| error.with_request(request))?;
+                let release_authorization = self
+                    .finish(token, false, ReleaseRequirement::NotApplicable)
+                    .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
                 Ok((
                     bytes,
                     OperationEvidence {
                         request,
                         completion,
                         trace,
+                        release_authorization,
                     },
                 ))
             }
-            Err(error) => Err(self.finish_error(token, request, error)),
+            Err(error) => {
+                Err(self.finish_error(token, request, error, ReleaseRequirement::NotApplicable))
+            }
         }
     }
 
@@ -472,15 +552,17 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let result =
             self.execute_write(member_index, coding_position, request, bytes, &plan, token);
         match result {
-            Ok(evidence) => {
-                if let Err(cleanup) = self.finish(token, false) {
-                    return Err(self.cleanup_error(request, cleanup));
-                }
+            Ok(mut evidence) => {
+                self.set_basis_conformance(token, BasisConformance::Consumed);
+                let release_authorization = self
+                    .finish(token, false, transaction_requirement(Some(&evidence.trace)))
+                    .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
+                evidence.release_authorization = release_authorization;
                 Ok(evidence)
             }
             Err(error) => {
                 self.state = ServiceState::Recovering;
-                Err(self.finish_error(token, request, error))
+                Err(self.finish_error(token, request, error, transaction_requirement(None)))
             }
         }
     }
@@ -549,13 +631,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     persistence: PersistenceClaim::HostFenceOnly,
                 },
                 trace: empty_trace(self.topology.topology_epoch(), self.recovery_generation()?)?,
+                release_authorization: None,
             })
         })();
         match result {
-            Ok(evidence) => {
-                if let Err(cleanup) = self.finish(token, false) {
-                    return Err(self.cleanup_error(request, cleanup));
-                }
+            Ok(mut evidence) => {
+                let release_authorization = self
+                    .finish(token, false, ReleaseRequirement::NotApplicable)
+                    .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
+                evidence.release_authorization = release_authorization;
                 Ok(evidence)
             }
             Err(error) => {
@@ -568,7 +652,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ) {
                     self.state = ServiceState::Recovering;
                 }
-                Err(self.finish_error(token, request, error))
+                Err(self.finish_error(token, request, error, ReleaseRequirement::NotApplicable))
             }
         }
     }
@@ -666,6 +750,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        // RangeAcquired is the transaction owner's first releasable-scope result.
+        // Keep this explicit and generation-bound; do not infer scope from the
+        // request kind, child registration, frontend completion, or cleanup.
+        self.set_release_scope(token, ReleaseScope::InScope);
         let target = InvalidationTarget::new(regions.clone(), checksum_extents.clone());
         let write_recovery_record = self
             .checksums
@@ -882,14 +970,23 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 persistence: PersistenceClaim::HostFenceOnly,
             },
             trace: machine.trace().clone(),
+            release_authorization: None,
         })
     }
 
     fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, ServiceError> {
-        self.admission.reserve(request).map_err(slot_error)
+        let token = self.admission.reserve(request).map_err(slot_error)?;
+        self.set_release_scope(token, ReleaseScope::Outside);
+        self.clear_basis_observation(token);
+        Ok(token)
     }
 
-    fn finish(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), ServiceError> {
+    fn finish(
+        &mut self,
+        token: OperationSlotToken,
+        uncertain: bool,
+        requirement: ReleaseRequirement,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
         if uncertain {
             #[cfg(test)]
             if self.take_terminalization_fault(TerminalizationFault::Snapshot) {
@@ -899,13 +996,38 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ));
             }
             let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
-            self.finish_uncertain(token, snapshot)
+            self.finish_uncertain(token, snapshot)?;
+            match self.release_scope(token) {
+                ReleaseScope::Outside => self.release(token)?,
+                ReleaseScope::InScope => {}
+                ReleaseScope::Unknown => {
+                    return Err(ServiceError::io(
+                        FailureClass::ReconciliationRequired,
+                        "operation lacks a release applicability observation",
+                    ));
+                }
+            }
+            Ok(None)
         } else {
-            self.reclaim(token, false)
+            let operation_effect = self.operation_effect_observation(token)?;
+            let observation =
+                self.current_release_observation(token, operation_effect.effect, requirement);
+            match self.release_scope(token) {
+                ReleaseScope::Outside => self.reclaim_with_authorization(&observation),
+                ReleaseScope::InScope => self.reconcile_release_authorization(observation),
+                ReleaseScope::Unknown => Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "operation lacks a release applicability observation",
+                )),
+            }
         }
     }
 
-    fn finish_after_error(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
+    fn finish_after_error(
+        &mut self,
+        token: OperationSlotToken,
+        requirement: ReleaseRequirement,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
         #[cfg(test)]
         if self.take_terminalization_fault(TerminalizationFault::Snapshot) {
             return Err(ServiceError::io(
@@ -914,10 +1036,31 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             ));
         }
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
-        if needs_uncertain_reconciliation(&snapshot) {
-            self.finish_uncertain(token, snapshot)
+        let operation_effect = operation_effect_from_snapshot(token, &snapshot);
+        if operation_effect.effect == OperationEffect::Unresolved {
+            self.finish_uncertain(token, snapshot)?;
+            match self.release_scope(token) {
+                ReleaseScope::Outside => self.release(token)?,
+                ReleaseScope::InScope => {}
+                ReleaseScope::Unknown => {
+                    return Err(ServiceError::io(
+                        FailureClass::ReconciliationRequired,
+                        "operation lacks a release applicability observation",
+                    ));
+                }
+            }
+            Ok(None)
         } else {
-            self.reclaim(token, false)
+            let observation =
+                self.current_release_observation(token, operation_effect.effect, requirement);
+            match self.release_scope(token) {
+                ReleaseScope::Outside => self.reclaim_with_authorization(&observation),
+                ReleaseScope::InScope => self.reconcile_release_authorization(observation),
+                ReleaseScope::Unknown => Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "operation lacks a release applicability observation",
+                )),
+            }
         }
     }
 
@@ -941,10 +1084,29 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         self.admission
             .reconcile_children(token, &children)
             .map_err(slot_error)?;
-        self.reclaim(token, true)
+        self.mark_reclaimable(token, ReconciliationOutcome::UncertainRetained)
     }
 
-    fn reclaim(&mut self, token: OperationSlotToken, uncertain: bool) -> Result<(), ServiceError> {
+    fn mark_reclaimable(
+        &mut self,
+        token: OperationSlotToken,
+        reconciliation: ReconciliationOutcome,
+    ) -> Result<(), ServiceError> {
+        self.admission
+            .record_reconciliation(token, reconciliation)
+            .map_err(slot_error)
+    }
+
+    fn release(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
+        let result = self.admission.release(token).map_err(slot_error);
+        if result.is_ok() {
+            self.clear_release_scope(token);
+            self.clear_basis_observation(token);
+        }
+        result
+    }
+
+    fn release_after_reclaim(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
         #[cfg(test)]
         if self.take_terminalization_fault(TerminalizationFault::Reclaim) {
             return Err(ServiceError::io(
@@ -952,7 +1114,189 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "injected terminalization reclaim failure",
             ));
         }
-        self.admission.reclaim(token, uncertain).map_err(slot_error)
+        self.release(token)
+    }
+    fn reclaim_with_authorization(
+        &mut self,
+        observation: &ReleaseReconciliation,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
+        let token = observation.operation;
+        let scope = self.release_scope(token);
+        if matches!(scope, ReleaseScope::Unknown) {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "operation lacks a release applicability observation",
+            ));
+        }
+        self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
+        let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
+        if matches!(scope, ReleaseScope::Outside) {
+            self.release_after_reclaim(token)?;
+            return Ok(None);
+        }
+        let authorization = self.authorization_candidate(token, &snapshot, observation);
+        if authorization.is_none() {
+            return Ok(None);
+        }
+        if let Some(authorization) = authorization.as_ref() {
+            self.remember_release_authorization(authorization.clone());
+        }
+        self.release_after_reclaim(token).map(|()| authorization)
+    }
+
+    fn remember_release_authorization(&mut self, authorization: ReleaseAuthorization) {
+        let Ok(index) = usize::try_from(authorization.operation.index) else {
+            return;
+        };
+        if let Some(retained) = self.release_authorizations.get_mut(index) {
+            *retained = Some(authorization);
+        } else {
+            debug_assert!(false, "authorization index exceeds bounded slot table");
+        }
+    }
+
+    fn authorization_candidate(
+        &self,
+        token: OperationSlotToken,
+        snapshot: &SlotSnapshot,
+        observation: &ReleaseReconciliation,
+    ) -> Option<ReleaseAuthorization> {
+        let reconciliation = snapshot.reconciliation?;
+        if snapshot.token != token
+            || observation.operation != token
+            || !self.release_scope(token).is_in_scope()
+            || snapshot.state != SlotState::Reclaimable
+            || snapshot.drain_state == dwv_store::DrainState::Required
+            || (needs_uncertain_reconciliation(snapshot)
+                && !matches!(
+                    observation.operation_effect,
+                    OperationEffect::AuthoritativelyReconciled
+                ))
+            || reconciliation != ReconciliationOutcome::Durable
+            || !observation.requirement.is_satisfied()
+            || !matches!(
+                observation.operation_effect,
+                OperationEffect::Terminal | OperationEffect::AuthoritativelyReconciled
+            )
+            || !matches!(observation.recovery, RecoveryReconciliation::Authoritative)
+            || !observation.basis.is_conformant()
+        {
+            return None;
+        }
+        Some(ReleaseAuthorization { operation: token })
+    }
+
+    fn operation_effect_observation(
+        &self,
+        operation: OperationSlotToken,
+    ) -> Result<OperationEffectObservation, ServiceError> {
+        let snapshot = self.admission.snapshot(operation).map_err(slot_error)?;
+        Ok(operation_effect_from_snapshot(operation, &snapshot))
+    }
+
+    fn current_release_observation(
+        &self,
+        operation: OperationSlotToken,
+        operation_effect: OperationEffect,
+        requirement: ReleaseRequirement,
+    ) -> ReleaseReconciliation {
+        ReleaseReconciliation {
+            operation,
+            operation_effect,
+            requirement,
+            recovery: self.recovery_reconciliation_observation(),
+            basis: self.basis_conformance_observation(operation),
+        }
+    }
+
+    /// The recovery/topology/checksum-generation fact is separate from the
+    /// typed basis-conformance observation consumed by lifecycle release.
+    fn recovery_topology_generation_coherent(&self) -> bool {
+        self.recovery
+            .load_assembly_snapshot()
+            .is_ok_and(|snapshot| {
+                snapshot.topology_epoch == self.topology.topology_epoch()
+                    && snapshot.generation == self.checksums.recovery_generation
+            })
+    }
+
+    fn recovery_reconciliation_observation(&self) -> RecoveryReconciliation {
+        if self.recovery.verify_integrity() == RecoveryStoreHealth::Healthy
+            && self.recovery_topology_generation_coherent()
+        {
+            RecoveryReconciliation::Authoritative
+        } else {
+            RecoveryReconciliation::Unresolved
+        }
+    }
+
+    fn release_scope(&self, operation: OperationSlotToken) -> ReleaseScope {
+        let Ok(index) = usize::try_from(operation.index) else {
+            return ReleaseScope::Unknown;
+        };
+        self.release_scopes
+            .get(index)
+            .and_then(|scope| *scope)
+            .filter(|(token, _)| *token == operation)
+            .map_or(ReleaseScope::Unknown, |(_, scope)| scope)
+    }
+
+    fn set_release_scope(&mut self, operation: OperationSlotToken, scope: ReleaseScope) {
+        let Ok(index) = usize::try_from(operation.index) else {
+            return;
+        };
+        if let Some(slot) = self.release_scopes.get_mut(index) {
+            *slot = Some((operation, scope));
+        }
+    }
+
+    fn clear_release_scope(&mut self, operation: OperationSlotToken) {
+        let Ok(index) = usize::try_from(operation.index) else {
+            return;
+        };
+        if let Some(slot) = self.release_scopes.get_mut(index)
+            && slot.is_some_and(|(token, _)| token == operation)
+        {
+            *slot = None;
+        }
+    }
+
+    fn basis_conformance_observation(&self, operation: OperationSlotToken) -> BasisConformance {
+        let Ok(index) = usize::try_from(operation.index) else {
+            return BasisConformance::Unresolved;
+        };
+        self.basis_observations
+            .get(index)
+            .and_then(|observation| *observation)
+            .filter(|(token, _)| *token == operation)
+            .map_or(BasisConformance::Unresolved, |(_, observation)| observation)
+    }
+
+    fn set_basis_conformance(
+        &mut self,
+        operation: OperationSlotToken,
+        observation: BasisConformance,
+    ) {
+        if !observation.is_conformant() {
+            return;
+        }
+        let Ok(index) = usize::try_from(operation.index) else {
+            return;
+        };
+        if let Some(slot) = self.basis_observations.get_mut(index) {
+            *slot = Some((operation, observation));
+        }
+    }
+
+    fn clear_basis_observation(&mut self, operation: OperationSlotToken) {
+        let Ok(index) = usize::try_from(operation.index) else {
+            return;
+        };
+        if let Some(slot) = self.basis_observations.get_mut(index)
+            && slot.is_some_and(|(token, _)| token == operation)
+        {
+            *slot = None;
+        }
     }
 
     fn finish_error(
@@ -960,10 +1304,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         token: OperationSlotToken,
         request: BlockRequest,
         primary: ServiceError,
+        requirement: ReleaseRequirement,
     ) -> ServiceError {
         let primary = primary.with_request(request);
-        match self.finish_after_error(token) {
-            Ok(()) => primary,
+        match self.finish_after_error(token, requirement) {
+            Ok(_) => primary,
             Err(cleanup) => {
                 self.state = ServiceState::Recovering;
                 ServiceError::terminalization(request, Some(primary), cleanup.with_request(request))
@@ -1042,6 +1387,47 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         Ok(())
     }
+}
+fn transaction_release_complete(trace: Option<&dwv_transaction_ref::Trace>) -> bool {
+    let Some(trace) = trace else {
+        return false;
+    };
+    !trace
+        .events()
+        .iter()
+        .any(|event| matches!(event, TraceEvent::ReconciliationRequired { .. }))
+        && trace.events().iter().any(|event| {
+            matches!(
+                event,
+                TraceEvent::ResultApplied {
+                    action: ActionKind::ReleaseRange,
+                    result: ResultKind::RangeReleased,
+
+                    ..
+                }
+            )
+        })
+}
+
+fn transaction_requirement(trace: Option<&dwv_transaction_ref::Trace>) -> ReleaseRequirement {
+    if transaction_release_complete(trace) {
+        ReleaseRequirement::TransactionSatisfied
+    } else {
+        ReleaseRequirement::TransactionUnresolved
+    }
+}
+
+fn operation_effect_from_snapshot(
+    operation: OperationSlotToken,
+    snapshot: &SlotSnapshot,
+) -> OperationEffectObservation {
+    debug_assert_eq!(snapshot.token, operation);
+    let effect = if needs_uncertain_reconciliation(snapshot) {
+        OperationEffect::Unresolved
+    } else {
+        OperationEffect::Terminal
+    };
+    OperationEffectObservation { operation, effect }
 }
 
 fn needs_uncertain_reconciliation(snapshot: &SlotSnapshot) -> bool {
@@ -2050,8 +2436,8 @@ mod tests {
                 }
             );
             assert_eq!(service.state(), ServiceState::Recovering);
-            assert_eq!(service.admission_usage().operation_slots, 0);
-            assert_eq!(service.admission_usage().backend_submissions, 0);
+            assert_eq!(service.admission_usage().operation_slots, 1);
+            assert_eq!(service.admission_usage().backend_submissions, 6);
         }
 
         for effect in [FakeEffect::Failed, FakeEffect::Uncertain] {
@@ -2105,8 +2491,8 @@ mod tests {
         assert_eq!(completion.disposition, CompletionDisposition::Success);
         assert_eq!(completion.completed.as_slice(), &[range]);
         assert_eq!(service.state(), ServiceState::Recovering);
-        assert_eq!(service.admission_usage().operation_slots, 0);
-        assert_eq!(service.admission_usage().backend_submissions, 0);
+        assert_eq!(service.admission_usage().operation_slots, 1);
+        assert_eq!(service.admission_usage().backend_submissions, 6);
 
         let mut service = fake_service_with_effects(
             FakeRead::Exact,
@@ -2129,6 +2515,55 @@ mod tests {
         assert_eq!(service.state(), ServiceState::Recovering);
         assert_eq!(service.admission_usage().operation_slots, 0);
         assert_eq!(service.admission_usage().backend_submissions, 0);
+    }
+
+    #[test]
+    fn operation_effect_observation_distinguishes_known_failed_and_uncertain_children() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        for uncertain in [false, true] {
+            let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+            let request_id = if uncertain { 13 } else { 12 };
+            let token = service
+                .reserve(request(
+                    RequestId(request_id),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ))
+                .unwrap();
+            let child = service.admission.child(token, range).unwrap();
+            service.admission.submitted(token).unwrap();
+            let disposition = if uncertain {
+                CompletionDisposition::Uncertain
+            } else {
+                CompletionDisposition::Failed(StoreError::BackendFailure { code: 74 })
+            };
+            service
+                .admission
+                .complete(
+                    token,
+                    FakeStore::completion(
+                        child,
+                        range,
+                        None,
+                        disposition,
+                        PersistenceEvidence::VolatileOrUnknown,
+                    ),
+                )
+                .unwrap();
+            let observation = service.operation_effect_observation(token).unwrap();
+            assert_eq!(
+                observation.effect,
+                if uncertain {
+                    OperationEffect::Unresolved
+                } else {
+                    OperationEffect::Terminal
+                }
+            );
+        }
     }
 
     #[test]
@@ -2964,6 +3399,482 @@ mod tests {
         assert_eq!(service.admission_usage().operation_slots, 0);
     }
 
+    fn authoritative_release(token: OperationSlotToken) -> ReleaseReconciliation {
+        ReleaseReconciliation {
+            operation: token,
+            operation_effect: OperationEffect::AuthoritativelyReconciled,
+            requirement: ReleaseRequirement::TransactionSatisfied,
+            recovery: RecoveryReconciliation::Authoritative,
+            basis: BasisConformance::Reconciled,
+        }
+    }
+
+    #[test]
+    fn routine_read_and_flush_do_not_establish_release_authorization() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+
+        let (_, read) = service
+            .read(request(
+                RequestId(60),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert!(read.release_authorization.is_none());
+
+        let flush = service
+            .flush(request(
+                RequestId(61),
+                epoch,
+                0,
+                BlockOp::Flush,
+                ByteRange::empty(),
+                DurabilityIntent::ExplicitFlush,
+            ))
+            .unwrap();
+        assert!(flush.release_authorization.is_none());
+        assert_eq!(service.admission_usage().operation_slots, 0);
+    }
+
+    #[test]
+    fn typed_basis_observation_is_distinct_from_generation_coherence() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let token = service
+            .reserve(request(
+                RequestId(601),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert_eq!(
+            service.basis_conformance_observation(token),
+            BasisConformance::Unresolved
+        );
+        service.set_basis_conformance(token, BasisConformance::Consumed);
+        assert_eq!(
+            service.basis_conformance_observation(token),
+            BasisConformance::Consumed
+        );
+        assert!(BasisConformance::Consumed.is_conformant());
+        assert!(BasisConformance::Discarded.is_conformant());
+        assert!(BasisConformance::Reconciled.is_conformant());
+        assert!(!BasisConformance::Unresolved.is_conformant());
+
+        let generation = service
+            .recovery()
+            .load_assembly_snapshot()
+            .unwrap()
+            .generation;
+        service.checksums.recovery_generation = generation
+            .checked_next()
+            .expect("fixture generation is bounded");
+        assert!(!service.recovery_topology_generation_coherent());
+        assert_eq!(
+            service.basis_conformance_observation(token),
+            BasisConformance::Consumed
+        );
+    }
+
+    #[test]
+    fn failed_operation_reconciles_to_an_exact_certificate_after_primary_error() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let admitted = request(
+            RequestId(62),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::Failed,
+            FakeEffect::Success,
+            ServiceConfig::default(),
+        );
+        let error = service
+            .write(admitted, &[0x66; BLOCK as usize])
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            ServiceError::Io {
+                class: FailureClass::StoreWrite,
+                ..
+            }
+        ));
+        let token = OperationSlotToken::new(0, 1);
+        assert_eq!(service.admission_usage().operation_slots, 1);
+
+        let authorization = service
+            .reconcile_release_authorization(authoritative_release(token))
+            .unwrap()
+            .unwrap();
+        assert_eq!(authorization.operation, token);
+        assert_eq!(service.release_authorization(token), Some(&authorization));
+        assert_eq!(service.admission_usage().operation_slots, 0);
+    }
+
+    #[test]
+    fn short_and_failed_terminal_evidence_can_keep_certificate_after_cleanup() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        for disposition in [
+            CompletionDisposition::Short,
+            CompletionDisposition::Failed(StoreError::BackendFailure { code: 73 }),
+        ] {
+            let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+            let admitted = request(
+                RequestId(620 + disposition_code(&disposition)),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            );
+            let token = service.reserve(admitted).unwrap();
+            // This direct fixture bypasses TransactionMachine; bind its owner-approved
+            // acquisition result explicitly instead of inferring scope from the request.
+            service.set_release_scope(token, ReleaseScope::InScope);
+            let child = service.admission.child(token, range).unwrap();
+            service.admission.submitted(token).unwrap();
+            service
+                .admission
+                .complete(
+                    token,
+                    FakeStore::completion(
+                        child,
+                        range,
+                        if matches!(&disposition, CompletionDisposition::Short) {
+                            Some(ByteRange::new(range.offset, range.length / 2).unwrap())
+                        } else {
+                            None
+                        },
+                        disposition,
+                        PersistenceEvidence::VolatileOrUnknown,
+                    ),
+                )
+                .unwrap();
+            let authorization = service
+                .reclaim_with_authorization(&ReleaseReconciliation {
+                    operation: token,
+                    operation_effect: OperationEffect::Terminal,
+                    requirement: ReleaseRequirement::TransactionSatisfied,
+                    recovery: RecoveryReconciliation::Authoritative,
+                    basis: BasisConformance::Reconciled,
+                })
+                .unwrap()
+                .unwrap();
+            assert_eq!(service.release_authorization(token), Some(&authorization));
+            assert_eq!(service.admission_usage().operation_slots, 0);
+        }
+    }
+
+    fn disposition_code(disposition: &CompletionDisposition) -> u64 {
+        match disposition {
+            CompletionDisposition::Short => 1,
+            CompletionDisposition::Failed(_) => 2,
+            _ => 3,
+        }
+    }
+
+    #[test]
+    fn authoritative_older_generation_reconciliation_survives_unrelated_work() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let config = ServiceConfig {
+            admission: AdmissionConfig {
+                limits: ResourceLimits::new(2, 8, 64, 8, 8, 8),
+            },
+            ..ServiceConfig::default()
+        };
+        let admitted = request(
+            RequestId(63),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::Failed,
+            FakeEffect::Success,
+            config,
+        );
+        service
+            .write(admitted, &[0x67; BLOCK as usize])
+            .unwrap_err();
+        let older = OperationSlotToken::new(0, 1);
+        let (_, unrelated) = service
+            .read(request(
+                RequestId(64),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert!(unrelated.release_authorization.is_none());
+        assert_eq!(service.admission_usage().operation_slots, 1);
+
+        let authorization = service
+            .reconcile_release_authorization(authoritative_release(older))
+            .unwrap()
+            .unwrap();
+        assert_eq!(authorization.operation, older);
+        assert_eq!(service.release_authorization(older), Some(&authorization));
+    }
+
+    #[test]
+    fn cleanup_failure_and_success_do_not_revoke_authorization() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let admitted = request(
+            RequestId(65),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        service.inject_terminalization_failure(TerminalizationFault::Reclaim);
+        let error = service
+            .write(admitted, &[0x68; BLOCK as usize])
+            .unwrap_err();
+        assert!(error.cleanup_error().is_some());
+        assert!(
+            error.primary_error().is_none(),
+            "normal write work completed; only physical cleanup failed"
+        );
+        let token = OperationSlotToken::new(0, 1);
+        let operation_effect = service.operation_effect_observation(token).unwrap();
+        assert_eq!(operation_effect.operation, token);
+        assert_eq!(
+            operation_effect.effect,
+            OperationEffect::Terminal,
+            "normal write provider must publish exact-generation terminal media effect"
+        );
+        assert_eq!(
+            service.basis_conformance_observation(token),
+            BasisConformance::Consumed,
+            "normal write provider must publish exact-generation basis consumption before cleanup"
+        );
+        let authorization = service.release_authorization(token).unwrap().clone();
+        assert_eq!(service.admission_usage().operation_slots, 1);
+
+        service.release(token).unwrap();
+        assert_eq!(service.release_authorization(token), Some(&authorization));
+        assert_eq!(service.admission_usage().operation_slots, 0);
+        let generation = service
+            .recovery()
+            .load_assembly_snapshot()
+            .unwrap()
+            .generation;
+        service.checksums.recovery_generation = generation
+            .checked_next()
+            .expect("fixture generation is bounded");
+        assert_eq!(service.release_authorization(token), Some(&authorization));
+
+        let (_, unrelated) = service
+            .read(request(
+                RequestId(66),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert!(unrelated.release_authorization.is_none());
+        assert_eq!(service.release_authorization(token), Some(&authorization));
+    }
+
+    #[test]
+    fn stale_generation_reconciliation_is_rejected_and_missing_evidence_is_fail_closed() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let admitted = request(
+            RequestId(67),
+            epoch,
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        );
+        let mut service = fake_service_with_effects(
+            FakeRead::Exact,
+            FakeEffect::Failed,
+            FakeEffect::Success,
+            ServiceConfig::default(),
+        );
+        service
+            .write(admitted, &[0x69; BLOCK as usize])
+            .unwrap_err();
+        let token = OperationSlotToken::new(0, 1);
+
+        let mut stale = authoritative_release(token);
+        stale.operation = OperationSlotToken::new(0, 2);
+        assert!(service.reconcile_release_authorization(stale).is_err());
+        assert!(service.release_authorization(token).is_none());
+        assert_eq!(service.admission_usage().operation_slots, 1);
+
+        let mut missing_transaction = authoritative_release(token);
+        missing_transaction.requirement = ReleaseRequirement::TransactionUnresolved;
+        assert!(matches!(
+            service.reconcile_release_authorization(missing_transaction),
+            Err(ServiceError::Io {
+                class: FailureClass::ReconciliationRequired,
+                ..
+            })
+        ));
+        assert!(service.release_authorization(token).is_none());
+
+        let mut missing_basis = authoritative_release(token);
+        missing_basis.basis = BasisConformance::Unresolved;
+        assert!(matches!(
+            service.reconcile_release_authorization(missing_basis),
+            Err(ServiceError::Io {
+                class: FailureClass::ReconciliationRequired,
+                ..
+            })
+        ));
+        assert!(service.release_authorization(token).is_none());
+        assert_eq!(service.admission_usage().operation_slots, 1);
+    }
+
+    #[test]
+    fn exact_generation_lookup_does_not_use_global_latest_ordering() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+        let first = service
+            .write(
+                request(
+                    RequestId(68),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x70; BLOCK as usize],
+            )
+            .unwrap()
+            .release_authorization
+            .unwrap();
+        assert_eq!(service.release_authorization(first.operation), Some(&first));
+
+        let second = service
+            .write(
+                request(
+                    RequestId(69),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x71; BLOCK as usize],
+            )
+            .unwrap()
+            .release_authorization
+            .unwrap();
+        assert_ne!(first.operation, second.operation);
+        assert!(service.release_authorization(first.operation).is_none());
+        assert_eq!(
+            service.release_authorization(second.operation),
+            Some(&second)
+        );
+    }
+    #[test]
+    fn release_scope_is_bound_to_acquisition_not_write_kind_or_child_count() {
+        let epoch = TopologyEpoch(4);
+        let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+        let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+
+        let outside = service
+            .reserve(request(
+                RequestId(701),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert_eq!(service.release_scope(outside), ReleaseScope::Outside);
+        let outside_observation = authoritative_release(outside);
+        assert!(
+            service
+                .reclaim_with_authorization(&outside_observation)
+                .unwrap()
+                .is_none()
+        );
+        assert!(service.release_authorization(outside).is_none());
+
+        let in_scope = service
+            .reserve(request(
+                RequestId(702),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        service.set_release_scope(in_scope, ReleaseScope::InScope);
+        assert_eq!(service.release_scope(in_scope), ReleaseScope::InScope);
+        let authorization = service
+            .reclaim_with_authorization(&authoritative_release(in_scope))
+            .unwrap()
+            .expect("in-scope zero-child operation can be authorized");
+        assert_eq!(authorization.operation, in_scope);
+        assert_eq!(
+            service.release_authorization(in_scope),
+            Some(&authorization)
+        );
+        let missing = service
+            .reserve(request(
+                RequestId(703),
+                epoch,
+                0,
+                BlockOp::Read,
+                range,
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        service.clear_release_scope(missing);
+        assert_eq!(service.release_scope(missing), ReleaseScope::Unknown);
+        assert!(matches!(
+            service.reconcile_release_authorization(authoritative_release(missing)),
+            Err(ServiceError::Io {
+                class: FailureClass::ReconciliationRequired,
+                ..
+            })
+        ));
+        let mismatched = OperationSlotToken::new(missing.index, missing.generation + 1);
+        assert_eq!(service.release_scope(mismatched), ReleaseScope::Unknown);
+        assert!(
+            service
+                .reconcile_release_authorization(authoritative_release(mismatched))
+                .is_err()
+        );
+        assert_eq!(service.admission_usage().operation_slots, 1);
+    }
+
     #[test]
     fn failed_child_admission_reconciles_registered_children_before_reclaim() {
         let config = ServiceConfig {
@@ -2986,14 +3897,22 @@ mod tests {
         assert_eq!(result.as_ref().unwrap_err().request(), Some(admitted));
         assert!(matches!(
             result,
-            Err(ServiceError::Io {
-                class: FailureClass::Admission,
+            Err(ServiceError::Terminalization {
+                primary: Some(_),
                 ..
             })
         ));
-        assert_eq!(service.admission_usage().operation_slots, 0);
+        assert_eq!(service.admission_usage().operation_slots, 1);
         assert_eq!(service.admission_usage().backend_submissions, 0);
         assert_eq!(service.state(), ServiceState::Recovering);
+        let token = OperationSlotToken::new(0, 1);
+        assert_eq!(service.release_scope(token), ReleaseScope::InScope);
+        let authorization = service
+            .reconcile_release_authorization(authoritative_release(token))
+            .unwrap()
+            .expect("an acquired release scope does not require physical children");
+        assert_eq!(authorization.operation, token);
+        assert_eq!(service.release_authorization(token), Some(&authorization));
         drop(service);
         fs::remove_dir_all(root).unwrap();
     }
@@ -3681,4 +4600,6 @@ mod tests {
             publication_identity(&topology, &changed_assessment).unwrap()
         );
     }
+    #[path = "lifecycle_connect.rs"]
+    mod lifecycle_connect;
 }

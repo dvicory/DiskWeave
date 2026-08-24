@@ -698,6 +698,7 @@ dependencies = [
 name = "dwv-service"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "blake3",
  "dwv-codec",
  "dwv-core",
@@ -706,6 +707,9 @@ dependencies = [
  "dwv-store-file",
  "dwv-transaction-ref",
  "dwv-verify",
+ "itf",
+ "quint-connect",
+ "serde",
 ]
 
 [[package]]
