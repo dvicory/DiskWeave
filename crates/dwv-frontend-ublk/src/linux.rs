@@ -4,7 +4,7 @@ use crate::{
     ProbeDisposition, ProbeReport, PublicationMetadataMatch, QUEUE_DEPTH, TagTable, TerminalResult,
     TraceLog, TraceRecord, borrowed_write_payload, classify_control_access,
     classify_publication_metadata, completion_was_delivered, map_kernel_completion,
-    translate_request_for_slot, validate_shutdown_evidence,
+    map_service_error, translate_request_for_slot, validate_shutdown_evidence,
 };
 use dwv_core::{
     ArrayId, BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId,
@@ -62,7 +62,7 @@ fn execute_service<S: RandomAccessStore, R: RecoveryStateStore>(
         BlockOp::Read => service
             .read(request)
             .map(|(bytes, _)| bytes)
-            .map_err(|error| AdapterError::Io(error.to_string())),
+            .map_err(map_service_error),
         BlockOp::Write => {
             let bytes = write_bytes.ok_or(AdapterError::Invalid("write buffer is missing"))?;
             if bytes.len() as u64 != request.range.length {
@@ -73,12 +73,12 @@ fn execute_service<S: RandomAccessStore, R: RecoveryStateStore>(
             service
                 .write(request, bytes)
                 .map(|_| Vec::new())
-                .map_err(|error| AdapterError::Io(error.to_string()))
+                .map_err(map_service_error)
         }
         BlockOp::Flush => service
             .flush(request)
             .map(|_| Vec::new())
-            .map_err(|error| AdapterError::Io(error.to_string())),
+            .map_err(map_service_error),
         _ => Err(AdapterError::Unsupported("normalized operation")),
     }
 }
@@ -685,6 +685,7 @@ fn terminal_errno(terminal: TerminalResult) -> i32 {
         TerminalResult::Unsupported => -libc::EOPNOTSUPP,
         TerminalResult::Invalid => -libc::EINVAL,
         TerminalResult::ResourceExhausted => -libc::EAGAIN,
+        TerminalResult::Retry => -libc::EAGAIN,
         TerminalResult::Io | TerminalResult::ReconciliationRequired => -libc::EIO,
         TerminalResult::Success => 0,
     }

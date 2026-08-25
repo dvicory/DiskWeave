@@ -505,6 +505,29 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R
         self.service.deliver_write_result(result)
     }
 }
+fn finish_retained_write<S: RandomAccessStore, R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<S, R>,
+    submission: &PortableWriteSubmission,
+) -> OperationEvidence {
+    loop {
+        match service.drive_write(submission).unwrap() {
+            PortableWriteDrive::Wait(PortableWriteWait::BasisReadPermission) => {
+                service.grant_basis_read_permission(submission).unwrap();
+            }
+            PortableWriteDrive::Work(work) => {
+                service.accept_write_work(&work).unwrap();
+                let result = service.execute_write_work(&work).unwrap();
+                if let Some(evidence) = service.deliver_write_result(result).unwrap() {
+                    return evidence;
+                }
+            }
+            PortableWriteDrive::Complete(evidence) => return evidence,
+            PortableWriteDrive::Wait(wait) => {
+                panic!("retained write did not complete: {wait:?}");
+            }
+        }
+    }
+}
 
 fn reported_store_completion(
     error: ServiceError,
@@ -678,6 +701,395 @@ fn write_driver_start_has_no_physical_io_until_executor_acceptance() {
             && member.store.physical_writes == 0
             && member.store.physical_flushes == 0
     }));
+}
+#[test]
+fn protected_write_claim_covers_basis_and_releases_with_authorization() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(424),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let bytes = vec![0x3c; BLOCK as usize];
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let submission = service.submit_write(request, &bytes).unwrap();
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_none()
+    );
+
+    service.grant_basis_read_permission(&submission).unwrap();
+    let PortableWriteDrive::Work(basis_data) = service.drive_write(&submission).unwrap() else {
+        panic!("coded admission should precede the first basis read");
+    };
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+    assert_eq!(service.members[0].store.physical_reads, 0);
+    service.accept_write_work(&basis_data).unwrap();
+    let basis_data_result = service.execute_write_work(&basis_data).unwrap();
+    assert!(
+        service
+            .deliver_write_result(basis_data_result)
+            .unwrap()
+            .is_none()
+    );
+
+    let PortableWriteDrive::Work(basis_parity) = service.drive_write(&submission).unwrap() else {
+        panic!("the second basis read should remain under the held claim");
+    };
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+    service.accept_write_work(&basis_parity).unwrap();
+    let basis_parity_result = service.execute_write_work(&basis_parity).unwrap();
+    assert!(
+        service
+            .deliver_write_result(basis_parity_result)
+            .unwrap()
+            .is_none()
+    );
+
+    let PortableWriteDrive::Work(first_write) = service.drive_write(&submission).unwrap() else {
+        panic!("coded effect permission should precede the first protected write");
+    };
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::EffectPossible)
+    );
+    assert_eq!(service.members[0].store.physical_writes, 0);
+    service.accept_write_work(&first_write).unwrap();
+    let first_write_result = service.execute_write_work(&first_write).unwrap();
+    assert!(
+        service
+            .deliver_write_result(first_write_result)
+            .unwrap()
+            .is_none()
+    );
+
+    let evidence = finish_retained_write(&mut service, &submission);
+    assert_eq!(evidence.request, request);
+    assert!(evidence.release_authorization.is_some());
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_none()
+    );
+}
+
+#[test]
+fn protected_write_contention_parks_and_disjoint_claims_progress() {
+    let epoch = TopologyEpoch(4);
+    let first_range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let disjoint_range = ByteRange::new(u64::from(BLOCK), u64::from(BLOCK)).unwrap();
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let holder = service
+        .submit_write(
+            request(
+                RequestId(425),
+                epoch,
+                0,
+                BlockOp::Write,
+                first_range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x41; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&holder).unwrap();
+    let PortableWriteDrive::Work(holder_basis) = service.drive_write(&holder).unwrap() else {
+        panic!("holder should emit its first basis read");
+    };
+    service.accept_write_work(&holder_basis).unwrap();
+
+    let contender = service
+        .submit_write(
+            request(
+                RequestId(426),
+                epoch,
+                1,
+                BlockOp::Write,
+                first_range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x42; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&contender).unwrap();
+    assert_eq!(
+        service.drive_write(&contender).unwrap(),
+        PortableWriteDrive::Wait(PortableWriteWait::CodedRangeContention)
+    );
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(contender.operation)
+            .is_none()
+    );
+    assert_eq!(service.members[0].store.physical_reads, 0);
+    assert_eq!(service.members[1].store.physical_reads, 0);
+
+    let disjoint = service
+        .submit_write(
+            request(
+                RequestId(427),
+                epoch,
+                1,
+                BlockOp::Write,
+                disjoint_range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x43; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&disjoint).unwrap();
+    assert!(matches!(
+        service.drive_write(&disjoint).unwrap(),
+        PortableWriteDrive::Work(_)
+    ));
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(disjoint.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+
+    let holder_basis_result = service.execute_write_work(&holder_basis).unwrap();
+    assert!(
+        service
+            .deliver_write_result(holder_basis_result)
+            .unwrap()
+            .is_none()
+    );
+    finish_retained_write(&mut service, &holder);
+
+    let PortableWriteDrive::Work(resumed) = service.drive_write(&contender).unwrap() else {
+        panic!("contended operation should resume without a new submission");
+    };
+    assert_eq!(resumed.submission.operation, contender.operation);
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(contender.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+}
+
+#[test]
+fn protected_write_failure_keeps_claim_until_matching_authorization() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(428),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Uncertain, ServiceConfig::default());
+    let submission = service
+        .submit_write(request, &[0x44; BLOCK as usize])
+        .unwrap();
+    service.grant_basis_read_permission(&submission).unwrap();
+    let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+        panic!("uncertain write should still acquire coded authority first");
+    };
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+    service.accept_write_work(&work).unwrap();
+    let result = service.execute_write_work(&work).unwrap();
+    assert!(service.deliver_write_result(result).is_err());
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_some()
+    );
+
+    let mut stale = authoritative_release(submission.operation);
+    stale.operation = OperationSlotToken::new(
+        submission.operation.index,
+        submission.operation.generation.wrapping_add(1),
+    );
+    assert!(service.reconcile_release_authorization(stale).is_err());
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_some()
+    );
+
+    let authorization = service
+        .reconcile_release_authorization(authoritative_release(submission.operation))
+        .unwrap()
+        .expect("owner-approved matching authorization should release the claim");
+    assert_eq!(authorization.operation, submission.operation);
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_none()
+    );
+}
+#[test]
+fn protected_write_capture_block_parks_without_re_admission() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(429),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    service
+        .coded_start_capture(
+            CodedCaptureId(9),
+            CodedCaptureScopeInput::complete([CodedUnitId(0)]),
+        )
+        .unwrap();
+    let submission = service
+        .submit_write(request, &[0x45; BLOCK as usize])
+        .unwrap();
+    service.grant_basis_read_permission(&submission).unwrap();
+    for _ in 0..2 {
+        let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+            panic!("basis reads should remain runnable under the held claim");
+        };
+        service.accept_write_work(&work).unwrap();
+        let result = service.execute_write_work(&work).unwrap();
+        assert!(service.deliver_write_result(result).unwrap().is_none());
+    }
+
+    assert_eq!(
+        service.drive_write(&submission).unwrap(),
+        PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked)
+    );
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+    );
+    service
+        .coded_captures_mut()
+        .observe_decision(
+            CodedCaptureId(9),
+            dwv_recovery::CodedCaptureDecision::Rejected,
+        )
+        .unwrap();
+    assert!(matches!(
+        service.drive_write(&submission).unwrap(),
+        PortableWriteDrive::Work(_)
+    ));
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::EffectPossible)
+    );
+}
+
+#[test]
+fn blocking_write_uses_the_retained_coded_path() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(430),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let evidence = service.write(request, &[0x46; BLOCK as usize]).unwrap();
+    assert_eq!(evidence.request, request);
+    let authorization = evidence
+        .release_authorization
+        .clone()
+        .expect("blocking write should expose exact release authorization");
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(authorization.operation),
+        None
+    );
+}
+#[test]
+fn blocking_contention_rejects_only_the_unstarted_request() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let holder = service
+        .submit_write(
+            request(
+                RequestId(431),
+                epoch,
+                0,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x47; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&holder).unwrap();
+    let PortableWriteDrive::Work(work) = service.drive_write(&holder).unwrap() else {
+        panic!("holder should acquire coded authority before the blocking contender");
+    };
+    service.accept_write_work(&work).unwrap();
+
+    let error = service
+        .write(
+            request(
+                RequestId(432),
+                epoch,
+                1,
+                BlockOp::Write,
+                range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x48; BLOCK as usize],
+        )
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ServiceError::Io {
+            class: FailureClass::CodedContention,
+            ..
+        }
+    ));
+    assert_eq!(service.state(), ServiceState::Serving);
+    assert_eq!(service.admission_usage().operation_slots, 1);
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(holder.operation)
+            .is_some()
+    );
 }
 
 #[test]

@@ -13,8 +13,9 @@ use crate::{
 };
 use dwv_codec::Geometry as CodecGeometry;
 use dwv_core::{
-    AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, ByteRange, CodingPosition,
-    DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
+    AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, ByteRange, CodedUnitId,
+    CodingPosition, DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch,
+    TopologySnapshot,
 };
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
@@ -54,7 +55,6 @@ pub(crate) enum OperationReadiness {
     Waiting(PendingReason),
 }
 
-#[cfg_attr(not(test), allow(dead_code))]
 /// Normalized coordination result; scheduler and wakeup policy remain external.
 #[must_use = "coded effect permission may remain blocked and must be handled explicitly"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -255,9 +255,11 @@ pub enum BasisReadPermission {
     Pending,
     Granted,
 }
-
+/// The retained operation is parked without changing its transaction or slot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PortableWriteWait {
+    CodedRangeContention,
+    CaptureBlocked,
     BasisReadPermission,
     PhysicalResults,
     OwnerReconciliation,
@@ -345,15 +347,18 @@ enum WriteFinalizationPhase {
     RangeReleased,
     EvidenceReady,
 }
-
 struct WriteDriver {
     operation: OperationSlotToken,
     request: BlockRequest,
     payload: Vec<u8>,
     machine: TransactionMachine,
+    transaction_plan: TransactionPlan,
     member_index: usize,
     parity_index: usize,
     coding_position: CodingPosition,
+    coded_claim: CodedClaimInput,
+    coded_admitted: bool,
+    coded_effect_permitted: bool,
     ranges: Vec<ByteRange>,
     basis_reads: Vec<[usize; 2]>,
     data_write_children: Vec<ChildOperationId>,
@@ -369,7 +374,7 @@ struct WriteDriver {
     work: Vec<PendingWriteWork>,
     regions: Vec<RegionId>,
     checksum_extents: Vec<IntegrityExtentId>,
-    write_recovery_record: WriteRecoveryRecordEvidence,
+    write_recovery_record: Option<WriteRecoveryRecordEvidence>,
     failed: bool,
     evidence: Option<OperationEvidence>,
 }
@@ -664,7 +669,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             })
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn coded_admit(
         &mut self,
         operation: OperationSlotToken,
@@ -726,7 +730,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn coded_permit_effect(
         &mut self,
         operation: OperationSlotToken,
@@ -750,7 +753,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     ///
     /// Coded claim removal does not require the operation slot to remain live.
     /// The lifecycle owner supplies the exact generation-qualified certificate.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn coded_release_claim(
         &mut self,
         operation: OperationSlotToken,
@@ -761,6 +763,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .map_err(|error| {
                 ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
             })
+    }
+    fn release_coded_claim_if_authorized(
+        &mut self,
+        authorization: &ReleaseAuthorization,
+    ) -> Result<(), ServiceError> {
+        if self
+            .coded_authority
+            .operation_phase(authorization.operation)
+            .is_some()
+        {
+            self.coded_release_claim(authorization.operation, authorization)?;
+        }
+        Ok(())
     }
     /// Observe authorization only for the exact generation that produced it.
     pub fn release_authorization(
@@ -811,6 +826,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             ReleaseScope::InScope => {}
         }
         if let Some(authorization) = self.release_authorization(observation.operation).cloned() {
+            self.release_coded_claim_if_authorized(&authorization)?;
             self.release_after_reclaim(observation.operation)?;
             return Ok(Some(authorization));
         }
@@ -1493,16 +1509,30 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     /// Execute the same normalized work port used by external executors.
+    /// The synchronous facade returns explicit retryable contention for a
+    /// pre-admission coded wait without degrading the service. Callers that
+    /// need to park and resume across an external wait use the retained
+    /// submit/drive boundary; waits after admission remain conservative
+    /// owner-reconciliation outcomes.
     pub fn write(
         &mut self,
         request: BlockRequest,
         bytes: &[u8],
     ) -> Result<OperationEvidence, ServiceError> {
         let submission = self.submit_write(request, bytes)?;
+        let mut cancelled_contention = false;
         let result: Result<OperationEvidence, ServiceError> = (|| {
             self.grant_basis_read_permission(&submission)?;
             loop {
                 match self.drive_write(&submission)? {
+                    PortableWriteDrive::Wait(PortableWriteWait::CodedRangeContention) => {
+                        self.cancel_unstarted_write(submission.operation)?;
+                        cancelled_contention = true;
+                        return Err(ServiceError::io(
+                            FailureClass::CodedContention,
+                            "blocking write encountered coded contention; use the retained write driver to resume",
+                        ));
+                    }
                     PortableWriteDrive::Wait(wait) => {
                         return Err(ServiceError::io(
                             FailureClass::ReconciliationRequired,
@@ -1522,6 +1552,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         })();
         match result {
             Ok(evidence) => Ok(evidence),
+            Err(error) if cancelled_contention => Err(error.with_request(request)),
             Err(error) => {
                 self.state = ServiceState::Recovering;
                 let error = error.with_request(request);
@@ -1602,6 +1633,40 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         Ok(index)
     }
+    fn cancel_unstarted_write(
+        &mut self,
+        operation: OperationSlotToken,
+    ) -> Result<(), ServiceError> {
+        let index = usize::try_from(operation.index)
+            .map_err(|_| ServiceError::io(FailureClass::Admission, "stale write submission"))?;
+        let Some(driver) = self.write_drivers.get_mut(index).and_then(Option::take) else {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown write continuation",
+            ));
+        };
+        let unstarted = driver.operation == operation
+            && !driver.coded_admitted
+            && driver.write_recovery_record.is_none()
+            && driver
+                .work
+                .iter()
+                .all(|pending| pending.state == WriteWorkState::Planned);
+        if !unstarted {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "blocking write wait crossed its cancellation boundary",
+            ));
+        }
+        self.admission
+            .refuse_unaccepted(operation)
+            .map_err(slot_error)?;
+        self.admission
+            .record_reconciliation(operation, ReconciliationOutcome::Durable)
+            .map_err(slot_error)?;
+        self.release(operation)
+    }
 
     fn drive_write_driver(
         &mut self,
@@ -1625,6 +1690,17 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 PortableWriteWait::OwnerReconciliation
             }));
         }
+        if !driver.coded_admitted {
+            match self.coded_admit(driver.operation, driver.coded_claim.clone())? {
+                CodedAdmissionOutcome::Contended => {
+                    return Ok(PortableWriteDrive::Wait(
+                        PortableWriteWait::CodedRangeContention,
+                    ));
+                }
+                CodedAdmissionOutcome::Admitted => driver.coded_admitted = true,
+            }
+        }
+        self.ensure_write_recovery_record(driver)?;
         if driver.basis_permission != BasisReadPermission::Granted {
             return Ok(PortableWriteDrive::Wait(
                 PortableWriteWait::BasisReadPermission,
@@ -1652,6 +1728,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 }) {
                     return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
                 }
+                if !driver.coded_effect_permitted
+                    && matches!(
+                        self.coded_permit_effect(driver.operation)?,
+                        CodedEffectOutcome::BlockedByCapture
+                    )
+                {
+                    return Ok(PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked));
+                }
+                driver.coded_effect_permitted = true;
                 self.prepare_write_actions(driver)?;
                 self.drive_write_driver(driver)
             }
@@ -1905,15 +1990,40 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             }
             driver.failed = true;
             self.write_drivers[index] = Some(driver);
-            // Every protected write has already persisted its write-recovery
-            // record before the driver is retained. Abandonment therefore
-            // requires owner reconciliation before normal admission resumes.
+            // The recovery record is persisted at the first admitted driver
+            // step. Abandonment before that boundary has no irreversible
+            // effect and therefore has no record to reconcile.
             self.state = ServiceState::Recovering;
         }
         self.admission
             .refuse_unaccepted(token)
             .map_err(slot_error)?;
         self.admission.abandon(token).map_err(slot_error)
+    }
+    /// Map the validated captured topology's logical codeword blocks to the
+    /// opaque coded-unit keys used by the shared authority. Member identity is
+    /// intentionally absent: data members sharing a codeword contend.
+    fn coded_claim_for_plan(
+        &self,
+        plan: &crate::range::RangePlan,
+    ) -> Result<CodedClaimInput, ServiceError> {
+        let block = u64::from(self.topology.geometry().logical_block_size());
+        let mut units = Vec::new();
+        for range in &plan.ranges {
+            let mut offset = range.offset;
+            let end = range.end();
+            while offset < end {
+                let unit = u32::try_from(offset / block).map_err(|_| {
+                    ServiceError::io(
+                        FailureClass::Range,
+                        "coded codeword index exceeds bounded coded-unit identity",
+                    )
+                })?;
+                units.push(CodedUnitId(unit));
+                offset += block;
+            }
+        }
+        Ok(CodedClaimInput::complete(units))
     }
 
     fn prepare_write(
@@ -1925,6 +2035,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         plan: &crate::range::RangePlan,
         token: OperationSlotToken,
     ) -> Result<WriteDriver, ServiceError> {
+        let coded_claim = self.coded_claim_for_plan(plan)?;
         let generation = self.recovery_generation()?;
         if generation != self.checksums.recovery_generation {
             return Err(ServiceError::io(
@@ -2000,22 +2111,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         )
         .with_stores(stores);
         tx_plan.limits = TransactionLimits::default();
+        let transaction_plan = tx_plan.clone();
         let mut machine = TransactionMachine::new(tx_plan)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         machine
             .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         self.set_release_scope(token, ReleaseScope::InScope);
-        let target = InvalidationTarget::new(regions.clone(), checksum_extents.clone());
-        let write_recovery_record = self
-            .checksums
-            .invalidate_with_write_recovery_record(&mut self.recovery, target)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        machine
-            .apply(ActionResult::WriteRecoveryRecordDurableWithEvidence(
-                write_recovery_record.clone(),
-            ))
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        // The recovery record is committed only after the complete coded claim
+        // is admitted. A contended operation must not advance recovery state
+        // before it can ever issue dependent basis I/O.
 
         let child_ranges = plan
             .ranges
@@ -2082,9 +2187,13 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             request,
             payload: bytes.to_vec(),
             machine,
+            transaction_plan,
             member_index,
             parity_index,
             coding_position,
+            coded_claim,
+            coded_admitted: false,
+            coded_effect_permitted: false,
             ranges: plan.ranges.clone(),
             basis_reads,
             data_write_children,
@@ -2100,11 +2209,43 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             work,
             regions,
             checksum_extents,
-            write_recovery_record,
+            write_recovery_record: None,
             failed: false,
             evidence: None,
         })
     }
+    fn ensure_write_recovery_record(
+        &mut self,
+        driver: &mut WriteDriver,
+    ) -> Result<(), ServiceError> {
+        if driver.write_recovery_record.is_some() {
+            return Ok(());
+        }
+        let generation = self.recovery_generation()?;
+        if driver.transaction_plan.recovery_generation != generation {
+            let mut transaction_plan = driver.transaction_plan.clone();
+            transaction_plan.recovery_generation = generation;
+            let mut machine = TransactionMachine::new(transaction_plan.clone())
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            machine
+                .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            driver.transaction_plan = transaction_plan;
+            driver.machine = machine;
+        }
+        let target =
+            InvalidationTarget::new(driver.regions.clone(), driver.checksum_extents.clone());
+        let record = self
+            .checksums
+            .invalidate_with_write_recovery_record(&mut self.recovery, target)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        driver.write_recovery_record = Some(record.clone());
+        driver
+            .machine
+            .apply(ActionResult::WriteRecoveryRecordDurableWithEvidence(record))
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
+    }
+
     fn make_write_work(
         &self,
         submission: &PortableWriteSubmission,
@@ -2292,6 +2433,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         if let Some(evidence) = driver.evidence.clone() {
             return Ok(evidence);
         }
+        let write_recovery_record = driver.write_recovery_record.clone().ok_or_else(|| {
+            ServiceError::io(FailureClass::Recovery, "write-recovery record is missing")
+        })?;
         if driver.finalization == WriteFinalizationPhase::Pending {
             let [
                 (data_identity, data_watermark),
@@ -2364,15 +2508,13 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                             .regions
                             .iter()
                             .copied()
-                            .map(|region| {
-                                (region, driver.write_recovery_record.committed_generation)
-                            })
+                            .map(|region| (region, write_recovery_record.committed_generation))
                             .collect(),
                     ),
                     |certificate, extent| {
                         certificate.with_integrity_extent(
                             extent,
-                            driver.write_recovery_record.committed_generation,
+                            write_recovery_record.committed_generation,
                         )
                     },
                 );
@@ -2402,10 +2544,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .recovery
                     .load_assembly_snapshot()
                     .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-                if current.generation != driver.write_recovery_record.committed_generation {
+                if current.generation < write_recovery_record.committed_generation {
                     return Err(ServiceError::io(
                         FailureClass::Recovery,
-                        "recovery generation changed during write",
+                        "recovery generation moved backwards during write",
                     ));
                 }
                 let mut recovery_clean =
@@ -2419,7 +2561,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 for region in driver.regions.iter().copied() {
                     recovery_clean.push(RecoveryMutation::MarkRegionClean {
                         region,
-                        through_generation: driver.write_recovery_record.committed_generation,
+                        through_generation: write_recovery_record.committed_generation,
                     });
                 }
                 let committed = self
@@ -2638,7 +2780,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
         let authorization = self.authorization_candidate(token, &snapshot, observation);
         if let Some(authorization) = authorization.as_ref() {
+            // LifecycleRelease owns this monotonic exact-generation fact.
+            // Retain it before invoking downstream coded-claim removal so a
+            // coded cleanup failure cannot retroactively erase authorization.
             self.remember_release_authorization(authorization.clone());
+            self.release_coded_claim_if_authorized(authorization)?;
         }
         Ok(authorization)
     }

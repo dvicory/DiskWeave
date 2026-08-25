@@ -1074,3 +1074,88 @@ fn coded_range_connect_clean_requires_decision() -> impl Driver {
 fn coded_range_connect_negative_paths() -> impl Driver {
     BridgeDriver::new()
 }
+/// Production-side correspondence for the task-4.2 boundary. Basis lifecycle
+/// facts remain outside this CodedRangeClean model; these observations come
+/// directly from the retained service driver and its coded authority.
+#[test]
+fn coded_range_connect_protected_write_holds_claim_through_basis_and_write() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, BLOCK as u64).expect("bounded protected range");
+    let request = request(
+        RequestId(1100),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let submission = service
+        .submit_write(request, &[0x5a; BLOCK as usize])
+        .expect("protected write admission");
+    service
+        .grant_basis_read_permission(&submission)
+        .expect("basis permission");
+
+    for _ in 0..2 {
+        let PortableWriteDrive::Work(work) = service
+            .drive_write(&submission)
+            .expect("basis work should be runnable")
+        else {
+            panic!("basis work was not emitted");
+        };
+        assert_eq!(
+            service
+                .coded_authority()
+                .operation_phase(submission.operation),
+            Some(CodedOperationPhase::Held)
+        );
+        service
+            .accept_write_work(&work)
+            .expect("basis work acceptance");
+        let result = service
+            .execute_write_work(&work)
+            .expect("basis work execution");
+        assert!(
+            service
+                .deliver_write_result(result)
+                .expect("basis completion")
+                .is_none()
+        );
+    }
+
+    let PortableWriteDrive::Work(write) = service
+        .drive_write(&submission)
+        .expect("protected write work should be runnable")
+    else {
+        panic!("protected write was not emitted");
+    };
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(CodedOperationPhase::EffectPossible)
+    );
+    assert_eq!(service.members[0].store.physical_writes, 0);
+    service
+        .accept_write_work(&write)
+        .expect("protected write acceptance");
+    let result = service
+        .execute_write_work(&write)
+        .expect("protected write execution");
+    assert!(
+        service
+            .deliver_write_result(result)
+            .expect("protected write completion")
+            .is_none()
+    );
+
+    let evidence = finish_retained_write(&mut service, &submission);
+    assert!(evidence.release_authorization.is_some());
+    assert!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation)
+            .is_none()
+    );
+}

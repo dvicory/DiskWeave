@@ -11,6 +11,7 @@ use dwv_core::{
     FrontendCapabilities, FrontendId, OrderingIntent, RequestId, SlotId, SubmissionSequence,
     TopologyEpoch,
 };
+use dwv_service::{FailureClass, ServiceError};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::path::Path;
@@ -123,6 +124,7 @@ pub enum TerminalResult {
     Invalid,
     Unsupported,
     ResourceExhausted,
+    Retry,
     Io,
     ReconciliationRequired,
 }
@@ -132,6 +134,7 @@ pub enum AdapterError {
     Invalid(&'static str),
     Unsupported(&'static str),
     Exhausted(&'static str),
+    Retry(String),
     Conflict(String),
     Io(String),
     ReconciliationRequired(String),
@@ -143,6 +146,7 @@ impl AdapterError {
             Self::Invalid(_) => TerminalResult::Invalid,
             Self::Unsupported(_) => TerminalResult::Unsupported,
             Self::Exhausted(_) => TerminalResult::ResourceExhausted,
+            Self::Retry(_) => TerminalResult::Retry,
             Self::Conflict(_) | Self::Io(_) => TerminalResult::Io,
             Self::ReconciliationRequired(_) => TerminalResult::ReconciliationRequired,
         }
@@ -155,6 +159,7 @@ impl fmt::Display for AdapterError {
             Self::Invalid(message) => write!(formatter, "invalid request: {message}"),
             Self::Unsupported(message) => write!(formatter, "unsupported: {message}"),
             Self::Exhausted(message) => write!(formatter, "resource exhausted: {message}"),
+            Self::Retry(message) => write!(formatter, "retryable contention: {message}"),
             Self::Conflict(message) => write!(formatter, "conflict: {message}"),
             Self::Io(message) => write!(formatter, "I/O failure: {message}"),
             Self::ReconciliationRequired(message) => {
@@ -165,6 +170,18 @@ impl fmt::Display for AdapterError {
 }
 
 impl std::error::Error for AdapterError {}
+
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+pub(crate) fn map_service_error(error: ServiceError) -> AdapterError {
+    match error {
+        ServiceError::Io {
+            class: FailureClass::CodedContention,
+            detail,
+            ..
+        } => AdapterError::Retry(detail),
+        error => AdapterError::Io(error.to_string()),
+    }
+}
 
 /// dwv:req req.linux-ublk-frontend.kernel-requests-preserve-normalized-semantics
 pub fn translate_request(
@@ -615,6 +632,20 @@ pub fn cleanup(_root: &Path, _device_id: u32) -> Result<serde_json::Value, Adapt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn coded_contention_maps_to_retryable_result() {
+        let error = ServiceError::Io {
+            request: None,
+            class: FailureClass::CodedContention,
+            detail: "same coded range is currently held".into(),
+            completion: None,
+        };
+        let mapped = map_service_error(error);
+        assert!(matches!(mapped, AdapterError::Retry(_)));
+        assert_eq!(mapped.terminal(), TerminalResult::Retry);
+        assert_ne!(mapped.terminal(), TerminalResult::Io);
+    }
 
     fn raw(operation: KernelOperation) -> KernelRequest {
         KernelRequest {
