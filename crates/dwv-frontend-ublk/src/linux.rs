@@ -551,6 +551,11 @@ where
                     Ok(translated) => {
                         let normalized = NormalizedTraceRequest::from_translated(translated)
                             .map_err(|_| UblkError::OtherError(-libc::EIO))?;
+                        // The current ublk profile holds this mutex across one
+                        // blocking service operation, so ordinary requests are
+                        // serialized and cannot contend on coded authority.
+                        // Retry remains a portable retained-execution result,
+                        // not a terminal Linux completion in this profile.
                         let execution = borrowed_write_payload(
                             operation,
                             translated.data_length,
@@ -685,7 +690,9 @@ fn terminal_errno(terminal: TerminalResult) -> i32 {
         TerminalResult::Unsupported => -libc::EOPNOTSUPP,
         TerminalResult::Invalid => -libc::EINVAL,
         TerminalResult::ResourceExhausted => -libc::EAGAIN,
-        TerminalResult::Retry => -libc::EAGAIN,
+        TerminalResult::Retry => {
+            unreachable!("serialized ublk profile cannot complete retryable coded contention")
+        }
         TerminalResult::Io | TerminalResult::ReconciliationRequired => -libc::EIO,
         TerminalResult::Success => 0,
     }
