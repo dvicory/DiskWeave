@@ -96,39 +96,51 @@ A read SHALL validate the normalized byte range, split it at required boundaries
 <!-- dwv:requires req.recovery-state-semantics.data-parity-write-requires-write-recovery-record -->
 <!-- dwv:requires req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions -->
 <!-- dwv:requires req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent -->
+<!-- dwv:requires req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts -->
 <!-- dwv:requires req.xor-reference-model.incremental-updates-and-full-recomputation-are-equivalent -->
 <!-- dwv:requires req.store-operation-contracts.stores-report-exact-range-outcomes-and-persistence-evidence -->
 
-A protected write SHALL compose the canonical checked dirty-region mapping, durable write-recovery-record owner, atomic recovery transaction, delegated reference-transaction relation, single-XOR computation, and exact-range store operations. This requirement owns service orchestration only. It SHALL preserve each owner's result, emit no protected member data/parity write before the write-recovery-record owner succeeds, and SHALL not reinterpret the delegated reference relation or the non-delegated owner predicates.
+This requirement owns service orchestration and conformance only. A protected write SHALL compose one complete validated semantic mutation unit (which MAY be a request-decomposition unit) with the canonical dirty-region mapping, transaction-owned coded-range authority for every mutation and relevant basis read, the durable write-recovery-record owner, atomic recovery transaction, delegated reference-transaction relation, single-XOR computation, and exact-range store operations. The service SHALL present complete owner-approved admission before dependent basis I/O or protected mutation, preserve each owner's result, and keep relevant basis observations coherent through consumption or discard/reconciliation before release. No protected member data/parity write SHALL occur until both coded/resource admission and write-recovery-record admission succeed. It SHALL NOT restate or reinterpret coded, transaction, dirty, recovery, XOR, store, or release predicates.
 
 #### Scenario: Partial write requires read-modify-write
 
 - **WHEN** a write covers part of a parity extent
-- **THEN** the service composes the required old data and parity reads, reference-equivalent XOR update, and exact writes under the delegated transaction relation and after the write-recovery-record owner succeeds
+- **THEN** the service composes required basis reads, reference-equivalent XOR, and exact writes only after coded/resource and write-recovery owners admit the unit, preserving basis coherence through consumption or discard/reconciliation
 
 #### Scenario: Full overwrite is aligned
 
 - **WHEN** a write fully covers the required data and parity extent
-- **THEN** the service may avoid old-data reads only under the XOR contract while producing parity bytes equal to full recomputation
+- **THEN** the service may avoid old-data reads only under the XOR contract while preserving every owner-approved coded, transaction, dirty, recovery, persistence, and store boundary
+
+#### Scenario: Basis coherence is required through consumption
+
+- **WHEN** a relevant basis observation remains needed after authority would otherwise release
+- **THEN** the service holds it coherently through the consuming mutation or discards/reconciles it before release and never uses a release-then-use gap
 
 ### Requirement: Durable completion and recovery CLEAN require persistence evidence
 <!-- dwv:req req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence -->
 <!-- dwv:requires req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence -->
 <!-- dwv:requires req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence -->
 <!-- dwv:requires req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence -->
+<!-- dwv:requires req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set -->
+<!-- dwv:requires req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts -->
 
-The service SHALL preserve normalized request durability intent and compose accepted store watermarks, persistence evidence, and exact dirty-region clear decisions. It may report durable completion and commit recovery state `CLEAN` only when each owner accepts current-generation evidence. Unsupported durability requirements SHALL be rejected or reported at the explicitly established weaker scope; the service SHALL NOT restate or weaken an owner's persistence-evidence predicate.
+This requirement owns service composition and conformance only. The service SHALL preserve normalized durability intent and compose owner-approved dirty/recovery observations, exact lifecycle dispositions, store watermarks and persistence evidence, dirty/checksum coverage, recovery generation/topology and reopen reconciliation, one capture-wide CLEAN-owner `Accepted`/`Rejected` decision, and the closed mutation set. It may report durable completion or commit recovery state `CLEAN` only when the owning requirements accept current-generation evidence and permit the exact selected clear. Unsupported durability requirements SHALL be rejected or reported at the explicitly established weaker scope. CLEAN-capture uncertainty remains distinct from exact external `ReleaseAllowed` supplied by the canonical lifecycle-release requirement; it neither supplies nor negates that authorization. The service SHALL NOT restate or weaken owner predicates.
 
 #### Scenario: All required owners accept completion evidence
 
-- **WHEN** data/parity writes are complete and store, recovery, and dirty owners accept the matching evidence
-- **THEN** the service may commit recovery state `CLEAN` only for the proven regions and may report the corresponding durable completion
+- **WHEN** writes are complete, lifecycle owners provide dispositions, the CLEAN owner accepts the closed set, the durable post-capture cut is satisfied, and store/recovery/dirty owners accept matching evidence
+- **THEN** the service may report durable completion and commit `CLEAN` only for the proven selected regions
 
 #### Scenario: An owner rejects completion evidence
 
-- **WHEN** any required owner rejects missing, volatile, stale, partial, future, or mismatched evidence
+- **WHEN** any owner rejects missing, volatile, stale, partial, future, or mismatched evidence, or the CLEAN owner does not accept the capture
 - **THEN** the service reports the conservative result and leaves affected state dirty, stale, or indeterminate
 
+#### Scenario: CLEAN disposition is Unknown
+
+- **WHEN** recovery or an adapter reports an unclassifiable `Unknown` commit or reopen disposition
+- **THEN** the service preserves dirty/indeterminate state and bounded capture evidence, obtains authoritative reconciliation before `CLEAN` or cleanup, and independently consumes exact external `ReleaseAllowed` when the canonical lifecycle-release owner authorizes operation or coded-claim release
 ### Requirement: Abandonment, restart, and failure preserve operation safety
 <!-- dwv:req req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety -->
 <!-- dwv:requires req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics -->
