@@ -20,10 +20,11 @@ mod write;
 pub use admission::{AdmissionConfig, OperationAdmission};
 pub use degraded::{OfflineAuthorizationError, RebuildSource, authorize_known_erasure_from_stores};
 pub use dwv_recovery::{
-    CodedCaptureCoordinator, CodedCaptureDecision, CodedCaptureError, CodedCaptureId,
-    CodedCaptureMembership, CodedCapturePhase, CodedCaptureScopeInput, CodedCaptureSnapshot,
-    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutObservation,
-    CodedLaterCutReconciliation,
+    CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision, CodedCaptureError,
+    CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
+    CodedCapturePhase, CodedCaptureRetentionSummary, CodedCaptureRetirement,
+    CodedCaptureScopeInput, CodedCaptureSnapshot, CodedCleanCommitObservation,
+    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
 };
 pub use dwv_transaction_ref::{
     CodedAdmissionOutcome, CodedAuthorityError, CodedClaim, CodedClaimInput, CodedClaimRelease,

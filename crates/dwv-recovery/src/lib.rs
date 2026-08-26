@@ -32,10 +32,11 @@ pub use baseline::{
     new_checksum_baseline, pending_checksum_baseline_extents,
 };
 pub use coded_clean::{
-    CodedCaptureCoordinator, CodedCaptureDecision, CodedCaptureError, CodedCaptureId,
-    CodedCaptureMembership, CodedCapturePhase, CodedCaptureScopeInput, CodedCaptureSnapshot,
-    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutObservation,
-    CodedLaterCutReconciliation,
+    CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision, CodedCaptureError,
+    CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
+    CodedCapturePhase, CodedCaptureRetentionSummary, CodedCaptureRetirement,
+    CodedCaptureScopeInput, CodedCaptureSnapshot, CodedCleanCommitObservation,
+    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
 };
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};

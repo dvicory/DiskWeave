@@ -6,8 +6,8 @@ use dwv_core::{
     TopologySnapshot,
 };
 use dwv_recovery::{
-    MemoryRecoveryStore, RecoveryGeneration, RecoveryMutation, RecoveryStateStore,
-    TopologySnapshot as RecoveryTopologySnapshot,
+    CodedCaptureDecision, CodedCleanCommitObservation, MemoryRecoveryStore, RecoveryGeneration,
+    RecoveryMutation, RecoveryStateStore, TopologySnapshot as RecoveryTopologySnapshot,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{HealthyPortableService, MemberBinding, ServiceConfig};
@@ -352,7 +352,12 @@ impl OpenFixture {
                     ));
                 }
                 self.service
-                    .write(request, bytes)
+                    .write_with_clean_capture(
+                        request,
+                        bytes,
+                        CodedCaptureDecision::Accepted,
+                        CodedCleanCommitObservation::Durable,
+                    )
                     .map(|_| Vec::new())
                     .map_err(|error| AdapterError::Io(error.to_string()))
             }

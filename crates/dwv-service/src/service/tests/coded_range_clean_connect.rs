@@ -3,9 +3,10 @@ use crate::evidence::ReleaseAuthorization;
 use anyhow::{Context, bail};
 use dwv_core::{BlockOp, ByteRange, CodedUnitId, DurabilityIntent, RequestId, TopologyEpoch};
 use dwv_recovery::{
-    CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership, CodedCapturePhase,
-    CodedCaptureScopeInput, CodedCleanCommitObservation, CodedCleanReconciliation,
-    CodedLaterCutObservation, CodedLaterCutReconciliation, MemoryRecoveryStore,
+    CodedCaptureCut, CodedCaptureDecision, CodedCaptureFrontier, CodedCaptureId,
+    CodedCaptureMembership, CodedCapturePhase, CodedCleanCommitObservation,
+    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
+    IntegrityExtentId, MemoryRecoveryStore, RecoveryGeneration, RegionId,
 };
 use dwv_store::OperationSlotToken;
 use dwv_transaction_ref::{
@@ -196,11 +197,14 @@ impl BridgeDriver {
             _ => bail!("sampled Connect choice {choice} is outside the bounded action set"),
         }
     }
-
     fn start_capture(&mut self) -> Result<()> {
         self.service_mut()?.coded_start_capture(
             CodedCaptureId(0),
             CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]),
+            [RegionId(0)],
+            [IntegrityExtentId(0)],
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
         )?;
         Ok(())
     }
@@ -240,21 +244,31 @@ impl BridgeDriver {
         Ok(())
     }
 
+    fn later_cut_evidence(&self) -> CodedCaptureCut {
+        CodedCaptureCut::new(
+            TopologyEpoch(4),
+            RecoveryGeneration(1),
+            CodedCaptureFrontier::new(RecoveryGeneration(1), 2),
+        )
+    }
+
     fn later_cut(&mut self, observation: CodedLaterCutObservation) -> Result<()> {
         let operation = self.token("opC")?;
+        let cut = self.later_cut_evidence();
         self.service_mut()?.coded_captures_mut().observe_later_cut(
             CodedCaptureId(0),
             operation,
+            cut,
             observation,
         )?;
         Ok(())
     }
-
     fn later_cut_reconcile(&mut self, observation: CodedLaterCutReconciliation) -> Result<()> {
         let operation = self.token("opC")?;
+        let cut = self.later_cut_evidence();
         self.service_mut()?
             .coded_captures_mut()
-            .reconcile_later_cut(CodedCaptureId(0), operation, observation)?;
+            .reconcile_later_cut(CodedCaptureId(0), operation, cut, observation)?;
         Ok(())
     }
 
@@ -878,7 +892,14 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
 
     let mut capture_first = fake_service(FakeRead::Exact, ServiceConfig::default());
     capture_first
-        .coded_start_capture(CodedCaptureId(0), scope.clone())
+        .coded_start_capture(
+            CodedCaptureId(0),
+            scope.clone(),
+            [RegionId(0)],
+            [IntegrityExtentId(0)],
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
+        )
         .unwrap();
     let later = capture_first
         .reserve(request(
@@ -924,7 +945,14 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
         CodedAdmissionOutcome::Admitted
     );
     admit_first
-        .coded_start_capture(CodedCaptureId(0), scope)
+        .coded_start_capture(
+            CodedCaptureId(0),
+            scope,
+            [RegionId(0)],
+            [IntegrityExtentId(0)],
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
+            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
+        )
         .unwrap();
     assert_eq!(
         admit_first

@@ -977,14 +977,28 @@ mod tests {
         log.complete(first, successful_trace_record(1)).unwrap();
         log.mark_reclaimable(first).unwrap();
 
+        for sequence in 2..=MAX_TRACE_RECORDS as u64 {
+            let reservation = log.reserve().unwrap();
+            log.complete(reservation, successful_trace_record(sequence))
+                .unwrap();
+            log.mark_reclaimable(reservation).unwrap();
+        }
+
         log.set_retired_records_for_test(u64::MAX - 1);
 
         let renewed = log.reserve().unwrap();
-        log.complete(renewed, successful_trace_record(2)).unwrap();
+        log.complete(
+            renewed,
+            successful_trace_record(MAX_TRACE_RECORDS as u64 + 1),
+        )
+        .unwrap();
         log.mark_reclaimable(renewed).unwrap();
         let after_saturation = log.reserve().unwrap();
-        log.complete(after_saturation, successful_trace_record(3))
-            .unwrap();
+        log.complete(
+            after_saturation,
+            successful_trace_record(MAX_TRACE_RECORDS as u64 + 2),
+        )
+        .unwrap();
         log.mark_reclaimable(after_saturation).unwrap();
 
         let document = log.document("fixture".into(), 8192, 3).unwrap();

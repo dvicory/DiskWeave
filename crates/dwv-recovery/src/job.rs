@@ -251,6 +251,16 @@ impl ChecksumAuthority {
             records: Vec::new(),
         }
     }
+    /// Return the single checksum profile represented by this authority.
+    ///
+    /// Mixed profiles are not a usable capture binding.
+    pub fn profile_id(&self) -> Option<ChecksumProfileId> {
+        let profile = self.records.first()?.profile;
+        self.records
+            .iter()
+            .all(|record| record.profile == profile)
+            .then_some(profile)
+    }
 
     pub fn records(&self) -> &[ChecksumRecord] {
         &self.records
