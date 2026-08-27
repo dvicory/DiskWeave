@@ -66,14 +66,71 @@ pub enum RecoveryCleanRefusal {
     SessionStillDirty,
 }
 
+/// Recovery-owner proof that one exact CLEAN request was refused.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryCleanRefusalPermit {
+    topology_epoch: TopologyEpoch,
+    generation: RecoveryGeneration,
+    regions: Vec<RegionId>,
+    checksum_extents: Vec<IntegrityExtentId>,
+}
+
+impl RecoveryCleanRefusalPermit {
+    pub const fn topology_epoch(&self) -> TopologyEpoch {
+        self.topology_epoch
+    }
+
+    pub const fn generation(&self) -> RecoveryGeneration {
+        self.generation
+    }
+
+    pub fn regions(&self) -> &[RegionId] {
+        &self.regions
+    }
+
+    pub fn checksum_extents(&self) -> &[IntegrityExtentId] {
+        &self.checksum_extents
+    }
+}
+
+/// Recovery-owner authorization for one exact CLEAN mutation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryCleanPermit {
+    topology_epoch: TopologyEpoch,
+    generation: RecoveryGeneration,
+    regions: Vec<RegionId>,
+    checksum_extents: Vec<IntegrityExtentId>,
+    certificate: FenceCertificate,
+}
+
+impl RecoveryCleanPermit {
+    pub const fn generation(&self) -> RecoveryGeneration {
+        self.generation
+    }
+
+    pub const fn topology_epoch(&self) -> TopologyEpoch {
+        self.topology_epoch
+    }
+
+    pub fn regions(&self) -> &[RegionId] {
+        &self.regions
+    }
+
+    pub fn checksum_extents(&self) -> &[IntegrityExtentId] {
+        &self.checksum_extents
+    }
+
+    pub fn certificate(&self) -> &FenceCertificate {
+        &self.certificate
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryCleanDecision {
-    Clear {
-        certificate: FenceCertificate,
-        session_dirty: bool,
-    },
+    Clear(RecoveryCleanPermit),
     Refused {
         reason: RecoveryCleanRefusal,
+        receipt: RecoveryCleanRefusalPermit,
         missing_stores: Vec<StoreId>,
         missing_regions: Vec<RegionId>,
         missing_extents: Vec<IntegrityExtentId>,
@@ -86,28 +143,54 @@ impl RecoveryCleanDecision {
     }
 }
 
+fn refused(
+    snapshot: &RecoverySnapshot,
+    request: &RecoveryCleanRequest,
+    reason: RecoveryCleanRefusal,
+    missing_stores: Vec<StoreId>,
+    missing_regions: Vec<RegionId>,
+    missing_extents: Vec<IntegrityExtentId>,
+) -> RecoveryCleanDecision {
+    RecoveryCleanDecision::Refused {
+        reason,
+        receipt: RecoveryCleanRefusalPermit {
+            topology_epoch: snapshot.topology_epoch,
+            generation: snapshot.generation,
+            regions: request.regions.clone(),
+            checksum_extents: request.checksum_extents.clone(),
+        },
+        missing_stores,
+        missing_regions,
+        missing_extents,
+    }
+}
+
 pub fn evaluate_recovery_clean(
     snapshot: &RecoverySnapshot,
     request: &RecoveryCleanRequest,
     certificate: &FenceCertificate,
 ) -> Result<RecoveryCleanDecision, RecoveryError> {
     if snapshot.generation != request.generation {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::GenerationChanged,
-            missing_stores: Vec::new(),
-            missing_regions: Vec::new(),
-            missing_extents: Vec::new(),
-        });
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::GenerationChanged,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
     }
     if certificate.topology_epoch != request.topology_epoch
         || certificate.fence_domain != request.fence_domain
     {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::TopologyChanged,
-            missing_stores: Vec::new(),
-            missing_regions: Vec::new(),
-            missing_extents: Vec::new(),
-        });
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::TopologyChanged,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        ));
     }
     if certificate.stores.is_empty() {
         return Err(RecoveryError::InvalidTransition(
@@ -139,28 +222,34 @@ pub fn evaluate_recovery_clean(
         .collect();
 
     if !missing_stores.is_empty() {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::MissingStoreFence,
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::MissingStoreFence,
             missing_stores,
             missing_regions,
             missing_extents,
-        });
+        ));
     }
     if !missing_regions.is_empty() {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::MissingRegionCoverage,
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::MissingRegionCoverage,
             missing_stores,
             missing_regions,
             missing_extents,
-        });
+        ));
     }
     if !missing_extents.is_empty() {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::MissingIntegrityCoverage,
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::MissingIntegrityCoverage,
             missing_stores,
             missing_regions,
             missing_extents,
-        });
+        ));
     }
 
     let session_dirty = snapshot
@@ -168,18 +257,23 @@ pub fn evaluate_recovery_clean(
         .as_ref()
         .is_some_and(|session| !session.closed || session.global_fence.is_none());
     if session_dirty {
-        return Ok(RecoveryCleanDecision::Refused {
-            reason: RecoveryCleanRefusal::SessionStillDirty,
+        return Ok(refused(
+            snapshot,
+            request,
+            RecoveryCleanRefusal::SessionStillDirty,
             missing_stores,
             missing_regions,
             missing_extents,
-        });
+        ));
     }
 
-    Ok(RecoveryCleanDecision::Clear {
+    Ok(RecoveryCleanDecision::Clear(RecoveryCleanPermit {
+        topology_epoch: request.topology_epoch,
+        generation: request.generation,
+        regions: request.regions.clone(),
+        checksum_extents: request.checksum_extents.clone(),
         certificate: certificate.clone(),
-        session_dirty,
-    })
+    }))
 }
 
 pub fn fence_ref(

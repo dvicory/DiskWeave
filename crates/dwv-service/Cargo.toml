@@ -15,6 +15,7 @@ dwv-verify = { path = "../dwv-verify" }
 
 [dev-dependencies]
 anyhow = "1"
+dwv-recovery = { path = "../dwv-recovery", features = ["test-support"] }
 dwv-store-file = { path = "../dwv-store-file" }
 itf = "0.4"
 quint-connect = "0.1.2"

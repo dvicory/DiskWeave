@@ -308,14 +308,34 @@ impl ChecksumAuthority {
         store: &mut S,
         target: InvalidationTarget,
     ) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
-        let evidence = WriteRecoveryRecordCommit::new(
+        self.invalidate_with_write_recovery_record_and_mutations(store, target, [])
+    }
+
+    pub fn invalidate_with_write_recovery_record_and_mutations<S: RecoveryStateStore + ?Sized>(
+        &mut self,
+        store: &mut S,
+        target: InvalidationTarget,
+        mutations: impl IntoIterator<Item = crate::RecoveryMutation>,
+    ) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
+        self.invalidate_with_write_recovery_record_and_receipt(store, target, mutations)
+            .map(|result| result.evidence)
+    }
+
+    pub fn invalidate_with_write_recovery_record_and_receipt<S: RecoveryStateStore + ?Sized>(
+        &mut self,
+        store: &mut S,
+        target: InvalidationTarget,
+        mutations: impl IntoIterator<Item = crate::RecoveryMutation>,
+    ) -> Result<crate::WriteRecoveryRecordCommitResult, RecoveryError> {
+        let result = WriteRecoveryRecordCommit::new(
             store,
             self.topology_epoch,
             self.recovery_generation,
             target.clone(),
         )
-        .commit()?;
-        self.recovery_generation = evidence.committed_generation;
+        .with_mutations(mutations)
+        .commit_with_receipt()?;
+        self.recovery_generation = result.evidence.committed_generation;
         for extent in target.checksum_extents {
             if let Some(record) = self
                 .records
@@ -325,7 +345,7 @@ impl ChecksumAuthority {
                 *record = record.stale_from(ContentGeneration(self.recovery_generation));
             }
         }
-        Ok(evidence)
+        Ok(result)
     }
 
     pub fn capture_job(

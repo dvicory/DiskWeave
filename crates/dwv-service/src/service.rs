@@ -20,15 +20,16 @@ use dwv_core::{
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
     ChecksumPersistenceEvidence, ChecksumRecord, ChecksumSetGeneration, ChecksumTarget,
-    CodedCaptureCoordinator, CodedCaptureDecision, CodedCaptureFrontier, CodedCaptureId,
-    CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
-    CodedCaptureRetentionSummary, CodedCaptureRetirement, CodedCaptureScopeInput,
-    CodedCleanCommitObservation, ContentGeneration, DIRTY_REGION_BYTES, FenceCertificate,
-    IntegrityExtentId, IntegrityState, InvalidationTarget, RecoveryCleanDecision,
-    RecoveryCleanRequest, RecoveryGeneration, RecoveryMutation, RecoverySnapshot,
-    RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId, WriteRecoveryRecordEvidence,
-    assess_checksum_baseline, dirty_regions_for_range, evaluate_recovery_clean,
+    CodedCaptureCoordinator, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
+    CodedCapturePhase, CodedCaptureReconciliationReceipt, ContentGeneration, DIRTY_REGION_BYTES,
+    FenceCertificate, IntegrityExtentId, IntegrityState, InvalidationTarget, RecoveryCleanDecision,
+    RecoveryCleanRefusalPermit, RecoveryCleanRequest, RecoveryGeneration, RecoveryMutation,
+    RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId,
+    WriteRecoveryRecordEvidence, assess_checksum_baseline, dirty_regions_for_range,
+    evaluate_recovery_clean,
 };
+#[cfg(test)]
+use dwv_recovery::{CodedCaptureError, CodedLaterCutObservation};
 use dwv_store::{
     ChildOperationId, CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment,
     IdentityComparison, IdentityObservationSet, IdentitySourceKind, OperationSlotToken,
@@ -38,12 +39,16 @@ use dwv_store::{
 };
 use dwv_transaction_ref::{
     ActionKind, ActionResult, CodedAdmissionOutcome, CodedClaimInput, CodedClaimRelease,
-    CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult, ErrorClass,
-    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
-    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
-    TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
+    CodedEffectPermit, CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult,
+    ErrorClass, ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
+    ResultKind, SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits,
+    TransactionMachine, TransactionPersistenceEvidence, TransactionPlan,
+    WriteRecoveryRecordRequirement,
 };
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 /// Runnable/waiting bookkeeping stays in the service driver. It records why
 /// an operation is waiting without assigning wakeup, retry, or fairness policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -62,7 +67,7 @@ pub(crate) enum OperationReadiness {
 #[must_use = "coded effect permission may remain blocked and must be handled explicitly"]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum CodedEffectOutcome {
-    Permitted,
+    Permitted(CodedEffectPermit),
     BlockedByCapture,
 }
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
@@ -266,6 +271,7 @@ pub enum PortableWriteWait {
     BasisReadPermission,
     PhysicalResults,
     OwnerReconciliation,
+    CleanCaptureMembers,
 }
 
 /// One normalized physical action. It is only a description: no store method
@@ -340,7 +346,7 @@ enum WritePhase {
     Writes,
     Flushes,
 }
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum WriteFinalizationPhase {
     Pending,
     WatermarksSet,
@@ -361,7 +367,7 @@ struct WriteDriver {
     coding_position: CodingPosition,
     coded_claim: CodedClaimInput,
     coded_admitted: bool,
-    coded_effect_permitted: bool,
+    coded_effect_permit: Option<CodedEffectPermit>,
     ranges: Vec<ByteRange>,
     basis_reads: Vec<[usize; 2]>,
     data_write_children: Vec<ChildOperationId>,
@@ -437,6 +443,9 @@ pub fn assess_writable_start(
     {
         return WritableStartAssessment::RecoveryRequired;
     }
+    if !snapshot.coded_captures.is_empty() {
+        return WritableStartAssessment::RecoveryRequired;
+    }
     match assess_checksum_baseline(snapshot) {
         ChecksumBaselineStatus::NotRequired | ChecksumBaselineStatus::Complete { .. } => {
             WritableStartAssessment::Available
@@ -495,7 +504,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
     coded_authority: CodedRangeAuthority,
     coded_captures: CodedCaptureCoordinator,
-    next_capture_id: u64,
+    reopened_captures: BTreeSet<CodedCaptureId>,
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
 }
@@ -525,17 +534,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let snapshot = recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let state = if snapshot.topology_epoch != topology.topology_epoch() {
-            ServiceState::Blocked(FailureClass::StaleTopology)
-        } else if snapshot
-            .dirty_regions
-            .iter()
-            .any(|region| !matches!(region.state, dwv_recovery::RegionState::Clean))
-        {
-            ServiceState::Recovering
-        } else {
-            ServiceState::Serving
-        };
         let generation = snapshot.generation;
         let checksums = match assess_checksum_baseline(&snapshot) {
             ChecksumBaselineStatus::NotRequired => checksum_authority(&topology, generation)?,
@@ -561,6 +559,63 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ));
             }
         };
+        let checksum_profile = checksums.profile_id().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture reopen requires one active checksum profile",
+            )
+        })?;
+        if checksum_profile != BLAKE3_256_PROFILE.id {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture reopen requires the supported checksum profile",
+            ));
+        }
+        let coded_captures = CodedCaptureCoordinator::from_snapshots_for_owner(
+            snapshot.coded_captures.clone(),
+            &topology,
+            generation,
+            BLAKE3_256_PROFILE,
+            checksums.active_set,
+            DIRTY_REGION_BYTES,
+        )
+        .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let reopened_captures = snapshot
+            .coded_captures
+            .iter()
+            .map(|capture| capture.capture)
+            .collect();
+        let mut coded_authority = CodedRangeAuthority::new();
+        let admission_high_water = snapshot
+            .coded_captures
+            .iter()
+            .flat_map(|capture| {
+                std::iter::once(capture.capture_frontier.admission_sequence())
+                    .chain(std::iter::once(
+                        capture.retained_frontier.admission_sequence(),
+                    ))
+                    .chain(
+                        capture
+                            .pending_later_cuts
+                            .values()
+                            .map(|cut| cut.frontier().admission_sequence()),
+                    )
+            })
+            .max()
+            .unwrap_or(0);
+        coded_authority.advance_admission_high_water(admission_high_water);
+        let state = if snapshot.topology_epoch != topology.topology_epoch() {
+            ServiceState::Blocked(FailureClass::StaleTopology)
+        } else if snapshot
+            .dirty_regions
+            .iter()
+            .any(|region| !matches!(region.state, dwv_recovery::RegionState::Clean))
+            || coded_captures.has_unresolved_reopen_state()
+        {
+            ServiceState::Recovering
+        } else {
+            ServiceState::Serving
+        };
         Ok(Self {
             topology,
             members,
@@ -577,9 +632,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             release_authorizations: vec![None; config.admission.limits.operation_slots],
             release_scopes: vec![None; config.admission.limits.operation_slots],
             basis_observations: vec![None; config.admission.limits.operation_slots],
-            coded_authority: CodedRangeAuthority::new(),
-            coded_captures: CodedCaptureCoordinator::new(),
-            next_capture_id: 0,
+            coded_authority,
+            coded_captures,
+            reopened_captures,
             #[cfg(test)]
             terminalization_fault: None,
         })
@@ -690,46 +745,70 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ),
             ));
         }
-        let outcome = self
-            .coded_authority
+        let mut authority_candidate = self.coded_authority.clone();
+        let outcome = authority_candidate
             .admit(operation, claim)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
-        match outcome {
+        match &outcome {
             CodedAdmissionOutcome::Contended => {
                 self.set_readiness(
                     operation,
                     OperationReadiness::Waiting(PendingReason::AdmissionContended),
                 );
             }
-            CodedAdmissionOutcome::Admitted => {
-                let units = self
-                    .coded_authority
-                    .active_claim(operation)
-                    .map(|claim| claim.units().clone())
-                    .ok_or_else(|| {
-                        ServiceError::io(
-                            FailureClass::Admission,
-                            "coded authority lost an admitted claim",
-                        )
+            CodedAdmissionOutcome::Admitted(admission) => {
+                let current = self
+                    .recovery
+                    .load_assembly_snapshot()
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let prior_by_capture = self
+                    .coded_captures
+                    .snapshots()
+                    .into_iter()
+                    .map(|snapshot| (snapshot.capture, snapshot))
+                    .collect::<BTreeMap<_, _>>();
+                let mut capture_candidate = self.coded_captures.clone();
+                capture_candidate.observe_admitted_claim(admission);
+                let changed = capture_candidate
+                    .snapshots()
+                    .into_iter()
+                    .filter(|snapshot| prior_by_capture.get(&snapshot.capture) != Some(snapshot))
+                    .map(|snapshot| snapshot.capture)
+                    .collect::<Vec<_>>();
+                if !changed.is_empty() {
+                    let mut txn =
+                        RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+                    for capture in changed {
+                        let update = capture_candidate
+                            .durable_update(capture, prior_by_capture.get(&capture))
+                            .map_err(|error| {
+                                ServiceError::io(FailureClass::Recovery, error.to_string())
+                            })?;
+                        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+                    }
+                    let committed = self.recovery.commit_durable(txn).map_err(|error| {
+                        ServiceError::io(FailureClass::Recovery, error.to_string())
                     })?;
-                self.coded_captures
-                    .observe_admitted_claim(operation, &units);
+                    self.checksums.recovery_generation = committed;
+                }
+                self.coded_captures = capture_candidate;
+                self.coded_authority = authority_candidate;
+                self.set_release_scope(operation, ReleaseScope::InScope);
                 self.set_readiness(operation, OperationReadiness::Runnable);
             }
         }
         Ok(outcome)
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg(test)]
     pub(crate) fn coded_start_capture(
         &mut self,
         capture: CodedCaptureId,
-        scope: CodedCaptureScopeInput,
         dirty_regions: impl IntoIterator<Item = RegionId>,
         checksum_extents: impl IntoIterator<Item = IntegrityExtentId>,
-        lower_frontier: CodedCaptureFrontier,
-        capture_frontier: CodedCaptureFrontier,
     ) -> Result<(), ServiceError> {
+        let dirty_regions = dirty_regions.into_iter().collect::<BTreeSet<_>>();
+        let checksum_extents = checksum_extents.into_iter().collect::<BTreeSet<_>>();
         let checksum_profile = self.checksums.profile_id().ok_or_else(|| {
             ServiceError::io(
                 FailureClass::Recovery,
@@ -755,25 +834,215 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "coded capture owner topology/recovery/checksum state is incoherent",
             ));
         }
-        let owner_facts = CodedCaptureOwnerFacts::new(
-            self.topology.clone(),
-            snapshot.generation,
-            checksum_profile,
-            self.checksums.active_set,
-            scope,
-            dirty_regions,
-            checksum_extents,
-            lower_frontier,
-            capture_frontier,
-        );
-        let active_claims = self
+        if capture.0 != snapshot.next_coded_capture_id {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture ID does not match the durable next capture ID",
+            ));
+        }
+        let capture_generation = snapshot.generation.checked_next().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture generation is exhausted",
+            )
+        })?;
+        let scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
+            &self.topology,
+            dirty_regions.iter().copied(),
+            checksum_extents.iter().copied(),
+            DIRTY_REGION_BYTES,
+            BLAKE3_256_PROFILE,
+        )
+        .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let establishment = self
             .coded_authority
-            .active_claims()
-            .map(|(operation, claim)| (operation, claim.units().clone()))
-            .collect::<Vec<_>>();
-        self.coded_captures
-            .start_capture(capture, owner_facts, active_claims)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
+            .capture_boundary()
+            .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
+        let mut capture_candidate = self.coded_captures.clone();
+        capture_candidate
+            .start_capture(
+                capture,
+                capture_generation,
+                self.checksums.active_set,
+                scope,
+                establishment,
+            )
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let update = capture_candidate
+            .durable_update(capture, None)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut txn = RecoveryTxn::new(snapshot.generation, self.topology.topology_epoch());
+        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+        let committed = self
+            .recovery
+            .commit_durable(txn)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        self.checksums.recovery_generation = committed;
+        self.coded_captures = capture_candidate;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_test_update_capture(
+        &mut self,
+        capture: CodedCaptureId,
+        mutate: impl FnOnce(&mut CodedCaptureCoordinator) -> Result<(), CodedCaptureError>,
+    ) -> Result<(), ServiceError> {
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let prior = self
+            .coded_captures
+            .capture_snapshot(capture)
+            .ok_or_else(|| ServiceError::io(FailureClass::Recovery, "coded capture is missing"))?;
+        let mut candidate = self.coded_captures.clone();
+        mutate(&mut candidate)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let update = candidate
+            .durable_update(capture, Some(&prior))
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+        let committed = self
+            .recovery
+            .commit_durable(txn)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        self.checksums.recovery_generation = committed;
+        self.coded_captures = candidate;
+        Ok(())
+    }
+
+    /// Refuse and retire one capture inherited from a prior process.
+    ///
+    /// The recovery owner supplies an exact current-generation refusal. The
+    /// atomic durable transition preserves dirty state while removing capture
+    /// evidence whose future-exclusion duty ended at refusal.
+    pub fn refuse_reopened_coded_capture(
+        &mut self,
+        capture: CodedCaptureId,
+        refusal: &RecoveryCleanRefusalPermit,
+    ) -> Result<(), ServiceError> {
+        if self.state != ServiceState::Recovering
+            || !self.reopened_captures.contains(&capture)
+            || self.admission_usage().operation_slots != 0
+        {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "coded reopen refusal requires an inherited capture and no live operations",
+            ));
+        }
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        if refusal.generation() != current.generation
+            || refusal.topology_epoch() != self.topology.topology_epoch()
+        {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "coded reopen refusal does not match current recovery authority",
+            ));
+        }
+        let mut candidate = self.coded_captures.clone();
+        let update = candidate
+            .apply_clean_refusal(capture, refusal)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let removal = candidate
+            .retire_resolved_capture(capture)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+        txn.push(RecoveryMutation::RemoveCodedCapture { removal });
+        let committed = self
+            .recovery
+            .commit_durable(txn)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        self.checksums.recovery_generation = committed;
+        self.coded_captures = candidate;
+        self.reopened_captures.remove(&capture);
+        Ok(())
+    }
+
+    /// Persist one recovery-inspection-issued resolution for an uncertain CLEAN commit.
+    pub fn reconcile_coded_clean_commit(
+        &mut self,
+        receipt: CodedCaptureReconciliationReceipt,
+    ) -> Result<(), ServiceError> {
+        let capture = receipt.capture();
+        self.apply_coded_reconciliation(capture, receipt)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn coded_observe_later_admission(
+        &mut self,
+        capture: CodedCaptureId,
+        operation: OperationSlotToken,
+        observation: CodedLaterCutObservation,
+    ) -> Result<(), ServiceError> {
+        let admission = self.coded_authority.admission(operation).ok_or_else(|| {
+            ServiceError::io(FailureClass::Admission, "coded admission is missing")
+        })?;
+        let topology_epoch = self.topology.topology_epoch();
+        let recovery_generation = self.checksums.recovery_generation;
+        self.coded_test_update_capture(capture, move |coordinator| {
+            coordinator.observe_later_admission(
+                capture,
+                &admission,
+                topology_epoch,
+                recovery_generation,
+                observation,
+            )
+        })
+    }
+
+    /// Persist one recovery-inspection-issued resolution for an uncertain later cut.
+    pub fn reconcile_coded_later_cut(
+        &mut self,
+        receipt: CodedCaptureReconciliationReceipt,
+    ) -> Result<(), ServiceError> {
+        let capture = receipt.capture();
+        self.apply_coded_reconciliation(capture, receipt)
+    }
+
+    fn apply_coded_reconciliation(
+        &mut self,
+        capture: CodedCaptureId,
+        receipt: CodedCaptureReconciliationReceipt,
+    ) -> Result<(), ServiceError> {
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let prior = self
+            .coded_captures
+            .capture_snapshot(capture)
+            .ok_or_else(|| ServiceError::io(FailureClass::Recovery, "coded capture is missing"))?;
+        let mut capture_candidate = self.coded_captures.clone();
+        capture_candidate
+            .apply_reconciliation(receipt)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let committed_generation = current.generation.checked_next().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded reconciliation recovery generation is exhausted",
+            )
+        })?;
+        capture_candidate
+            .compact_authorized_operations(capture, committed_generation)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let update = capture_candidate
+            .durable_update(capture, Some(&prior))
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+        let committed = self
+            .recovery
+            .commit_durable(txn)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        self.checksums.recovery_generation = committed;
+        self.coded_captures = capture_candidate;
+        Ok(())
     }
 
     pub(crate) fn coded_permit_effect(
@@ -788,11 +1057,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             );
             return Ok(CodedEffectOutcome::BlockedByCapture);
         }
-        self.coded_authority
+        let permit = self
+            .coded_authority
             .permit_effect(operation)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         self.set_readiness(operation, OperationReadiness::Runnable);
-        Ok(CodedEffectOutcome::Permitted)
+        Ok(CodedEffectOutcome::Permitted(permit))
     }
 
     /// Consume one exact lifecycle-owned release certificate.
@@ -804,22 +1074,75 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         operation: OperationSlotToken,
         authorization: &ReleaseAuthorization,
     ) -> Result<CodedClaimRelease, ServiceError> {
-        self.coded_authority
-            .release(operation, Some(authorization.operation))
-            .map_err(|error| {
-                ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
-            })
+        if authorization.operation() != operation {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "release authorization does not match the coded operation",
+            ));
+        }
+        let permit = self
+            .admission
+            .release_permit(operation)
+            .map_err(slot_error)?;
+        let mut authority_candidate = self.coded_authority.clone();
+        let release = authority_candidate.release(permit).map_err(|error| {
+            ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
+        })?;
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let committed_generation = current.generation.checked_next().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded release recovery generation is exhausted",
+            )
+        })?;
+        let prior_by_capture = self
+            .coded_captures
+            .snapshots()
+            .into_iter()
+            .map(|snapshot| (snapshot.capture, snapshot))
+            .collect::<BTreeMap<_, _>>();
+        let mut capture_candidate = self.coded_captures.clone();
+        capture_candidate.observe_release_allowed(&release);
+        let changed = capture_candidate
+            .snapshots()
+            .into_iter()
+            .filter(|snapshot| prior_by_capture.get(&snapshot.capture) != Some(snapshot))
+            .map(|snapshot| snapshot.capture)
+            .collect::<Vec<_>>();
+        if !changed.is_empty() {
+            let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+            for capture in changed {
+                let update = capture_candidate
+                    .durable_update(capture, prior_by_capture.get(&capture))
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                txn.push(RecoveryMutation::UpsertCodedCapture { update });
+            }
+            let committed = self
+                .recovery
+                .commit_durable(txn)
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            if committed != committed_generation {
+                return Err(ServiceError::io(
+                    FailureClass::Recovery,
+                    "coded release committed at an unexpected generation",
+                ));
+            }
+            self.checksums.recovery_generation = committed;
+        }
+        self.coded_authority = authority_candidate;
+        self.coded_captures = capture_candidate;
+        Ok(release)
     }
     fn release_coded_claim_if_authorized(
         &mut self,
         authorization: &ReleaseAuthorization,
     ) -> Result<(), ServiceError> {
-        if self
-            .coded_authority
-            .operation_phase(authorization.operation)
-            .is_some()
-        {
-            self.coded_release_claim(authorization.operation, authorization)?;
+        let operation = authorization.operation();
+        if self.coded_authority.operation_phase(operation).is_some() {
+            self.coded_release_claim(operation, authorization)?;
         }
         Ok(())
     }
@@ -831,7 +1154,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         self.release_authorizations
             .iter()
             .filter_map(Option::as_ref)
-            .find(|authorization| authorization.operation == operation)
+            .find(|authorization| authorization.operation() == operation)
     }
 
     /// Reconcile one exact retained generation from owner-approved observations.
@@ -1228,177 +1551,113 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         Ok(())
     }
 
-    /// Bind one externally established capture to this retained write.
-    ///
-    /// The caller must establish the capture-wide decision and any exact
-    /// later-cut reconciliation through the recovery owner before finalization.
-    /// This method only carries the capture identity; it does not infer CLEAN
-    /// or lifecycle-release policy.
-    pub fn bind_clean_capture(
+    fn allocate_clean_capture(&self) -> Result<CodedCaptureId, ServiceError> {
+        let snapshot = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        snapshot
+            .next_coded_capture_id
+            .checked_add(1)
+            .ok_or_else(|| {
+                ServiceError::io(
+                    FailureClass::Recovery,
+                    "coded CLEAN capture identity space is exhausted",
+                )
+            })?;
+        Ok(CodedCaptureId(snapshot.next_coded_capture_id))
+    }
+
+    /// Persist a complete closed-set boundary before the first basis read.
+    fn establish_clean_capture(
         &mut self,
-        submission: &PortableWriteSubmission,
+        driver: &mut WriteDriver,
         capture: CodedCaptureId,
     ) -> Result<(), ServiceError> {
-        let index = self.write_index(submission)?;
-        if self.coded_captures.capture_snapshot(capture).is_none() {
-            return Err(ServiceError::io(
-                FailureClass::Recovery,
-                format!("coded CLEAN capture {capture:?} is not available"),
-            ));
-        }
-        let mut driver = self.write_drivers[index]
-            .take()
-            .expect("validated write driver remains retained");
         if !driver.coded_admitted {
-            self.write_drivers[index] = Some(driver);
             return Err(ServiceError::io(
                 FailureClass::Admission,
                 "coded CLEAN capture requires completed coded admission",
             ));
         }
-        if driver.clean_capture.replace(capture).is_some() {
-            self.write_drivers[index] = Some(driver);
+        if driver.clean_capture.is_some() {
             return Err(ServiceError::io(
                 FailureClass::Admission,
                 "write already has a coded CLEAN capture",
             ));
         }
-        self.write_drivers[index] = Some(driver);
-        Ok(())
-    }
-
-    fn allocate_clean_capture(&mut self) -> Result<CodedCaptureId, ServiceError> {
-        let capture = CodedCaptureId(self.next_capture_id);
-        self.next_capture_id = self.next_capture_id.checked_add(1).ok_or_else(|| {
-            ServiceError::io(
-                FailureClass::Recovery,
-                "coded CLEAN capture identity space is exhausted",
-            )
-        })?;
-        Ok(capture)
-    }
-
-    /// Consume explicit CLEAN-owner observations for one retained write.
-    ///
-    /// The service derives the selected coded, dirty, and checksum scope from
-    /// the retained driver. The caller supplies the capture-wide decision and
-    /// recovery commit observation; this method does not derive either policy.
-    fn establish_clean_capture_for_write(
-        &mut self,
-        submission: &PortableWriteSubmission,
-        capture: CodedCaptureId,
-        decision: CodedCaptureDecision,
-        clean_commit: CodedCleanCommitObservation,
-    ) -> Result<(), ServiceError> {
-        let index = self.write_index(submission)?;
-        let (units, regions, checksum_extents) = {
-            let driver = self.write_drivers[index]
-                .as_ref()
-                .expect("validated write driver remains retained");
-            if !driver.coded_admitted {
-                return Err(ServiceError::io(
-                    FailureClass::Admission,
-                    "coded CLEAN capture requires completed coded admission",
-                ));
-            }
-            (
-                driver.coded_claim.units().clone(),
-                driver.regions.clone(),
-                driver.checksum_extents.clone(),
-            )
-        };
+        let regions = driver.regions.clone();
+        let checksum_extents = driver.checksum_extents.clone();
         let current = self
             .recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let capture_frontier =
-            CodedCaptureFrontier::new(current.generation, capture.0.saturating_add(1));
-        self.coded_start_capture(
-            capture,
-            CodedCaptureScopeInput::complete(units),
-            regions,
-            checksum_extents,
-            CodedCaptureFrontier::new(current.generation, capture.0),
-            capture_frontier,
-        )?;
-        self.coded_captures
-            .observe_decision(capture, decision)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        if decision == CodedCaptureDecision::Accepted {
-            self.coded_captures
-                .request_clean(capture)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            self.coded_captures
-                .observe_clean_commit(capture, clean_commit)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        }
-        self.bind_clean_capture(submission, capture)
-    }
-
-    fn retire_clean_capture(
-        &mut self,
-        capture: CodedCaptureId,
-        evidence: &OperationEvidence,
-    ) -> Result<(), ServiceError> {
-        let authorization = evidence.release_authorization.as_ref().ok_or_else(|| {
-            ServiceError::io(
-                FailureClass::Recovery,
-                "completed write lacks lifecycle release authorization",
-            )
-        })?;
-        let snapshot = self
-            .coded_captures
-            .capture_snapshot(capture)
-            .ok_or_else(|| {
-                ServiceError::io(
-                    FailureClass::Recovery,
-                    format!("coded CLEAN capture {capture:?} is no longer available"),
-                )
-            })?;
-        let current = self
-            .recovery
-            .load_assembly_snapshot()
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let base_frontier = snapshot.capture_frontier.max(snapshot.retained_frontier);
-        let frontier = CodedCaptureFrontier::new(
-            current.generation,
-            base_frontier.admission_sequence.saturating_add(1),
-        );
-        let retirement_frontier = CodedCaptureFrontier::new(
-            current.generation,
-            frontier.admission_sequence.saturating_add(1),
-        );
-        let retained_operations = snapshot
-            .membership
-            .keys()
-            .copied()
-            .filter(|operation| *operation != authorization.operation)
-            .collect::<BTreeSet<_>>();
-        self.coded_captures
-            .compact_capture(
-                CodedCaptureRetentionSummary::new(
-                    capture,
-                    snapshot.topology.topology_epoch(),
-                    frontier,
-                    [authorization.operation],
-                )
-                .with_retained_operations(retained_operations)
-                .with_release_authorized_operations([authorization.operation]),
-            )
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        if self
-            .coded_captures
-            .capture_snapshot(capture)
-            .is_some_and(|snapshot| snapshot.membership.is_empty())
+        if current.generation != self.checksums.recovery_generation
+            || capture.0 != current.next_coded_capture_id
         {
-            self.coded_captures
-                .retire_capture(CodedCaptureRetirement::new(
-                    capture,
-                    snapshot.topology.topology_epoch(),
-                    retirement_frontier,
-                ))
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "coded CLEAN capture owner state moved before capture",
+            ));
         }
+        let capture_generation = current.generation.checked_next().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded CLEAN capture generation is exhausted",
+            )
+        })?;
+        let checksum_profile = self.checksums.profile_id().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture requires one active checksum profile",
+            )
+        })?;
+        if checksum_profile != BLAKE3_256_PROFILE.id {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "coded capture requires the supported checksum profile",
+            ));
+        }
+        let scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
+            &self.topology,
+            regions.iter().copied(),
+            checksum_extents.iter().copied(),
+            DIRTY_REGION_BYTES,
+            BLAKE3_256_PROFILE,
+        )
+        .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let establishment = self
+            .coded_authority
+            .capture_boundary()
+            .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
+        let mut capture_candidate = self.coded_captures.clone();
+        capture_candidate
+            .start_capture(
+                capture,
+                capture_generation,
+                self.checksums.active_set,
+                scope,
+                establishment,
+            )
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let update = capture_candidate
+            .durable_update(capture, None)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        txn.push(RecoveryMutation::UpsertCodedCapture { update });
+        let committed = self
+            .recovery
+            .commit_durable(txn)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        if committed != capture_generation {
+            return Err(ServiceError::io(
+                FailureClass::Recovery,
+                "coded CLEAN capture committed at an unexpected generation",
+            ));
+        }
+        self.checksums.recovery_generation = committed;
+        self.coded_captures = capture_candidate;
+        driver.clean_capture = Some(capture);
         Ok(())
     }
 
@@ -1722,7 +1981,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             return Ok(None);
         }
         let evidence = match self.finish_write_driver(&mut driver) {
-            Ok(evidence) => evidence,
+            Ok(Some(evidence)) => evidence,
+            Ok(None) => {
+                self.write_drivers[index] = Some(driver);
+                return Ok(None);
+            }
             Err(error) => {
                 self.state = ServiceState::Recovering;
                 let class = Self::write_failure_class(&driver);
@@ -1800,86 +2063,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
     }
 
-    /// Execute a blocking write with explicit CLEAN-owner observations.
-    ///
-    /// The capture is established before the first basis I/O. The supplied
-    /// decision and commit observation remain opaque owner facts; the service
-    /// only composes them with the retained write and retires the capture
-    /// after exact lifecycle release authorization.
-    pub fn write_with_clean_capture(
-        &mut self,
-        request: BlockRequest,
-        bytes: &[u8],
-        decision: CodedCaptureDecision,
-        clean_commit: CodedCleanCommitObservation,
-    ) -> Result<OperationEvidence, ServiceError> {
-        let submission = self.submit_write(request, bytes)?;
-        let capture = self.allocate_clean_capture()?;
-        let mut capture_established = false;
-        let mut cancelled_contention = false;
-        let result: Result<OperationEvidence, ServiceError> = (|| {
-            self.grant_basis_read_permission(&submission)?;
-            loop {
-                match self.drive_write(&submission)? {
-                    PortableWriteDrive::Wait(PortableWriteWait::CodedRangeContention) => {
-                        self.cancel_unstarted_write(submission.operation)?;
-                        cancelled_contention = true;
-                        return Err(ServiceError::io(
-                            FailureClass::CodedContention,
-                            "blocking write encountered coded contention; use the retained write driver to resume",
-                        ));
-                    }
-                    PortableWriteDrive::Wait(wait) => {
-                        return Err(ServiceError::io(
-                            FailureClass::ReconciliationRequired,
-                            format!("blocking write stopped at {wait:?}"),
-                        ));
-                    }
-                    PortableWriteDrive::Complete(evidence) => {
-                        if capture_established {
-                            self.retire_clean_capture(capture, &evidence)?;
-                        }
-                        return Ok(evidence);
-                    }
-                    PortableWriteDrive::Work(work) => {
-                        if !capture_established
-                            && matches!(work.action, PortableWriteAction::BasisRead { .. })
-                        {
-                            self.establish_clean_capture_for_write(
-                                &submission,
-                                capture,
-                                decision,
-                                clean_commit,
-                            )?;
-                            capture_established = true;
-                        }
-                        self.accept_write_work(&work)?;
-                        let result = self.execute_write_work(&work)?;
-                        if let Some(evidence) = self.deliver_write_result(result)? {
-                            self.retire_clean_capture(capture, &evidence)?;
-                            return Ok(evidence);
-                        }
-                    }
-                }
-            }
-        })();
-        match result {
-            Ok(evidence) => Ok(evidence),
-            Err(error) if cancelled_contention => Err(error.with_request(request)),
-            Err(error) => {
-                self.state = ServiceState::Recovering;
-                let error = error.with_request(request);
-                match self.abandon(submission.operation) {
-                    Ok(()) => Err(error),
-                    Err(cleanup) => Err(ServiceError::terminalization(
-                        request,
-                        Some(error),
-                        cleanup.with_request(request),
-                    )),
-                }
-            }
-        }
-    }
     fn write_failure_class(driver: &WriteDriver) -> ErrorClass {
         match driver.machine.pending_action().map(|action| action.kind()) {
             Some(ActionKind::AcquireRange) => ErrorClass::RangeAcquisitionFailed,
@@ -2017,24 +2200,27 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         PortableWriteWait::CodedRangeContention,
                     ));
                 }
-                CodedAdmissionOutcome::Admitted => {
+                CodedAdmissionOutcome::Admitted(_) => {
                     driver.coded_admitted = true;
                     driver
                         .machine
                         .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
                         .map_err(|error| {
-                            ServiceError::io(FailureClass::Recovery, error.to_string())
+                            ServiceError::io(FailureClass::Admission, error.to_string())
                         })?;
-                    self.set_release_scope(driver.operation, ReleaseScope::InScope);
                 }
             }
         }
-        self.ensure_write_recovery_record(driver)?;
         if driver.basis_permission != BasisReadPermission::Granted {
             return Ok(PortableWriteDrive::Wait(
                 PortableWriteWait::BasisReadPermission,
             ));
         }
+        if driver.clean_capture.is_none() {
+            let capture = self.allocate_clean_capture()?;
+            self.establish_clean_capture(driver, capture)?;
+        }
+        self.ensure_write_recovery_record(driver)?;
         if driver
             .work
             .iter()
@@ -2057,15 +2243,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 }) {
                     return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
                 }
-                if !driver.coded_effect_permitted
-                    && matches!(
-                        self.coded_permit_effect(driver.operation)?,
-                        CodedEffectOutcome::BlockedByCapture
-                    )
-                {
-                    return Ok(PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked));
+                if driver.coded_effect_permit.is_none() {
+                    match self.coded_permit_effect(driver.operation)? {
+                        CodedEffectOutcome::BlockedByCapture => {
+                            return Ok(PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked));
+                        }
+                        CodedEffectOutcome::Permitted(permit) => {
+                            driver.coded_effect_permit = Some(permit);
+                        }
+                    }
                 }
-                driver.coded_effect_permitted = true;
                 self.prepare_write_actions(driver)?;
                 self.drive_write_driver(driver)
             }
@@ -2100,8 +2287,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 }) {
                     return Ok(PortableWriteDrive::Wait(PortableWriteWait::PhysicalResults));
                 }
-                let evidence = self.finish_write_driver(driver)?;
-                Ok(PortableWriteDrive::Complete(evidence))
+                match self.finish_write_driver(driver)? {
+                    Some(evidence) => Ok(PortableWriteDrive::Complete(evidence)),
+                    None => Ok(PortableWriteDrive::Wait(
+                        PortableWriteWait::CleanCaptureMembers,
+                    )),
+                }
             }
         }
     }
@@ -2115,7 +2306,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             && let Some(authorization) = self.release_authorization(driver.operation).cloned()
         {
             evidence.release_authorization = Some(authorization);
-            return match self.release_after_reclaim(driver.operation) {
+            let cleanup = self.release_after_reclaim(driver.operation);
+            return match cleanup {
                 Ok(()) => {
                     self.write_drivers[index] = None;
                     Ok(evidence)
@@ -2346,7 +2538,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 offset += block;
             }
         }
-        Ok(CodedClaimInput::complete(units))
+        Ok(CodedClaimInput::mapped(units))
     }
 
     fn prepare_write(
@@ -2516,7 +2708,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             coding_position,
             coded_claim,
             coded_admitted: false,
-            coded_effect_permitted: false,
+            coded_effect_permit: None,
             ranges: plan.ranges.clone(),
             basis_reads,
             data_write_children,
@@ -2559,10 +2751,57 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         let target =
             InvalidationTarget::new(driver.regions.clone(), driver.checksum_extents.clone());
-        let record = self
+        let mut prepared_cuts = Vec::new();
+        let mut capture_mutations = Vec::new();
+        let admission = self
+            .coded_authority
+            .admission(driver.operation)
+            .ok_or_else(|| {
+                ServiceError::io(
+                    FailureClass::Admission,
+                    "coded admission witness is unavailable",
+                )
+            })?;
+        for snapshot in self.coded_captures.snapshots() {
+            if snapshot.membership.get(&driver.operation) != Some(&CodedCaptureMembership::Later) {
+                continue;
+            }
+            let prepared = self
+                .coded_captures
+                .prepare_later_cut(
+                    snapshot.capture,
+                    &admission,
+                    self.topology.topology_epoch(),
+                    generation,
+                )
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            capture_mutations.push(RecoveryMutation::UpsertCodedCapture {
+                update: prepared.update(),
+            });
+            prepared_cuts.push(prepared);
+        }
+        let result = self
             .checksums
-            .invalidate_with_write_recovery_record(&mut self.recovery, target)
+            .invalidate_with_write_recovery_record_and_receipt(
+                &mut self.recovery,
+                target,
+                capture_mutations,
+            )
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        if !prepared_cuts.is_empty() {
+            let receipt = result.receipt.as_ref().ok_or_else(|| {
+                ServiceError::io(
+                    FailureClass::Recovery,
+                    "write-recovery commit omitted its coded-cut receipt",
+                )
+            })?;
+            for prepared in prepared_cuts {
+                self.coded_captures
+                    .confirm_later_cut(prepared, receipt)
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            }
+        }
+        let record = result.evidence;
         driver.write_recovery_record = Some(record.clone());
         driver
             .machine
@@ -2750,13 +2989,13 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         Ok(())
     }
 
-    fn validate_capture_clean(
+    fn evaluate_capture_clean(
         &self,
         driver: &WriteDriver,
         current: &RecoverySnapshot,
         write_recovery_record: &WriteRecoveryRecordEvidence,
         certificate: &FenceCertificate,
-    ) -> Result<(), ServiceError> {
+    ) -> Result<Option<RecoveryCleanDecision>, ServiceError> {
         let capture = driver.clean_capture.ok_or_else(|| {
             ServiceError::io(
                 FailureClass::ReconciliationRequired,
@@ -2772,38 +3011,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     format!("coded CLEAN capture {capture:?} is no longer available"),
                 )
             })?;
-        match capture_snapshot.phase {
-            CodedCapturePhase::CleanKnown => {}
-            CodedCapturePhase::Refused => {
-                return Err(ServiceError::io(
-                    FailureClass::Recovery,
-                    format!("coded CLEAN capture {capture:?} was rejected"),
-                ));
-            }
-            CodedCapturePhase::CleanCommitUnknown => {
-                return Err(ServiceError::io(
-                    FailureClass::ReconciliationRequired,
-                    format!("coded CLEAN capture {capture:?} has an unknown commit"),
-                ));
-            }
-            phase => {
-                return Err(ServiceError::io(
-                    FailureClass::ReconciliationRequired,
-                    format!("coded CLEAN capture {capture:?} is not durable: {phase:?}"),
-                ));
-            }
-        }
-        if capture_snapshot.decision != Some(CodedCaptureDecision::Accepted)
+        if capture_snapshot.phase != CodedCapturePhase::Open
+            || capture_snapshot.decision.is_some()
             || !capture_snapshot.scope_complete
             || !capture_snapshot.scope_validated
             || !capture_snapshot.lower_frontier_covered
         {
             return Err(ServiceError::io(
-                FailureClass::Recovery,
-                format!("coded CLEAN capture {capture:?} lacks accepted owner facts"),
+                FailureClass::ReconciliationRequired,
+                format!("coded CLEAN capture {capture:?} is not an undecided durable capture"),
             ));
         }
-        if capture_snapshot.topology.topology_epoch() != self.topology.topology_epoch()
+        if capture_snapshot.topology != self.topology
             || capture_snapshot.checksum_profile
                 != self.checksums.profile_id().ok_or_else(|| {
                     ServiceError::io(FailureClass::Recovery, "checksum profile is unavailable")
@@ -2821,36 +3040,55 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .iter()
             .copied()
             .collect::<BTreeSet<_>>();
+        let expected_scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
+            &self.topology,
+            selected_regions.iter().copied(),
+            selected_extents.iter().copied(),
+            DIRTY_REGION_BYTES,
+            BLAKE3_256_PROFILE,
+        )
+        .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         if capture_snapshot.dirty_regions != selected_regions
             || capture_snapshot.checksum_extents != selected_extents
-            || !driver
-                .coded_claim
-                .units()
-                .is_subset(&capture_snapshot.scope)
+            || capture_snapshot.scope != *expected_scope.units()
         {
             return Err(ServiceError::io(
                 FailureClass::Recovery,
                 format!("coded CLEAN capture {capture:?} does not cover the exact selected state"),
             ));
         }
-        match capture_snapshot.membership.get(&driver.operation) {
-            Some(CodedCaptureMembership::Included)
-            | Some(CodedCaptureMembership::LaterDurableAfterClean) => {}
-            Some(CodedCaptureMembership::LaterRejected)
-            | Some(CodedCaptureMembership::LaterDurableStalesClean) => {
-                return Err(ServiceError::io(
-                    FailureClass::Recovery,
-                    "coded CLEAN operation was rejected or made the capture stale",
-                ));
-            }
-            Some(CodedCaptureMembership::Later)
-            | Some(CodedCaptureMembership::LaterUnknown)
-            | None => {
-                return Err(ServiceError::io(
-                    FailureClass::ReconciliationRequired,
-                    "coded CLEAN operation lacks a resolved capture disposition",
-                ));
-            }
+        if capture_snapshot.membership.get(&driver.operation)
+            != Some(&CodedCaptureMembership::Included)
+        {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "coded CLEAN operation is not included in its capture",
+            ));
+        }
+        if capture_snapshot
+            .membership
+            .iter()
+            .any(|(operation, membership)| {
+                if *operation == driver.operation {
+                    return false;
+                }
+                match membership {
+                    CodedCaptureMembership::Included => {
+                        !capture_snapshot
+                            .release_authorized_operations
+                            .contains(operation)
+                            && !self.write_drivers.iter().flatten().any(|other| {
+                                other.operation == *operation
+                                    && other.finalization
+                                        >= WriteFinalizationPhase::FlushesCompleted
+                            })
+                    }
+                    CodedCaptureMembership::Later | CodedCaptureMembership::LaterUnknown => true,
+                    _ => false,
+                }
+            })
+        {
+            return Ok(None);
         }
         let [
             (data_identity, data_watermark),
@@ -2877,31 +3115,23 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .fold(request, |request, extent| {
                 request.with_checksum_extent(extent)
             });
-        match evaluate_recovery_clean(current, &request, certificate)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?
-        {
-            RecoveryCleanDecision::Clear { .. } => {
-                if write_recovery_record.committed_generation > current.generation {
-                    return Err(ServiceError::io(
-                        FailureClass::Recovery,
-                        "write-recovery generation is newer than the current recovery snapshot",
-                    ));
-                }
-                Ok(())
-            }
-            RecoveryCleanDecision::Refused { reason, .. } => Err(ServiceError::io(
+        if write_recovery_record.committed_generation > current.generation {
+            return Err(ServiceError::io(
                 FailureClass::Recovery,
-                format!("recovery CLEAN owner refused the selected state: {reason:?}"),
-            )),
+                "write-recovery generation is newer than the current recovery snapshot",
+            ));
         }
+        evaluate_recovery_clean(current, &request, certificate)
+            .map(Some)
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))
     }
 
     fn finish_write_driver(
         &mut self,
         driver: &mut WriteDriver,
-    ) -> Result<OperationEvidence, ServiceError> {
+    ) -> Result<Option<OperationEvidence>, ServiceError> {
         if let Some(evidence) = driver.evidence.clone() {
-            return Ok(evidence);
+            return Ok(Some(evidence));
         }
         let write_recovery_record = driver.write_recovery_record.clone().ok_or_else(|| {
             ServiceError::io(FailureClass::Recovery, "write-recovery record is missing")
@@ -3024,12 +3254,46 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .certificate
                     .clone()
                     .expect("flush finalization retains its certificate");
-                self.validate_capture_clean(
+                let capture = driver.clean_capture.expect("validated capture is bound");
+                let Some(decision) = self.evaluate_capture_clean(
                     driver,
                     &current,
                     &write_recovery_record,
                     &certificate,
-                )?;
+                )?
+                else {
+                    return Ok(None);
+                };
+                let prepared = match decision {
+                    RecoveryCleanDecision::Refused {
+                        reason, receipt, ..
+                    } => {
+                        let mut refused_candidate = self.coded_captures.clone();
+                        let update = refused_candidate
+                            .apply_clean_refusal(capture, &receipt)
+                            .map_err(|error| {
+                                ServiceError::io(FailureClass::Recovery, error.to_string())
+                            })?;
+                        let mut refused =
+                            RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+                        refused.push(RecoveryMutation::UpsertCodedCapture { update });
+                        let committed = self.recovery.commit_durable(refused).map_err(|error| {
+                            ServiceError::io(FailureClass::Recovery, error.to_string())
+                        })?;
+                        self.checksums.recovery_generation = committed;
+                        self.coded_captures = refused_candidate;
+                        return Err(ServiceError::io(
+                            FailureClass::Recovery,
+                            format!("recovery CLEAN owner refused the selected state: {reason:?}"),
+                        ));
+                    }
+                    RecoveryCleanDecision::Clear(permit) => self
+                        .coded_captures
+                        .prepare_clean_commit(capture, &permit)
+                        .map_err(|error| {
+                            ServiceError::io(FailureClass::Recovery, error.to_string())
+                        })?,
+                };
                 let mut recovery_clean =
                     RecoveryTxn::new(current.generation, self.topology.topology_epoch());
                 recovery_clean.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
@@ -3039,9 +3303,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         through_generation: write_recovery_record.committed_generation,
                     });
                 }
-                let committed = self
+                recovery_clean.push(RecoveryMutation::UpsertCodedCapture {
+                    update: prepared.update(),
+                });
+                let receipt = self
                     .recovery
-                    .commit_durable(recovery_clean)
+                    .commit_durable_receipt(recovery_clean)
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let committed = receipt.generation();
+                self.coded_captures
+                    .confirm_clean_commit(prepared, &receipt)
                     .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
                 self.checksums.recovery_generation = committed;
                 driver.recovery_committed = Some(committed);
@@ -3081,6 +3352,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         driver
             .evidence
             .clone()
+            .map(Some)
             .ok_or_else(|| ServiceError::io(FailureClass::Recovery, "write finalization stopped"))
     }
 
@@ -3286,6 +3558,93 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         result
     }
+    fn compact_released_capture_membership(
+        &mut self,
+        token: OperationSlotToken,
+    ) -> Result<(), ServiceError> {
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let committed_generation = current.generation.checked_next().ok_or_else(|| {
+            ServiceError::io(
+                FailureClass::Recovery,
+                "coded compaction recovery generation is exhausted",
+            )
+        })?;
+        let prior_by_capture = self
+            .coded_captures
+            .snapshots()
+            .into_iter()
+            .map(|snapshot| (snapshot.capture, snapshot))
+            .collect::<BTreeMap<_, _>>();
+        let captures = prior_by_capture
+            .values()
+            .filter(|snapshot| snapshot.release_frontiers.contains_key(&token))
+            .map(|snapshot| snapshot.capture)
+            .collect::<Vec<_>>();
+        let mut candidate = self.coded_captures.clone();
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        let mut changed = false;
+        for capture in captures {
+            if !candidate
+                .compact_authorized_operations(capture, committed_generation)
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?
+            {
+                continue;
+            }
+            let update = candidate
+                .durable_update(capture, prior_by_capture.get(&capture))
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            txn.push(RecoveryMutation::UpsertCodedCapture { update });
+            changed = true;
+        }
+        if changed {
+            let committed = self
+                .recovery
+                .commit_durable(txn)
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            if committed != committed_generation {
+                return Err(ServiceError::io(
+                    FailureClass::Recovery,
+                    "coded compaction committed at an unexpected generation",
+                ));
+            }
+            self.checksums.recovery_generation = committed;
+            self.coded_captures = candidate;
+        }
+        Ok(())
+    }
+
+    fn retire_resolved_captures(&mut self) -> Result<(), ServiceError> {
+        let current = self
+            .recovery
+            .load_assembly_snapshot()
+            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let mut candidate = self.coded_captures.clone();
+        let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+        let mut changed = false;
+        for capture in candidate
+            .snapshots()
+            .into_iter()
+            .map(|snapshot| snapshot.capture)
+            .collect::<Vec<_>>()
+        {
+            if let Ok(removal) = candidate.retire_resolved_capture(capture) {
+                txn.push(RecoveryMutation::RemoveCodedCapture { removal });
+                changed = true;
+            }
+        }
+        if changed {
+            let committed = self
+                .recovery
+                .commit_durable(txn)
+                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            self.checksums.recovery_generation = committed;
+            self.coded_captures = candidate;
+        }
+        Ok(())
+    }
 
     fn release_after_reclaim(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
         #[cfg(test)]
@@ -3295,6 +3654,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "injected terminalization reclaim failure",
             ));
         }
+        self.compact_released_capture_membership(token)?;
+        self.retire_resolved_captures()?;
         self.release(token)
     }
     fn reclaim_with_authorization(
@@ -3322,7 +3683,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     fn remember_release_authorization(&mut self, authorization: ReleaseAuthorization) {
-        let Ok(index) = usize::try_from(authorization.operation.index) else {
+        let Ok(index) = usize::try_from(authorization.operation().index) else {
             return;
         };
         if let Some(retained) = self.release_authorizations.get_mut(index) {
@@ -3360,7 +3721,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         {
             return None;
         }
-        Some(ReleaseAuthorization { operation: token })
+        Some(ReleaseAuthorization::issue_from_lifecycle_owner(token))
     }
 
     fn operation_effect_observation(

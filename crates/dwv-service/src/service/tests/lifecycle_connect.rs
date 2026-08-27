@@ -556,7 +556,7 @@ impl BridgeDriver {
                     .context("cleanup failure did not retain the exact certificate")?
             }
         };
-        if authorization.operation != token
+        if authorization.operation() != token
             || self.service()?.release_authorization(token) != Some(&authorization)
         {
             bail!("release authorization was not returned and retained for the exact token");

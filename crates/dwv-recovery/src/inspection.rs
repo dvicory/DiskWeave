@@ -1,4 +1,8 @@
-use crate::{MemoryRecoveryStore, RecoveryManifest};
+use crate::{
+    CodedCaptureId, CodedCaptureMembership, CodedCapturePhase, CodedCaptureReconciliationReceipt,
+    MemoryRecoveryStore, RecoveryManifest,
+};
+use dwv_store::OperationSlotToken;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum RecoveryFormatLayer {
@@ -76,6 +80,124 @@ pub fn reconcile_uncertain_commit(
     } else {
         RecoveryReconciliation::ReconciliationRequired
     }
+}
+
+/// Resolve one exact uncertain CLEAN commit from independently reopened state.
+pub fn reconcile_coded_clean_attempt(
+    prior: &RecoveryManifest,
+    proposed: &RecoveryManifest,
+    reopened: &RecoveryInspection,
+    capture: CodedCaptureId,
+) -> Option<CodedCaptureReconciliationReceipt> {
+    let outcome = reconcile_uncertain_commit(prior, proposed, reopened);
+    let prior_capture = prior
+        .snapshot
+        .coded_captures
+        .iter()
+        .find(|snapshot| snapshot.capture == capture)?
+        .clone();
+    let proposed_capture = proposed
+        .snapshot
+        .coded_captures
+        .iter()
+        .find(|snapshot| snapshot.capture == capture)?
+        .clone();
+    if prior_capture.phase != CodedCapturePhase::CleanCommitPending
+        || !matches!(
+            proposed_capture.phase,
+            CodedCapturePhase::CleanKnown | CodedCapturePhase::Refused
+        )
+    {
+        return None;
+    }
+    let mut expected_proposed = prior_capture.clone();
+    expected_proposed.phase = proposed_capture.phase;
+    if expected_proposed != proposed_capture {
+        return None;
+    }
+    let mut expected_unknown = prior_capture;
+    expected_unknown.phase = CodedCapturePhase::CleanCommitUnknown;
+    let resolved = match outcome {
+        RecoveryReconciliation::Proposed => proposed_capture,
+        RecoveryReconciliation::Prior => {
+            let mut rejected = expected_unknown.clone();
+            rejected.phase = CodedCapturePhase::Refused;
+            rejected
+        }
+        RecoveryReconciliation::ReconciliationRequired => return None,
+    };
+    Some(CodedCaptureReconciliationReceipt::new(
+        expected_unknown,
+        resolved,
+    ))
+}
+
+/// Resolve one exact uncertain later cut from independently reopened state.
+pub fn reconcile_coded_later_cut_attempt(
+    prior: &RecoveryManifest,
+    proposed: &RecoveryManifest,
+    reopened: &RecoveryInspection,
+    capture: CodedCaptureId,
+    operation: OperationSlotToken,
+) -> Option<CodedCaptureReconciliationReceipt> {
+    let outcome = reconcile_uncertain_commit(prior, proposed, reopened);
+    let prior_capture = prior
+        .snapshot
+        .coded_captures
+        .iter()
+        .find(|snapshot| snapshot.capture == capture)?
+        .clone();
+    let proposed_capture = proposed
+        .snapshot
+        .coded_captures
+        .iter()
+        .find(|snapshot| snapshot.capture == capture)?
+        .clone();
+    if prior_capture.membership.get(&operation) != Some(&CodedCaptureMembership::Later) {
+        return None;
+    }
+    let membership = *proposed_capture.membership.get(&operation)?;
+    if !matches!(
+        membership,
+        CodedCaptureMembership::LaterDurableAfterClean
+            | CodedCaptureMembership::LaterDurableStalesClean
+    ) {
+        return None;
+    }
+    let cut = *proposed_capture.resolved_later_cuts.get(&operation)?;
+    let cut_frontier = cut.frontier();
+    let mut expected_proposed = prior_capture.clone();
+    expected_proposed.membership.insert(operation, membership);
+    expected_proposed.resolved_later_cuts.insert(operation, cut);
+    expected_proposed.retirement_frontier = Some(
+        expected_proposed
+            .retirement_frontier
+            .map_or(cut_frontier, |frontier| frontier.max(cut_frontier)),
+    );
+    if expected_proposed != proposed_capture {
+        return None;
+    }
+    let mut expected_unknown = prior_capture;
+    expected_unknown
+        .membership
+        .insert(operation, CodedCaptureMembership::LaterUnknown);
+    expected_unknown.pending_later_cuts.insert(operation, cut);
+    let resolved = match outcome {
+        RecoveryReconciliation::Proposed => proposed_capture,
+        RecoveryReconciliation::Prior => {
+            let mut rejected = expected_unknown.clone();
+            rejected.pending_later_cuts.remove(&operation);
+            rejected
+                .membership
+                .insert(operation, CodedCaptureMembership::LaterRejected);
+            rejected
+        }
+        RecoveryReconciliation::ReconciliationRequired => return None,
+    };
+    Some(CodedCaptureReconciliationReceipt::new(
+        expected_unknown,
+        resolved,
+    ))
 }
 
 #[cfg(test)]

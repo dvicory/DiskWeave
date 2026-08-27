@@ -47,7 +47,9 @@ pub struct StoreIncarnationId(pub u64);
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FrontendTag(pub u64);
 
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
 pub struct OperationSlotToken {
     pub index: u32,
     pub generation: u32,
@@ -56,6 +58,18 @@ pub struct OperationSlotToken {
 impl OperationSlotToken {
     pub const fn new(index: u32, generation: u32) -> Self {
         Self { index, generation }
+    }
+}
+
+/// Exact-generation lifecycle proof that an operation is reclaimable.
+#[derive(Debug, Eq, PartialEq)]
+pub struct OperationReleasePermit {
+    operation: OperationSlotToken,
+}
+
+impl OperationReleasePermit {
+    pub const fn operation(&self) -> OperationSlotToken {
+        self.operation
     }
 }
 
@@ -1903,6 +1917,21 @@ impl OperationSlotTable {
             abandoned: slot.abandoned,
             retry_count: slot.retry_count,
         })
+    }
+
+    pub fn release_permit(
+        &self,
+        token: OperationSlotToken,
+    ) -> Result<OperationReleasePermit, SlotError> {
+        let index = self.active_index(token)?;
+        let slot = self.slots[index].as_ref().expect("active index has a slot");
+        if slot.state != SlotState::Reclaimable {
+            return Err(SlotError::InvalidState {
+                token,
+                state: slot.state,
+            });
+        }
+        Ok(OperationReleasePermit { operation: token })
     }
 
     pub fn release(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {

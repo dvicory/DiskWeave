@@ -6,8 +6,8 @@ use dwv_core::{
     TopologySnapshot,
 };
 use dwv_recovery::{
-    CodedCaptureDecision, CodedCleanCommitObservation, MemoryRecoveryStore, RecoveryGeneration,
-    RecoveryMutation, RecoveryStateStore, TopologySnapshot as RecoveryTopologySnapshot,
+    MemoryRecoveryStore, RecoveryGeneration, RecoveryMutation, RecoveryStateStore,
+    TopologySnapshot as RecoveryTopologySnapshot,
 };
 use dwv_recovery_sqlite::SqliteRecoveryStore;
 use dwv_service::{HealthyPortableService, MemberBinding, ServiceConfig};
@@ -352,12 +352,7 @@ impl OpenFixture {
                     ));
                 }
                 self.service
-                    .write_with_clean_capture(
-                        request,
-                        bytes,
-                        CodedCaptureDecision::Accepted,
-                        CodedCleanCommitObservation::Durable,
-                    )
+                    .write(request, bytes)
                     .map(|_| Vec::new())
                     .map_err(|error| AdapterError::Io(error.to_string()))
             }
@@ -596,10 +591,87 @@ mod tests {
         opened.execute(write, Some(&vec![0xa5; 4096])).unwrap();
         opened.flush(2).unwrap();
         drop(opened);
+        let fixture = Fixture::load(&root).unwrap();
+        let mut reopened = fixture.open().unwrap();
+        let read = BlockRequest::new(
+            RequestId(3),
+            FrontendId(1),
+            DATA_SLOT,
+            epoch,
+            BlockOp::Read,
+            range,
+            Some(BufferToken::new(0, 2)),
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(3),
+                preflush: false,
+                fence_domain: FenceDomain(1),
+            },
+            DurabilityIntent::Ordinary,
+        );
+        assert_eq!(reopened.execute(read, None).unwrap(), vec![0xa5; 4096]);
+        drop(reopened);
         let inspection = Fixture::load(&root).unwrap().inspect().unwrap();
         assert!(inspection.parity_matches_data);
         let bytes = fs::read(root.join("data.raw")).unwrap();
         assert_eq!(&bytes[4096..8192], &[0xa5; 4096]);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unresolved_capture_survives_crash_and_blocks_reopen() {
+        let root = temp_root("capture-reopen");
+        let manifest = Fixture::initialize(&root, 16 * 1024 * 1024).unwrap();
+        let fixture = Fixture::load(&root).unwrap();
+        let epoch = TopologyEpoch(fixture.manifest().topology_epoch);
+        let mut opened = fixture.open().unwrap();
+        let range = ByteRange::new(4096, 4096).unwrap();
+        let write = BlockRequest::new(
+            RequestId(10),
+            FrontendId(1),
+            DATA_SLOT,
+            epoch,
+            BlockOp::Write,
+            range,
+            Some(BufferToken::new(0, 1)),
+            OrderingIntent {
+                submission_sequence: SubmissionSequence(10),
+                preflush: false,
+                fence_domain: FenceDomain(1),
+            },
+            DurabilityIntent::Ordinary,
+        );
+        let submission = opened.service.submit_write(write, &[0xb6; 4096]).unwrap();
+        opened
+            .service
+            .grant_basis_read_permission(&submission)
+            .unwrap();
+        assert!(matches!(
+            opened.service.drive_write(&submission).unwrap(),
+            dwv_service::PortableWriteDrive::Work(_)
+        ));
+        drop(opened);
+
+        let reopened = Fixture::load(&root).unwrap().open().unwrap();
+        assert_eq!(
+            reopened.service.state(),
+            dwv_service::ServiceState::Recovering
+        );
+        drop(reopened);
+        let recovery = SqliteRecoveryStore::open(root.join(&manifest.recovery_file)).unwrap();
+        let snapshot = recovery.load_assembly_snapshot().unwrap();
+        assert_eq!(snapshot.coded_captures.len(), 1);
+        assert_eq!(snapshot.next_coded_capture_id, 1);
+        assert_eq!(
+            snapshot.coded_captures[0].phase,
+            dwv_recovery::CodedCapturePhase::Open
+        );
+        assert_eq!(
+            snapshot.coded_captures[0]
+                .membership
+                .get(&submission.operation),
+            Some(&dwv_recovery::CodedCaptureMembership::Included)
+        );
+        drop(recovery);
         fs::remove_dir_all(root).unwrap();
     }
 

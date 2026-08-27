@@ -1,8 +1,9 @@
 use dwv_core::{BlockRequest, ByteRange};
 use dwv_store::{
-    AdmissionError, OperationSlotTable, OperationSlotToken, ReconciliationOutcome, ResourceKind,
-    ResourceLimits, ResourceUsage, SlotError, SlotState, StoreCompletionDelivery, StoreError,
-    StoreId, StoreIncarnationId, StoreSubmissionIdentity, StoreWriteWatermark,
+    AdmissionError, OperationReleasePermit, OperationSlotTable, OperationSlotToken,
+    ReconciliationOutcome, ResourceKind, ResourceLimits, ResourceUsage, SlotError, SlotState,
+    StoreCompletionDelivery, StoreError, StoreId, StoreIncarnationId, StoreSubmissionIdentity,
+    StoreWriteWatermark,
 };
 #[cfg(test)]
 use dwv_store::{CompletedRangeSet, CompletionDisposition, PersistenceEvidence, StoreCompletion};
@@ -200,6 +201,13 @@ impl OperationAdmission {
     ) -> Result<(), SlotError> {
         self.table.record_reconciliation(token, outcome)
     }
+    pub fn release_permit(
+        &self,
+        token: OperationSlotToken,
+    ) -> Result<OperationReleasePermit, SlotError> {
+        self.table.release_permit(token)
+    }
+
     pub fn release(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
         self.table.release(token)
     }

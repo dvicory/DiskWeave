@@ -1,9 +1,9 @@
 //! Durable write-recovery record operations over the recovery-state adapter.
 
 use crate::{
-    InvalidationTarget, RecoveryCommitObservation, RecoveryError, RecoveryGeneration,
-    RecoveryStateStore, WriteRecoveryRecordDecision, WriteRecoveryRecordEvidence,
-    assess_write_recovery_record,
+    DurableRecoveryCommit, InvalidationTarget, RecoveryCommitObservation, RecoveryError,
+    RecoveryGeneration, RecoveryMutation, RecoveryStateStore, WriteRecoveryRecordDecision,
+    WriteRecoveryRecordEvidence, assess_write_recovery_record,
 };
 use dwv_core::TopologyEpoch;
 
@@ -12,6 +12,12 @@ pub struct WriteRecoveryRecordCommit<'a, S: RecoveryStateStore + ?Sized> {
     topology_epoch: TopologyEpoch,
     expected_generation: RecoveryGeneration,
     target: InvalidationTarget,
+    additional_mutations: Vec<RecoveryMutation>,
+}
+
+pub struct WriteRecoveryRecordCommitResult {
+    pub evidence: WriteRecoveryRecordEvidence,
+    pub receipt: Option<DurableRecoveryCommit>,
 }
 
 impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
@@ -26,7 +32,13 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
             topology_epoch,
             expected_generation,
             target,
+            additional_mutations: Vec::new(),
         }
+    }
+
+    pub fn with_mutations(mut self, mutations: impl IntoIterator<Item = RecoveryMutation>) -> Self {
+        self.additional_mutations.extend(mutations);
+        self
     }
 
     pub fn assess(&self) -> Result<WriteRecoveryRecordDecision, RecoveryError> {
@@ -40,32 +52,51 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
     }
 
     pub fn commit(self) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
+        self.commit_with_receipt().map(|result| result.evidence)
+    }
+
+    pub fn commit_with_receipt(self) -> Result<WriteRecoveryRecordCommitResult, RecoveryError> {
         let decision = self.assess()?;
-        if let WriteRecoveryRecordDecision::AlreadyCovered(coverage) = decision {
-            return Ok(WriteRecoveryRecordEvidence::already_covered(
-                coverage.topology_epoch,
-                coverage.generation,
-                coverage.target,
-            ));
+        let already_covered = matches!(&decision, WriteRecoveryRecordDecision::AlreadyCovered(_));
+        if self.additional_mutations.is_empty()
+            && let WriteRecoveryRecordDecision::AlreadyCovered(coverage) = decision
+        {
+            return Ok(WriteRecoveryRecordCommitResult {
+                evidence: WriteRecoveryRecordEvidence::already_covered(
+                    coverage.topology_epoch,
+                    coverage.generation,
+                    coverage.target,
+                ),
+                receipt: None,
+            });
         }
 
         let target = self.target;
         let mut txn = self
             .store
             .begin_protocol_txn(self.expected_generation, self.topology_epoch);
-        for region in &target.regions {
-            txn.mark_region_dirty(*region, self.expected_generation);
+        if !already_covered {
+            for region in &target.regions {
+                txn.mark_region_dirty(*region, self.expected_generation);
+            }
+            for extent in &target.checksum_extents {
+                txn.mark_integrity_stale(*extent, self.expected_generation);
+            }
         }
-        for extent in &target.checksum_extents {
-            txn.mark_integrity_stale(*extent, self.expected_generation);
+        for mutation in self.additional_mutations {
+            txn.push(mutation);
         }
-        let committed_generation = self.store.commit_durable(txn)?;
-        Ok(WriteRecoveryRecordEvidence {
-            topology_epoch: self.topology_epoch,
-            captured_generation: self.expected_generation,
-            committed_generation,
-            target,
-            durable: true,
+        let receipt = self.store.commit_durable_receipt(txn)?;
+        let committed_generation = receipt.generation();
+        Ok(WriteRecoveryRecordCommitResult {
+            evidence: WriteRecoveryRecordEvidence {
+                topology_epoch: self.topology_epoch,
+                captured_generation: self.expected_generation,
+                committed_generation,
+                target,
+                durable: true,
+            },
+            receipt: Some(receipt),
         })
     }
 

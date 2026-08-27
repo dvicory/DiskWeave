@@ -2,6 +2,7 @@
 
 **Status:** Temporary, non-authoritative execution state.  
 **Authority:** This file does not define product behavior, architecture, OpenSpec ownership, implementation, evidence, milestones, or release scope. Current `openspec/specs/*/spec.md` files remain the only detailed product authority.  
+**Interpretation:** Review results describe the campaign boundary at which they were recorded. Terminal ledger entries name later canonicalization where subsequent OpenSpec work closed a boundary.  
 **Campaign source:** Repaired from the F2 report dated 2026-08-12.  
 **Retirement rule:** Delete this file when the completion gate in Section 8 passes. Do not preserve it as a parallel requirements system.
 
@@ -60,25 +61,25 @@ These are compact results, not persisted claim cards.
 **Current closure inspected:**
 
 - `req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity`
+- `req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts`
 - `req.degraded-read-offline-rebuild.degraded-read-eligibility-is-explicit-and-fail-closed`
 - `req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions`
 - `req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent`
 - the returned write, transaction, recovery, store, and XOR closure
 
-**Result:** Current canonical semantics require a range-acquisition action and correct parity orchestration, but they do not define the conflict domain of that authority. They do not state that writes to different data members at corresponding offsets conflict through the same parity address. v0.8 §11.6 and v0.9 §8.6 agree on the missing rule. This is an **unresolved retained target semantic** and a possible current semantic gap, but current debt is not positively established: current requirements do not promise concurrent write progress, and the current service serializes through one mutable service path while supplying a synthetic range token. Implementation shape is not durable authority.
-
-Two conforming implementations could otherwise choose per-member versus coded-range coordination and behave differently under concurrent same-codeword writes. Terminal closure therefore requires canonical semantics before implementation concurrency may rely on the rule.
+**Result:** At the original campaign review boundary, canonical semantics required a range-acquisition action and correct parity orchestration but did not define the shared conflict domain. Subsequent OpenSpec reconciliation canonicalized that domain under `req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts`: writes to different data members at corresponding offsets conflict through the same coded parity range. The production authority and Connect evidence now implement and verify that rule.
 
 ### Semantic review — Recovery CLEAN concurrency
 
 **Current closure inspected:**
 
 - `req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence`
+- `req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set`
 - `req.healthy-portable-io.durable-completion-and-recovery-clean-require-persistence-evidence`
 - `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence`
 - their transaction, watermark, checksum, and repair closure
 
-**Result:** Current owners define exact scoped persistence evidence, region subsets, generations, action order, and stale-transaction rejection. They do not independently close the race in which an already-dirty overlapping mutation can be admitted while a recovery-CLEAN commit clears the same region; closure depends on the unresolved range/admission conflict domain. v0.8 §11.7 and v0.9 §9.11 retain the requirement that recovery CLEAN captures a closed mutation set. Keep this as a separate **ownership-or-scope-unresolved** row rather than declaring it entailed by generic generations.
+**Result:** At the original campaign review boundary, current owners did not independently close the race between an admitted overlapping mutation and a recovery-CLEAN commit. Subsequent OpenSpec reconciliation canonicalized the closed-mutation-set rule under `req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set`, including exact capture membership, durable CLEAN and later-cut outcomes, uncertainty, and generation-qualified lifecycle release. The production coordinator and Connect evidence now implement and verify that boundary.
 
 ### Semantic review — Long-running job lifecycle
 
@@ -200,8 +201,8 @@ These descriptive semantic-boundary entries are temporary burn-down handles, not
 | Fresh-basis foreground write/currentization for `Prior` or `Unprotected` ranges | Fresh-basis foreground write/currentization for `Prior` or `Unprotected` ranges | capability “Restart a complete array after a custody gap”, capability “Repair or change an array safely”, capability “Adopt selected present data into a new lineage” | **target-delta; mapped** | v0.9 §§6.8–6.9, 9.4; must never incrementally trust prior parity. |
 | Proof-based reconciliation of `Indeterminate` basis | Proof-based reconciliation of `Indeterminate` basis | capability “Restart a complete array after a custody gap”, capability “Repair or change an array safely” | **target-delta; mapped** | Split from currentization because it may settle surviving basis without destructive rebaseline. |
 | Separately authorized present-data rebaseline of `Indeterminate` basis | Separately authorized present-data rebaseline of `Indeterminate` basis | capability “Restart a complete array after a custody gap”, capability “Repair or change an array safely”, capability “Adopt selected present data into a new lineage” | **ownership-or-scope-unresolved** | Split because authorization, discarded claims, audit, and destructive consequences advance independently. |
-| Global coded-range coordination across different member operations | Global coded-range coordination across different member operations | capability “Restart a complete array after a custody gap”–capability “Repair or change an array safely” | **unresolved retained target semantic** | semantic review “Shared coded-range coordination”; v0.8 §11.6 and v0.9 §8.6. Conflict domain is shared parity address, not target member or queue. |
-| Closed-mutation-set recovery-CLEAN concurrency | Closed-mutation-set recovery-CLEAN concurrency | capability “Use ordinary members through one mediated service”–capability “Restore current protection in background”, capability “Repair or change an array safely” | **ownership-or-scope-unresolved** | semantic review “Recovery-CLEAN concurrency”; v0.8 §11.7 and v0.9 §9.11. Keep separate from lock mechanism and generic persistence evidence. |
+| Global coded-range coordination across different member operations | Global coded-range coordination across different member operations | capability “Restart a complete array after a custody gap”–capability “Repair or change an array safely” | **canonicalized** | `req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts`; conflict domain is shared parity address, not target member or queue. |
+| Closed-mutation-set recovery-CLEAN concurrency | Closed-mutation-set recovery-CLEAN concurrency | capability “Use ordinary members through one mediated service”–capability “Restore current protection in background”, capability “Repair or change an array safely” | **canonicalized** | `req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set`; kept separate from lock mechanism and generic persistence evidence. |
 | Background rollover lifecycle, progress, restart, failure, and completion | Background rollover lifecycle, progress, restart, failure, and completion | capability “Restore current protection in background” | **target-delta; mapped** | v0.9 §§9.13, 10.6–10.9. |
 | Cross-operation fairness and starvation limits | Cross-operation fairness and starvation limits | capability “Restore current protection in background”, capability “Repair or change an array safely”, capability “Retain, restore, or retire historical claims” | **target-delta; mapped** | v0.8 §11.10 and v0.9 §9.13; independent of resource admission. |
 | Portable shutdown, endpoint withdrawal, and claim-release ordering | Portable shutdown, endpoint withdrawal, and claim-release ordering | capability “Use ordinary members through one mediated service”, capability “Restart a complete array after a custody gap” | **OpenSpec planned; implementation blocked** | Change `add-portable-shutdown-claim-release` defines the target ordering but is not current authority. Implementation inspection found no service-owned durable writable-session begin/close path, so exact close-session evidence is unavailable. Beads `dwv-hg0.4` -> `.7` -> `.1` and independent `.5` -> `.6` -> `.1` now form the two prerequisite tracks; `.2` proves operator behavior and model/implementation correspondence; `.3` verifies, archives, and canonicalizes after `dwv-6c0.1` and `dwv-6c0.2`. semantic boundary “Typed store-scoped stabilization, durable epoch admission, and scan-independent publication”, semantic boundary “Closed-mutation-set recovery-CLEAN concurrency”, and semantic boundary “Baseline deployment/startup/shutdown dependency ordering” are review inputs only, not declared unblockers; verify.concurrency-schedules remains deferred until the implementation seam exists. |

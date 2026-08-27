@@ -10,7 +10,7 @@ use dwv_core::{
     ArrayId, BlockOp, BlockRequest, ByteRange, DurabilityIntent, FenceDomain, FrontendId,
     OrderingIntent, RequestId, SlotId, SubmissionSequence, TopologyEpoch,
 };
-use dwv_recovery::{CodedCaptureDecision, CodedCleanCommitObservation, RecoveryStateStore};
+use dwv_recovery::RecoveryStateStore;
 use dwv_service::{HealthyPortableService, PublicationIdentity};
 use dwv_store::RandomAccessStore;
 use libublk::helpers::IoBuf;
@@ -71,12 +71,7 @@ fn execute_service<S: RandomAccessStore, R: RecoveryStateStore>(
                 ));
             }
             service
-                .write_with_clean_capture(
-                    request,
-                    bytes,
-                    CodedCaptureDecision::Accepted,
-                    CodedCleanCommitObservation::Durable,
-                )
+                .write(request, bytes)
                 .map(|_| Vec::new())
                 .map_err(map_service_error)
         }

@@ -96,10 +96,21 @@ pub(crate) struct ReleaseReconciliation {
     pub(crate) basis: BasisConformance,
 }
 
-/// Immutable service-level proof that one exact operation generation is releasable.
+/// Immutable service-level proof that the lifecycle owner found all seven
+/// required observations for one exact operation generation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseAuthorization {
-    pub operation: OperationSlotToken,
+    operation: OperationSlotToken,
+}
+
+impl ReleaseAuthorization {
+    pub(crate) const fn issue_from_lifecycle_owner(operation: OperationSlotToken) -> Self {
+        Self { operation }
+    }
+
+    pub const fn operation(&self) -> OperationSlotToken {
+        self.operation
+    }
 }
 
 /// dwv:req req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics

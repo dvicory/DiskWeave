@@ -10,6 +10,7 @@ use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
 mod baseline;
+mod coded_authority;
 mod coded_clean;
 mod extent;
 mod generation;
@@ -31,17 +32,25 @@ pub use baseline::{
     ChecksumBaselineStatus, assess_checksum_baseline, expected_checksum_extents,
     new_checksum_baseline, pending_checksum_baseline_extents,
 };
+pub use coded_authority::{
+    CodedAdmission, CodedAdmissionOutcome, CodedAuthorityError, CodedAuthorityFrontier,
+    CodedCaptureBoundary, CodedCaptureEstablishment, CodedClaim, CodedClaimInput,
+    CodedClaimRelease, CodedEffectPermit, CodedHistoryCoverage, CodedOperationPhase,
+    CodedRangeAuthority,
+};
 pub use coded_clean::{
     CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision, CodedCaptureError,
     CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
-    CodedCapturePhase, CodedCaptureRetentionSummary, CodedCaptureRetirement,
-    CodedCaptureScopeInput, CodedCaptureSnapshot, CodedCleanCommitObservation,
+    CodedCapturePhase, CodedCaptureReconciliationReceipt, CodedCaptureRemoval,
+    CodedCaptureSnapshot, CodedCaptureUpdate, CodedCleanCommitObservation,
     CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
+    ValidatedCodedCaptureScope,
 };
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
 pub use inspection::{
-    RecoveryFormatLayer, RecoveryInspection, RecoveryReconciliation, reconcile_uncertain_commit,
+    RecoveryFormatLayer, RecoveryInspection, RecoveryReconciliation, reconcile_coded_clean_attempt,
+    reconcile_coded_later_cut_attempt, reconcile_uncertain_commit,
 };
 pub use invalidation::{
     InvalidationTarget, WriteRecoveryRecordBoundary, WriteRecoveryRecordCoverage,
@@ -71,13 +80,13 @@ pub use record::{
     ChecksumPersistenceEvidence, ChecksumRecord, ChecksumState, ContentGeneration, Digest,
 };
 pub use recovery_clean::{
-    RecoveryCleanDecision, RecoveryCleanRefusal, RecoveryCleanRequest, RequiredFence,
-    evaluate_recovery_clean, fence_ref,
+    RecoveryCleanDecision, RecoveryCleanPermit, RecoveryCleanRefusal, RecoveryCleanRefusalPermit,
+    RecoveryCleanRequest, RequiredFence, evaluate_recovery_clean, fence_ref,
 };
 pub use transition::{
     RecoveryTransitionId, TransitionEvidence, TransitionKind, TransitionOutcome, TransitionTrace,
 };
-pub use write_recovery_record::WriteRecoveryRecordCommit;
+pub use write_recovery_record::{WriteRecoveryRecordCommit, WriteRecoveryRecordCommitResult};
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -159,7 +168,7 @@ pub struct RecoveryCursor(pub u64);
 )]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(4);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(5);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -174,6 +183,7 @@ pub enum RecoveryRecordKind {
     MigrationState,
     MetadataLossAudit,
     OfflineRebuild,
+    CodedCleanCapture,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -197,6 +207,7 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
             RecoveryRecordKind::MetadataLossAudit,
             RecoveryRecordKind::OfflineRebuild,
             RecoveryRecordKind::ChecksumBaseline,
+            RecoveryRecordKind::CodedCleanCapture,
         ],
     }
 }
@@ -207,6 +218,7 @@ pub enum RecoveryMigrationStep {
     AddMetadataLossAuditV2,
     AddOfflineRebuildV3,
     AddChecksumBaselineV4,
+    AddCodedCleanCaptureV5,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -240,6 +252,7 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ],
             (RecoverySchemaVersion(1), RecoverySchemaVersion(2)) => {
                 vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
@@ -252,6 +265,7 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ],
             (RecoverySchemaVersion(2), RecoverySchemaVersion(3)) => {
                 vec![RecoveryMigrationStep::AddOfflineRebuildV3]
@@ -259,9 +273,14 @@ impl RecoveryMigrationPlan {
             (RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA) => vec![
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ],
-            (RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA) => {
-                vec![RecoveryMigrationStep::AddChecksumBaselineV4]
+            (RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
+            ],
+            (RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA) => {
+                vec![RecoveryMigrationStep::AddCodedCleanCaptureV5]
             }
             _ => {
                 return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
@@ -328,6 +347,39 @@ impl RecoveryCommitObservation {
             Self::Rejected | Self::Lost => RecoveryDisposition::ReconcileReadOnly,
             Self::Corrupt => RecoveryDisposition::RebuildFromData,
         }
+    }
+}
+
+/// Owner-issued proof that one exact recovery transaction committed durably.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DurableRecoveryCommit {
+    expected_generation: RecoveryGeneration,
+    topology_epoch: TopologyEpoch,
+    committed_generation: RecoveryGeneration,
+    mutations: Vec<RecoveryMutation>,
+}
+
+impl DurableRecoveryCommit {
+    pub const fn generation(&self) -> RecoveryGeneration {
+        self.committed_generation
+    }
+
+    pub const fn expected_generation(&self) -> RecoveryGeneration {
+        self.expected_generation
+    }
+
+    pub const fn topology_epoch(&self) -> TopologyEpoch {
+        self.topology_epoch
+    }
+
+    pub fn committed_coded_capture(&self, snapshot: &CodedCaptureSnapshot) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                RecoveryMutation::UpsertCodedCapture { update }
+                    if update.proposed() == snapshot
+            )
+        })
     }
 }
 
@@ -597,6 +649,10 @@ pub struct RecoverySnapshot {
     pub maintenance_checkpoints: Vec<MaintenanceCheckpoint>,
     pub metadata_loss_audit: Option<MetadataLossAudit>,
     pub rebuilds: Vec<RebuildState>,
+    #[serde(default)]
+    pub coded_captures: Vec<CodedCaptureSnapshot>,
+    #[serde(default)]
+    pub next_coded_capture_id: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -617,6 +673,9 @@ pub struct RecoveryExportLimits {
     pub max_integrity_captures_per_fence: usize,
     pub max_digest_bytes: usize,
     pub max_rebuilds: usize,
+    pub max_coded_captures: usize,
+    pub max_coded_capture_units: usize,
+    pub max_coded_capture_memberships: usize,
 }
 
 impl Default for RecoveryExportLimits {
@@ -632,10 +691,12 @@ impl Default for RecoveryExportLimits {
             max_integrity_captures_per_fence: 16 * 1024,
             max_digest_bytes: 1024,
             max_rebuilds: 64,
+            max_coded_captures: 1024,
+            max_coded_capture_units: 64 * 1024,
+            max_coded_capture_memberships: 16 * 1024,
         }
     }
 }
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryError {
     Unhealthy(RecoveryStoreHealth),
@@ -681,6 +742,9 @@ pub enum TransitionError {
     IntegrityCoverageMissing,
     IntegrityContentGenerationFuture,
     IntegrityBindingMismatch,
+    CodedCaptureIdentityMismatch,
+    CodedCaptureMissing,
+    CodedCaptureTopologyMismatch,
 }
 
 impl fmt::Display for RecoveryError {
@@ -780,6 +844,12 @@ pub enum RecoveryMutation {
     CompleteOfflineRebuild {
         receipt: RebuildCompletionReceipt,
     },
+    UpsertCodedCapture {
+        update: CodedCaptureUpdate,
+    },
+    RemoveCodedCapture {
+        removal: CodedCaptureRemoval,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -861,6 +931,21 @@ pub trait RecoveryStateStore {
         }
         self.commit_durable(txn)
     }
+    fn commit_durable_receipt(
+        &mut self,
+        txn: RecoveryTxn,
+    ) -> Result<DurableRecoveryCommit, RecoveryError> {
+        let expected_generation = txn.expected_generation;
+        let topology_epoch = txn.expected_topology_epoch;
+        let mutations = txn.mutations.clone();
+        self.commit_durable(txn)
+            .map(|committed_generation| DurableRecoveryCommit {
+                expected_generation,
+                topology_epoch,
+                committed_generation,
+                mutations,
+            })
+    }
     fn export_manifest(
         &self,
         generation: RecoveryGeneration,
@@ -921,6 +1006,8 @@ impl MemoryRecoveryStore {
                 maintenance_checkpoints: Vec::new(),
                 metadata_loss_audit: None,
                 rebuilds: Vec::new(),
+                coded_captures: Vec::new(),
+                next_coded_capture_id: 0,
             },
             health: RecoveryStoreHealth::Healthy,
         }
@@ -1267,6 +1354,52 @@ impl MemoryRecoveryStore {
                     .apply_completion_receipt(receipt, snapshot.generation)
                     .map_err(RecoveryError::Rebuild)?;
             }
+            RecoveryMutation::UpsertCodedCapture { update } => {
+                let capture_snapshot = update.proposed().clone();
+                if capture_snapshot.topology.topology_epoch() != expected_topology_epoch
+                    || !capture_snapshot.validates_internal_state()
+                {
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::CodedCaptureTopologyMismatch,
+                    ));
+                }
+                let existing_index = snapshot
+                    .coded_captures
+                    .iter()
+                    .position(|existing| existing.capture == capture_snapshot.capture);
+                match (existing_index, update.expected()) {
+                    (Some(index), Some(expected))
+                        if snapshot.coded_captures.get(index) == Some(expected) =>
+                    {
+                        snapshot.coded_captures[index] = capture_snapshot;
+                    }
+                    (None, None)
+                        if capture_snapshot.capture.0 == snapshot.next_coded_capture_id =>
+                    {
+                        snapshot.next_coded_capture_id = snapshot
+                            .next_coded_capture_id
+                            .checked_add(1)
+                            .ok_or(RecoveryError::GenerationExhausted)?;
+                        snapshot.coded_captures.push(capture_snapshot);
+                    }
+                    _ => {
+                        return Err(RecoveryError::InvalidTransition(
+                            TransitionError::CodedCaptureIdentityMismatch,
+                        ));
+                    }
+                }
+            }
+            RecoveryMutation::RemoveCodedCapture { removal } => {
+                let expected = removal.expected();
+                let index = snapshot
+                    .coded_captures
+                    .iter()
+                    .position(|existing| existing == expected)
+                    .ok_or(RecoveryError::InvalidTransition(
+                        TransitionError::CodedCaptureMissing,
+                    ))?;
+                snapshot.coded_captures.remove(index);
+            }
         }
         Ok(())
     }
@@ -1331,6 +1464,21 @@ impl RecoveryStateStore for MemoryRecoveryStore {
 
 impl MemoryRecoveryStore {
     pub fn from_manifest(manifest: RecoveryManifest) -> Result<Self, RecoveryError> {
+        CodedCaptureCoordinator::from_snapshots(manifest.snapshot.coded_captures.clone()).map_err(
+            |_| RecoveryError::InvalidTransition(TransitionError::CodedCaptureIdentityMismatch),
+        )?;
+        let expected_next_capture = manifest
+            .snapshot
+            .coded_captures
+            .iter()
+            .map(|capture| capture.capture.0)
+            .max()
+            .map_or(0, |capture| capture.saturating_add(1));
+        if manifest.snapshot.next_coded_capture_id < expected_next_capture {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::CodedCaptureIdentityMismatch,
+            ));
+        }
         if manifest.schema != CURRENT_RECOVERY_SCHEMA {
             return Err(RecoveryError::UnsupportedSchemaMigration {
                 from: manifest.schema,
@@ -1427,6 +1575,19 @@ fn validate_export_limits(
     {
         return Err(RecoveryError::ExportLimitExceeded(
             RecoveryRecordKind::ChecksumBaseline,
+        ));
+    }
+    if snapshot.coded_captures.len() > limits.max_coded_captures
+        || snapshot.coded_captures.iter().any(|capture| {
+            capture.scope.len() > limits.max_coded_capture_units
+                || capture.membership.len() > limits.max_coded_capture_memberships
+                || capture.pending_later_cuts.len() > limits.max_coded_capture_memberships
+                || capture.release_authorized_operations.len()
+                    > limits.max_coded_capture_memberships
+        })
+    {
+        return Err(RecoveryError::ExportLimitExceeded(
+            RecoveryRecordKind::CodedCleanCapture,
         ));
     }
     if snapshot.fences.len() > limits.max_fences {
@@ -1938,6 +2099,7 @@ mod tests {
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ]
         );
         assert_eq!(
@@ -1948,6 +2110,7 @@ mod tests {
                 RecoveryMigrationStep::AddMetadataLossAuditV2,
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ]
         );
         assert_eq!(
@@ -1957,13 +2120,23 @@ mod tests {
             vec![
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
             ]
         );
         assert_eq!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::AddChecksumBaselineV4]
+            vec![
+                RecoveryMigrationStep::AddChecksumBaselineV4,
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
+            ]
+        );
+        assert_eq!(
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA)
+                .unwrap()
+                .steps,
+            vec![RecoveryMigrationStep::AddCodedCleanCaptureV5]
         );
         assert!(
             current_recovery_schema()
@@ -1974,6 +2147,11 @@ mod tests {
             current_recovery_schema()
                 .records
                 .contains(&RecoveryRecordKind::ChecksumBaseline)
+        );
+        assert!(
+            current_recovery_schema()
+                .records
+                .contains(&RecoveryRecordKind::CodedCleanCapture)
         );
         assert!(matches!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), CURRENT_RECOVERY_SCHEMA),

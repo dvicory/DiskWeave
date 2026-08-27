@@ -404,7 +404,7 @@ impl TopologyAssignment {
 }
 
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct TopologySnapshot {
     array_id: ArrayId,
     topology_epoch: TopologyEpoch,

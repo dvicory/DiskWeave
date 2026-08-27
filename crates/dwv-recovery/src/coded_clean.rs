@@ -1,10 +1,49 @@
 use crate::{
-    ChecksumProfileId, ChecksumSetGeneration, IntegrityExtentId, RecoveryGeneration, RegionId,
+    ChecksumProfile, ChecksumProfileId, ChecksumSetGeneration, CodedAdmission,
+    CodedAuthorityFrontier, CodedCaptureEstablishment, CodedClaimRelease, DurableRecoveryCommit,
+    IntegrityExtentId, RecoveryCleanPermit, RecoveryCleanRefusalPermit, RecoveryGeneration,
+    RegionId,
 };
 use dwv_core::{CodedUnitId, TopologyEpoch, TopologySnapshot};
 use dwv_store::OperationSlotToken;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
+
+mod operation_map_serde {
+    use dwv_store::OperationSlotToken;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Error};
+    use std::collections::BTreeMap;
+
+    pub fn serialize<S, V>(
+        map: &BTreeMap<OperationSlotToken, V>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+        V: Serialize,
+    {
+        map.iter().collect::<Vec<_>>().serialize(serializer)
+    }
+
+    pub fn deserialize<'de, D, V>(
+        deserializer: D,
+    ) -> Result<BTreeMap<OperationSlotToken, V>, D::Error>
+    where
+        D: Deserializer<'de>,
+        V: Deserialize<'de>,
+    {
+        let entries = Vec::<(OperationSlotToken, V)>::deserialize(deserializer)?;
+        let mut map = BTreeMap::new();
+        for (operation, value) in entries {
+            if map.insert(operation, value).is_some() {
+                return Err(D::Error::custom(
+                    "duplicate coded capture operation identity",
+                ));
+            }
+        }
+        Ok(map)
+    }
+}
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
@@ -17,28 +56,37 @@ pub struct CodedCaptureId(pub u64);
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]
 pub struct CodedCaptureFrontier {
-    pub recovery_generation: RecoveryGeneration,
-    pub admission_sequence: u64,
+    recovery_generation: RecoveryGeneration,
+    admission_sequence: u64,
 }
 
 impl CodedCaptureFrontier {
-    pub const fn new(recovery_generation: RecoveryGeneration, admission_sequence: u64) -> Self {
+    fn new(recovery_generation: RecoveryGeneration, admission_sequence: u64) -> Self {
         Self {
             recovery_generation,
             admission_sequence,
         }
     }
+
+    pub const fn recovery_generation(self) -> RecoveryGeneration {
+        self.recovery_generation
+    }
+
+    pub const fn admission_sequence(self) -> u64 {
+        self.admission_sequence
+    }
 }
+
 /// Owner-approved durable boundary for a mutation admitted after capture.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct CodedCaptureCut {
-    pub topology_epoch: TopologyEpoch,
-    pub recovery_generation: RecoveryGeneration,
-    pub frontier: CodedCaptureFrontier,
+    topology_epoch: TopologyEpoch,
+    recovery_generation: RecoveryGeneration,
+    frontier: CodedCaptureFrontier,
 }
 
 impl CodedCaptureCut {
-    pub const fn new(
+    fn new(
         topology_epoch: TopologyEpoch,
         recovery_generation: RecoveryGeneration,
         frontier: CodedCaptureFrontier,
@@ -49,6 +97,18 @@ impl CodedCaptureCut {
             frontier,
         }
     }
+
+    pub const fn topology_epoch(self) -> TopologyEpoch {
+        self.topology_epoch
+    }
+
+    pub const fn recovery_generation(self) -> RecoveryGeneration {
+        self.recovery_generation
+    }
+
+    pub const fn frontier(self) -> CodedCaptureFrontier {
+        self.frontier
+    }
 }
 /// Owner-approved evidence that exact resolved membership may be forgotten
 /// through a bounded frontier. Every current operation identity must be listed
@@ -56,6 +116,7 @@ impl CodedCaptureCut {
 /// every releasable identity must carry an external
 /// `ReleaseAllowed(operation-generation)` fact from the lifecycle owner. The
 /// coordinator does not infer historicality from capture-local membership.
+#[cfg(test)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CodedCaptureRetentionSummary {
     pub capture: CodedCaptureId,
@@ -66,6 +127,7 @@ pub struct CodedCaptureRetentionSummary {
     pub release_authorized_operations: BTreeSet<OperationSlotToken>,
 }
 
+#[cfg(test)]
 impl CodedCaptureRetentionSummary {
     pub fn new(
         capture: CodedCaptureId,
@@ -105,6 +167,7 @@ impl CodedCaptureRetentionSummary {
 /// and retained frontiers; that superseding dirty/recovery boundary ends the
 /// capture's future-exclusion responsibility. A `Refused` capture has no
 /// future-exclusion obligation.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CodedCaptureRetirement {
     pub capture: CodedCaptureId,
@@ -112,6 +175,7 @@ pub struct CodedCaptureRetirement {
     pub frontier: CodedCaptureFrontier,
 }
 
+#[cfg(test)]
 impl CodedCaptureRetirement {
     pub const fn new(
         capture: CodedCaptureId,
@@ -137,7 +201,7 @@ pub struct CodedCaptureOwnerFacts {
     pub recovery_generation: RecoveryGeneration,
     pub checksum_profile: ChecksumProfileId,
     pub checksum_set_generation: ChecksumSetGeneration,
-    pub scope: CodedCaptureScopeInput,
+    pub scope: ValidatedCodedCaptureScope,
     pub dirty_regions: BTreeSet<RegionId>,
     pub checksum_extents: BTreeSet<IntegrityExtentId>,
     pub lower_frontier: CodedCaptureFrontier,
@@ -146,12 +210,12 @@ pub struct CodedCaptureOwnerFacts {
 
 impl CodedCaptureOwnerFacts {
     #[allow(clippy::too_many_arguments)]
-    pub fn new(
+    fn new(
         topology: TopologySnapshot,
         recovery_generation: RecoveryGeneration,
         checksum_profile: ChecksumProfileId,
         checksum_set_generation: ChecksumSetGeneration,
-        scope: CodedCaptureScopeInput,
+        scope: ValidatedCodedCaptureScope,
         dirty_regions: impl IntoIterator<Item = RegionId>,
         checksum_extents: impl IntoIterator<Item = IntegrityExtentId>,
         lower_frontier: CodedCaptureFrontier,
@@ -169,53 +233,143 @@ impl CodedCaptureOwnerFacts {
             capture_frontier,
         }
     }
+
+    /// Build the complete coded scope that can invalidate the selected dirty
+    /// regions or checksum extents under the captured topology and profiles.
+    pub fn selected_invalidation_scope(
+        topology: &TopologySnapshot,
+        dirty_regions: impl IntoIterator<Item = RegionId>,
+        checksum_extents: impl IntoIterator<Item = IntegrityExtentId>,
+        dirty_region_bytes: u64,
+        checksum_profile: ChecksumProfile,
+    ) -> Result<ValidatedCodedCaptureScope, CodedCaptureError> {
+        if dirty_region_bytes == 0
+            || checksum_profile.extent_size == 0
+            || topology.geometry().logical_block_size() == 0
+        {
+            return Err(CodedCaptureError::InvalidScopeGeometry);
+        }
+        let dirty_regions = dirty_regions.into_iter().collect::<BTreeSet<_>>();
+        let checksum_extents = checksum_extents.into_iter().collect::<BTreeSet<_>>();
+        let protected_length = topology.geometry().protected_length();
+        let logical_block = u64::from(topology.geometry().logical_block_size());
+        let checksum_extents_per_member = protected_length.div_ceil(checksum_profile.extent_size);
+        let coding_positions = topology
+            .assignments()
+            .iter()
+            .map(|assignment| u32::from(assignment.coding_position().0))
+            .collect::<BTreeSet<_>>();
+        let mut units = BTreeSet::new();
+        let mut add_range = |offset: u64, length: u64| -> Result<(), CodedCaptureError> {
+            let end = offset
+                .checked_add(length)
+                .map(|end| end.min(protected_length))
+                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
+            if offset >= end {
+                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
+            }
+            let first = offset / logical_block;
+            let last = (end - 1) / logical_block;
+            units.extend((first..=last).map(CodedUnitId));
+            Ok(())
+        };
+        for region in &dirty_regions {
+            let coding_position = u32::try_from(region.0 >> 32)
+                .map_err(|_| CodedCaptureError::ScopeIdentityOutOfRange)?;
+            if !coding_positions.contains(&coding_position) {
+                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
+            }
+            let region_index = region.0 & u64::from(u32::MAX);
+            let offset = region_index
+                .checked_mul(dirty_region_bytes)
+                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
+            add_range(offset, dirty_region_bytes)?;
+        }
+        for extent in &checksum_extents {
+            if checksum_extents_per_member == 0 {
+                return Err(CodedCaptureError::InvalidScopeGeometry);
+            }
+            let coding_position = extent.0 / checksum_extents_per_member;
+            let coding_position = u32::try_from(coding_position)
+                .map_err(|_| CodedCaptureError::ScopeIdentityOutOfRange)?;
+            if !coding_positions.contains(&coding_position) {
+                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
+            }
+            let extent_index = extent.0 % checksum_extents_per_member;
+            let offset = extent_index
+                .checked_mul(checksum_profile.extent_size)
+                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
+            add_range(offset, checksum_profile.extent_size)?;
+        }
+        if units.is_empty() {
+            return Err(CodedCaptureError::EmptyScope);
+        }
+        Ok(ValidatedCodedCaptureScope::validated(
+            units,
+            topology.clone(),
+            dirty_regions,
+            checksum_extents,
+            dirty_region_bytes,
+            checksum_profile,
+        ))
+    }
+}
+
+/// Exact future-inclusive coded scope computed from owner geometry.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedCodedCaptureScope {
+    units: BTreeSet<CodedUnitId>,
+    binding: Option<CaptureScopeBinding>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodedCaptureScopeInput {
-    units: BTreeSet<CodedUnitId>,
-    complete: bool,
-    validated: bool,
-    lower_frontier_covered: bool,
+struct CaptureScopeBinding {
+    topology: TopologySnapshot,
+    dirty_regions: BTreeSet<RegionId>,
+    checksum_extents: BTreeSet<IntegrityExtentId>,
+    dirty_region_bytes: u64,
+    checksum_profile: ChecksumProfile,
 }
 
-impl CodedCaptureScopeInput {
-    pub fn new(
-        units: impl IntoIterator<Item = CodedUnitId>,
-        complete: bool,
-        validated: bool,
-        lower_frontier_covered: bool,
+impl ValidatedCodedCaptureScope {
+    fn validated(
+        units: BTreeSet<CodedUnitId>,
+        topology: TopologySnapshot,
+        dirty_regions: BTreeSet<RegionId>,
+        checksum_extents: BTreeSet<IntegrityExtentId>,
+        dirty_region_bytes: u64,
+        checksum_profile: ChecksumProfile,
     ) -> Self {
         Self {
-            units: units.into_iter().collect(),
-            complete,
-            validated,
-            lower_frontier_covered,
+            units,
+            binding: Some(CaptureScopeBinding {
+                topology,
+                dirty_regions,
+                checksum_extents,
+                dirty_region_bytes,
+                checksum_profile,
+            }),
         }
     }
 
-    pub fn complete(units: impl IntoIterator<Item = CodedUnitId>) -> Self {
-        Self::new(units, true, true, true)
+    fn from_snapshot_units(units: impl IntoIterator<Item = CodedUnitId>) -> Self {
+        Self {
+            units: units.into_iter().collect(),
+            binding: None,
+        }
+    }
+
+    #[cfg(test)]
+    fn complete(units: impl IntoIterator<Item = CodedUnitId>) -> Self {
+        Self::from_snapshot_units(units)
     }
 
     pub fn units(&self) -> &BTreeSet<CodedUnitId> {
         &self.units
     }
-
-    pub const fn is_complete(&self) -> bool {
-        self.complete
-    }
-
-    pub const fn is_validated(&self) -> bool {
-        self.validated
-    }
-
-    pub const fn lower_frontier_covered(&self) -> bool {
-        self.lower_frontier_covered
-    }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum CodedCapturePhase {
     Open,
     CleanCommitPending,
@@ -224,7 +378,7 @@ pub enum CodedCapturePhase {
     Refused,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum CodedCaptureMembership {
     Included,
     Later,
@@ -234,7 +388,7 @@ pub enum CodedCaptureMembership {
     LaterUnknown,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub enum CodedCaptureDecision {
     Accepted,
     Rejected,
@@ -268,7 +422,7 @@ pub enum CodedLaterCutReconciliation {
     Rejected,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct CodedCaptureSnapshot {
     pub phase: CodedCapturePhase,
     pub capture: CodedCaptureId,
@@ -285,10 +439,190 @@ pub struct CodedCaptureSnapshot {
     pub lower_frontier: CodedCaptureFrontier,
     pub capture_frontier: CodedCaptureFrontier,
     pub retained_frontier: CodedCaptureFrontier,
+    #[serde(with = "operation_map_serde")]
     pub membership: BTreeMap<OperationSlotToken, CodedCaptureMembership>,
     /// Exact post-capture cut retained for each unresolved `LaterUnknown`.
+    #[serde(with = "operation_map_serde")]
     pub pending_later_cuts: BTreeMap<OperationSlotToken, CodedCaptureCut>,
+    /// Exact owner-confirmed cuts retained until their operations are compacted.
+    #[serde(default, with = "operation_map_serde")]
+    pub resolved_later_cuts: BTreeMap<OperationSlotToken, CodedCaptureCut>,
+    /// Newer durable dirty/recovery boundary that can supersede future exclusion.
+    #[serde(default)]
+    pub retirement_frontier: Option<CodedCaptureFrontier>,
+    pub release_authorized_operations: BTreeSet<OperationSlotToken>,
+    #[serde(default, with = "operation_map_serde")]
+    pub release_frontiers: BTreeMap<OperationSlotToken, CodedAuthorityFrontier>,
     pub decision: Option<CodedCaptureDecision>,
+}
+impl CodedCaptureSnapshot {
+    pub(crate) fn validates_internal_state(&self) -> bool {
+        let decision_valid = match self.phase {
+            CodedCapturePhase::Open => self.decision != Some(CodedCaptureDecision::Rejected),
+            CodedCapturePhase::CleanCommitPending
+            | CodedCapturePhase::CleanCommitUnknown
+            | CodedCapturePhase::CleanKnown => {
+                self.decision == Some(CodedCaptureDecision::Accepted)
+            }
+            CodedCapturePhase::Refused => true,
+        };
+        let pending = self
+            .membership
+            .iter()
+            .filter_map(|(operation, membership)| {
+                (*membership == CodedCaptureMembership::LaterUnknown).then_some(*operation)
+            })
+            .collect::<BTreeSet<_>>();
+        let resolved = self
+            .membership
+            .iter()
+            .filter_map(|(operation, membership)| {
+                matches!(
+                    membership,
+                    CodedCaptureMembership::LaterDurableAfterClean
+                        | CodedCaptureMembership::LaterDurableStalesClean
+                )
+                .then_some(*operation)
+            })
+            .collect::<BTreeSet<_>>();
+        let cut_valid = |cut: &CodedCaptureCut| {
+            cut.topology_epoch == self.topology.topology_epoch()
+                && cut.recovery_generation == cut.frontier.recovery_generation
+                && cut.frontier > self.capture_frontier
+        };
+        !self.scope.is_empty()
+            && self.scope_complete
+            && self.scope_validated
+            && self.lower_frontier_covered
+            && self.lower_frontier.recovery_generation == self.recovery_generation
+            && self.capture_frontier.recovery_generation == self.recovery_generation
+            && self.lower_frontier <= self.capture_frontier
+            && self.retained_frontier >= self.lower_frontier
+            && self
+                .retirement_frontier
+                .is_none_or(|frontier| frontier > self.capture_frontier)
+            && decision_valid
+            && pending == self.pending_later_cuts.keys().copied().collect()
+            && resolved == self.resolved_later_cuts.keys().copied().collect()
+            && self.pending_later_cuts.values().all(cut_valid)
+            && self.resolved_later_cuts.values().all(cut_valid)
+            && self
+                .release_authorized_operations
+                .is_subset(&self.membership.keys().copied().collect())
+            && self.release_authorized_operations
+                == self.release_frontiers.keys().copied().collect()
+            && !(self.phase == CodedCapturePhase::CleanKnown
+                && self.membership.values().any(|membership| {
+                    *membership == CodedCaptureMembership::LaterDurableStalesClean
+                }))
+            && !(self.phase == CodedCapturePhase::Open
+                && self.membership.values().any(|membership| {
+                    *membership == CodedCaptureMembership::LaterDurableAfterClean
+                }))
+    }
+}
+
+/// Coordinator-issued exact current-to-proposed durable capture transition.
+///
+/// This capability is intentionally not deserializable: persisted snapshots
+/// are data, while a transition must be issued by the live coordinator.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodedCaptureUpdate {
+    expected: Option<CodedCaptureSnapshot>,
+    proposed: CodedCaptureSnapshot,
+}
+
+impl CodedCaptureUpdate {
+    pub(crate) fn expected(&self) -> Option<&CodedCaptureSnapshot> {
+        self.expected.as_ref()
+    }
+
+    pub(crate) fn proposed(&self) -> &CodedCaptureSnapshot {
+        &self.proposed
+    }
+}
+
+/// Recovery-inspection-issued exact uncertain-transition resolution.
+pub struct CodedCaptureReconciliationReceipt {
+    expected_unknown: CodedCaptureSnapshot,
+    resolved: CodedCaptureSnapshot,
+}
+
+impl CodedCaptureReconciliationReceipt {
+    pub(crate) fn new(
+        expected_unknown: CodedCaptureSnapshot,
+        resolved: CodedCaptureSnapshot,
+    ) -> Self {
+        Self {
+            expected_unknown,
+            resolved,
+        }
+    }
+
+    pub const fn capture(&self) -> CodedCaptureId {
+        self.resolved.capture
+    }
+}
+
+/// One exact owner-evaluated CLEAN transition awaiting its recovery commit.
+#[must_use = "prepared CLEAN transitions must be committed or discarded"]
+pub struct PreparedCodedCleanCommit {
+    capture: CodedCaptureId,
+    expected_generation: RecoveryGeneration,
+    prior: CodedCaptureSnapshot,
+    proposed: CodedCaptureSnapshot,
+    proposed_record: CaptureRecord,
+}
+
+/// Coordinator-issued proof that one exact durable capture is retirable.
+///
+/// This capability is intentionally not deserializable or reconstructible from
+/// a persisted snapshot.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodedCaptureRemoval {
+    expected: CodedCaptureSnapshot,
+}
+
+impl CodedCaptureRemoval {
+    pub(crate) fn expected(&self) -> &CodedCaptureSnapshot {
+        &self.expected
+    }
+}
+
+impl PreparedCodedCleanCommit {
+    pub fn snapshot(&self) -> &CodedCaptureSnapshot {
+        &self.proposed
+    }
+
+    pub fn update(&self) -> CodedCaptureUpdate {
+        CodedCaptureUpdate {
+            expected: Some(self.prior.clone()),
+            proposed: self.proposed.clone(),
+        }
+    }
+}
+
+/// One exact later-cut transition awaiting its write-recovery commit.
+#[must_use = "prepared later cuts must be committed or discarded"]
+pub struct PreparedCodedLaterCut {
+    capture: CodedCaptureId,
+    expected_generation: RecoveryGeneration,
+    prior: CodedCaptureSnapshot,
+    proposed: CodedCaptureSnapshot,
+    proposed_record: CaptureRecord,
+}
+
+impl PreparedCodedLaterCut {
+    pub fn snapshot(&self) -> &CodedCaptureSnapshot {
+        &self.proposed
+    }
+
+    pub fn update(&self) -> CodedCaptureUpdate {
+        CodedCaptureUpdate {
+            expected: Some(self.prior.clone()),
+            proposed: self.proposed.clone(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -297,6 +631,12 @@ pub enum CodedCaptureError {
     IncompleteScope,
     UnvalidatedScope,
     LowerFrontierUncovered,
+    InvalidScopeGeometry,
+    ScopeIdentityOutOfRange,
+    ScopeArithmeticOverflow,
+    PreparedTransitionStale(CodedCaptureId),
+    DurableReceiptMismatch(CodedCaptureId),
+    SnapshotInvalid(CodedCaptureId),
     CaptureFrontierGenerationMismatch(CodedCaptureId),
     RetentionSummaryInvalid(CodedCaptureId),
     RetentionFrontierStale(CodedCaptureId),
@@ -338,6 +678,30 @@ impl fmt::Display for CodedCaptureError {
             Self::UnvalidatedScope => formatter.write_str("coded capture scope is not validated"),
             Self::LowerFrontierUncovered => {
                 formatter.write_str("coded capture lower frontier is not covered")
+            }
+            Self::InvalidScopeGeometry => {
+                formatter.write_str("coded capture scope geometry is invalid")
+            }
+            Self::ScopeIdentityOutOfRange => {
+                formatter.write_str("coded capture scope identity is outside the topology")
+            }
+            Self::ScopeArithmeticOverflow => {
+                formatter.write_str("coded capture scope arithmetic overflowed")
+            }
+            Self::PreparedTransitionStale(capture) => {
+                write!(
+                    formatter,
+                    "prepared transition for capture {capture:?} is stale"
+                )
+            }
+            Self::DurableReceiptMismatch(capture) => {
+                write!(
+                    formatter,
+                    "durable receipt does not cover capture {capture:?}"
+                )
+            }
+            Self::SnapshotInvalid(capture) => {
+                write!(formatter, "durable coded capture {capture:?} is invalid")
             }
             Self::CaptureFrontierGenerationMismatch(capture) => write!(
                 formatter,
@@ -435,7 +799,11 @@ struct CaptureRecord {
     scope: BTreeSet<CodedUnitId>,
     membership: BTreeMap<OperationSlotToken, CodedCaptureMembership>,
     pending_later_cuts: BTreeMap<OperationSlotToken, CodedCaptureCut>,
+    resolved_later_cuts: BTreeMap<OperationSlotToken, CodedCaptureCut>,
+    release_authorized_operations: BTreeSet<OperationSlotToken>,
+    release_frontiers: BTreeMap<OperationSlotToken, CodedAuthorityFrontier>,
     retained_frontier: CodedCaptureFrontier,
+    retirement_frontier: Option<CodedCaptureFrontier>,
     decision: Option<CodedCaptureDecision>,
 }
 
@@ -449,9 +817,9 @@ impl CaptureRecord {
             checksum_profile: self.owner_facts.checksum_profile,
             checksum_set_generation: self.owner_facts.checksum_set_generation,
             scope: self.scope.clone(),
-            scope_complete: self.owner_facts.scope.is_complete(),
-            scope_validated: self.owner_facts.scope.is_validated(),
-            lower_frontier_covered: self.owner_facts.scope.lower_frontier_covered(),
+            scope_complete: true,
+            scope_validated: true,
+            lower_frontier_covered: true,
             dirty_regions: self.owner_facts.dirty_regions.clone(),
             checksum_extents: self.owner_facts.checksum_extents.clone(),
             lower_frontier: self.owner_facts.lower_frontier,
@@ -459,6 +827,10 @@ impl CaptureRecord {
             retained_frontier: self.retained_frontier,
             membership: self.membership.clone(),
             pending_later_cuts: self.pending_later_cuts.clone(),
+            resolved_later_cuts: self.resolved_later_cuts.clone(),
+            release_authorized_operations: self.release_authorized_operations.clone(),
+            release_frontiers: self.release_frontiers.clone(),
+            retirement_frontier: self.retirement_frontier,
             decision: self.decision,
         }
     }
@@ -471,9 +843,8 @@ impl CaptureRecord {
         !matches!(self.phase, CodedCapturePhase::Refused)
     }
 
-    fn clean_eligible(&self) -> bool {
+    fn mutation_set_closed(&self) -> bool {
         !self.scope.is_empty()
-            && self.decision == Some(CodedCaptureDecision::Accepted)
             && !self.membership.values().any(|membership| {
                 matches!(
                     membership,
@@ -482,6 +853,12 @@ impl CaptureRecord {
                 )
             })
     }
+
+    #[cfg(any(test, feature = "test-support"))]
+    fn clean_eligible(&self) -> bool {
+        self.decision == Some(CodedCaptureDecision::Accepted) && self.mutation_set_closed()
+    }
+
     fn accepts_later_cut(&self, cut: CodedCaptureCut) -> bool {
         let prior_frontier = self
             .owner_facts
@@ -500,7 +877,9 @@ impl CaptureRecord {
             return Ok(());
         };
         let resolved = match membership {
-            CodedCaptureMembership::Included => self.decision.is_some(),
+            CodedCaptureMembership::Included => {
+                self.decision.is_some() || self.phase == CodedCapturePhase::Refused
+            }
             CodedCaptureMembership::LaterDurableAfterClean
             | CodedCaptureMembership::LaterDurableStalesClean
             | CodedCaptureMembership::LaterRejected => true,
@@ -512,7 +891,7 @@ impl CaptureRecord {
     }
 }
 /// dwv:req req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct CodedCaptureCoordinator {
     captures: BTreeMap<CodedCaptureId, CaptureRecord>,
 }
@@ -522,8 +901,202 @@ impl CodedCaptureCoordinator {
         Self::default()
     }
 
-    /// Start a bounded capture from exact owner facts and a complete scope.
+    pub(crate) fn from_snapshots(
+        snapshots: impl IntoIterator<Item = CodedCaptureSnapshot>,
+    ) -> Result<Self, CodedCaptureError> {
+        let mut coordinator = Self::new();
+        for snapshot in snapshots {
+            let capture = snapshot.capture;
+            if !snapshot.scope_complete
+                || !snapshot.scope_validated
+                || !snapshot.lower_frontier_covered
+            {
+                return Err(CodedCaptureError::SnapshotInvalid(capture));
+            }
+            let owner_facts = CodedCaptureOwnerFacts::new(
+                snapshot.topology.clone(),
+                snapshot.recovery_generation,
+                snapshot.checksum_profile,
+                snapshot.checksum_set_generation,
+                ValidatedCodedCaptureScope::from_snapshot_units(snapshot.scope.iter().copied()),
+                snapshot.dirty_regions.iter().copied(),
+                snapshot.checksum_extents.iter().copied(),
+                snapshot.lower_frontier,
+                snapshot.capture_frontier,
+            );
+            coordinator.insert_capture(capture, owner_facts, [])?;
+            coordinator.restore_snapshot_state(snapshot)?;
+        }
+        Ok(coordinator)
+    }
+    pub fn from_snapshots_for_owner(
+        snapshots: impl IntoIterator<Item = CodedCaptureSnapshot>,
+        topology: &TopologySnapshot,
+        recovery_generation: RecoveryGeneration,
+        checksum_profile: ChecksumProfile,
+        checksum_set_generation: ChecksumSetGeneration,
+        dirty_region_bytes: u64,
+    ) -> Result<Self, CodedCaptureError> {
+        let mut coordinator = Self::new();
+        for snapshot in snapshots {
+            let capture = snapshot.capture;
+            let scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
+                topology,
+                snapshot.dirty_regions.iter().copied(),
+                snapshot.checksum_extents.iter().copied(),
+                dirty_region_bytes,
+                checksum_profile,
+            )
+            .map_err(|_| CodedCaptureError::SnapshotInvalid(capture))?;
+            if !snapshot.scope_complete
+                || !snapshot.scope_validated
+                || !snapshot.lower_frontier_covered
+                || snapshot.topology != *topology
+                || snapshot.recovery_generation > recovery_generation
+                || snapshot.checksum_profile != checksum_profile.id
+                || snapshot.checksum_set_generation != checksum_set_generation
+                || snapshot.scope != *scope.units()
+                || snapshot.lower_frontier.recovery_generation != snapshot.recovery_generation
+                || snapshot.capture_frontier.recovery_generation != snapshot.recovery_generation
+                || snapshot.retained_frontier < snapshot.lower_frontier
+                || snapshot.retained_frontier.recovery_generation > recovery_generation
+            {
+                return Err(CodedCaptureError::SnapshotInvalid(capture));
+            }
+            let owner_facts = CodedCaptureOwnerFacts::new(
+                snapshot.topology.clone(),
+                snapshot.recovery_generation,
+                snapshot.checksum_profile,
+                snapshot.checksum_set_generation,
+                scope,
+                snapshot.dirty_regions.iter().copied(),
+                snapshot.checksum_extents.iter().copied(),
+                snapshot.lower_frontier,
+                snapshot.capture_frontier,
+            );
+            coordinator.insert_capture(capture, owner_facts, [])?;
+            coordinator.restore_snapshot_state(snapshot)?;
+        }
+        Ok(coordinator)
+    }
+    fn restore_snapshot_state(
+        &mut self,
+        snapshot: CodedCaptureSnapshot,
+    ) -> Result<(), CodedCaptureError> {
+        let capture = snapshot.capture;
+        let record = self.record_mut(capture)?;
+        if !snapshot.validates_internal_state() {
+            return Err(CodedCaptureError::SnapshotInvalid(capture));
+        }
+        record.phase = snapshot.phase;
+        record.membership = snapshot.membership;
+        record.pending_later_cuts = snapshot.pending_later_cuts;
+        record.resolved_later_cuts = snapshot.resolved_later_cuts;
+        record.release_authorized_operations = snapshot.release_authorized_operations;
+        record.retained_frontier = snapshot.retained_frontier;
+        record.release_frontiers = snapshot.release_frontiers;
+        record.retirement_frontier = snapshot.retirement_frontier;
+        record.decision = snapshot.decision;
+        Ok(())
+    }
+
+    pub fn snapshots(&self) -> Vec<CodedCaptureSnapshot> {
+        self.captures
+            .iter()
+            .map(|(capture, record)| record.snapshot(*capture))
+            .collect()
+    }
+
+    pub fn durable_update(
+        &self,
+        capture: CodedCaptureId,
+        expected: Option<&CodedCaptureSnapshot>,
+    ) -> Result<CodedCaptureUpdate, CodedCaptureError> {
+        if expected.is_some_and(|snapshot| snapshot.capture != capture) {
+            return Err(CodedCaptureError::SnapshotInvalid(capture));
+        }
+        let proposed = self
+            .capture_snapshot(capture)
+            .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        Ok(CodedCaptureUpdate {
+            expected: expected.cloned(),
+            proposed,
+        })
+    }
+
+    pub fn has_unresolved_reopen_state(&self) -> bool {
+        self.captures.values().any(|record| {
+            matches!(
+                record.phase,
+                CodedCapturePhase::Open
+                    | CodedCapturePhase::CleanCommitPending
+                    | CodedCapturePhase::CleanCommitUnknown
+            ) || !record.pending_later_cuts.is_empty()
+                || record
+                    .membership
+                    .keys()
+                    .any(|operation| !record.release_authorized_operations.contains(operation))
+        })
+    }
+
+    /// Retain one exact lifecycle release receipt for every affected capture.
+    pub fn observe_release_allowed(&mut self, release: &CodedClaimRelease) -> bool {
+        let operation = release.operation();
+        let mut observed = false;
+        for record in self.captures.values_mut() {
+            if record.membership.contains_key(&operation) {
+                observed |= record.release_authorized_operations.insert(operation);
+                record
+                    .release_frontiers
+                    .insert(operation, release.frontier());
+            }
+        }
+        observed
+    }
+
+    /// Start a bounded capture from capabilities issued by the scope and
+    /// coded-admission owners.
     pub fn start_capture(
+        &mut self,
+        capture: CodedCaptureId,
+        recovery_generation: RecoveryGeneration,
+        checksum_set_generation: ChecksumSetGeneration,
+        scope: ValidatedCodedCaptureScope,
+        establishment: CodedCaptureEstablishment,
+    ) -> Result<(), CodedCaptureError> {
+        let (history, boundary, active_claims) = establishment.into_parts();
+        if scope.units.is_empty() {
+            return Err(CodedCaptureError::EmptyScope);
+        }
+        let binding = scope
+            .binding
+            .as_ref()
+            .ok_or(CodedCaptureError::UnvalidatedScope)?;
+        let lower_frontier =
+            CodedCaptureFrontier::new(recovery_generation, history.through_sequence());
+        let capture_frontier =
+            CodedCaptureFrontier::new(recovery_generation, boundary.capture_sequence());
+        let owner_facts = CodedCaptureOwnerFacts::new(
+            binding.topology.clone(),
+            recovery_generation,
+            binding.checksum_profile.id,
+            checksum_set_generation,
+            scope.clone(),
+            binding.dirty_regions.iter().copied(),
+            binding.checksum_extents.iter().copied(),
+            lower_frontier,
+            capture_frontier,
+        );
+        self.insert_capture(
+            capture,
+            owner_facts,
+            active_claims
+                .into_iter()
+                .map(|admission| (admission.operation(), admission.units().clone())),
+        )
+    }
+
+    fn insert_capture(
         &mut self,
         capture: CodedCaptureId,
         owner_facts: CodedCaptureOwnerFacts,
@@ -535,15 +1108,6 @@ impl CodedCaptureCoordinator {
         let scope = owner_facts.scope.clone();
         if scope.units.is_empty() {
             return Err(CodedCaptureError::EmptyScope);
-        }
-        if !scope.complete {
-            return Err(CodedCaptureError::IncompleteScope);
-        }
-        if !scope.validated {
-            return Err(CodedCaptureError::UnvalidatedScope);
-        }
-        if !scope.lower_frontier_covered {
-            return Err(CodedCaptureError::LowerFrontierUncovered);
         }
         if owner_facts.capture_frontier.recovery_generation != owner_facts.recovery_generation {
             return Err(CodedCaptureError::CaptureFrontierGenerationMismatch(
@@ -572,7 +1136,11 @@ impl CodedCaptureCoordinator {
                 scope: scope.units,
                 membership,
                 pending_later_cuts: BTreeMap::new(),
+                resolved_later_cuts: BTreeMap::new(),
+                release_authorized_operations: BTreeSet::new(),
+                release_frontiers: BTreeMap::new(),
                 retained_frontier,
+                retirement_frontier: None,
                 decision: None,
             },
         );
@@ -580,18 +1148,36 @@ impl CodedCaptureCoordinator {
     }
 
     /// Observe a later admitted claim against every active capture.
-    pub fn observe_admitted_claim(
-        &mut self,
-        operation: OperationSlotToken,
-        units: &BTreeSet<CodedUnitId>,
-    ) {
+    pub fn observe_admitted_claim(&mut self, admission: &CodedAdmission) {
         for capture in self.captures.values_mut() {
-            if capture.tracks_future() && capture.intersects(units) {
+            if capture.tracks_future() && capture.intersects(admission.units()) {
                 capture
                     .membership
-                    .insert(operation, CodedCaptureMembership::Later);
+                    .insert(admission.operation(), CodedCaptureMembership::Later);
             }
         }
+    }
+
+    /// Stage an owner-produced cut for a later admitted operation.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe_later_admission(
+        &mut self,
+        capture: CodedCaptureId,
+        admission: &CodedAdmission,
+        topology_epoch: TopologyEpoch,
+        recovery_generation: RecoveryGeneration,
+        observation: CodedLaterCutObservation,
+    ) -> Result<(), CodedCaptureError> {
+        self.apply_later_cut(
+            capture,
+            admission.operation(),
+            CodedCaptureCut::new(
+                topology_epoch,
+                recovery_generation,
+                CodedCaptureFrontier::new(recovery_generation, admission.sequence()),
+            ),
+            observation,
+        )
     }
 
     /// Return whether every applicable active capture permits the operation's effect.
@@ -610,15 +1196,127 @@ impl CodedCaptureCoordinator {
         })
     }
 
-    /// Consume an owner-approved summary and forget only its exact resolved
-    /// operation identities. Live or unresolved membership remains retained.
-    pub fn compact_capture(
+    /// Retire only a resolved capture whose remaining exclusion duty ended.
+    ///
+    /// A durable refusal leaves conservative dirty state and has no future
+    /// exclusion duty, so its stale in-process membership need not acquire
+    /// lifecycle release receipts after a process restart. A known CLEAN still
+    /// requires empty membership and a newer durable retirement frontier.
+    pub fn retire_resolved_capture(
+        &mut self,
+        capture: CodedCaptureId,
+    ) -> Result<CodedCaptureRemoval, CodedCaptureError> {
+        let expected = self
+            .capture_snapshot(capture)
+            .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        let record = self.record_mut(capture)?;
+        let retirable = match record.phase {
+            CodedCapturePhase::Refused => true,
+            CodedCapturePhase::CleanKnown => {
+                record.membership.is_empty()
+                    && record.pending_later_cuts.is_empty()
+                    && record.retirement_frontier.is_some_and(|frontier| {
+                        frontier
+                            > record
+                                .owner_facts
+                                .capture_frontier
+                                .max(record.retained_frontier)
+                    })
+            }
+            _ => false,
+        };
+        if !retirable {
+            return Err(CodedCaptureError::CaptureNotRetirable(capture));
+        }
+        self.captures.remove(&capture);
+        Ok(CodedCaptureRemoval { expected })
+    }
+
+    /// Forget one lifecycle-released operation under its owner-issued receipt.
+    pub fn compact_released_operation(
+        &mut self,
+        release: &CodedClaimRelease,
+        recovery_generation: RecoveryGeneration,
+    ) -> Result<Vec<CodedCaptureId>, CodedCaptureError> {
+        let operation = release.operation();
+        let frontier =
+            CodedCaptureFrontier::new(recovery_generation, release.frontier().admission_sequence());
+        let captures = self
+            .captures
+            .iter()
+            .filter_map(|(capture, record)| {
+                record
+                    .membership
+                    .contains_key(&operation)
+                    .then_some(*capture)
+            })
+            .collect::<Vec<_>>();
+        for capture in &captures {
+            let record = self.record_mut(*capture)?;
+            if !record.release_authorized_operations.contains(&operation) {
+                return Err(CodedCaptureError::RetentionSummaryInvalid(*capture));
+            }
+            match record.can_forget_operation(*capture, operation) {
+                Ok(()) => {
+                    record.membership.remove(&operation);
+                    record.pending_later_cuts.remove(&operation);
+                    record.resolved_later_cuts.remove(&operation);
+                    record.release_authorized_operations.remove(&operation);
+                    record.release_frontiers.remove(&operation);
+                    record.retained_frontier = record.retained_frontier.max(frontier);
+                }
+                Err(CodedCaptureError::CaptureOperationUnresolved { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(captures)
+    }
+
+    /// Compact retained lifecycle receipts whose outcome is now resolved.
+    pub fn compact_authorized_operations(
+        &mut self,
+        capture: CodedCaptureId,
+        recovery_generation: RecoveryGeneration,
+    ) -> Result<bool, CodedCaptureError> {
+        let operations = self
+            .record_mut(capture)?
+            .release_frontiers
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
+        let mut changed = false;
+        for operation in operations {
+            let record = self.record_mut(capture)?;
+            if record.can_forget_operation(capture, operation).is_err() {
+                continue;
+            }
+            let authority_frontier = record.release_frontiers[&operation];
+            let frontier = CodedCaptureFrontier::new(
+                recovery_generation,
+                authority_frontier.admission_sequence(),
+            );
+            record.membership.remove(&operation);
+            record.pending_later_cuts.remove(&operation);
+            record.resolved_later_cuts.remove(&operation);
+            record.release_authorized_operations.remove(&operation);
+            record.release_frontiers.remove(&operation);
+            record.retained_frontier = record.retained_frontier.max(frontier);
+            changed = true;
+        }
+        Ok(changed)
+    }
+
+    #[cfg(test)]
+    fn apply_compaction(
         &mut self,
         summary: CodedCaptureRetentionSummary,
     ) -> Result<(), CodedCaptureError> {
         let record = self.record_mut(summary.capture)?;
         if summary.topology_epoch != record.owner_facts.topology.topology_epoch()
             || summary.release_authorized_operations != summary.releasable_operations
+            || !summary
+                .releasable_operations
+                .is_subset(&record.release_authorized_operations)
         {
             return Err(CodedCaptureError::RetentionSummaryInvalid(summary.capture));
         }
@@ -640,14 +1338,14 @@ impl CodedCaptureCoordinator {
         }
         for operation in summary.releasable_operations {
             record.membership.remove(&operation);
+            record.release_authorized_operations.remove(&operation);
         }
         record.retained_frontier = summary.frontier;
         Ok(())
     }
 
-    /// Retire a refused or fully resolved capture after owner-approved
-    /// retention evidence has removed every exact obligation.
-    pub fn retire_capture(
+    #[cfg(test)]
+    fn apply_retirement(
         &mut self,
         retirement: CodedCaptureRetirement,
     ) -> Result<(), CodedCaptureError> {
@@ -665,12 +1363,14 @@ impl CodedCaptureCoordinator {
                 retirement.capture,
             ));
         }
-        if !matches!(
-            record.phase,
-            CodedCapturePhase::Refused | CodedCapturePhase::CleanKnown
-        ) || !record.membership.is_empty()
-            || !record.pending_later_cuts.is_empty()
-        {
+        let retirable = match record.phase {
+            CodedCapturePhase::Refused => true,
+            CodedCapturePhase::CleanKnown => {
+                record.membership.is_empty() && record.pending_later_cuts.is_empty()
+            }
+            _ => false,
+        };
+        if !retirable {
             return Err(CodedCaptureError::CaptureNotRetirable(retirement.capture));
         }
         self.captures.remove(&retirement.capture);
@@ -683,6 +1383,178 @@ impl CodedCaptureCoordinator {
             .map(|record| record.snapshot(capture))
     }
 
+    /// Apply one exact recovery-owner refusal to its selected capture.
+    pub fn apply_clean_refusal(
+        &mut self,
+        capture: CodedCaptureId,
+        refusal: &RecoveryCleanRefusalPermit,
+    ) -> Result<CodedCaptureUpdate, CodedCaptureError> {
+        let prior = self
+            .capture_snapshot(capture)
+            .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        let record = self.record_mut(capture)?;
+        if record.phase != CodedCapturePhase::Open
+            || record.decision.is_some()
+            || refusal.topology_epoch() != record.owner_facts.topology.topology_epoch()
+            || refusal.generation() < record.owner_facts.recovery_generation
+            || refusal.regions().iter().copied().collect::<BTreeSet<_>>()
+                != record.owner_facts.dirty_regions
+            || refusal
+                .checksum_extents()
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                != record.owner_facts.checksum_extents
+        {
+            return Err(CodedCaptureError::CleanNotEligible(capture));
+        }
+        record.decision = Some(CodedCaptureDecision::Rejected);
+        record.phase = CodedCapturePhase::Refused;
+        Ok(CodedCaptureUpdate {
+            expected: Some(prior),
+            proposed: record.snapshot(capture),
+        })
+    }
+
+    /// Prepare one accepted CLEAN result without installing it as durable state.
+    pub fn prepare_clean_commit(
+        &self,
+        capture: CodedCaptureId,
+        permit: &RecoveryCleanPermit,
+    ) -> Result<PreparedCodedCleanCommit, CodedCaptureError> {
+        let prior = self
+            .capture_snapshot(capture)
+            .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        let mut candidate = self.clone();
+        let record = candidate.record_mut(capture)?;
+        if record.phase != CodedCapturePhase::Open
+            || record.decision.is_some()
+            || permit.topology_epoch() != record.owner_facts.topology.topology_epoch()
+            || permit.generation() < record.owner_facts.recovery_generation
+            || permit.regions().iter().copied().collect::<BTreeSet<_>>()
+                != record.owner_facts.dirty_regions
+            || permit
+                .checksum_extents()
+                .iter()
+                .copied()
+                .collect::<BTreeSet<_>>()
+                != record.owner_facts.checksum_extents
+            || !record.mutation_set_closed()
+        {
+            return Err(CodedCaptureError::CleanNotEligible(capture));
+        }
+        record.decision = Some(CodedCaptureDecision::Accepted);
+        record.phase = CodedCapturePhase::CleanKnown;
+        let proposed_record = record.clone();
+        let proposed = proposed_record.snapshot(capture);
+        Ok(PreparedCodedCleanCommit {
+            capture,
+            expected_generation: permit.generation(),
+            prior,
+            proposed,
+            proposed_record,
+        })
+    }
+
+    /// Install a prepared CLEAN only under the exact recovery-owner receipt.
+    pub fn confirm_clean_commit(
+        &mut self,
+        prepared: PreparedCodedCleanCommit,
+        receipt: &DurableRecoveryCommit,
+    ) -> Result<(), CodedCaptureError> {
+        if self.capture_snapshot(prepared.capture).as_ref() != Some(&prepared.prior) {
+            return Err(CodedCaptureError::PreparedTransitionStale(prepared.capture));
+        }
+        if receipt.expected_generation() != prepared.expected_generation
+            || receipt.topology_epoch() != prepared.proposed.topology.topology_epoch()
+            || prepared.expected_generation.checked_next() != Some(receipt.generation())
+            || !receipt.committed_coded_capture(&prepared.proposed)
+        {
+            return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
+        }
+        self.captures
+            .insert(prepared.capture, prepared.proposed_record);
+        Ok(())
+    }
+
+    /// Prepare an owner-derived later cut without installing it as durable state.
+    pub fn prepare_later_cut(
+        &self,
+        capture: CodedCaptureId,
+        admission: &CodedAdmission,
+        topology_epoch: TopologyEpoch,
+        expected_generation: RecoveryGeneration,
+    ) -> Result<PreparedCodedLaterCut, CodedCaptureError> {
+        let committed_generation = expected_generation
+            .checked_next()
+            .ok_or(CodedCaptureError::LaterCutEvidenceInvalid(capture))?;
+        let prior = self
+            .capture_snapshot(capture)
+            .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        let mut candidate = self.clone();
+        let cut = CodedCaptureCut::new(
+            topology_epoch,
+            committed_generation,
+            CodedCaptureFrontier::new(committed_generation, admission.sequence()),
+        );
+        let observation = match candidate.record_mut(capture)?.phase {
+            CodedCapturePhase::Open => CodedLaterCutObservation::DurableStalesClean,
+            CodedCapturePhase::CleanKnown => CodedLaterCutObservation::DurableAfterClean,
+            CodedCapturePhase::Refused => {
+                return Err(CodedCaptureError::CaptureNotOpen(capture));
+            }
+            CodedCapturePhase::CleanCommitPending | CodedCapturePhase::CleanCommitUnknown => {
+                return Err(CodedCaptureError::LaterCutOrder(capture));
+            }
+        };
+        candidate.apply_later_cut(capture, admission.operation(), cut, observation)?;
+        let proposed_record = candidate.record_mut(capture)?.clone();
+        let proposed = proposed_record.snapshot(capture);
+        Ok(PreparedCodedLaterCut {
+            capture,
+            expected_generation,
+            prior,
+            proposed,
+            proposed_record,
+        })
+    }
+
+    /// Install a prepared later cut only under the exact recovery-owner receipt.
+    pub fn confirm_later_cut(
+        &mut self,
+        prepared: PreparedCodedLaterCut,
+        receipt: &DurableRecoveryCommit,
+    ) -> Result<(), CodedCaptureError> {
+        if self.capture_snapshot(prepared.capture).as_ref() != Some(&prepared.prior) {
+            return Err(CodedCaptureError::PreparedTransitionStale(prepared.capture));
+        }
+        if receipt.expected_generation() != prepared.expected_generation
+            || receipt.topology_epoch() != prepared.proposed.topology.topology_epoch()
+            || prepared.expected_generation.checked_next() != Some(receipt.generation())
+            || !receipt.committed_coded_capture(&prepared.proposed)
+        {
+            return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
+        }
+        self.captures
+            .insert(prepared.capture, prepared.proposed_record);
+        Ok(())
+    }
+
+    /// Apply one exact resolution issued by recovery inspection.
+    pub fn apply_reconciliation(
+        &mut self,
+        receipt: CodedCaptureReconciliationReceipt,
+    ) -> Result<(), CodedCaptureError> {
+        let capture = receipt.capture();
+        if self.capture_snapshot(capture).as_ref() != Some(&receipt.expected_unknown)
+            || !receipt.resolved.validates_internal_state()
+        {
+            return Err(CodedCaptureError::DurableReceiptMismatch(capture));
+        }
+        self.restore_snapshot_state(receipt.resolved)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn observe_decision(
         &mut self,
         capture: CodedCaptureId,
@@ -702,6 +1574,7 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn request_clean(&mut self, capture: CodedCaptureId) -> Result<(), CodedCaptureError> {
         let record = self.record_mut(capture)?;
         if record.phase != CodedCapturePhase::Open {
@@ -714,6 +1587,7 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn observe_clean_commit(
         &mut self,
         capture: CodedCaptureId,
@@ -734,6 +1608,7 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub fn reconcile_clean_commit(
         &mut self,
         capture: CodedCaptureId,
@@ -753,7 +1628,7 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
-    pub fn observe_later_cut(
+    fn apply_later_cut(
         &mut self,
         capture: CodedCaptureId,
         operation: OperationSlotToken,
@@ -788,9 +1663,21 @@ impl CodedCaptureCoordinator {
         }
         let membership = match observation {
             CodedLaterCutObservation::DurableAfterClean => {
+                record.resolved_later_cuts.insert(operation, cut);
+                record.retirement_frontier = Some(
+                    record
+                        .retirement_frontier
+                        .map_or(cut.frontier, |frontier| frontier.max(cut.frontier)),
+                );
                 CodedCaptureMembership::LaterDurableAfterClean
             }
             CodedLaterCutObservation::DurableStalesClean => {
+                record.resolved_later_cuts.insert(operation, cut);
+                record.retirement_frontier = Some(
+                    record
+                        .retirement_frontier
+                        .map_or(cut.frontier, |frontier| frontier.max(cut.frontier)),
+                );
                 record.phase = CodedCapturePhase::Refused;
                 CodedCaptureMembership::LaterDurableStalesClean
             }
@@ -804,19 +1691,29 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
-    pub fn reconcile_later_cut(
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn observe_later_cut(
         &mut self,
         capture: CodedCaptureId,
         operation: OperationSlotToken,
         cut: CodedCaptureCut,
+        observation: CodedLaterCutObservation,
+    ) -> Result<(), CodedCaptureError> {
+        self.apply_later_cut(capture, operation, cut, observation)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn reconcile_later_cut(
+        &mut self,
+        capture: CodedCaptureId,
+        operation: OperationSlotToken,
         observation: CodedLaterCutReconciliation,
     ) -> Result<(), CodedCaptureError> {
         let record = self.record_mut(capture)?;
-        if record.membership.get(&operation) != Some(&CodedCaptureMembership::LaterUnknown) {
+        if record.membership.get(&operation) != Some(&CodedCaptureMembership::LaterUnknown)
+            || !record.pending_later_cuts.contains_key(&operation)
+        {
             return Err(CodedCaptureError::LaterCutNotPending { capture, operation });
-        }
-        if record.pending_later_cuts.get(&operation).copied() != Some(cut) {
-            return Err(CodedCaptureError::LaterCutMismatch { capture, operation });
         }
         if observation == CodedLaterCutReconciliation::DurableAfterClean
             && record.phase != CodedCapturePhase::CleanKnown
@@ -828,21 +1725,90 @@ impl CodedCaptureCoordinator {
         {
             return Err(CodedCaptureError::LaterCutOrder(capture));
         }
-        record.pending_later_cuts.remove(&operation);
-        record.membership.insert(
-            operation,
-            match observation {
-                CodedLaterCutReconciliation::DurableAfterClean => {
-                    CodedCaptureMembership::LaterDurableAfterClean
-                }
-                CodedLaterCutReconciliation::StalesClean => {
-                    record.phase = CodedCapturePhase::Refused;
-                    CodedCaptureMembership::LaterDurableStalesClean
-                }
-                CodedLaterCutReconciliation::Rejected => CodedCaptureMembership::LaterRejected,
-            },
-        );
+        let cut = record
+            .pending_later_cuts
+            .remove(&operation)
+            .ok_or(CodedCaptureError::LaterCutNotPending { capture, operation })?;
+        let membership = match observation {
+            CodedLaterCutReconciliation::DurableAfterClean => {
+                record.resolved_later_cuts.insert(operation, cut);
+                record.retirement_frontier = Some(
+                    record
+                        .retirement_frontier
+                        .map_or(cut.frontier, |frontier| frontier.max(cut.frontier)),
+                );
+                CodedCaptureMembership::LaterDurableAfterClean
+            }
+            CodedLaterCutReconciliation::StalesClean => {
+                record.resolved_later_cuts.insert(operation, cut);
+                record.retirement_frontier = Some(
+                    record
+                        .retirement_frontier
+                        .map_or(cut.frontier, |frontier| frontier.max(cut.frontier)),
+                );
+                record.phase = CodedCapturePhase::Refused;
+                CodedCaptureMembership::LaterDurableStalesClean
+            }
+            CodedLaterCutReconciliation::Rejected => CodedCaptureMembership::LaterRejected,
+        };
+        record.membership.insert(operation, membership);
         Ok(())
+    }
+
+    #[cfg(test)]
+    fn start_capture_unchecked(
+        &mut self,
+        capture: CodedCaptureId,
+        owner_facts: CodedCaptureOwnerFacts,
+        active_claims: impl IntoIterator<Item = (OperationSlotToken, BTreeSet<CodedUnitId>)>,
+    ) -> Result<(), CodedCaptureError> {
+        self.insert_capture(capture, owner_facts, active_claims)
+    }
+
+    #[cfg(test)]
+    fn observe_admitted_claim_unchecked(
+        &mut self,
+        operation: OperationSlotToken,
+        units: &BTreeSet<CodedUnitId>,
+    ) {
+        for capture in self.captures.values_mut() {
+            if capture.tracks_future() && capture.intersects(units) {
+                capture
+                    .membership
+                    .insert(operation, CodedCaptureMembership::Later);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    fn compact_capture_unchecked(
+        &mut self,
+        summary: CodedCaptureRetentionSummary,
+    ) -> Result<(), CodedCaptureError> {
+        self.apply_compaction(summary)
+    }
+
+    #[cfg(test)]
+    fn retire_capture_unchecked(
+        &mut self,
+        retirement: CodedCaptureRetirement,
+    ) -> Result<(), CodedCaptureError> {
+        self.apply_retirement(retirement)
+    }
+
+    #[cfg(test)]
+    fn reconcile_later_cut_unchecked(
+        &mut self,
+        capture: CodedCaptureId,
+        operation: OperationSlotToken,
+        cut: CodedCaptureCut,
+        observation: CodedLaterCutReconciliation,
+    ) -> Result<(), CodedCaptureError> {
+        let record = self.record_mut(capture)?;
+        if record.pending_later_cuts.get(&operation).copied() != Some(cut) {
+            return Err(CodedCaptureError::LaterCutMismatch { capture, operation });
+        }
+        self.reconcile_later_cut(capture, operation, observation)
     }
 
     fn record_mut(
@@ -858,9 +1824,14 @@ impl CodedCaptureCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{BLAKE3_256_PROFILE, DIRTY_REGION_BYTES};
 
     fn token(index: u32) -> OperationSlotToken {
         OperationSlotToken::new(index, 1)
+    }
+
+    fn release(operation: OperationSlotToken) -> CodedClaimRelease {
+        CodedClaimRelease::for_test(operation, u64::from(operation.index) + 1)
     }
 
     fn units(units: impl IntoIterator<Item = u32>) -> BTreeSet<CodedUnitId> {
@@ -869,7 +1840,7 @@ mod tests {
             .map(|unit| CodedUnitId(u64::from(unit)))
             .collect()
     }
-    fn owner_facts(scope: CodedCaptureScopeInput) -> CodedCaptureOwnerFacts {
+    fn owner_facts(scope: ValidatedCodedCaptureScope) -> CodedCaptureOwnerFacts {
         use dwv_core::{
             ArrayId, AssignmentGeneration, AssignmentInstanceId, CodingPosition, CodingProfile,
             MemberRole, ProtectedGeometry, SlotId, TopologyAssignment, TopologyEpoch,
@@ -920,16 +1891,64 @@ mod tests {
     }
 
     #[test]
+    fn selected_scope_unions_block_dirty_region_and_checksum_extent_geometry() {
+        use dwv_core::{
+            ArrayId, AssignmentGeneration, AssignmentInstanceId, CodingPosition, CodingProfile,
+            MemberRole, ProtectedGeometry, SlotId, TopologyAssignment, TopologyEpoch,
+        };
+
+        let topology = TopologySnapshot::new(
+            ArrayId([4; 16]),
+            TopologyEpoch(1),
+            CodingProfile::new(1, 1).unwrap(),
+            ProtectedGeometry::new(8 * 1024 * 1024, 512).unwrap(),
+            vec![
+                TopologyAssignment::new(
+                    SlotId::from_bytes([1; 16]),
+                    MemberRole::Data,
+                    CodingPosition(0),
+                    AssignmentInstanceId::from_bytes([2; 16]),
+                    AssignmentGeneration(1),
+                ),
+                TopologyAssignment::new(
+                    SlotId::from_bytes([2; 16]),
+                    MemberRole::Parity,
+                    CodingPosition(1),
+                    AssignmentInstanceId::from_bytes([3; 16]),
+                    AssignmentGeneration(1),
+                ),
+            ],
+        )
+        .unwrap();
+        let scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
+            &topology,
+            [RegionId(1025)],
+            [IntegrityExtentId(0)],
+            DIRTY_REGION_BYTES,
+            BLAKE3_256_PROFILE,
+        )
+        .unwrap();
+
+        assert_eq!(scope.units().len(), 8_200);
+        assert!(scope.units().contains(&CodedUnitId(0)));
+        assert!(scope.units().contains(&CodedUnitId(8_191)));
+        assert!(!scope.units().contains(&CodedUnitId(8_192)));
+        assert!(!scope.units().contains(&CodedUnitId(8_199)));
+        assert!(scope.units().contains(&CodedUnitId(8_200)));
+        assert!(scope.units().contains(&CodedUnitId(8_207)));
+    }
+
+    #[test]
     fn capture_rejects_incoherent_frontier_owner_facts() {
         let capture = CodedCaptureId(8);
-        let scope = CodedCaptureScopeInput::complete([CodedUnitId(0)]);
+        let scope = ValidatedCodedCaptureScope::complete([CodedUnitId(0)]);
 
         let mut mismatched_generation = owner_facts(scope.clone());
         mismatched_generation.capture_frontier =
             CodedCaptureFrontier::new(RecoveryGeneration(1), 1);
         let mut captures = CodedCaptureCoordinator::new();
         assert_eq!(
-            captures.start_capture(capture, mismatched_generation, []),
+            captures.start_capture_unchecked(capture, mismatched_generation, []),
             Err(CodedCaptureError::CaptureFrontierGenerationMismatch(
                 capture
             ))
@@ -939,7 +1958,7 @@ mod tests {
         reversed.lower_frontier = CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 2);
         let mut captures = CodedCaptureCoordinator::new();
         assert_eq!(
-            captures.start_capture(capture, reversed, []),
+            captures.start_capture_unchecked(capture, reversed, []),
             Err(CodedCaptureError::FrontierOrderInvalid(capture))
         );
     }
@@ -948,13 +1967,15 @@ mod tests {
     fn older_recovery_generation_is_not_a_newer_later_cut_even_with_a_larger_sequence() {
         let capture = CodedCaptureId(9);
         let operation = token(4);
-        let mut facts = owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)]));
+        let mut facts = owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)]));
         facts.recovery_generation = RecoveryGeneration(1);
         facts.lower_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), 0);
         facts.capture_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), 1);
 
         let mut captures = CodedCaptureCoordinator::new();
-        captures.start_capture(capture, facts, []).unwrap();
+        captures
+            .start_capture_unchecked(capture, facts, [])
+            .unwrap();
         captures
             .observe_decision(capture, CodedCaptureDecision::Accepted)
             .unwrap();
@@ -962,7 +1983,7 @@ mod tests {
         captures
             .observe_clean_commit(capture, CodedCleanCommitObservation::Durable)
             .unwrap();
-        captures.observe_admitted_claim(operation, &units([0]));
+        captures.observe_admitted_claim_unchecked(operation, &units([0]));
 
         let older_generation = CodedCaptureCut::new(
             dwv_core::TopologyEpoch(1),
@@ -986,9 +2007,9 @@ mod tests {
         let capture = CodedCaptureId(10);
         let mut captures = CodedCaptureCoordinator::new();
         captures
-            .start_capture(
+            .start_capture_unchecked(
                 capture,
-                owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)])),
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
                 [],
             )
             .unwrap();
@@ -1004,7 +2025,7 @@ mod tests {
             let operation = OperationSlotToken::new(0, generation);
             let frontier =
                 CodedCaptureFrontier::new(RecoveryGeneration::ZERO, u64::from(generation) + 1);
-            captures.observe_admitted_claim(operation, &units([0]));
+            captures.observe_admitted_claim_unchecked(operation, &units([0]));
             captures
                 .observe_later_cut(
                     capture,
@@ -1017,8 +2038,9 @@ mod tests {
                     CodedLaterCutObservation::DurableAfterClean,
                 )
                 .unwrap();
+            assert!(captures.observe_release_allowed(&release(operation)));
             captures
-                .compact_capture(
+                .compact_capture_unchecked(
                     CodedCaptureRetentionSummary::new(
                         capture,
                         dwv_core::TopologyEpoch(1),
@@ -1034,9 +2056,9 @@ mod tests {
         }
 
         let live = OperationSlotToken::new(2, 1);
-        captures.observe_admitted_claim(live, &units([0]));
+        captures.observe_admitted_claim_unchecked(live, &units([0]));
         assert_eq!(
-            captures.compact_capture(CodedCaptureRetentionSummary::new(
+            captures.compact_capture_unchecked(CodedCaptureRetentionSummary::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 later_cut().frontier,
@@ -1045,7 +2067,7 @@ mod tests {
             Err(CodedCaptureError::RetentionSummaryInvalid(capture))
         );
         captures
-            .compact_capture(
+            .compact_capture_unchecked(
                 CodedCaptureRetentionSummary::new(
                     capture,
                     dwv_core::TopologyEpoch(1),
@@ -1073,7 +2095,7 @@ mod tests {
             .unwrap();
         assert!(!captures.effect_allowed(live));
         assert_eq!(
-            captures.compact_capture(CodedCaptureRetentionSummary::new(
+            captures.compact_capture_unchecked(CodedCaptureRetentionSummary::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 later_cut().frontier,
@@ -1082,8 +2104,9 @@ mod tests {
             Err(CodedCaptureError::RetentionSummaryInvalid(capture))
         );
         assert!(!captures.effect_allowed(live));
+        assert!(captures.observe_release_allowed(&release(live)));
         captures
-            .compact_capture(
+            .compact_capture_unchecked(
                 CodedCaptureRetentionSummary::new(
                     capture,
                     dwv_core::TopologyEpoch(1),
@@ -1101,7 +2124,7 @@ mod tests {
             CodedCaptureFrontier::new(RecoveryGeneration(1), 3),
         );
         let unresolved = OperationSlotToken::new(1, 1);
-        captures.observe_admitted_claim(unresolved, &units([0]));
+        captures.observe_admitted_claim_unchecked(unresolved, &units([0]));
         captures
             .observe_later_cut(
                 capture,
@@ -1111,7 +2134,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(
-            captures.compact_capture(CodedCaptureRetentionSummary::new(
+            captures.compact_capture_unchecked(CodedCaptureRetentionSummary::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 unknown_cut.frontier,
@@ -1126,7 +2149,7 @@ mod tests {
             CodedCaptureFrontier::new(RecoveryGeneration(1), 4),
         );
         captures
-            .compact_capture(
+            .compact_capture_unchecked(
                 CodedCaptureRetentionSummary::new(
                     capture,
                     dwv_core::TopologyEpoch(1),
@@ -1145,7 +2168,7 @@ mod tests {
             Some(&unknown_cut)
         );
         assert_eq!(
-            captures.reconcile_later_cut(
+            captures.reconcile_later_cut_unchecked(
                 capture,
                 unresolved,
                 newer_cut,
@@ -1157,7 +2180,7 @@ mod tests {
             })
         );
         assert_eq!(
-            captures.reconcile_later_cut(
+            captures.reconcile_later_cut_unchecked(
                 capture,
                 unresolved,
                 unknown_cut,
@@ -1167,7 +2190,7 @@ mod tests {
         );
 
         assert_eq!(
-            captures.compact_capture(CodedCaptureRetentionSummary::new(
+            captures.compact_capture_unchecked(CodedCaptureRetentionSummary::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 2),
@@ -1176,16 +2199,17 @@ mod tests {
             Err(CodedCaptureError::RetentionFrontierStale(capture))
         );
         assert_eq!(
-            captures.retire_capture(CodedCaptureRetirement::new(
+            captures.retire_capture_unchecked(CodedCaptureRetirement::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 retirement_frontier,
             )),
             Err(CodedCaptureError::CaptureNotRetirable(capture))
         );
+        assert!(captures.observe_release_allowed(&release(unresolved)));
 
         captures
-            .compact_capture(
+            .compact_capture_unchecked(
                 CodedCaptureRetentionSummary::new(
                     capture,
                     dwv_core::TopologyEpoch(1),
@@ -1196,7 +2220,7 @@ mod tests {
             )
             .unwrap();
         captures
-            .retire_capture(CodedCaptureRetirement::new(
+            .retire_capture_unchecked(CodedCaptureRetirement::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 retirement_frontier,
@@ -1206,49 +2230,33 @@ mod tests {
     }
 
     #[test]
-    fn capture_requires_a_complete_validated_covered_scope() {
-        let invalid_scopes = [
-            (
-                CodedCaptureScopeInput::new([], true, true, true),
-                CodedCaptureError::EmptyScope,
+    fn capture_rejects_an_empty_internal_scope() {
+        let mut captures = CodedCaptureCoordinator::new();
+        assert_eq!(
+            captures.start_capture_unchecked(
+                CodedCaptureId(0),
+                owner_facts(ValidatedCodedCaptureScope::complete([])),
+                [],
             ),
-            (
-                CodedCaptureScopeInput::new([CodedUnitId(0)], false, true, true),
-                CodedCaptureError::IncompleteScope,
-            ),
-            (
-                CodedCaptureScopeInput::new([CodedUnitId(0)], true, false, true),
-                CodedCaptureError::UnvalidatedScope,
-            ),
-            (
-                CodedCaptureScopeInput::new([CodedUnitId(0)], true, true, false),
-                CodedCaptureError::LowerFrontierUncovered,
-            ),
-        ];
-        for (scope, expected) in invalid_scopes {
-            let mut captures = CodedCaptureCoordinator::new();
-            assert_eq!(
-                captures.start_capture(CodedCaptureId(0), owner_facts(scope), []),
-                Err(expected)
-            );
-            assert!(captures.capture_snapshot(CodedCaptureId(0)).is_none());
-        }
+            Err(CodedCaptureError::EmptyScope)
+        );
+        assert!(captures.capture_snapshot(CodedCaptureId(0)).is_none());
     }
 
     #[test]
     fn capture_records_included_and_later_membership() {
         let mut captures = CodedCaptureCoordinator::new();
         captures
-            .start_capture(
+            .start_capture_unchecked(
                 CodedCaptureId(0),
-                owner_facts(CodedCaptureScopeInput::complete([
+                owner_facts(ValidatedCodedCaptureScope::complete([
                     CodedUnitId(0),
                     CodedUnitId(1),
                 ])),
                 [(token(0), units([0]))],
             )
             .unwrap();
-        captures.observe_admitted_claim(token(1), &units([1]));
+        captures.observe_admitted_claim_unchecked(token(1), &units([1]));
         let snapshot = captures.capture_snapshot(CodedCaptureId(0)).unwrap();
         assert_eq!(
             snapshot.membership.get(&token(0)),
@@ -1266,9 +2274,9 @@ mod tests {
         let operation = token(3);
         let mut captures = CodedCaptureCoordinator::new();
         captures
-            .start_capture(
+            .start_capture_unchecked(
                 capture,
-                owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)])),
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
                 [],
             )
             .unwrap();
@@ -1303,7 +2311,7 @@ mod tests {
         captures
             .observe_clean_commit(capture, CodedCleanCommitObservation::Durable)
             .unwrap();
-        captures.observe_admitted_claim(operation, &units([0]));
+        captures.observe_admitted_claim_unchecked(operation, &units([0]));
 
         let stale_cut = CodedCaptureCut::new(
             dwv_core::TopologyEpoch(1),
@@ -1336,27 +2344,36 @@ mod tests {
     fn rejected_capture_does_not_classify_future_admissions() {
         let mut captures = CodedCaptureCoordinator::new();
         let capture = CodedCaptureId(0);
+        let inherited = token(0);
         captures
-            .start_capture(
+            .start_capture_unchecked(
                 capture,
-                owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)])),
-                [],
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                [(inherited, units([0]))],
             )
             .unwrap();
         captures
             .observe_decision(capture, CodedCaptureDecision::Rejected)
             .unwrap();
-        captures.observe_admitted_claim(token(0), &units([0]));
+        captures.observe_admitted_claim_unchecked(token(1), &units([0]));
         assert!(
+            !captures
+                .capture_snapshot(capture)
+                .unwrap()
+                .membership
+                .contains_key(&token(1))
+        );
+        assert!(captures.effect_allowed(token(1)));
+        assert_eq!(
             captures
                 .capture_snapshot(capture)
                 .unwrap()
                 .membership
-                .is_empty()
+                .get(&inherited),
+            Some(&CodedCaptureMembership::Included)
         );
-        assert!(captures.effect_allowed(token(0)));
         captures
-            .retire_capture(CodedCaptureRetirement::new(
+            .retire_capture_unchecked(CodedCaptureRetirement::new(
                 capture,
                 dwv_core::TopologyEpoch(1),
                 CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
@@ -1369,9 +2386,9 @@ mod tests {
         let mut captures = CodedCaptureCoordinator::new();
         for capture in [CodedCaptureId(0), CodedCaptureId(1)] {
             captures
-                .start_capture(
+                .start_capture_unchecked(
                     capture,
-                    owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)])),
+                    owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
                     [],
                 )
                 .unwrap();
@@ -1385,7 +2402,7 @@ mod tests {
         }
 
         let later = token(1);
-        captures.observe_admitted_claim(later, &units([0]));
+        captures.observe_admitted_claim_unchecked(later, &units([0]));
         assert!(!captures.effect_allowed(later));
 
         captures
@@ -1417,9 +2434,9 @@ mod tests {
         let mut captures = CodedCaptureCoordinator::new();
         for (capture, unit) in [(CodedCaptureId(0), 0), (CodedCaptureId(1), 1)] {
             captures
-                .start_capture(
+                .start_capture_unchecked(
                     capture,
-                    owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(unit)])),
+                    owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(unit)])),
                     [],
                 )
                 .unwrap();
@@ -1433,7 +2450,7 @@ mod tests {
         }
 
         let later = token(1);
-        captures.observe_admitted_claim(later, &units([0]));
+        captures.observe_admitted_claim_unchecked(later, &units([0]));
         assert!(!captures.effect_allowed(later));
         assert_eq!(
             captures
@@ -1464,9 +2481,9 @@ mod tests {
         let mut captures = CodedCaptureCoordinator::new();
         let capture = CodedCaptureId(0);
         captures
-            .start_capture(
+            .start_capture_unchecked(
                 capture,
-                owner_facts(CodedCaptureScopeInput::complete([CodedUnitId(0)])),
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
                 [(token(0), units([0]))],
             )
             .unwrap();
@@ -1477,7 +2494,7 @@ mod tests {
         captures
             .observe_clean_commit(capture, CodedCleanCommitObservation::Unknown)
             .unwrap();
-        captures.observe_admitted_claim(token(1), &units([0]));
+        captures.observe_admitted_claim_unchecked(token(1), &units([0]));
         assert!(!captures.effect_allowed(token(1)));
         captures
             .observe_later_cut(
@@ -1488,7 +2505,7 @@ mod tests {
             )
             .unwrap();
         captures
-            .reconcile_later_cut(
+            .reconcile_later_cut_unchecked(
                 capture,
                 token(1),
                 later_cut(),

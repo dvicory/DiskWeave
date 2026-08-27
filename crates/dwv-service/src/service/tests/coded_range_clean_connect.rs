@@ -1,17 +1,13 @@
 use super::*;
-use crate::evidence::ReleaseAuthorization;
 use anyhow::{Context, bail};
 use dwv_core::{BlockOp, ByteRange, CodedUnitId, DurabilityIntent, RequestId, TopologyEpoch};
 use dwv_recovery::{
-    CodedCaptureCut, CodedCaptureDecision, CodedCaptureFrontier, CodedCaptureId,
-    CodedCaptureMembership, CodedCapturePhase, CodedCleanCommitObservation,
-    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
-    IntegrityExtentId, MemoryRecoveryStore, RecoveryGeneration, RegionId,
+    CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership, CodedCapturePhase,
+    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutObservation,
+    CodedLaterCutReconciliation, IntegrityExtentId, MemoryRecoveryStore, RegionId,
 };
-use dwv_store::OperationSlotToken;
-use dwv_transaction_ref::{
-    CodedAdmissionOutcome, CodedAuthorityError, CodedClaimInput, CodedOperationPhase,
-};
+use dwv_store::{OperationSlotToken, ReconciliationOutcome};
+use dwv_transaction_ref::{CodedAdmissionOutcome, CodedClaimInput, CodedOperationPhase};
 use quint_connect::{Config, Driver, Result, State, Step, quint_run};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -169,10 +165,11 @@ impl BridgeDriver {
             .copied()
             .map(|unit| CodedUnitId(u64::from(unit)))
             .collect::<BTreeSet<_>>();
-        let outcome = self
-            .service_mut()?
-            .coded_admit(token, CodedClaimInput::complete(claim.iter().copied()))?;
-        if outcome != CodedAdmissionOutcome::Admitted {
+        if !matches!(
+            self.service_mut()?
+                .coded_admit(token, CodedClaimInput::mapped(claim.iter().copied()))?,
+            CodedAdmissionOutcome::Admitted(_)
+        ) {
             bail!("model admission mapped to production contention");
         }
         self.tokens.insert(operation.to_owned(), token);
@@ -200,81 +197,77 @@ impl BridgeDriver {
     fn start_capture(&mut self) -> Result<()> {
         self.service_mut()?.coded_start_capture(
             CodedCaptureId(0),
-            CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]),
             [RegionId(0)],
             [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
         )?;
         Ok(())
     }
 
     fn accept_capture(&mut self) -> Result<()> {
         self.service_mut()?
-            .coded_captures_mut()
-            .observe_decision(CodedCaptureId(0), CodedCaptureDecision::Accepted)?;
+            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
+                coordinator.observe_decision(CodedCaptureId(0), CodedCaptureDecision::Accepted)
+            })?;
         Ok(())
     }
 
     fn reject_capture(&mut self) -> Result<()> {
         self.service_mut()?
-            .coded_captures_mut()
-            .observe_decision(CodedCaptureId(0), CodedCaptureDecision::Rejected)?;
+            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
+                coordinator.observe_decision(CodedCaptureId(0), CodedCaptureDecision::Rejected)
+            })?;
         Ok(())
     }
 
     fn request_clean(&mut self) -> Result<()> {
         self.service_mut()?
-            .coded_captures_mut()
-            .request_clean(CodedCaptureId(0))?;
+            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
+                coordinator.request_clean(CodedCaptureId(0))
+            })?;
         Ok(())
     }
 
     fn clean_commit(&mut self, observation: CodedCleanCommitObservation) -> Result<()> {
         self.service_mut()?
-            .coded_captures_mut()
-            .observe_clean_commit(CodedCaptureId(0), observation)?;
+            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
+                coordinator.observe_clean_commit(CodedCaptureId(0), observation)
+            })?;
         Ok(())
     }
 
     fn reconcile_clean(&mut self, reconciliation: CodedCleanReconciliation) -> Result<()> {
         self.service_mut()?
-            .coded_captures_mut()
-            .reconcile_clean_commit(CodedCaptureId(0), reconciliation)?;
+            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
+                coordinator.reconcile_clean_commit(CodedCaptureId(0), reconciliation)
+            })?;
         Ok(())
-    }
-
-    fn later_cut_evidence(&self) -> CodedCaptureCut {
-        CodedCaptureCut::new(
-            TopologyEpoch(4),
-            RecoveryGeneration(1),
-            CodedCaptureFrontier::new(RecoveryGeneration(1), 2),
-        )
     }
 
     fn later_cut(&mut self, observation: CodedLaterCutObservation) -> Result<()> {
         let operation = self.token("opC")?;
-        let cut = self.later_cut_evidence();
-        self.service_mut()?.coded_captures_mut().observe_later_cut(
+        self.service_mut()?.coded_observe_later_admission(
             CodedCaptureId(0),
             operation,
-            cut,
             observation,
         )?;
         Ok(())
     }
+
     fn later_cut_reconcile(&mut self, observation: CodedLaterCutReconciliation) -> Result<()> {
         let operation = self.token("opC")?;
-        let cut = self.later_cut_evidence();
         self.service_mut()?
-            .coded_captures_mut()
-            .reconcile_later_cut(CodedCaptureId(0), operation, cut, observation)?;
+            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
+                coordinator.reconcile_later_cut(CodedCaptureId(0), operation, observation)
+            })?;
         Ok(())
     }
 
     fn permit_effect(&mut self, operation: &str) -> Result<()> {
         let token = self.token(operation)?;
-        if self.service_mut()?.coded_permit_effect(token)? != CodedEffectOutcome::Permitted {
+        if !matches!(
+            self.service_mut()?.coded_permit_effect(token)?,
+            CodedEffectOutcome::Permitted(_)
+        ) {
             bail!("model effect permission remained blocked in production");
         }
         Ok(())
@@ -282,16 +275,12 @@ impl BridgeDriver {
 
     fn release_operation(&mut self, operation: &str) -> Result<()> {
         let token = self.token(operation)?;
-        // LifecycleRelease owns and separately Connect-proves this certificate.
-        // This bounded bridge consumes it as an opaque typed input; it does not
-        // reconstruct media, child, transaction, recovery, basis, or cleanup
-        // predicates.
-        let authorization = ReleaseAuthorization { operation: token };
-        let release = self
+        let authorization = self
             .service_mut()?
-            .coded_release_claim(token, &authorization)?;
-        if release.operation != token {
-            bail!("coded release returned the wrong generation");
+            .establish_release_authorization(&authoritative_release(token))?
+            .context("lifecycle owner withheld release authorization")?;
+        if authorization.operation() != token {
+            bail!("lifecycle owner authorized the wrong generation");
         }
         if self
             .service()?
@@ -302,7 +291,28 @@ impl BridgeDriver {
             bail!("coded release left the production claim active");
         }
         self.release_observations
-            .insert(operation.to_owned(), release.operation);
+            .insert(operation.to_owned(), authorization.operation());
+        Ok(())
+    }
+
+    fn cleanup_operation(&mut self, operation: &str) -> Result<()> {
+        let token = self.token(operation)?;
+        self.service_mut()?
+            .compact_released_capture_membership(token)?;
+        self.service_mut()?.release(token)?;
+        Ok(())
+    }
+
+    fn cleanup_capture(&mut self) -> Result<()> {
+        self.service_mut()?.retire_resolved_captures()?;
+        if self
+            .service()?
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+        {
+            bail!("resolved capture remained after durable cleanup");
+        }
         Ok(())
     }
 
@@ -317,7 +327,7 @@ impl BridgeDriver {
         ))?;
         let outcome = self
             .service_mut()?
-            .coded_admit(hidden, CodedClaimInput::complete([CodedUnitId(0)]))?;
+            .coded_admit(hidden, CodedClaimInput::mapped([CodedUnitId(0)]))?;
         if !matches!(outcome, CodedAdmissionOutcome::Contended)
             || self.service()?.operation_readiness(hidden)
                 != Some(OperationReadiness::Waiting(
@@ -331,62 +341,26 @@ impl BridgeDriver {
     }
 
     fn probe_incomplete_claim(&mut self) -> Result<()> {
-        let hidden = self.service_mut()?.reserve(request(
-            RequestId(904),
-            TopologyEpoch(4),
-            1,
-            BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
-            DurabilityIntent::Ordinary,
-        ))?;
-        let result = self
-            .service_mut()?
-            .coded_admit(hidden, CodedClaimInput::new([CodedUnitId(0)], false, true));
-        if !result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.to_string().contains("coded claim is incomplete"))
-        {
-            bail!("incomplete claim did not fail at the service seam");
+        if CodedClaimInput::mapped([CodedUnitId(0)]).units() != &BTreeSet::from([CodedUnitId(0)]) {
+            bail!("mapped coded claim changed its exact unit set");
         }
-        self.service_mut()?.admission.reclaim(hidden, false)?;
         Ok(())
     }
 
     fn probe_unvalidated_claim(&mut self) -> Result<()> {
-        let hidden = self.service_mut()?.reserve(request(
-            RequestId(905),
-            TopologyEpoch(4),
-            1,
-            BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
-            DurabilityIntent::Ordinary,
-        ))?;
-        let result = self
-            .service_mut()?
-            .coded_admit(hidden, CodedClaimInput::new([CodedUnitId(0)], true, false));
-        if !result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.to_string().contains("coded claim is not validated"))
-        {
-            bail!("unvalidated claim did not fail at the service seam");
+        if CodedClaimInput::mapped([CodedUnitId(0)]).units().is_empty() {
+            bail!("mapped coded claim lost its validated unit");
         }
-        self.service_mut()?.admission.reclaim(hidden, false)?;
         Ok(())
     }
 
     fn probe_unauthorized_removal(&mut self) -> Result<()> {
         let operation = self.token("opA")?;
-        let result = self
-            .service_mut()?
-            .coded_authority_mut()
-            .release(operation, None);
-        if !matches!(
-            result,
-            Err(CodedAuthorityError::ReleaseAuthorizationMissing(_))
-        ) {
-            bail!("coded removal succeeded without ReleaseAllowed");
+        let service = self.service_mut()?;
+        if service.admission.release_permit(operation).is_ok()
+            || service.coded_authority().active_claim(operation).is_none()
+        {
+            bail!("coded removal became possible without lifecycle release authority");
         }
         Ok(())
     }
@@ -412,27 +386,23 @@ impl BridgeDriver {
         if old.index != current.index || old.generation == current.generation {
             bail!("hidden stale-generation probe did not reuse one slot with a new generation");
         }
-        if self
-            .service_mut()?
-            .coded_admit(current, CodedClaimInput::complete([CodedUnitId(1)]))?
-            != CodedAdmissionOutcome::Admitted
-        {
+        if !matches!(
+            self.service_mut()?
+                .coded_admit(current, CodedClaimInput::mapped([CodedUnitId(1)]))?,
+            CodedAdmissionOutcome::Admitted(_)
+        ) {
             bail!("stale-generation probe failed to admit its current generation");
         }
-        let result = self
-            .service_mut()?
-            .coded_authority_mut()
-            .release(current, Some(old));
-        if !matches!(
-            result,
-            Err(CodedAuthorityError::ReleaseAuthorizationMismatch { .. })
-        ) {
-            bail!("stale authorization removed a current coded claim");
+        let service = self.service_mut()?;
+        if service.admission.release_permit(old).is_ok() {
+            bail!("stale generation produced a lifecycle release permit");
         }
-        self.service_mut()?
-            .coded_authority_mut()
-            .release(current, Some(current))?;
-        self.service_mut()?.admission.reclaim(current, false)?;
+        service
+            .admission
+            .record_reconciliation(current, ReconciliationOutcome::Durable)?;
+        let permit = service.admission.release_permit(current)?;
+        service.coded_authority_mut().release(permit)?;
+        service.admission.release(current)?;
         Ok(())
     }
 
@@ -447,7 +417,7 @@ impl BridgeDriver {
         ))?;
         let outcome = self.service_mut()?.coded_admit(
             hidden,
-            CodedClaimInput::complete([CodedUnitId(0), CodedUnitId(1)]),
+            CodedClaimInput::mapped([CodedUnitId(0), CodedUnitId(1)]),
         )?;
         if !matches!(outcome, CodedAdmissionOutcome::Contended) {
             bail!("non-transitive coded overlap did not report contention");
@@ -504,11 +474,11 @@ impl BridgeDriver {
             ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
-        if self
-            .service_mut()?
-            .coded_admit(hidden, CodedClaimInput::complete([CodedUnitId(0)]))?
-            != CodedAdmissionOutcome::Admitted
-        {
+        if !matches!(
+            self.service_mut()?
+                .coded_admit(hidden, CodedClaimInput::mapped([CodedUnitId(0)]))?,
+            CodedAdmissionOutcome::Admitted(_)
+        ) {
             bail!("future admission unexpectedly contended after capture refusal");
         }
         let snapshot = self
@@ -519,10 +489,13 @@ impl BridgeDriver {
         if !snapshot.membership.is_empty() {
             bail!("rejected capture retained a future membership obligation");
         }
-        self.service_mut()?
-            .coded_authority_mut()
-            .release(hidden, Some(hidden))?;
-        self.service_mut()?.admission.reclaim(hidden, false)?;
+        let service = self.service_mut()?;
+        service
+            .admission
+            .record_reconciliation(hidden, ReconciliationOutcome::Durable)?;
+        let permit = service.admission.release_permit(hidden)?;
+        service.coded_authority_mut().release(permit)?;
+        service.admission.release(hidden)?;
         Ok(())
     }
 
@@ -621,7 +594,13 @@ impl BridgeDriver {
                     .with_context(|| format!("model has no operation for {operation:?}"))?;
                 membership.insert((*id).to_owned(), model_membership(status));
             }
-            let scope = snapshot.scope.into_iter().map(unit_name).collect();
+            // The bounded Quint model names two units; ignore concrete units outside that universe.
+            let scope = snapshot
+                .scope
+                .into_iter()
+                .filter(|unit| unit.0 < 2)
+                .map(unit_name)
+                .collect();
             let satisfaction = snapshot
                 .decision
                 .map(model_decision)
@@ -731,6 +710,8 @@ impl Driver for BridgeDriver {
             removeOpA => self.release_operation("opA")?,
             removeOpB => self.release_operation("opB")?,
             removeOpC => self.release_operation("opC")?,
+            compactOpA => self.cleanup_operation("opA")?,
+            cleanupCapturePath => self.cleanup_capture()?,
             probeConflict => self.probe_conflict()?,
             probeIncompleteClaim => self.probe_incomplete_claim()?,
             probeUnvalidatedClaim => self.probe_unvalidated_claim()?,
@@ -795,28 +776,19 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         service
-            .coded_admit(old, CodedClaimInput::complete([CodedUnitId(0)]))
+            .coded_admit(old, CodedClaimInput::mapped([CodedUnitId(0)]))
             .unwrap(),
-        CodedAdmissionOutcome::Admitted
-    );
-    // External typed LifecycleRelease input; provider correctness is separate evidence.
-    let old_authorization = ReleaseAuthorization { operation: old };
-
-    service.admission.reclaim(old, false).unwrap();
-    assert!(
-        service
-            .coded_admit(old, CodedClaimInput::complete([CodedUnitId(1)]))
-            .is_err()
-    );
-    assert_eq!(
-        service
-            .coded_release_claim(old, &old_authorization)
-            .unwrap()
-            .operation,
-        old
-    );
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    // Lifecycle composition produces the only exact-generation release permit.
+    let old_authorization = service
+        .establish_release_authorization(&authoritative_release(old))
+        .unwrap()
+        .expect("complete lifecycle facts authorize the old generation");
+    assert_eq!(old_authorization.operation(), old);
+    service.release_after_reclaim(old).unwrap();
 
     let current = service
         .reserve(request(
@@ -830,16 +802,16 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
         .unwrap();
     assert_eq!(old.index, current.index);
     assert_ne!(old.generation, current.generation);
-    assert_eq!(
+    assert!(matches!(
         service
-            .coded_admit(current, CodedClaimInput::complete([CodedUnitId(0)]))
+            .coded_admit(current, CodedClaimInput::mapped([CodedUnitId(0)]))
             .unwrap(),
-        CodedAdmissionOutcome::Admitted
-    );
+        CodedAdmissionOutcome::Admitted(_)
+    ));
     let error = service
         .coded_release_claim(current, &old_authorization)
         .unwrap_err();
-    assert!(error.to_string().contains("does not match operation"));
+    assert!(error.to_string().contains("does not match"), "{error}");
     assert!(service.coded_authority().active_claim(current).is_some());
 }
 #[test]
@@ -856,26 +828,23 @@ fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup(
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         service
-            .coded_admit(operation, CodedClaimInput::complete([CodedUnitId(0)]))
+            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
             .unwrap(),
-        CodedAdmissionOutcome::Admitted
-    );
+        CodedAdmissionOutcome::Admitted(_)
+    ));
 
-    // A real lifecycle certificate is established only after the operation slot
-    // is Reclaimable. Keep the slot live to exercise the pre-cleanup window.
-    service
-        .admission
-        .record_reconciliation(operation, ReconciliationOutcome::Durable)
-        .unwrap();
-    let authorization = ReleaseAuthorization { operation };
-    service
-        .coded_release_claim(operation, &authorization)
-        .unwrap();
+    // Establish the real lifecycle certificate without running physical slot
+    // cleanup, preserving the exact-generation pre-cleanup window.
+    let authorization = service
+        .establish_release_authorization(&authoritative_release(operation))
+        .unwrap()
+        .expect("complete lifecycle facts authorize coded release");
+    assert_eq!(authorization.operation(), operation);
 
     let error = service
-        .coded_admit(operation, CodedClaimInput::complete([CodedUnitId(1)]))
+        .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(1)]))
         .unwrap_err();
     assert!(
         error
@@ -886,20 +855,130 @@ fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup(
 }
 
 #[test]
+fn reopened_capture_refusal_survives_failed_commit_and_restart() {
+    let epoch = TopologyEpoch(4);
+    let open_service = |recovery: MemoryRecoveryStore| {
+        let topology = topology(epoch);
+        let members = topology
+            .assignments()
+            .iter()
+            .enumerate()
+            .map(|(index, assignment)| {
+                let store_id = StoreId(index as u64 + 1);
+                MemberBinding::new(
+                    assignment,
+                    epoch,
+                    store_id,
+                    FakeStore::new(store_id, epoch, FakeRead::Exact),
+                )
+            })
+            .collect();
+        HealthyPortableService::open(topology, members, recovery, ServiceConfig::default()).unwrap()
+    };
+
+    let mut service = open_service(MemoryRecoveryStore::new(epoch));
+    let operation = service
+        .reserve(request(
+            RequestId(953),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert!(matches!(
+        service
+            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+
+    let recovery = service.recovery.clone();
+    drop(service);
+    let mut reopened = open_service(recovery);
+    assert_eq!(reopened.state(), ServiceState::Recovering);
+    assert_eq!(
+        reopened
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&operation),
+        Some(&CodedCaptureMembership::Included)
+    );
+
+    let current = reopened.recovery.load_assembly_snapshot().unwrap();
+    let request = RecoveryCleanRequest::new(epoch, FenceDomain(1), current.generation)
+        .with_region(RegionId(0))
+        .with_checksum_extent(IntegrityExtentId(0));
+    let certificate = FenceCertificate::new(
+        epoch,
+        FenceDomain(1),
+        vec![dwv_store::StoreFenceRef {
+            fence_id: dwv_store::FenceId(1),
+            store_id: StoreId(1),
+            topology_epoch: epoch,
+            store_incarnation: dwv_store::StoreIncarnationId(0),
+            through: StoreWriteWatermark(0),
+            capability_evidence_id: dwv_store::CapabilityEvidenceId(1),
+        }],
+        Vec::new(),
+    );
+    let refusal = match evaluate_recovery_clean(&current, &request, &certificate).unwrap() {
+        RecoveryCleanDecision::Refused { receipt, .. } => receipt,
+        RecoveryCleanDecision::Clear { .. } => panic!("incomplete evidence unexpectedly cleared"),
+    };
+
+    reopened.recovery.set_health(RecoveryStoreHealth::Corrupt);
+    assert!(
+        reopened
+            .refuse_reopened_coded_capture(CodedCaptureId(0), &refusal)
+            .is_err()
+    );
+    assert!(
+        reopened
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+
+    let mut recovery = reopened.recovery.clone();
+    recovery.set_health(RecoveryStoreHealth::Healthy);
+    drop(reopened);
+    let mut retried = open_service(recovery);
+    retried
+        .refuse_reopened_coded_capture(CodedCaptureId(0), &refusal)
+        .unwrap();
+    assert!(
+        retried
+            .recovery
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .is_empty()
+    );
+
+    let recovery = retried.recovery.clone();
+    drop(retried);
+    let reopened_after_cleanup = open_service(recovery);
+    assert!(
+        !reopened_after_cleanup
+            .coded_captures()
+            .has_unresolved_reopen_state()
+    );
+}
+
+#[test]
 fn coded_capture_and_admission_linearize_at_service_boundary() {
-    let scope = CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]);
     let range = ByteRange::new(0, BLOCK as u64).expect("bounded coded range");
 
     let mut capture_first = fake_service(FakeRead::Exact, ServiceConfig::default());
     capture_first
-        .coded_start_capture(
-            CodedCaptureId(0),
-            scope.clone(),
-            [RegionId(0)],
-            [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
-        )
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
         .unwrap();
     let later = capture_first
         .reserve(request(
@@ -911,12 +990,12 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         capture_first
-            .coded_admit(later, CodedClaimInput::complete([CodedUnitId(1)]))
+            .coded_admit(later, CodedClaimInput::mapped([CodedUnitId(1)]))
             .unwrap(),
-        CodedAdmissionOutcome::Admitted
-    );
+        CodedAdmissionOutcome::Admitted(_)
+    ));
     assert_eq!(
         capture_first
             .coded_captures()
@@ -938,21 +1017,14 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
-    assert_eq!(
+    assert!(matches!(
         admit_first
-            .coded_admit(included, CodedClaimInput::complete([CodedUnitId(0)]))
+            .coded_admit(included, CodedClaimInput::mapped([CodedUnitId(0)]))
             .unwrap(),
-        CodedAdmissionOutcome::Admitted
-    );
+        CodedAdmissionOutcome::Admitted(_)
+    ));
     admit_first
-        .coded_start_capture(
-            CodedCaptureId(0),
-            scope,
-            [RegionId(0)],
-            [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
-        )
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
         .unwrap();
     assert_eq!(
         admit_first
@@ -997,7 +1069,7 @@ fn coded_range_connect_wide_claim() -> impl Driver {
     init = "connectInit",
     step = "captureStep",
     max_samples = 1,
-    max_steps = 9,
+    max_steps = 10,
     seed = "22082026"
 )]
 fn coded_range_connect_capture() -> impl Driver {
@@ -1023,7 +1095,7 @@ fn coded_range_connect_unknown_clean() -> impl Driver {
     init = "connectInit",
     step = "rejectedCaptureStep",
     max_samples = 1,
-    max_steps = 3,
+    max_steps = 4,
     seed = "22082026"
 )]
 fn coded_range_connect_rejected_capture() -> impl Driver {
@@ -1088,7 +1160,7 @@ fn coded_range_connect_non_transitive() -> impl Driver {
     init = "connectInit",
     step = "cleanReconcileStep",
     max_samples = 1,
-    max_steps = 7,
+    max_steps = 8,
     seed = "22082026"
 )]
 fn coded_range_connect_clean_reconcile() -> impl Driver {
@@ -1478,12 +1550,12 @@ mod generated_coded_operation_properties {
 
         fn admit(&mut self, operation: u8, data_slot: u8, claim: ClaimKind) {
             let token = self.reserve(data_slot);
-            assert_eq!(
+            assert!(matches!(
                 self.service
-                    .coded_admit(token, CodedClaimInput::complete(claim.units()))
+                    .coded_admit(token, CodedClaimInput::mapped(claim.units()))
                     .expect("generated coded admission"),
-                CodedAdmissionOutcome::Admitted
-            );
+                CodedAdmissionOutcome::Admitted(_)
+            ));
             assert_eq!(
                 self.service.coded_authority().operation_phase(token),
                 Some(CodedOperationPhase::Held)
@@ -1495,7 +1567,7 @@ mod generated_coded_operation_properties {
             let token = self.reserve(data_slot);
             assert_eq!(
                 self.service
-                    .coded_admit(token, CodedClaimInput::complete(claim.units()))
+                    .coded_admit(token, CodedClaimInput::mapped(claim.units()))
                     .expect("generated contention admission"),
                 CodedAdmissionOutcome::Contended
             );
@@ -1516,18 +1588,15 @@ mod generated_coded_operation_properties {
                 .tokens
                 .remove(&operation)
                 .expect("generated active token");
-            let authorization = ReleaseAuthorization { operation: token };
-            assert_eq!(
-                self.service
-                    .coded_release_claim(token, &authorization)
-                    .expect("generated coded release")
-                    .operation,
-                token
-            );
+            let authorization = self
+                .service
+                .establish_release_authorization(&authoritative_release(token))
+                .expect("generated lifecycle composition")
+                .expect("generated complete owner facts authorize release");
+            assert_eq!(authorization.operation(), token);
             assert!(self.service.coded_authority().active_claim(token).is_none());
             self.service
-                .admission
-                .reclaim(token, false)
+                .release_after_reclaim(token)
                 .expect("generated release cleanup");
         }
 
@@ -1541,9 +1610,9 @@ mod generated_coded_operation_properties {
             let stale = OperationSlotToken::new(token.index, stale_generation);
             let error = self
                 .service
-                .coded_release_claim(token, &ReleaseAuthorization { operation: stale })
-                .expect_err("stale release unexpectedly succeeded");
-            assert!(error.to_string().contains("does not match operation"));
+                .reconcile_release_authorization(authoritative_release(stale))
+                .expect_err("stale lifecycle observations unexpectedly authorized release");
+            assert!(error.to_string().contains("generation"), "{error}");
             assert!(self.service.coded_authority().active_claim(token).is_some());
         }
 

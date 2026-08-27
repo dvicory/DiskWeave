@@ -18,8 +18,9 @@ pub use action::{
     TransactionIdentity, TransactionPersistenceEvidence, WriteRecoveryRecordRequirement,
 };
 pub use coded::{
-    CodedAdmissionOutcome, CodedAuthorityError, CodedClaim, CodedClaimInput, CodedClaimRelease,
-    CodedOperationPhase, CodedRangeAuthority,
+    CodedAdmission, CodedAdmissionOutcome, CodedAuthorityError, CodedCaptureBoundary,
+    CodedCaptureEstablishment, CodedClaim, CodedClaimInput, CodedClaimRelease, CodedEffectPermit,
+    CodedHistoryCoverage, CodedOperationPhase, CodedRangeAuthority,
 };
 pub use error::{ErrorClass, PlanError, TransactionError};
 pub use machine::{

@@ -8,10 +8,7 @@ use dwv_core::{
 use dwv_recovery::MemoryRecoveryStore;
 use dwv_recovery::WriteRecoveryRecordCommit;
 use dwv_recovery::{Blake3Provider, DigestProvider};
-use dwv_recovery::{
-    CodedCaptureCut, CodedCaptureDecision, CodedCaptureFrontier, CodedCaptureId,
-    CodedCaptureMembership, CodedCaptureScopeInput, CodedLaterCutObservation, RecoveryGeneration,
-};
+use dwv_recovery::{CodedCaptureId, CodedCaptureMembership, RecoveryGeneration};
 use dwv_store::{
     CapabilityEvidenceId, ChildOperationId, CompletedRangeSet, FenceId, IdentityObservation,
     ResourceLimits, StoreCapabilities, StoreCompletion, StoreCompletionDelivery, StoreError,
@@ -29,7 +26,6 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 const LENGTH: u64 = 4096;
 const BLOCK: u32 = 512;
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
-static NEXT_CAPTURE: AtomicUsize = AtomicUsize::new(10_000);
 
 struct FileVerificationStore(FileStore);
 
@@ -451,7 +447,6 @@ struct DeterministicWriteHarness<S: RandomAccessStore, R: RecoveryStateStore> {
     submission: PortableWriteSubmission,
     accepted: Vec<PortableWriteWork>,
     ready: Vec<PortableWriteResult>,
-    clean_capture: Option<CodedCaptureId>,
 }
 
 impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R> {
@@ -466,7 +461,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R
             submission,
             accepted: Vec::new(),
             ready: Vec::new(),
-            clean_capture: None,
         })
     }
 
@@ -477,14 +471,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R
     fn emit_without_execution(&mut self) -> Result<PortableWriteDrive, ServiceError> {
         let turn = self.service.drive_write(&self.submission)?;
         if let PortableWriteDrive::Work(work) = &turn {
-            if self.clean_capture.is_none()
-                && matches!(work.action, PortableWriteAction::BasisRead { .. })
-            {
-                self.clean_capture = Some(establish_test_clean_capture(
-                    &mut self.service,
-                    &self.submission,
-                )?);
-            }
             self.service.accept_write_work(work)?;
             self.accepted.push(work.clone());
         }
@@ -517,52 +503,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R
 
     fn deliver(&mut self, index: usize) -> Result<Option<OperationEvidence>, ServiceError> {
         let result = self.ready.swap_remove(index);
-        let evidence = self.service.deliver_write_result(result)?;
-        if let Some(evidence_ref) = evidence.as_ref()
-            && let Some(capture) = self.clean_capture.take()
-        {
-            retire_test_clean_capture(&mut self.service, capture, evidence_ref)?;
-        }
-        Ok(evidence)
+        self.service.deliver_write_result(result)
     }
 }
 fn finish_retained_write<S: RandomAccessStore, R: RecoveryStateStore>(
-    service: &mut HealthyPortableService<S, R>,
-    submission: &PortableWriteSubmission,
-) -> OperationEvidence {
-    let mut capture = None;
-    loop {
-        match service.drive_write(submission).unwrap() {
-            PortableWriteDrive::Wait(PortableWriteWait::BasisReadPermission) => {
-                service.grant_basis_read_permission(submission).unwrap();
-            }
-            PortableWriteDrive::Work(work) => {
-                if capture.is_none() && matches!(work.action, PortableWriteAction::Flush { .. }) {
-                    capture = Some(establish_test_clean_capture(service, submission).unwrap());
-                }
-                service.accept_write_work(&work).unwrap();
-                let result = service.execute_write_work(&work).unwrap();
-                if let Some(evidence) = service.deliver_write_result(result).unwrap() {
-                    if let Some(capture) = capture {
-                        retire_test_clean_capture(service, capture, &evidence).unwrap();
-                    }
-                    return evidence;
-                }
-            }
-            PortableWriteDrive::Complete(evidence) => {
-                if let Some(capture) = capture {
-                    retire_test_clean_capture(service, capture, &evidence).unwrap();
-                }
-                return evidence;
-            }
-            PortableWriteDrive::Wait(wait) => {
-                panic!("retained write did not complete: {wait:?}");
-            }
-        }
-    }
-}
-
-fn finish_retained_write_with_capture<S: RandomAccessStore, R: RecoveryStateStore>(
     service: &mut HealthyPortableService<S, R>,
     submission: &PortableWriteSubmission,
 ) -> OperationEvidence {
@@ -733,6 +677,41 @@ fn coded_claim_supports_unit_above_u32_boundary_without_large_fixture() {
 }
 
 #[test]
+fn coded_claim_mapping_matches_independent_codeword_overlap_oracle() {
+    let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let block = u64::from(BLOCK);
+    for start in 0..8 {
+        for block_count in 1..=8 - start {
+            for chunk_blocks in 1..=block_count {
+                let end = start + block_count;
+                let mut cursor = start;
+                let mut ranges = Vec::new();
+                while cursor < end {
+                    let chunk_end = (cursor + chunk_blocks).min(end);
+                    ranges.push(
+                        ByteRange::new(cursor * block, (chunk_end - cursor) * block).unwrap(),
+                    );
+                    cursor = chunk_end;
+                }
+                let plan = crate::range::RangePlan { ranges };
+                let actual = service.coded_claim_for_plan(&plan).unwrap();
+                let expected = (0..8)
+                    .filter(|unit| {
+                        let unit_start = unit * block;
+                        let unit_end = unit_start + block;
+                        plan.ranges
+                            .iter()
+                            .any(|range| unit_start < range.end() && range.offset < unit_end)
+                    })
+                    .map(CodedUnitId)
+                    .collect::<BTreeSet<_>>();
+                assert_eq!(actual.units(), &expected);
+            }
+        }
+    }
+}
+
+#[test]
 fn write_driver_start_has_no_physical_io_until_executor_acceptance() {
     let epoch = TopologyEpoch(4);
     let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
@@ -894,7 +873,6 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
         panic!("holder should emit its first basis read");
     };
     service.accept_write_work(&holder_basis).unwrap();
-    establish_test_clean_capture_with_id(&mut service, &holder, CodedCaptureId(0)).unwrap();
     assert_eq!(
         service
             .coded_captures()
@@ -955,19 +933,33 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
             .unwrap()
             .is_none()
     );
-    finish_retained_write_with_capture(&mut service, &holder);
+    finish_retained_write(&mut service, &holder);
 
+    let released_capture = service
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .expect("released CLEAN capture remains as retained evidence");
+    assert!(released_capture.membership.is_empty());
+    assert!(
+        service
+            .recovery
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .contains(&released_capture)
+    );
     let PortableWriteDrive::Work(later_basis) = service.drive_write(&contender).unwrap() else {
-        panic!("later operation should emit its basis work after holder release");
+        panic!("contended operation should resume without a new submission");
     };
+    assert_eq!(later_basis.submission.operation, contender.operation);
     assert_eq!(
         service
             .coded_captures()
-            .capture_snapshot(CodedCaptureId(0))
+            .capture_snapshot(CodedCaptureId(1))
             .unwrap()
             .membership
             .get(&contender.operation),
-        Some(&CodedCaptureMembership::Later)
+        Some(&CodedCaptureMembership::Included)
     );
     service.accept_write_work(&later_basis).unwrap();
     let later_basis_result = service.execute_write_work(&later_basis).unwrap();
@@ -977,40 +969,12 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
             .unwrap()
             .is_none()
     );
-    loop {
-        match service.drive_write(&contender).unwrap() {
-            PortableWriteDrive::Work(work) => {
-                service.accept_write_work(&work).unwrap();
-                let result = service.execute_write_work(&work).unwrap();
-                assert!(service.deliver_write_result(result).unwrap().is_none());
-            }
-            PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked) => break,
-            other => panic!("later operation crossed capture boundary as {other:?}"),
-        }
-    }
-    service
-        .coded_captures_mut()
-        .observe_later_cut(
-            CodedCaptureId(0),
-            contender.operation,
-            CodedCaptureCut::new(
-                epoch,
-                RecoveryGeneration(1),
-                CodedCaptureFrontier::new(RecoveryGeneration(1), 2),
-            ),
-            CodedLaterCutObservation::DurableAfterClean,
-        )
-        .unwrap();
-    let PortableWriteDrive::Work(resumed) = service.drive_write(&contender).unwrap() else {
-        panic!("contended operation should resume without a new submission");
-    };
-    assert_eq!(resumed.submission.operation, contender.operation);
-    assert_eq!(
-        service
-            .coded_authority()
-            .operation_phase(contender.operation),
-        Some(dwv_transaction_ref::CodedOperationPhase::EffectPossible)
-    );
+    let evidence = finish_retained_write(&mut service, &contender);
+    assert_eq!(evidence.request, contender.request);
+    let retained = service.coded_captures().snapshots();
+    assert_eq!(retained.len(), 2);
+    assert!(retained.iter().all(|capture| capture.membership.is_empty()));
+    assert_eq!(service.recovery.snapshot().coded_captures, retained);
 }
 
 #[test]
@@ -1065,13 +1029,26 @@ fn protected_write_failure_keeps_claim_until_matching_authorization() {
     let authorization = service
         .reconcile_release_authorization(authoritative_release(submission.operation))
         .unwrap()
-        .expect("owner-approved matching authorization should release the claim");
-    assert_eq!(authorization.operation, submission.operation);
+        .expect("matching lifecycle evidence should release only the coded claim");
+    assert_eq!(authorization.operation(), submission.operation);
     assert!(
         service
             .coded_authority()
             .operation_phase(submission.operation)
             .is_none()
+    );
+    let capture = service
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .expect("unresolved capture survives coded claim release");
+    assert!(
+        capture
+            .release_authorized_operations
+            .contains(&submission.operation)
+    );
+    assert_eq!(
+        service.recovery.snapshot().coded_captures.as_slice(),
+        &[capture]
     );
 }
 #[test]
@@ -1080,14 +1057,7 @@ fn coded_capture_rejects_incoherent_owner_generation() {
     service.checksums.recovery_generation = RecoveryGeneration(1);
 
     let error = service
-        .coded_start_capture(
-            CodedCaptureId(91),
-            CodedCaptureScopeInput::complete([CodedUnitId(0)]),
-            [RegionId(0)],
-            [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
-        )
+        .coded_start_capture(CodedCaptureId(91), [RegionId(0)], [IntegrityExtentId(0)])
         .expect_err("incoherent recovery/checksum generations must refuse capture");
     assert!(
         error
@@ -1108,14 +1078,7 @@ fn coded_capture_rejects_incoherent_checksum_topology() {
     service.checksums.topology_epoch = TopologyEpoch(5);
 
     let error = service
-        .coded_start_capture(
-            CodedCaptureId(92),
-            CodedCaptureScopeInput::complete([CodedUnitId(0)]),
-            [RegionId(0)],
-            [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
-        )
+        .coded_start_capture(CodedCaptureId(92), [RegionId(0)], [IntegrityExtentId(0)])
         .expect_err("incoherent checksum topology must refuse capture");
     assert!(
         error
@@ -1131,7 +1094,7 @@ fn coded_capture_rejects_incoherent_checksum_topology() {
 }
 
 #[test]
-fn protected_write_capture_block_parks_without_re_admission() {
+fn protected_write_persists_owner_later_cut_before_effect() {
     let epoch = TopologyEpoch(4);
     let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
     let request = request(
@@ -1144,14 +1107,7 @@ fn protected_write_capture_block_parks_without_re_admission() {
     );
     let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
     service
-        .coded_start_capture(
-            CodedCaptureId(9),
-            CodedCaptureScopeInput::complete([CodedUnitId(0)]),
-            [RegionId(0)],
-            [IntegrityExtentId(0)],
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 0),
-            CodedCaptureFrontier::new(RecoveryGeneration::ZERO, 1),
-        )
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
         .unwrap();
     let submission = service
         .submit_write(request, &[0x45; BLOCK as usize])
@@ -1166,23 +1122,24 @@ fn protected_write_capture_block_parks_without_re_admission() {
         assert!(service.deliver_write_result(result).unwrap().is_none());
     }
 
+    let capture = service
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .expect("earlier capture remains as refused evidence");
+    assert_eq!(capture.phase, CodedCapturePhase::Refused);
+    assert_eq!(capture.decision, None);
     assert_eq!(
-        service.drive_write(&submission).unwrap(),
-        PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked)
+        capture.membership.get(&submission.operation),
+        Some(&CodedCaptureMembership::LaterDurableStalesClean)
     );
+    let persisted = service.recovery.snapshot();
     assert_eq!(
-        service
-            .coded_authority()
-            .operation_phase(submission.operation),
-        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+        persisted
+            .coded_captures
+            .iter()
+            .find(|capture| capture.capture == CodedCaptureId(0)),
+        Some(&capture)
     );
-    service
-        .coded_captures_mut()
-        .observe_decision(
-            CodedCaptureId(9),
-            dwv_recovery::CodedCaptureDecision::Rejected,
-        )
-        .unwrap();
     assert!(matches!(
         service.drive_write(&submission).unwrap(),
         PortableWriteDrive::Work(_)
@@ -1218,7 +1175,7 @@ fn blocking_write_uses_the_retained_coded_path() {
     assert_eq!(
         service
             .coded_authority()
-            .operation_phase(authorization.operation),
+            .operation_phase(authorization.operation()),
         None
     );
 }
@@ -2288,53 +2245,6 @@ fn fixture_with_config(
     (root, service)
 }
 
-fn establish_test_clean_capture<S, R>(
-    service: &mut HealthyPortableService<S, R>,
-    submission: &PortableWriteSubmission,
-) -> Result<CodedCaptureId, ServiceError>
-where
-    S: dwv_store::RandomAccessStore,
-    R: dwv_recovery::RecoveryStateStore,
-{
-    let capture = CodedCaptureId(
-        NEXT_CAPTURE
-            .fetch_add(1, Ordering::Relaxed)
-            .try_into()
-            .expect("test capture id fits in u64"),
-    );
-    establish_test_clean_capture_with_id(service, submission, capture)
-}
-
-fn establish_test_clean_capture_with_id<S, R>(
-    service: &mut HealthyPortableService<S, R>,
-    submission: &PortableWriteSubmission,
-    capture: CodedCaptureId,
-) -> Result<CodedCaptureId, ServiceError>
-where
-    S: dwv_store::RandomAccessStore,
-    R: dwv_recovery::RecoveryStateStore,
-{
-    service.establish_clean_capture_for_write(
-        submission,
-        capture,
-        CodedCaptureDecision::Accepted,
-        dwv_recovery::CodedCleanCommitObservation::Durable,
-    )?;
-    Ok(capture)
-}
-
-fn retire_test_clean_capture<S, R>(
-    service: &mut HealthyPortableService<S, R>,
-    capture: CodedCaptureId,
-    evidence: &OperationEvidence,
-) -> Result<(), ServiceError>
-where
-    S: dwv_store::RandomAccessStore,
-    R: dwv_recovery::RecoveryStateStore,
-{
-    service.retire_clean_capture(capture, evidence)
-}
-
 fn write_with_test_clean_capture<S, R>(
     service: &mut HealthyPortableService<S, R>,
     request: BlockRequest,
@@ -2344,42 +2254,7 @@ where
     S: dwv_store::RandomAccessStore,
     R: dwv_recovery::RecoveryStateStore,
 {
-    let submission = service.submit_write(request, bytes)?;
-    service.grant_basis_read_permission(&submission)?;
-    let mut capture = None;
-    loop {
-        match service.drive_write(&submission)? {
-            PortableWriteDrive::Wait(PortableWriteWait::BasisReadPermission) => {
-                service.grant_basis_read_permission(&submission)?;
-            }
-            PortableWriteDrive::Wait(wait) => {
-                return Err(ServiceError::io(
-                    FailureClass::ReconciliationRequired,
-                    format!("test write stopped at {wait:?}"),
-                ));
-            }
-            PortableWriteDrive::Work(work) => {
-                if capture.is_none() && matches!(work.action, PortableWriteAction::BasisRead { .. })
-                {
-                    capture = Some(establish_test_clean_capture(service, &submission)?);
-                }
-                service.accept_write_work(&work)?;
-                let result = service.execute_write_work(&work)?;
-                if let Some(evidence) = service.deliver_write_result(result)? {
-                    if let Some(capture) = capture {
-                        retire_test_clean_capture(service, capture, &evidence)?;
-                    }
-                    return Ok(evidence);
-                }
-            }
-            PortableWriteDrive::Complete(evidence) => {
-                if let Some(capture) = capture {
-                    retire_test_clean_capture(service, capture, &evidence)?;
-                }
-                return Ok(evidence);
-            }
-        }
-    }
+    service.write(request, bytes)
 }
 #[test]
 fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
@@ -2416,6 +2291,8 @@ fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
             integrity_records: Vec::new(),
             checksum_baseline: Some(baseline),
             fences: Vec::new(),
+            coded_captures: Vec::new(),
+            next_coded_capture_id: 0,
             maintenance_checkpoints: Vec::new(),
             metadata_loss_audit: Some(dwv_recovery::MetadataLossAudit {
                 matrix_version: dwv_recovery::METADATA_LOSS_MATRIX_VERSION,
@@ -3359,7 +3236,7 @@ fn authoritative_older_generation_reconciliation_survives_unrelated_work() {
         .reconcile_release_authorization(authoritative_release(older))
         .unwrap()
         .unwrap();
-    assert_eq!(authorization.operation, older);
+    assert_eq!(authorization.operation(), older);
     assert_eq!(service.release_authorization(older), Some(&authorization));
 }
 
@@ -3505,7 +3382,10 @@ fn exact_generation_lookup_does_not_use_global_latest_ordering() {
     .unwrap()
     .release_authorization
     .unwrap();
-    assert_eq!(service.release_authorization(first.operation), Some(&first));
+    assert_eq!(
+        service.release_authorization(first.operation()),
+        Some(&first)
+    );
 
     let second = write_with_test_clean_capture(
         &mut service,
@@ -3522,10 +3402,10 @@ fn exact_generation_lookup_does_not_use_global_latest_ordering() {
     .unwrap()
     .release_authorization
     .unwrap();
-    assert_ne!(first.operation, second.operation);
-    assert!(service.release_authorization(first.operation).is_none());
+    assert_ne!(first.operation(), second.operation());
+    assert!(service.release_authorization(first.operation()).is_none());
     assert_eq!(
-        service.release_authorization(second.operation),
+        service.release_authorization(second.operation()),
         Some(&second)
     );
 }
@@ -3571,7 +3451,7 @@ fn release_scope_is_bound_to_acquisition_not_write_kind_or_child_count() {
         .reclaim_with_authorization(&authoritative_release(in_scope))
         .unwrap()
         .expect("in-scope zero-child operation can be authorized");
-    assert_eq!(authorization.operation, in_scope);
+    assert_eq!(authorization.operation(), in_scope);
     assert_eq!(
         service.release_authorization(in_scope),
         Some(&authorization)

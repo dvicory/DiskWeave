@@ -22,9 +22,7 @@ pub use degraded::{OfflineAuthorizationError, RebuildSource, authorize_known_era
 pub use dwv_recovery::{
     CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision, CodedCaptureError,
     CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
-    CodedCapturePhase, CodedCaptureRetentionSummary, CodedCaptureRetirement,
-    CodedCaptureScopeInput, CodedCaptureSnapshot, CodedCleanCommitObservation,
-    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
+    CodedCapturePhase, CodedCaptureSnapshot, ValidatedCodedCaptureScope,
 };
 pub use dwv_transaction_ref::{
     CodedAdmissionOutcome, CodedAuthorityError, CodedClaim, CodedClaimInput, CodedClaimRelease,
