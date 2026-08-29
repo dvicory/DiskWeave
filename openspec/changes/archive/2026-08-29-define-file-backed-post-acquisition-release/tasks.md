@@ -22,5 +22,5 @@
 
 - [x] 4.1 Run strict OpenSpec validation for this change and the affected active startup target; repair only defects within this semantic scope.
 - [x] 4.2 Run focused crate tests, workspace tests, strict lint, documentation checks/build, and Rust diagnostics.
-- [ ] 4.3 Obtain fresh affected-owner external completion review before canonical synchronization or Bead closure.
-- [ ] 4.4 After completion approval, synchronize canonical semantics and archive the change through their normal workflows.
+- [x] 4.3 Obtain fresh affected-owner external completion review before canonical synchronization or Bead closure.
+- [x] 4.4 After completion approval, synchronize canonical semantics and archive the change through their normal workflows.
