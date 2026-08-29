@@ -15,7 +15,7 @@ See `proposal.md` for motivation. The canonical dirty-integrity requirement dele
 
 - Reconstruct or persist a general operation ledger across restart.
 - Make capture cleanup clear dirty regions, validate checksums, or publish service.
-- Change coded-range geometry, CLEAN-owner policy, recovery-state unknown-commit ownership, or physical capture-capacity limits.
+- Change coded-range geometry, CLEAN-owner policy, recovery-state unknown-commit ownership, or the configured operation-capacity limit.
 - Add compatibility shims for old serialized transition DTOs; they are capabilities, not persistent format.
 
 ## Decisions
@@ -31,6 +31,12 @@ The production mapping API has two owner operations over the same internal mappi
 Durable capture data retains capture identity, array/topology/coding identity, exact selected dirty/checksum geometry, exact coded units, capture and lower-frontier summaries, membership and pending/resolved history, durable evidence references/receipts, and exact snapshot/revision identity. Serialized convenience flags such as `scope_complete`, `scope_validated`, or `lower_frontier_covered` may describe the written snapshot but do not recreate proof.
 
 After reopen, the coded-range owner recomputes and validates the scope against the durable topology/coding identity and selected geometry. The dirty-integrity capture-retention owner revalidates membership, lower-frontier and retained-history coverage against durable release/CLEAN/later-cut evidence. Recovery-state owners revalidate generation, topology, predecessor revision, and commit observations. Missing, stale, contradictory, or unavailable underlying facts withhold fresh authority and leave the capture conservative and non-cleanable.
+
+### Typed live transitions carry authority across durability
+
+Every correctness-sensitive irreversible transition uses a focused owner-issued preparation or witness bound to the exact live predecessor and exact proposed successor. The service may carry that value through the owned durable effect, but the next live authority is installed only after a definite commit receipt or authoritative reopen reconciliation proves the successor.
+
+Raw capture IDs, persisted snapshots, phase enums, booleans, generations, high-water marks, and expected-state equality can locate or validate data but cannot substitute for the preparation. Persisted DTOs remain serializable data and never deserialize or reconstruct transition authority. Focused prepared-transition handles fit the current runtime and reopen representation; a general typestate framework is unnecessary.
 
 ### Production and test authority remain opaque
 
@@ -61,6 +67,12 @@ The service carries this preparation into one generation-checked recovery transa
 
 Physical slot cleanup remains separate. Failure after release but before compaction retains the release receipt and membership needed to retry safely.
 
+### Unresolved captures retain exact membership
+
+Membership compaction is available only after a capture is definitively `Refused` or durably `CleanKnown`. `Open`, commit-pending, and commit-unknown captures retain every exact Included/Later membership and cut observation; the retention owner cannot summarize them away merely because an operation otherwise reached `Released`.
+
+This exact unresolved history is bounded by admitted operation/capture capacity and the later-mutation cut. An overlapping later mutation cannot continue indefinitely through media effect: durable CLEAN must order first, or a newer durable boundary must stale/refuse the capture. If unknown outcomes or stalled reconciliation consume finite capacity, admission backpressures or fails closed. No capacity path forgets unresolved membership.
+
 ### The dirty-integrity capture-lifecycle owner issues phase-specific cleanup
 
 There is no generic production `retire_resolved_capture(capture_id)` authority that inspects phase and grants itself deletion. The dirty-integrity capture-lifecycle owner consumes phase-specific evidence and issues a non-interchangeable capability bound to capture identity, exact durable predecessor snapshot/revision, current topology, current recovery generation, exact selected dirty/checksum geometry, and exact proposed successor:
@@ -86,11 +98,34 @@ The capture-lifecycle owner may instead issue exact `CleanKnown` cleanup authori
 
 The CLEAN transaction alone does not authorize immediate deletion, but no genuinely later write or dirty boundary is required after these closure facts become durable. Under continued healthy owner execution, each ordinary successful write can therefore progress through full release, compaction, and cleanup even if its region is never touched again. Sequential disjoint writes do not monotonically increase retained captures; count is bounded by concurrently unresolved lifecycle work, while stalled/faulted cleanup triggers ordinary finite-capacity backpressure rather than silent forgetting or false `CLEAN`.
 
+### Every durable authority transition uses one outcome protocol
+
+Final release receipt, membership compaction, refused cleanup, and `CleanKnown` cleanup all use exact predecessor-bound prepare → commit → install:
+
+- definite success installs only the prepared successor and its next live authority;
+- known rejection or known non-commit preserves the exact predecessor and invalidates the preparation; and
+- a may-have-committed, lost, or corrupt acknowledgement installs neither process-local candidate, invalidates all process-local transition authority, and reopens or inspects durable storage.
+
+Reconciliation accepts only the exact durable predecessor or exact prepared successor. The delegated model observes `Released`, compacted membership, or absent capture only after definite success or authoritative reconciliation proves that exact state. This protocol is shared semantics, not a reusable generic implementation framework.
+
 ### Reopened refusal and removal use exact atomic proposals
 
 While recovering and before live admission, the service accepts only capture-specific cleanup authority derived from current refusal evidence and bound to the exact inherited predecessor. One generation-checked recovery transaction proposes refusal and removal atomically.
 
 A known rejection or failure leaves the exact prior durable and in-memory state authoritative. After a true may-have-committed unknown, lost, or corrupt acknowledgement, the service installs neither candidate, releases all process-local authority, and reopens or inspects the durable artifact under recovery-state semantics. Reopen may accept only the exact prior inherited capture or exact atomically refused-and-removed successor. Both preserve conservative dirty/indeterminate state and neither claims `CLEAN`, operation release, or valid integrity.
+
+### Unreconstructable inherited `CleanKnown` is invalidated and retired
+
+A crash can preserve durable `CleanKnown` while losing the prior process's live operation owners before every Included membership has a durable full-release and retained-history closure. Reconstructing those vanished operation capabilities from phase or membership would forge authority. Persisting a general operation-lifecycle ledger would add a second lifecycle system solely to retain one optimization result.
+
+On reopen, current owners first attempt normal revalidation. If they cannot re-establish every release, retained-history, and clean-cleanup capability needed to finish the inherited capture, the recovery/dirty-integrity owner issues one exact predecessor-bound proposal that:
+
+- invalidates or re-dirties the capture's selected dirty-region and checksum-extent state;
+- abandons or removes the old `CleanKnown` capture and its now-unusable inherited membership;
+- preserves payload bytes and makes no operation-release, integrity-validity, or current-CLEAN claim; and
+- binds the exact capture, topology, recovery generation, selected geometry, durable predecessor revision, and proposed invalidated successor.
+
+The service commits the invalidation and removal in one generation-checked recovery transaction. Definite success installs only the dirty/indeterminate successor. Known non-commit preserves the exact predecessor. A may-have-committed, lost, or corrupt acknowledgement installs neither candidate and permits reopen reconciliation of only the exact predecessor or exact proposed successor. Current recovery may establish `CLEAN` again later. This is capture-specific recovery policy, not a persistent operation ledger.
 
 ### The delegated model names external owner capabilities
 
