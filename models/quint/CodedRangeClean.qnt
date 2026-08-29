@@ -1,13 +1,15 @@
 /**
  * Bounded coded-range conflict and recovery-CLEAN closure relation.
  *
- * The relation receives complete validated claims/scopes, one external
- * CLEAN-owner decision per capture, exact CLEAN-commit/cut observations, and
- * an external ReleaseAllowed fact. It derives only coded overlap,
- * active/unreconciled capture membership, durable post-capture-cut
- * eligibility, CLEAN eligibility, and coded removal conditional on that
- * authorization. Lifecycle terminality, basis coherence, topology,
- * persistence, recovery correctness, and physical mechanisms remain external.
+ * The relation receives complete live owner-approved claims/scopes, one
+ * external CLEAN-owner decision per capture, exact CLEAN-commit/cut
+ * observations, canonical full-lifecycle ReleaseAllowed, owner-issued
+ * membership-compaction authorization, and phase-specific capture-cleanup
+ * authorization. It derives only coded overlap, active/unreconciled capture
+ * membership, durable post-capture-cut eligibility, CLEAN eligibility, and
+ * transitions conditional on those external capabilities. Lifecycle
+ * terminality, authority production, basis coherence, topology, persistence,
+ * recovery correctness, and physical mechanisms remain external.
  *
  * Finite operation/capture/input sets are analysis parameters, not production
  * cardinality, locks, counters, or frontier mechanisms.
@@ -24,9 +26,11 @@ module CodedRangeClean {
 
   type CaptureScope = {
     units: Set[str],
+    // Finite projections of fresh coded-owner scope authority. These values
+    // are action inputs, never persisted proof or rehydrated authority.
     complete: bool,
     validated: bool,
-    // External bounded lower-frontier summary; not retained after start.
+    // Fresh dirty-integrity-owner lower-frontier authority; not retained.
     lowerFrontierCovered: bool,
   }
 
@@ -49,11 +53,27 @@ module CodedRangeClean {
     | CaptureSatisfactionAccepted
     | CaptureSatisfactionRejected
 
-  // Supplied at the coded-removal boundary by existing owners. It is not
-  // stored in this relation and CLEAN uncertainty neither supplies nor negates.
+  // Exact canonical full-lifecycle ReleaseAllowed. Safe Reclaimable or any
+  // lower-level reclaim witness is only one external prerequisite and cannot
+  // inhabit this type. The authorization is consumed, never inferred/stored.
   type ReleaseAuthorization =
     ReleaseNotAuthorized
     | ReleaseAllowed
+
+  // Finite abstraction of exact dirty-integrity-owner compaction authority.
+  // Production binds capture/predecessor, receipts, forgotten/retained facts,
+  // and replacement summary; capture state alone never supplies it.
+  type MembershipCompactionAuthorization =
+    MembershipCompactionNotAuthorized
+    | MembershipCompactionAllowed
+
+  // Finite abstractions of distinct capture-specific production capabilities.
+  // Refused and CleanKnown authorization are not interchangeable, and neither
+  // is inferred from phase alone.
+  type CaptureCleanupAuthorization =
+    CaptureCleanupNotAuthorized
+    | RefusedCaptureCleanupAllowed
+    | CleanKnownCaptureCleanupAllowed
 
   // Commit observations are action inputs; CaptureCommitUnknown is the only
   // stored uncertainty status. Durable and rejected outcomes become
@@ -322,6 +342,39 @@ module CodedRangeClean {
     }
   }
 
+  pure def captureMembershipMayResolve(capture: CaptureState): bool =
+    capture.phase == CaptureRefused
+    or capture.phase == CaptureCleanKnown
+
+  // Open, commit-pending, and commit-unknown captures keep exact membership.
+  // Finite production capacity backpressures rather than weakening this guard.
+
+  pure def captureMembershipMayCompact(
+    capture: CaptureState,
+    operationId: str,
+  ): bool = {
+    val status = capture.membership.get(operationId)
+    captureMembershipMayResolve(capture)
+    and status != CaptureNotMember
+    and status != CaptureLater
+    and status != CaptureLaterUnknown
+  }
+
+  pure def captureMembershipEmpty(capture: CaptureState): bool =
+    Operations.forall(operationId =>
+      capture.membership.get(operationId) == CaptureNotMember
+    )
+
+
+  pure def captureAfterMembershipCompaction(
+    capture: CaptureState,
+    operationId: str,
+  ): CaptureState = {
+    {
+      ...capture,
+      membership: capture.membership.put(operationId, CaptureNotMember),
+    }
+  }
   action init: bool = all {
     state' = {
       operations: Operations.mapBy(operationId => initialOperation),
@@ -398,7 +451,9 @@ module CodedRangeClean {
     },
   }
 
-  // ReleaseAllowed is consumed at removal; it is never stored or inferred.
+  // ReleaseAllowed means the complete production release plus durable receipt
+  // definitely committed or authoritative reopen proved that exact successor.
+  // Failed or uncertain process-local preparations never enter this relation.
   action removeCodedClaim(
     operationId: str,
     authorization: ReleaseAuthorization,
@@ -412,6 +467,45 @@ module CodedRangeClean {
         ...state.operations.get(operationId),
         phase: Released,
       }),
+    },
+  }
+
+  // Definite full lifecycle release and its durable receipt precede separately
+  // owner-authorized compaction. Unresolved captures retain exact membership.
+  action compactReleasedMembership(
+    captureId: str,
+    operationId: str,
+    authorization: MembershipCompactionAuthorization,
+  ): bool = all {
+    authorization == MembershipCompactionAllowed,
+    state.operations.get(operationId).phase == Released,
+    captureMembershipMayCompact(state.captures.get(captureId), operationId),
+    state' = {
+      ...state,
+      captures: state.captures.put(captureId, captureAfterMembershipCompaction(state.captures.get(captureId), operationId)),
+    },
+  }
+
+  // Capture retirement consumes a phase-specific external owner capability
+  // only after definite commit or authoritative reconciliation. CleanKnown
+  // retirement needs no later mutation once production has durably closed and
+  // independently retained every release/history/CLEAN obligation.
+  action cleanupResolvedCapture(
+    captureId: str,
+    authorization: CaptureCleanupAuthorization,
+  ): bool = all {
+    (
+      state.captures.get(captureId).phase == CaptureRefused
+      and authorization == RefusedCaptureCleanupAllowed
+    )
+    or (
+      state.captures.get(captureId).phase == CaptureCleanKnown
+      and captureMembershipEmpty(state.captures.get(captureId))
+      and authorization == CleanKnownCaptureCleanupAllowed
+    ),
+    state' = {
+      ...state,
+      captures: state.captures.put(captureId, initialCapture),
     },
   }
 
@@ -531,6 +625,21 @@ module CodedRangeClean {
       val capture = state.captures.get(captureId)
       capture.scope.subseteq(CodedUnits)
       and capture.membership.keys() == Operations
+    })
+
+  val AbsentCaptureHasNoMembership: bool =
+    Captures.forall(captureId => {
+      val capture = state.captures.get(captureId)
+      capture.phase == CaptureAbsent implies captureMembershipEmpty(capture)
+    })
+
+  val UnresolvedCaptureMembershipNotCompactable: bool =
+    Captures.forall(captureId => {
+      val capture = state.captures.get(captureId)
+      not(captureMembershipMayResolve(capture)) implies
+        Operations.forall(operationId =>
+          not(captureMembershipMayCompact(capture, operationId))
+        )
     })
 
   val NoHeldCodedOverlap: bool =
