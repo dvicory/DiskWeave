@@ -1,16 +1,67 @@
 use super::*;
 use anyhow::{Context, bail};
-use dwv_core::{BlockOp, ByteRange, CodedUnitId, DurabilityIntent, RequestId, TopologyEpoch};
-use dwv_recovery::{
-    CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership, CodedCapturePhase,
-    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutObservation,
-    CodedLaterCutReconciliation, IntegrityExtentId, MemoryRecoveryStore, RegionId,
+use dwv_core::{
+    BlockOp, ByteRange, CodedUnitId, DurabilityIntent, FenceDomain, RequestId, TopologyEpoch,
 };
-use dwv_store::{OperationSlotToken, ReconciliationOutcome};
+use dwv_recovery::{
+    CodedCaptureCleanAuthorization, CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership,
+    CodedCapturePhase, CodedCaptureSnapshot, CodedCleanAttempt, CodedCleanAttemptPhase,
+    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutAttempt,
+    CodedLaterCutAttemptPhase, CodedLaterCutObservation, CodedLaterCutReconciliation,
+    FenceCertificate, IntegrityExtentId, MemoryRecoveryStore, PreparedCodedCleanCommit,
+    PreparedCodedLaterCut, RecoveryCleanDecision, RecoveryCleanRefusalPermit, RecoveryCleanRequest,
+    RecoveryMutation, RecoverySnapshot, RecoveryStateStore, RecoveryTxn, RegionId,
+};
+use dwv_store::{
+    CapabilityEvidenceId, FenceId, OperationSlotToken, ReconciliationOutcome, StoreFenceRef,
+    StoreId, StoreIncarnationId, StoreWriteWatermark,
+};
 use dwv_transaction_ref::{CodedAdmissionOutcome, CodedClaimInput, CodedOperationPhase};
 use quint_connect::{Config, Driver, Result, State, Step, quint_run};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
+
+fn release_certificate(topology_epoch: TopologyEpoch) -> FenceCertificate {
+    FenceCertificate::new(
+        topology_epoch,
+        FenceDomain(1),
+        vec![StoreFenceRef {
+            fence_id: FenceId(1),
+            store_id: StoreId(1),
+            topology_epoch,
+            store_incarnation: StoreIncarnationId(0),
+            through: StoreWriteWatermark(0),
+            capability_evidence_id: CapabilityEvidenceId(1),
+        }],
+        Vec::new(),
+    )
+}
+fn reopened_refusal_permit(
+    snapshot: &RecoverySnapshot,
+    capture: &CodedCaptureSnapshot,
+) -> RecoveryCleanRefusalPermit {
+    let request = capture.dirty_regions.iter().copied().fold(
+        RecoveryCleanRequest::new(snapshot.topology_epoch, FenceDomain(1), snapshot.generation),
+        RecoveryCleanRequest::with_region,
+    );
+    let request = capture
+        .checksum_extents
+        .iter()
+        .copied()
+        .fold(request, RecoveryCleanRequest::with_checksum_extent);
+    match evaluate_recovery_clean(
+        snapshot,
+        &request,
+        &release_certificate(snapshot.topology_epoch),
+    )
+    .expect("reopened refusal evaluation")
+    {
+        RecoveryCleanDecision::Refused { receipt, .. } => receipt,
+        RecoveryCleanDecision::Clear { .. } => {
+            panic!("inherited Open capture unexpectedly had complete CLEAN evidence")
+        }
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 struct ModelClaim {
@@ -96,6 +147,10 @@ struct BridgeDriver {
     claims: HashMap<String, BTreeSet<CodedUnitId>>,
     release_observations: HashMap<String, OperationSlotToken>,
     projection_fault: Option<ProjectionFault>,
+    clean_authorization: Option<CodedCaptureCleanAuthorization>,
+    clean_certificate: Option<FenceCertificate>,
+    clean_attempt: Option<CodedCleanAttempt>,
+    later_cut_attempt: Option<CodedLaterCutAttempt>,
 }
 
 impl BridgeDriver {
@@ -110,6 +165,10 @@ impl BridgeDriver {
             claims: HashMap::new(),
             release_observations: HashMap::new(),
             projection_fault,
+            clean_authorization: None,
+            clean_certificate: None,
+            clean_attempt: None,
+            later_cut_attempt: None,
         }
     }
 
@@ -118,6 +177,10 @@ impl BridgeDriver {
         self.tokens.clear();
         self.claims.clear();
         self.release_observations.clear();
+        self.clean_authorization = None;
+        self.clean_certificate = None;
+        self.clean_attempt = None;
+        self.later_cut_attempt = None;
     }
 
     fn service(&self) -> Result<&HealthyPortableService<FakeStore, MemoryRecoveryStore>> {
@@ -151,29 +214,45 @@ impl BridgeDriver {
             "opC" => 2,
             _ => bail!("unknown model operation {operation}"),
         };
+        let ranges = units
+            .iter()
+            .copied()
+            .map(|unit| {
+                ByteRange::new(u64::from(unit) * u64::from(BLOCK), u64::from(BLOCK))
+                    .expect("bounded model coded unit")
+            })
+            .collect::<Vec<_>>();
+        let plan = crate::range::RangePlan { ranges };
         let request = request(
             RequestId(100 + data_slot as u64),
             TopologyEpoch(4),
             data_slot,
             BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded coded range"),
+            ByteRange::new(
+                u64::from(*units.first().context("empty model coded claim")?) * u64::from(BLOCK),
+                u64::try_from(units.len()).unwrap() * u64::from(BLOCK),
+            )
+            .expect("bounded model request"),
             DurabilityIntent::Ordinary,
         );
-        let token = self.service_mut()?.reserve(request)?;
-        let claim = units
+        let claim = self.service()?.coded_claim_for_plan(&plan)?;
+        let expected = units
             .iter()
             .copied()
             .map(|unit| CodedUnitId(u64::from(unit)))
             .collect::<BTreeSet<_>>();
+        if claim.units() != &expected {
+            bail!("production geometry owner disagreed with the model coded claim");
+        }
+        let token = self.service_mut()?.reserve(request)?;
         if !matches!(
-            self.service_mut()?
-                .coded_admit(token, CodedClaimInput::mapped(claim.iter().copied()))?,
+            self.service_mut()?.coded_admit(token, claim)?,
             CodedAdmissionOutcome::Admitted(_)
         ) {
             bail!("model admission mapped to production contention");
         }
         self.tokens.insert(operation.to_owned(), token);
-        self.claims.insert(operation.to_owned(), claim);
+        self.claims.insert(operation.to_owned(), expected);
         Ok(())
     }
 
@@ -183,14 +262,12 @@ impl BridgeDriver {
             1 => self.admit("opB", &[0, 1]),
             2 => self.admit("opC", &[1]),
             3 => self.start_capture(),
-            4 => self.accept_capture(),
-            5 => self.reject_capture(),
-            6 => self.permit_effect("opA"),
-            7 => self.permit_effect("opB"),
-            8 => self.permit_effect("opC"),
-            9 => self.release_operation("opA"),
-            10 => self.release_operation("opB"),
-            11 => self.release_operation("opC"),
+            4 => self.permit_effect("opA"),
+            5 => self.permit_effect("opB"),
+            6 => self.permit_effect("opC"),
+            7 => self.release_operation("opA"),
+            8 => self.release_operation("opB"),
+            9 => self.release_operation("opC"),
             _ => bail!("sampled Connect choice {choice} is outside the bounded action set"),
         }
     }
@@ -204,64 +281,145 @@ impl BridgeDriver {
     }
 
     fn accept_capture(&mut self) -> Result<()> {
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
-                coordinator.observe_decision(CodedCaptureId(0), CodedCaptureDecision::Accepted)
-            })?;
+        if self.clean_authorization.is_some() || self.clean_attempt.is_some() {
+            bail!("CLEAN owner decided the capture twice");
+        }
+        let (authorization, certificate) =
+            prepare_connect_clean_authorization(self.service_mut()?, None)?;
+        self.clean_authorization = Some(authorization);
+        self.clean_certificate = Some(certificate);
         Ok(())
     }
 
     fn reject_capture(&mut self) -> Result<()> {
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
-                coordinator.observe_decision(CodedCaptureId(0), CodedCaptureDecision::Rejected)
-            })?;
+        if self.clean_authorization.is_some() || self.clean_attempt.is_some() {
+            bail!("CLEAN owner decided the capture twice");
+        }
+        self.persist_clean_resolution(false)?;
+        self.clean_certificate = None;
         Ok(())
     }
-
     fn request_clean(&mut self) -> Result<()> {
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), |coordinator| {
-                coordinator.request_clean(CodedCaptureId(0))
-            })?;
+        let authorization = self
+            .clean_authorization
+            .take()
+            .context("CLEAN was requested before owner acceptance")?;
+        let (authorization, certificate) =
+            prepare_connect_clean_authorization(self.service_mut()?, Some(authorization))?;
+        let prepared = self
+            .service()?
+            .coded_captures
+            .prepare_clean_commit(authorization)?;
+        self.clean_certificate = Some(certificate);
+        self.clean_attempt = Some(CodedCleanAttempt::new(prepared));
         Ok(())
     }
 
     fn clean_commit(&mut self, observation: CodedCleanCommitObservation) -> Result<()> {
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
-                coordinator.observe_clean_commit(CodedCaptureId(0), observation)
-            })?;
+        let mut attempt = self
+            .clean_attempt
+            .take()
+            .context("CLEAN commit was observed without an exact prepared transaction")?;
+        match observation {
+            CodedCleanCommitObservation::Durable => {
+                let certificate = self
+                    .clean_certificate
+                    .take()
+                    .context("prepared CLEAN transaction lost its fence certificate")?;
+                commit_connect_clean(
+                    self.service_mut()?,
+                    attempt.into_pending_prepared()?,
+                    certificate,
+                )?;
+            }
+            CodedCleanCommitObservation::Unknown | CodedCleanCommitObservation::Rejected => {
+                attempt.observe(observation)?;
+                if observation == CodedCleanCommitObservation::Rejected {
+                    self.clean_certificate = None;
+                }
+                self.clean_attempt = Some(attempt);
+            }
+        }
         Ok(())
     }
 
     fn reconcile_clean(&mut self, reconciliation: CodedCleanReconciliation) -> Result<()> {
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
-                coordinator.reconcile_clean_commit(CodedCaptureId(0), reconciliation)
-            })?;
+        let mut attempt = self
+            .clean_attempt
+            .take()
+            .context("CLEAN reconciliation had no exact unknown transaction")?;
+        match reconciliation {
+            CodedCleanReconciliation::Durable => {
+                let certificate = self
+                    .clean_certificate
+                    .take()
+                    .context("unknown CLEAN transaction lost its fence certificate")?;
+                commit_connect_clean(
+                    self.service_mut()?,
+                    attempt.into_unknown_prepared()?,
+                    certificate,
+                )?;
+            }
+            CodedCleanReconciliation::Rejected => {
+                attempt.reject_unknown()?;
+                self.clean_certificate = None;
+                self.clean_attempt = Some(attempt);
+            }
+        }
         Ok(())
     }
 
+    fn persist_clean_resolution(&mut self, clean: bool) -> Result<()> {
+        persist_test_clean_resolution(self.service_mut()?, clean)
+    }
+
     fn later_cut(&mut self, observation: CodedLaterCutObservation) -> Result<()> {
-        let operation = self.token("opC")?;
-        self.service_mut()?.coded_observe_later_admission(
-            CodedCaptureId(0),
-            operation,
-            observation,
-        )?;
+        let prepared = self.prepare_later_cut()?;
+        match observation {
+            CodedLaterCutObservation::DurableAfterClean
+            | CodedLaterCutObservation::DurableStalesClean => {
+                commit_connect_later_cut(self.service_mut()?, prepared)?;
+            }
+            CodedLaterCutObservation::Unknown | CodedLaterCutObservation::Rejected => {
+                self.later_cut_attempt = Some(CodedLaterCutAttempt::new(prepared, observation)?);
+            }
+        }
         Ok(())
     }
 
     fn later_cut_reconcile(&mut self, observation: CodedLaterCutReconciliation) -> Result<()> {
-        let operation = self.token("opC")?;
-        self.service_mut()?
-            .coded_test_update_capture(CodedCaptureId(0), move |coordinator| {
-                coordinator.reconcile_later_cut(CodedCaptureId(0), operation, observation)
-            })?;
+        let mut attempt = self
+            .later_cut_attempt
+            .take()
+            .context("later-cut reconciliation had no exact unknown transition")?;
+        match observation {
+            CodedLaterCutReconciliation::DurableAfterClean
+            | CodedLaterCutReconciliation::StalesClean => {
+                commit_connect_later_cut(self.service_mut()?, attempt.into_unknown_prepared()?)?;
+            }
+            CodedLaterCutReconciliation::Rejected => {
+                attempt.reject_unknown()?;
+                self.later_cut_attempt = Some(attempt);
+            }
+        }
         Ok(())
     }
 
+    fn prepare_later_cut(&mut self) -> Result<PreparedCodedLaterCut> {
+        let operation = self.token("opC")?;
+        let service = self.service_mut()?;
+        let current = service.recovery.load_assembly_snapshot()?;
+        let admission = service
+            .coded_authority
+            .admission(operation)
+            .context("coded admission is missing")?;
+        Ok(service.coded_captures.prepare_later_cut(
+            CodedCaptureId(0),
+            &admission,
+            service.topology.topology_epoch(),
+            current.generation,
+        )?)
+    }
     fn permit_effect(&mut self, operation: &str) -> Result<()> {
         let token = self.token(operation)?;
         if !matches!(
@@ -275,9 +433,10 @@ impl BridgeDriver {
 
     fn release_operation(&mut self, operation: &str) -> Result<()> {
         let token = self.token(operation)?;
+        let certificate = release_certificate(self.service()?.topology.topology_epoch());
         let authorization = self
             .service_mut()?
-            .establish_release_authorization(&authoritative_release(token))?
+            .establish_release_authorization_for_test(&authoritative_release(token), &certificate)?
             .context("lifecycle owner withheld release authorization")?;
         if authorization.operation() != token {
             bail!("lifecycle owner authorized the wrong generation");
@@ -297,8 +456,7 @@ impl BridgeDriver {
 
     fn cleanup_operation(&mut self, operation: &str) -> Result<()> {
         let token = self.token(operation)?;
-        self.service_mut()?
-            .compact_released_capture_membership(token)?;
+        self.service_mut()?.compact_resolved_capture_membership()?;
         self.service_mut()?.release(token)?;
         Ok(())
     }
@@ -313,6 +471,10 @@ impl BridgeDriver {
         {
             bail!("resolved capture remained after durable cleanup");
         }
+        self.clean_authorization = None;
+        self.clean_certificate = None;
+        self.clean_attempt = None;
+        self.later_cut_attempt = None;
         Ok(())
     }
 
@@ -341,15 +503,22 @@ impl BridgeDriver {
     }
 
     fn probe_incomplete_claim(&mut self) -> Result<()> {
-        if CodedClaimInput::mapped([CodedUnitId(0)]).units() != &BTreeSet::from([CodedUnitId(0)]) {
-            bail!("mapped coded claim changed its exact unit set");
+        if self.service()?.coded_geometry.claim_for_ranges([]).is_ok() {
+            bail!("production geometry owner accepted an empty coded claim");
         }
         Ok(())
     }
 
     fn probe_unvalidated_claim(&mut self) -> Result<()> {
-        if CodedClaimInput::mapped([CodedUnitId(0)]).units().is_empty() {
-            bail!("mapped coded claim lost its validated unit");
+        let end = self.service()?.topology.geometry().protected_length();
+        let outside = ByteRange::new(end, u64::from(BLOCK)).expect("non-empty outside range");
+        if self
+            .service()?
+            .coded_geometry
+            .claim_for_ranges([outside])
+            .is_ok()
+        {
+            bail!("production geometry owner accepted an out-of-range coded claim");
         }
         Ok(())
     }
@@ -500,23 +669,23 @@ impl BridgeDriver {
     }
 
     fn probe_clean_before_later_reconciliation(&mut self) -> Result<()> {
-        let result = self
-            .service_mut()?
-            .coded_captures_mut()
-            .request_clean(CodedCaptureId(0));
-        if result.is_ok() {
-            bail!("CLEAN became eligible while later uncertainty was unresolved");
+        let operation = self.token("opC")?;
+        if self.later_cut_attempt.as_ref().is_none_or(|attempt| {
+            attempt.operation() != operation
+                || attempt.phase() != CodedLaterCutAttemptPhase::Unknown
+        }) {
+            bail!("production later-cut attempt did not retain uncertainty");
         }
         Ok(())
     }
-
     fn probe_clean_before_decision(&mut self) -> Result<()> {
-        let result = self
-            .service_mut()?
-            .coded_captures_mut()
-            .request_clean(CodedCaptureId(0));
-        if result.is_ok() {
-            bail!("CLEAN became eligible before a decision was observed");
+        let decision = self
+            .service()?
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .and_then(|capture| capture.decision);
+        if decision.is_some() || self.clean_authorization.is_some() {
+            bail!("CLEAN-owner decision was observed unexpectedly");
         }
         Ok(())
     }
@@ -582,36 +751,62 @@ impl BridgeDriver {
         ]
         .into_iter()
         .collect::<HashMap<_, _>>();
-        let (phase, scope, satisfaction) = if let Some(snapshot) = capture {
+        let scope = if let Some(snapshot) = capture.as_ref() {
             let reverse = self
                 .tokens
                 .iter()
                 .map(|(id, token)| (*token, id.as_str()))
                 .collect::<HashMap<_, _>>();
-            for (operation, status) in snapshot.membership {
+            for (operation, status) in &snapshot.membership {
                 let id = reverse
-                    .get(&operation)
+                    .get(operation)
                     .with_context(|| format!("model has no operation for {operation:?}"))?;
-                membership.insert((*id).to_owned(), model_membership(status));
+                membership.insert((*id).to_owned(), model_membership(*status));
             }
             // The bounded Quint model names two units; ignore concrete units outside that universe.
-            let scope = snapshot
+            snapshot
                 .scope
-                .into_iter()
+                .iter()
+                .copied()
                 .filter(|unit| unit.0 < 2)
                 .map(unit_name)
-                .collect();
-            let satisfaction = snapshot
-                .decision
-                .map(model_decision)
-                .unwrap_or(ModelSatisfaction::CaptureSatisfactionNotObserved);
-            (model_capture_phase(snapshot.phase), scope, satisfaction)
+                .collect()
         } else {
-            (
-                ModelCapturePhase::CaptureAbsent,
-                HashSet::new(),
-                ModelSatisfaction::CaptureSatisfactionNotObserved,
-            )
+            HashSet::new()
+        };
+        if let Some(attempt) = self.later_cut_attempt.as_ref() {
+            let id = self
+                .tokens
+                .iter()
+                .find_map(|(id, token)| (*token == attempt.operation()).then_some(id))
+                .context("model has no operation for pending later cut")?;
+            let status = match attempt.phase() {
+                CodedLaterCutAttemptPhase::Unknown => ModelMembership::CaptureLaterUnknown,
+                CodedLaterCutAttemptPhase::Rejected => ModelMembership::CaptureLaterRejected,
+            };
+            membership.insert(id.clone(), status);
+        }
+        let phase = self.clean_attempt.as_ref().map_or_else(
+            || {
+                capture
+                    .as_ref()
+                    .map_or(ModelCapturePhase::CaptureAbsent, |snapshot| {
+                        model_capture_phase(snapshot.phase)
+                    })
+            },
+            |attempt| match attempt.phase() {
+                CodedCleanAttemptPhase::Pending => ModelCapturePhase::CaptureCommitPending,
+                CodedCleanAttemptPhase::Unknown => ModelCapturePhase::CaptureCommitUnknown,
+                CodedCleanAttemptPhase::Refused => ModelCapturePhase::CaptureRefused,
+            },
+        );
+        let satisfaction = match capture.as_ref().and_then(|snapshot| snapshot.decision) {
+            Some(CodedCaptureDecision::Accepted) => ModelSatisfaction::CaptureSatisfactionAccepted,
+            Some(CodedCaptureDecision::Rejected) => ModelSatisfaction::CaptureSatisfactionRejected,
+            None if self.clean_authorization.is_some() || self.clean_attempt.is_some() => {
+                ModelSatisfaction::CaptureSatisfactionAccepted
+            }
+            None => ModelSatisfaction::CaptureSatisfactionNotObserved,
         };
         let mut captures = HashMap::new();
         captures.insert(
@@ -652,6 +847,273 @@ impl BridgeDriver {
         }
         Ok(state)
     }
+}
+
+fn model_capture_phase(phase: CodedCapturePhase) -> ModelCapturePhase {
+    match phase {
+        CodedCapturePhase::Open => ModelCapturePhase::CaptureOpen,
+        CodedCapturePhase::CleanCommitPending => ModelCapturePhase::CaptureCommitPending,
+        CodedCapturePhase::CleanCommitUnknown => ModelCapturePhase::CaptureCommitUnknown,
+        CodedCapturePhase::CleanKnown => ModelCapturePhase::CaptureCleanKnown,
+        CodedCapturePhase::Refused => ModelCapturePhase::CaptureRefused,
+    }
+}
+
+fn prepare_connect_clean_authorization<R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<FakeStore, R>,
+    prior_authorization: Option<CodedCaptureCleanAuthorization>,
+) -> Result<(CodedCaptureCleanAuthorization, FenceCertificate)> {
+    let current = service.recovery.load_assembly_snapshot()?;
+    let capture = service
+        .coded_captures
+        .capture_snapshot(CodedCaptureId(0))
+        .context("coded capture is missing")?;
+    let request = capture.dirty_regions.iter().copied().fold(
+        RecoveryCleanRequest::new(
+            service.topology.topology_epoch(),
+            FenceDomain(1),
+            current.generation,
+        ),
+        |request, region| request.with_region(region),
+    );
+    let request = capture
+        .checksum_extents
+        .iter()
+        .copied()
+        .fold(request, RecoveryCleanRequest::with_checksum_extent);
+    let mut certificate = FenceCertificate::new(
+        service.topology.topology_epoch(),
+        FenceDomain(1),
+        vec![StoreFenceRef {
+            fence_id: FenceId(1),
+            store_id: StoreId(1),
+            topology_epoch: service.topology.topology_epoch(),
+            store_incarnation: StoreIncarnationId(0),
+            through: StoreWriteWatermark(0),
+            capability_evidence_id: CapabilityEvidenceId(1),
+        }],
+        capture
+            .dirty_regions
+            .iter()
+            .copied()
+            .map(|region| (region, current.generation))
+            .collect(),
+    );
+    for extent in capture.checksum_extents.iter().copied() {
+        certificate = certificate.with_integrity_extent(extent, current.generation);
+    }
+    let permit = match evaluate_recovery_clean(&current, &request, &certificate)? {
+        RecoveryCleanDecision::Clear(permit) => permit,
+        RecoveryCleanDecision::Refused { .. } => {
+            bail!("complete CLEAN evidence was unexpectedly refused")
+        }
+    };
+    let authorization = match prior_authorization {
+        Some(authorization) => {
+            service
+                .coded_captures
+                .refresh_clean_authorization(&current, authorization, permit)?
+        }
+        None => {
+            let included = capture
+                .membership
+                .iter()
+                .filter(|(_, membership)| **membership == CodedCaptureMembership::Included)
+                .map(|(operation, _)| {
+                    service
+                        .released_coded_lifecycle_evidence(CodedCaptureId(0), *operation)
+                        .context(
+                            "Connect CLEAN acceptance requires production release-owner evidence",
+                        )
+                })
+                .collect::<Result<Vec<_>>>()?;
+            service
+                .coded_captures
+                .authorize_clean(&current, CodedCaptureId(0), permit, included)?
+        }
+    };
+    Ok((authorization, certificate))
+}
+
+fn commit_connect_clean<R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<FakeStore, R>,
+    prepared: PreparedCodedCleanCommit,
+    certificate: FenceCertificate,
+) -> Result<()> {
+    let current = service.recovery.load_assembly_snapshot()?;
+    let proposed = prepared.snapshot().clone();
+    let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
+    for region in proposed.dirty_regions.iter().copied() {
+        txn.push(RecoveryMutation::MarkRegionDirty {
+            region,
+            mutation_generation: current.generation,
+        });
+    }
+    txn.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+    for region in proposed.dirty_regions.iter().copied() {
+        txn.push(RecoveryMutation::MarkRegionClean {
+            region,
+            through_generation: current.generation,
+        });
+    }
+    txn.push(RecoveryMutation::UpsertCodedCapture {
+        update: prepared.update(),
+    });
+    let receipt = service.recovery.commit_durable_receipt(txn)?;
+    service
+        .coded_captures
+        .confirm_clean_commit(prepared, &receipt)?;
+    service.checksums.recovery_generation = receipt.generation();
+    Ok(())
+}
+
+fn commit_connect_later_cut<R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<FakeStore, R>,
+    prepared: PreparedCodedLaterCut,
+) -> Result<()> {
+    let current = service.recovery.load_assembly_snapshot()?;
+    let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
+    txn.push(RecoveryMutation::UpsertCodedCapture {
+        update: prepared.update(),
+    });
+    let receipt = service.recovery.commit_durable_receipt(txn)?;
+    service
+        .coded_captures
+        .confirm_later_cut(prepared, &receipt)?;
+    service.checksums.recovery_generation = receipt.generation();
+    Ok(())
+}
+
+fn persist_test_clean_resolution<R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<FakeStore, R>,
+    clean: bool,
+) -> Result<()> {
+    let current = service.recovery.load_assembly_snapshot()?;
+    let capture = service
+        .coded_captures
+        .capture_snapshot(CodedCaptureId(0))
+        .context("coded capture is missing")?;
+    let request = capture.dirty_regions.iter().copied().fold(
+        RecoveryCleanRequest::new(
+            service.topology.topology_epoch(),
+            FenceDomain(1),
+            current.generation,
+        ),
+        |request, region| request.with_region(region),
+    );
+    let request = capture
+        .checksum_extents
+        .iter()
+        .copied()
+        .fold(request, RecoveryCleanRequest::with_checksum_extent);
+    let mut certificate = FenceCertificate::new(
+        service.topology.topology_epoch(),
+        FenceDomain(1),
+        vec![StoreFenceRef {
+            fence_id: FenceId(1),
+            store_id: StoreId(1),
+            topology_epoch: service.topology.topology_epoch(),
+            store_incarnation: StoreIncarnationId(0),
+            through: StoreWriteWatermark(0),
+            capability_evidence_id: CapabilityEvidenceId(1),
+        }],
+        if clean {
+            capture
+                .dirty_regions
+                .iter()
+                .copied()
+                .map(|region| (region, current.generation))
+                .collect()
+        } else {
+            Vec::new()
+        },
+    );
+    if clean {
+        for extent in capture.checksum_extents.iter().copied() {
+            certificate = certificate.with_integrity_extent(extent, current.generation);
+        }
+    }
+    match evaluate_recovery_clean(&current, &request, &certificate)? {
+        RecoveryCleanDecision::Clear(permit) if clean => {
+            let (_, foreign_issuer) =
+                dwv_recovery::CodedCaptureCoordinator::new_with_lifecycle_evidence_issuer();
+            let foreign_included = capture
+                .membership
+                .iter()
+                .filter(|(_, membership)| **membership == CodedCaptureMembership::Included)
+                .map(|(operation, _)| foreign_issuer.live(*operation, certificate.clone()));
+            assert!(
+                service
+                    .coded_captures
+                    .authorize_clean(
+                        &current,
+                        CodedCaptureId(0),
+                        permit.clone(),
+                        foreign_included,
+                    )
+                    .is_err(),
+                "evidence from another coordinator authorized production CLEAN"
+            );
+            let evidence_issuer = service.coded_lifecycle_evidence_issuer;
+            let included = capture
+                .membership
+                .iter()
+                .filter(|(_, membership)| **membership == CodedCaptureMembership::Included)
+                .map(|(operation, _)| evidence_issuer.live(*operation, certificate.clone()));
+            let authorization = service.coded_captures.authorize_clean(
+                &current,
+                CodedCaptureId(0),
+                permit,
+                included,
+            )?;
+            let prepared = service.coded_captures.prepare_clean_commit(authorization)?;
+            let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
+            for region in capture.dirty_regions.iter().copied() {
+                txn.push(RecoveryMutation::MarkRegionDirty {
+                    region,
+                    mutation_generation: current.generation,
+                });
+            }
+            txn.push(RecoveryMutation::RecordDataParityFence {
+                fence: certificate.clone(),
+            });
+            for region in capture.dirty_regions.iter().copied() {
+                txn.push(RecoveryMutation::MarkRegionClean {
+                    region,
+                    through_generation: current.generation,
+                });
+            }
+            txn.push(RecoveryMutation::UpsertCodedCapture {
+                update: prepared.update(),
+            });
+            let receipt = service.recovery.commit_durable_receipt(txn)?;
+            service
+                .coded_captures
+                .confirm_clean_commit(prepared, &receipt)?;
+            service.checksums.recovery_generation = receipt.generation();
+        }
+        RecoveryCleanDecision::Refused { receipt, .. } if !clean => {
+            let prepared = service
+                .coded_captures
+                .prepare_clean_refusal(CodedCaptureId(0), &receipt)?;
+            let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
+            txn.push(RecoveryMutation::UpsertCodedCapture {
+                update: prepared.update(),
+            });
+            let receipt = service.recovery.commit_durable_receipt(txn)?;
+            service
+                .coded_captures
+                .confirm_clean_refusal(prepared, &receipt)?;
+            service.checksums.recovery_generation = receipt.generation();
+        }
+        RecoveryCleanDecision::Clear(_) => {
+            bail!("incomplete CLEAN evidence unexpectedly cleared")
+        }
+        RecoveryCleanDecision::Refused { .. } => {
+            bail!("complete CLEAN evidence was unexpectedly refused")
+        }
+    }
+    Ok(())
 }
 
 impl State<BridgeDriver> for BridgeState {
@@ -712,6 +1174,8 @@ impl Driver for BridgeDriver {
             removeOpC => self.release_operation("opC")?,
             compactOpA => self.cleanup_operation("opA")?,
             cleanupCapturePath => self.cleanup_capture()?,
+            cleanupRefusedCapturePath => self.cleanup_capture()?,
+            cleanupCleanCapturePath => self.cleanup_capture()?,
             probeConflict => self.probe_conflict()?,
             probeIncompleteClaim => self.probe_incomplete_claim()?,
             probeUnvalidatedClaim => self.probe_unvalidated_claim()?,
@@ -730,16 +1194,6 @@ fn unit_name(unit: CodedUnitId) -> String {
     format!("u{}", unit.0)
 }
 
-fn model_capture_phase(phase: CodedCapturePhase) -> ModelCapturePhase {
-    match phase {
-        CodedCapturePhase::Open => ModelCapturePhase::CaptureOpen,
-        CodedCapturePhase::CleanCommitPending => ModelCapturePhase::CaptureCommitPending,
-        CodedCapturePhase::CleanCommitUnknown => ModelCapturePhase::CaptureCommitUnknown,
-        CodedCapturePhase::CleanKnown => ModelCapturePhase::CaptureCleanKnown,
-        CodedCapturePhase::Refused => ModelCapturePhase::CaptureRefused,
-    }
-}
-
 fn model_membership(membership: CodedCaptureMembership) -> ModelMembership {
     match membership {
         CodedCaptureMembership::Included => ModelMembership::CaptureIncluded,
@@ -752,13 +1206,6 @@ fn model_membership(membership: CodedCaptureMembership) -> ModelMembership {
         }
         CodedCaptureMembership::LaterRejected => ModelMembership::CaptureLaterRejected,
         CodedCaptureMembership::LaterUnknown => ModelMembership::CaptureLaterUnknown,
-    }
-}
-
-fn model_decision(decision: CodedCaptureDecision) -> ModelSatisfaction {
-    match decision {
-        CodedCaptureDecision::Accepted => ModelSatisfaction::CaptureSatisfactionAccepted,
-        CodedCaptureDecision::Rejected => ModelSatisfaction::CaptureSatisfactionRejected,
     }
 }
 
@@ -809,7 +1256,7 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
         CodedAdmissionOutcome::Admitted(_)
     ));
     let error = service
-        .coded_release_claim(current, &old_authorization)
+        .coded_release_claim_with_certificate(current, &old_authorization, None)
         .unwrap_err();
     assert!(error.to_string().contains("does not match"), "{error}");
     assert!(service.coded_authority().active_claim(current).is_some());
@@ -936,7 +1383,7 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
     reopened.recovery.set_health(RecoveryStoreHealth::Corrupt);
     assert!(
         reopened
-            .refuse_reopened_coded_capture(CodedCaptureId(0), &refusal)
+            .resolve_reopened_coded_capture(CodedCaptureId(0), Some(refusal.clone()))
             .is_err()
     );
     assert!(
@@ -951,7 +1398,7 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
     drop(reopened);
     let mut retried = open_service(recovery);
     retried
-        .refuse_reopened_coded_capture(CodedCaptureId(0), &refusal)
+        .resolve_reopened_coded_capture(CodedCaptureId(0), Some(refusal))
         .unwrap();
     assert!(
         retried
@@ -969,6 +1416,398 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
         !reopened_after_cleanup
             .coded_captures()
             .has_unresolved_reopen_state()
+    );
+}
+
+#[test]
+fn reopened_refusal_lost_ack_installs_neither_candidate_until_reopen() {
+    let epoch = TopologyEpoch(4);
+    let initial = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, initial.clone(), ServiceConfig::default());
+    let operation = service
+        .reserve(request(
+            RequestId(954),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert!(matches!(
+        service
+            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+
+    let inherited = LostAckRecovery::from_store(initial.durable_store());
+    drop(service);
+    let mut reopened =
+        fake_service_with_recovery(FakeRead::Exact, inherited.clone(), ServiceConfig::default());
+    let current = reopened.recovery.load_assembly_snapshot().unwrap();
+    let request = RecoveryCleanRequest::new(epoch, FenceDomain(1), current.generation)
+        .with_region(RegionId(0))
+        .with_checksum_extent(IntegrityExtentId(0));
+    let certificate = FenceCertificate::new(
+        epoch,
+        FenceDomain(1),
+        vec![StoreFenceRef {
+            fence_id: FenceId(1),
+            store_id: StoreId(1),
+            topology_epoch: epoch,
+            store_incarnation: StoreIncarnationId(0),
+            through: StoreWriteWatermark(0),
+            capability_evidence_id: CapabilityEvidenceId(1),
+        }],
+        Vec::new(),
+    );
+    let refusal = match evaluate_recovery_clean(&current, &request, &certificate).unwrap() {
+        RecoveryCleanDecision::Refused { receipt, .. } => receipt,
+        RecoveryCleanDecision::Clear { .. } => panic!("incomplete evidence unexpectedly cleared"),
+    };
+
+    inherited.lose_next_commit();
+    assert!(
+        reopened
+            .resolve_reopened_coded_capture(CodedCaptureId(0), Some(refusal))
+            .is_err()
+    );
+    assert!(
+        reopened
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some(),
+        "lost acknowledgement must not install the process-local removal"
+    );
+
+    let durable = inherited.durable_store();
+    drop(reopened);
+    let reconciled = fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reconciled
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none(),
+        "reopen must accept the exact durably committed successor"
+    );
+}
+
+fn started_lost_ack_coded_service(
+    request_id: u64,
+) -> (
+    HealthyPortableService<FakeStore, LostAckRecovery>,
+    LostAckRecovery,
+    OperationSlotToken,
+) {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    let operation = service
+        .reserve(request(
+            RequestId(request_id),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    assert!(matches!(
+        service
+            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
+            .unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    (service, recovery, operation)
+}
+
+#[test]
+fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen() {
+    let (mut release, release_recovery, release_operation) = started_lost_ack_coded_service(955);
+    release_recovery.lose_next_commit();
+    let release_receipt = release_certificate(release.topology.topology_epoch());
+    assert!(
+        release
+            .establish_release_authorization_for_test(
+                &authoritative_release(release_operation),
+                &release_receipt,
+            )
+            .is_err()
+    );
+    assert!(
+        release
+            .coded_authority()
+            .active_claim(release_operation)
+            .is_some(),
+        "lost acknowledgement must not install the process-local release"
+    );
+    let durable = release_recovery.durable_store();
+    drop(release);
+    let reopened_release =
+        fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reopened_release
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .release_authorized_operations
+            .contains(&release_operation),
+        "reopen must accept the durably committed release successor"
+    );
+
+    let (mut compaction, compaction_recovery, compaction_operation) =
+        started_lost_ack_coded_service(956);
+    persist_test_clean_resolution(&mut compaction, false).unwrap();
+    let compaction_certificate = release_certificate(compaction.topology.topology_epoch());
+    compaction
+        .establish_release_authorization_for_test(
+            &authoritative_release(compaction_operation),
+            &compaction_certificate,
+        )
+        .unwrap()
+        .unwrap();
+    compaction_recovery.lose_next_commit();
+    assert!(compaction.compact_resolved_capture_membership().is_err());
+    assert_eq!(
+        compaction
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&compaction_operation),
+        Some(&CodedCaptureMembership::Included),
+        "lost acknowledgement must not install process-local compaction"
+    );
+    let durable = compaction_recovery.durable_store();
+    drop(compaction);
+    let reopened_compaction =
+        fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reopened_compaction
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .is_empty(),
+        "reopen must accept the durably committed compaction successor"
+    );
+
+    let (mut cleanup, cleanup_recovery, cleanup_operation) = started_lost_ack_coded_service(957);
+    persist_test_clean_resolution(&mut cleanup, true).unwrap();
+    let cleanup_certificate = release_certificate(cleanup.topology.topology_epoch());
+    cleanup
+        .establish_release_authorization_for_test(
+            &authoritative_release(cleanup_operation),
+            &cleanup_certificate,
+        )
+        .unwrap()
+        .unwrap();
+    cleanup.compact_resolved_capture_membership().unwrap();
+    cleanup_recovery.lose_next_commit();
+    assert!(cleanup.retire_resolved_captures().is_err());
+    assert!(
+        cleanup
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some(),
+        "lost acknowledgement must not install process-local capture cleanup"
+    );
+    let durable = cleanup_recovery.durable_store();
+    drop(cleanup);
+    let reopened_cleanup =
+        fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reopened_cleanup
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none(),
+        "reopen must accept the durably committed cleanup successor"
+    );
+}
+#[test]
+fn persisted_refused_cleanup_handles_known_noncommit_and_lost_ack() {
+    let (mut known, known_recovery, _) = started_lost_ack_coded_service(958);
+    persist_test_clean_resolution(&mut known, false).unwrap();
+    let mut known = fake_service_with_recovery(
+        FakeRead::Exact,
+        known_recovery.durable_store(),
+        ServiceConfig::default(),
+    );
+    assert_eq!(
+        known
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .phase,
+        CodedCapturePhase::Refused
+    );
+    known.recovery.set_health(RecoveryStoreHealth::Corrupt);
+    assert!(
+        known
+            .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+            .is_err()
+    );
+    assert!(
+        known
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+    known.recovery.set_health(RecoveryStoreHealth::Healthy);
+    known
+        .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+        .unwrap();
+
+    let (mut lost, lost_recovery, _) = started_lost_ack_coded_service(959);
+    persist_test_clean_resolution(&mut lost, false).unwrap();
+    let inherited = LostAckRecovery::from_store(lost_recovery.durable_store());
+    drop(lost);
+    let mut reopened =
+        fake_service_with_recovery(FakeRead::Exact, inherited.clone(), ServiceConfig::default());
+    inherited.lose_next_commit();
+    assert!(
+        reopened
+            .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+            .is_err()
+    );
+    assert!(
+        reopened
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+    let durable = inherited.durable_store();
+    drop(reopened);
+    let reconciled = fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reconciled
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none()
+    );
+}
+
+#[test]
+fn inherited_clean_known_abandonment_handles_known_noncommit_and_lost_ack() {
+    let (mut known, known_recovery, _) = started_lost_ack_coded_service(960);
+    persist_test_clean_resolution(&mut known, true).unwrap();
+    let mut known = fake_service_with_recovery(
+        FakeRead::Exact,
+        known_recovery.durable_store(),
+        ServiceConfig::default(),
+    );
+    let inherited = known
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .unwrap();
+    assert_eq!(inherited.phase, CodedCapturePhase::CleanKnown);
+    assert!(!inherited.membership.is_empty());
+    known.recovery.set_health(RecoveryStoreHealth::Corrupt);
+    assert!(
+        known
+            .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+            .is_err()
+    );
+    assert!(
+        known
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+    known.recovery.set_health(RecoveryStoreHealth::Healthy);
+    known
+        .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+        .unwrap();
+
+    let (mut lost, lost_recovery, _) = started_lost_ack_coded_service(961);
+    persist_test_clean_resolution(&mut lost, true).unwrap();
+    let inherited = LostAckRecovery::from_store(lost_recovery.durable_store());
+    drop(lost);
+    let mut reopened =
+        fake_service_with_recovery(FakeRead::Exact, inherited.clone(), ServiceConfig::default());
+    inherited.lose_next_commit();
+    assert!(
+        reopened
+            .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+            .is_err()
+    );
+    assert!(
+        reopened
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+    let durable = inherited.durable_store();
+    drop(reopened);
+    let reconciled = fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert!(
+        reconciled
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none()
+    );
+}
+
+#[test]
+fn repeated_crash_before_empty_clean_cleanup_blocks_admission_until_retired() {
+    let (mut service, recovery, operation) = started_lost_ack_coded_service(962);
+    persist_test_clean_resolution(&mut service, true).unwrap();
+    let certificate = release_certificate(service.topology.topology_epoch());
+    service
+        .establish_release_authorization_for_test(&authoritative_release(operation), &certificate)
+        .unwrap()
+        .unwrap();
+    service.compact_resolved_capture_membership().unwrap();
+    let capture = service
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .unwrap();
+    assert_eq!(capture.phase, CodedCapturePhase::CleanKnown);
+    assert!(capture.membership.is_empty());
+
+    let durable = recovery.durable_store();
+    drop(service);
+    let first_reopen =
+        fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert_eq!(first_reopen.state(), ServiceState::Recovering);
+    let durable = first_reopen.recovery.clone();
+    drop(first_reopen);
+
+    let mut second_reopen =
+        fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert_eq!(second_reopen.state(), ServiceState::Recovering);
+    second_reopen
+        .resolve_reopened_coded_capture(CodedCaptureId(0), None)
+        .unwrap();
+    let durable = second_reopen.recovery.clone();
+    drop(second_reopen);
+
+    let serving = fake_service_with_recovery(FakeRead::Exact, durable, ServiceConfig::default());
+    assert_eq!(serving.state(), ServiceState::Recovering);
+    assert!(
+        serving
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none()
+    );
+    assert!(
+        serving
+            .recovery()
+            .load_assembly_snapshot()
+            .unwrap()
+            .dirty_regions
+            .iter()
+            .any(|region| region.state != dwv_recovery::RegionState::Clean),
+        "unverifiable retained history must invalidate the claimed clean state"
     );
 }
 
@@ -1080,6 +1919,19 @@ fn coded_range_connect_capture() -> impl Driver {
     spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
     main = "CodedRangeCleanConnect",
     init = "connectInit",
+    step = "cleanRetirementStep",
+    max_samples = 1,
+    max_steps = 9,
+    seed = "22082026"
+)]
+fn coded_range_connect_clean_retirement() -> impl Driver {
+    BridgeDriver::new()
+}
+
+#[quint_run(
+    spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
+    main = "CodedRangeCleanConnect",
+    init = "connectInit",
     step = "unknownCleanStep",
     max_samples = 1,
     max_steps = 11,
@@ -1108,7 +1960,7 @@ fn coded_range_connect_rejected_capture() -> impl Driver {
     init = "connectInit",
     step = "staleLaterCutStep",
     max_samples = 1,
-    max_steps = 6,
+    max_steps = 7,
     seed = "22082026"
 )]
 fn coded_range_connect_stale_later_cut() -> impl Driver {
@@ -1121,7 +1973,7 @@ fn coded_range_connect_stale_later_cut() -> impl Driver {
     init = "connectInit",
     step = "preCleanUnknownStep",
     max_samples = 1,
-    max_steps = 7,
+    max_steps = 8,
     seed = "22082026"
 )]
 fn coded_range_connect_pre_clean_unknown() -> impl Driver {
@@ -1134,7 +1986,7 @@ fn coded_range_connect_pre_clean_unknown() -> impl Driver {
     init = "connectInit",
     step = "laterRejectedStep",
     max_samples = 1,
-    max_steps = 6,
+    max_steps = 7,
     seed = "22082026"
 )]
 fn coded_range_connect_later_rejected() -> impl Driver {
@@ -1173,7 +2025,7 @@ fn coded_range_connect_clean_reconcile() -> impl Driver {
     init = "connectInit",
     step = "cleanReconcileRejectedStep",
     max_samples = 1,
-    max_steps = 6,
+    max_steps = 7,
     seed = "22082026"
 )]
 fn coded_range_connect_clean_reconcile_rejected() -> impl Driver {
@@ -1199,7 +2051,7 @@ fn coded_range_connect_later_reconcile_after_clean() -> impl Driver {
     init = "connectInit",
     step = "cleanRejectedStep",
     max_samples = 1,
-    max_steps = 5,
+    max_steps = 6,
     seed = "22082026"
 )]
 fn coded_range_connect_clean_rejected() -> impl Driver {
@@ -1385,6 +2237,7 @@ fn coded_range_connect_protected_write_holds_claim_through_basis_and_write() {
 mod generated_coded_operation_properties {
     use super::*;
     use proptest::prelude::*;
+    use proptest::test_runner::RngSeed;
     use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
     use std::collections::BTreeMap;
 
@@ -1432,6 +2285,7 @@ mod generated_coded_operation_properties {
         StaleRelease {
             operation: u8,
         },
+        Restart,
     }
 
     fn claim_strategy() -> impl Strategy<Value = ClaimKind> {
@@ -1472,6 +2326,7 @@ mod generated_coded_operation_properties {
                 }),
                 (0_u8..3).prop_map(|operation| Transition::Release { operation }),
                 (0_u8..3).prop_map(|operation| Transition::StaleRelease { operation }),
+                Just(Transition::Restart),
             ]
             .boxed()
         }
@@ -1487,6 +2342,7 @@ mod generated_coded_operation_properties {
                     state.active.remove(&operation);
                 }
                 Transition::Contended { .. } | Transition::StaleRelease { .. } => {}
+                Transition::Restart => {}
             }
             state
         }
@@ -1508,8 +2364,31 @@ mod generated_coded_operation_properties {
                 Transition::Release { operation } | Transition::StaleRelease { operation } => {
                     state.active.contains_key(&operation)
                 }
+                Transition::Restart => state.active.is_empty(),
             }
         }
+    }
+
+    fn open_generated_service(
+        recovery: MemoryRecoveryStore,
+    ) -> HealthyPortableService<FakeStore, MemoryRecoveryStore> {
+        let epoch = TopologyEpoch(4);
+        let topology = topology(epoch);
+        let members = topology
+            .assignments()
+            .iter()
+            .enumerate()
+            .map(|(index, assignment)| {
+                let store_id = StoreId(index as u64 + 1);
+                MemberBinding::new(
+                    assignment,
+                    epoch,
+                    store_id,
+                    FakeStore::new(store_id, epoch, FakeRead::Exact),
+                )
+            })
+            .collect();
+        HealthyPortableService::open(topology, members, recovery, ServiceConfig::default()).unwrap()
     }
 
     struct ConcreteState {
@@ -1525,8 +2404,12 @@ mod generated_coded_operation_properties {
         }
 
         fn with_drop_active_claim(drop_active_claim: bool) -> Self {
+            let mut service = open_generated_service(MemoryRecoveryStore::new(TopologyEpoch(4)));
+            service
+                .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+                .unwrap();
             Self {
-                service: fake_service(FakeRead::Exact, ServiceConfig::default()),
+                service,
                 tokens: BTreeMap::new(),
                 next_request_id: 0,
                 drop_active_claim,
@@ -1588,9 +2471,13 @@ mod generated_coded_operation_properties {
                 .tokens
                 .remove(&operation)
                 .expect("generated active token");
+            let certificate = release_certificate(self.service.topology.topology_epoch());
             let authorization = self
                 .service
-                .establish_release_authorization(&authoritative_release(token))
+                .establish_release_authorization_for_test(
+                    &authoritative_release(token),
+                    &certificate,
+                )
                 .expect("generated lifecycle composition")
                 .expect("generated complete owner facts authorize release");
             assert_eq!(authorization.operation(), token);
@@ -1614,6 +2501,36 @@ mod generated_coded_operation_properties {
                 .expect_err("stale lifecycle observations unexpectedly authorized release");
             assert!(error.to_string().contains("generation"), "{error}");
             assert!(self.service.coded_authority().active_claim(token).is_some());
+        }
+
+        fn restart(&mut self) {
+            let recovery = self.service.recovery.clone();
+            let mut reopened = open_generated_service(recovery);
+            let captures = reopened.coded_captures().snapshots();
+            for capture in captures {
+                let refusal = (capture.phase == CodedCapturePhase::Open).then(|| {
+                    let current = reopened.recovery.load_assembly_snapshot().unwrap();
+                    reopened_refusal_permit(&current, &capture)
+                });
+                reopened
+                    .resolve_reopened_coded_capture(capture.capture, refusal)
+                    .expect("generated restart resolves inherited capture");
+            }
+            let durable = reopened.recovery.load_assembly_snapshot().unwrap();
+            assert!(
+                durable
+                    .dirty_regions
+                    .iter()
+                    .all(|record| { !matches!(record.state, dwv_recovery::RegionState::Clean) })
+            );
+            assert!(durable.integrity_records.iter().all(|record| {
+                matches!(record.state, dwv_recovery::IntegrityState::Stale { .. })
+            }));
+            let capture = CodedCaptureId(durable.next_coded_capture_id);
+            reopened
+                .coded_start_capture(capture, [RegionId(0)], [IntegrityExtentId(0)])
+                .expect("generated restart begins a new bounded capture");
+            self.service = reopened;
         }
 
         fn observed_active_claim(
@@ -1672,6 +2589,7 @@ mod generated_coded_operation_properties {
                 } => state.contend(operation, data_slot, claim),
                 Transition::Release { operation } => state.release(operation),
                 Transition::StaleRelease { operation } => state.reject_stale_release(operation),
+                Transition::Restart => state.restart(),
             }
             state.assert_invariants(ref_state);
             state
@@ -1683,7 +2601,13 @@ mod generated_coded_operation_properties {
     }
 
     proptest_state_machine::prop_state_machine! {
-        #![proptest_config(ProptestConfig::with_cases(64))]
+        #![proptest_config(ProptestConfig {
+            cases: 10_000,
+            max_local_rejects: 400_000,
+            failure_persistence: None,
+            rng_seed: RngSeed::Fixed(22_082_026),
+            ..ProptestConfig::default()
+        })]
         #[test]
         fn generated_coded_operation_histories(sequential 1..24 => CodedOperationMachine);
     }
@@ -1720,6 +2644,7 @@ mod generated_coded_operation_properties {
     #[test]
     fn minimized_coded_operation_history_replays_deterministically() {
         let transitions = vec![
+            Transition::Restart,
             Transition::Admit {
                 operation: 0,
                 data_slot: 0,
@@ -1738,6 +2663,7 @@ mod generated_coded_operation_properties {
                 claim: ClaimKind::U1,
             },
             Transition::Release { operation: 1 },
+            Transition::Restart,
         ];
         CodedOperationMachine::<false>::test_sequential(
             proptest::test_runner::Config::default(),
@@ -1757,12 +2683,13 @@ mod generated_coded_operation_properties {
         let result = runner.run(
             &CodedOperationMachine::<true>::sequential_strategy(1..24),
             |(initial, transitions, seen_counter)| {
-                Ok(CodedOperationMachine::<true>::test_sequential(
+                CodedOperationMachine::<true>::test_sequential(
                     proptest::test_runner::Config::default(),
                     initial,
                     transitions,
                     seen_counter,
-                ))
+                );
+                Ok(())
             },
         );
         match result {

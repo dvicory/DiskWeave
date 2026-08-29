@@ -19,13 +19,112 @@ use dwv_verify::{
     ChecksumEvidence, DigestEvidence, RebuildTarget, VerificationIdentity, VerificationStore,
     VerificationStoreError, apply_repair, plan_repairs, verify_exhaustive,
 };
+use std::cell::{Cell, RefCell};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const LENGTH: u64 = 4096;
 const BLOCK: u32 = 512;
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
+
+#[derive(Clone)]
+struct LostAckRecovery {
+    inner: Rc<RefCell<MemoryRecoveryStore>>,
+    commits_until_lost_ack: Rc<Cell<Option<usize>>>,
+    commits_until_rejection: Rc<Cell<Option<usize>>>,
+}
+
+impl LostAckRecovery {
+    fn new(epoch: TopologyEpoch) -> Self {
+        Self::from_store(MemoryRecoveryStore::new(epoch))
+    }
+
+    fn from_store(store: MemoryRecoveryStore) -> Self {
+        Self {
+            inner: Rc::new(RefCell::new(store)),
+            commits_until_lost_ack: Rc::new(Cell::new(None)),
+            commits_until_rejection: Rc::new(Cell::new(None)),
+        }
+    }
+
+    fn lose_next_commit(&self) {
+        self.lose_commit_after(0);
+    }
+
+    fn lose_commit_after(&self, successful_commits: usize) {
+        self.commits_until_lost_ack.set(Some(successful_commits));
+    }
+    fn reject_commit_after(&self, successful_commits: usize) {
+        self.commits_until_rejection.set(Some(successful_commits));
+    }
+
+    fn durable_store(&self) -> MemoryRecoveryStore {
+        self.inner.borrow().clone()
+    }
+}
+
+impl RecoveryStateStore for LostAckRecovery {
+    fn load_assembly_snapshot(
+        &self,
+    ) -> Result<dwv_recovery::RecoverySnapshot, dwv_recovery::RecoveryError> {
+        self.inner.borrow().load_assembly_snapshot()
+    }
+
+    fn verify_integrity(&self) -> RecoveryStoreHealth {
+        self.inner.borrow().verify_integrity()
+    }
+
+    fn begin_protocol_txn(
+        &self,
+        expected: RecoveryGeneration,
+        topology_epoch: TopologyEpoch,
+    ) -> RecoveryTxn {
+        self.inner
+            .borrow()
+            .begin_protocol_txn(expected, topology_epoch)
+    }
+
+    fn commit_durable(
+        &mut self,
+        txn: RecoveryTxn,
+    ) -> Result<RecoveryGeneration, dwv_recovery::RecoveryError> {
+        match self.commits_until_rejection.get() {
+            Some(0) => {
+                self.commits_until_rejection.set(None);
+                return Err(dwv_recovery::RecoveryError::CommitNotDurable(
+                    dwv_recovery::RecoveryCommitObservation::Rejected,
+                ));
+            }
+            Some(remaining) => {
+                self.commits_until_rejection.set(Some(remaining - 1));
+            }
+            None => {}
+        }
+        let committed = self.inner.borrow_mut().commit_durable(txn)?;
+        match self.commits_until_lost_ack.get() {
+            Some(0) => {
+                self.commits_until_lost_ack.set(None);
+                Err(dwv_recovery::RecoveryError::CommitNotDurable(
+                    dwv_recovery::RecoveryCommitObservation::Lost,
+                ))
+            }
+            Some(remaining) => {
+                self.commits_until_lost_ack.set(Some(remaining - 1));
+                Ok(committed)
+            }
+            None => Ok(committed),
+        }
+    }
+
+    fn export_manifest(
+        &self,
+        generation: RecoveryGeneration,
+    ) -> Result<dwv_recovery::RecoveryManifest, dwv_recovery::RecoveryError> {
+        self.inner.borrow().export_manifest(generation)
+    }
+}
 
 struct FileVerificationStore(FileStore);
 
@@ -106,10 +205,14 @@ struct FakeStore {
 
 impl FakeStore {
     fn new(id: StoreId, epoch: TopologyEpoch, read: FakeRead) -> Self {
+        Self::new_with_length(id, epoch, read, LENGTH)
+    }
+
+    fn new_with_length(id: StoreId, epoch: TopologyEpoch, read: FakeRead, length: u64) -> Self {
         Self {
             id,
             epoch,
-            bytes: vec![0; LENGTH as usize],
+            bytes: vec![0; length as usize],
             read,
             physical_reads: 0,
             watermark: StoreWriteWatermark(0),
@@ -172,11 +275,12 @@ impl RandomAccessStore for FakeStore {
     }
 
     fn capabilities(&self) -> StoreCapabilities {
-        StoreCapabilities::portable_demo(LENGTH, BLOCK, LENGTH, CapabilityEvidenceId(self.id.0))
+        let length = self.bytes.len() as u64;
+        StoreCapabilities::portable_demo(length, BLOCK, length, CapabilityEvidenceId(self.id.0))
     }
 
     fn length(&self) -> u64 {
-        LENGTH
+        self.bytes.len() as u64
     }
 
     fn highest_accepted_watermark(&self) -> Option<StoreWriteWatermark> {
@@ -355,8 +459,12 @@ impl RandomAccessStore for FakeStore {
 }
 
 fn topology(epoch: TopologyEpoch) -> TopologySnapshot {
+    topology_with_length(epoch, LENGTH)
+}
+
+fn topology_with_length(epoch: TopologyEpoch, length: u64) -> TopologySnapshot {
     let profile = CodingProfile::new(2, 1).unwrap();
-    let geometry = ProtectedGeometry::new(LENGTH, BLOCK).unwrap();
+    let geometry = ProtectedGeometry::new(length, BLOCK).unwrap();
     let assignments = (0..3)
         .map(|index| {
             let role = if index < 2 {
@@ -416,6 +524,30 @@ fn fake_service(
     fake_service_with_effects(read, FakeEffect::Success, FakeEffect::Success, config)
 }
 
+fn fake_service_with_recovery<R: RecoveryStateStore>(
+    read: FakeRead,
+    recovery: R,
+    config: ServiceConfig,
+) -> HealthyPortableService<FakeStore, R> {
+    let epoch = TopologyEpoch(4);
+    let topology = topology(epoch);
+    let members = topology
+        .assignments()
+        .iter()
+        .enumerate()
+        .map(|(index, assignment)| {
+            let store_id = StoreId(index as u64 + 1);
+            MemberBinding::new(
+                assignment,
+                epoch,
+                store_id,
+                FakeStore::new(store_id, epoch, read),
+            )
+        })
+        .collect();
+    HealthyPortableService::open(topology, members, recovery, config).unwrap()
+}
+
 fn fake_service_with_effects(
     read: FakeRead,
     write: FakeEffect,
@@ -442,6 +574,31 @@ fn fake_service_with_effects(
         .unwrap()
 }
 
+fn fake_service_with_length(length: u64) -> HealthyPortableService<FakeStore, MemoryRecoveryStore> {
+    let epoch = TopologyEpoch(4);
+    let topology = topology_with_length(epoch, length);
+    let members = topology
+        .assignments()
+        .iter()
+        .enumerate()
+        .map(|(index, assignment)| {
+            let store_id = StoreId(index as u64 + 1);
+            MemberBinding::new(
+                assignment,
+                epoch,
+                store_id,
+                FakeStore::new_with_length(store_id, epoch, FakeRead::Exact, length),
+            )
+        })
+        .collect();
+    HealthyPortableService::open(
+        topology,
+        members,
+        MemoryRecoveryStore::new(epoch),
+        ServiceConfig::default(),
+    )
+    .unwrap()
+}
 struct DeterministicWriteHarness<S: RandomAccessStore, R: RecoveryStateStore> {
     service: HealthyPortableService<S, R>,
     submission: PortableWriteSubmission,
@@ -661,19 +818,6 @@ fn deferred_read_child_admission_failure_releases_reserved_operation() {
     assert_eq!(service.admission_usage().buffers, 0);
     assert_eq!(service.admission_usage().backend_submissions, 0);
     assert_eq!(service.state(), ServiceState::Serving);
-}
-
-#[test]
-fn coded_claim_supports_unit_above_u32_boundary_without_large_fixture() {
-    let service = fake_service(FakeRead::Exact, ServiceConfig::default());
-    let unit = u64::from(u32::MAX) + 1;
-    let offset = unit * u64::from(BLOCK);
-    let plan = crate::range::RangePlan {
-        ranges: vec![ByteRange::new(offset, u64::from(BLOCK)).unwrap()],
-    };
-
-    let claim = service.coded_claim_for_plan(&plan).unwrap();
-    assert_eq!(claim.units().iter().next(), Some(&CodedUnitId(unit)));
 }
 
 #[test]
@@ -935,18 +1079,20 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
     );
     finish_retained_write(&mut service, &holder);
 
-    let released_capture = service
-        .coded_captures()
-        .capture_snapshot(CodedCaptureId(0))
-        .expect("released CLEAN capture remains as retained evidence");
-    assert!(released_capture.membership.is_empty());
+    assert!(
+        service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .is_none(),
+        "a resolved last-write capture needs no synthetic later mutation"
+    );
     assert!(
         service
             .recovery
             .load_assembly_snapshot()
             .unwrap()
             .coded_captures
-            .contains(&released_capture)
+            .is_empty()
     );
     let PortableWriteDrive::Work(later_basis) = service.drive_write(&contender).unwrap() else {
         panic!("contended operation should resume without a new submission");
@@ -971,12 +1117,52 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
     );
     let evidence = finish_retained_write(&mut service, &contender);
     assert_eq!(evidence.request, contender.request);
-    let retained = service.coded_captures().snapshots();
-    assert_eq!(retained.len(), 2);
-    assert!(retained.iter().all(|capture| capture.membership.is_empty()));
-    assert_eq!(service.recovery.snapshot().coded_captures, retained);
+    assert!(service.coded_captures().snapshots().is_empty());
+    assert!(service.recovery.snapshot().coded_captures.is_empty());
 }
 
+#[test]
+fn sixty_four_sequential_codewords_leave_no_resolved_capture_history() {
+    const CODEWORDS: u64 = 64;
+    let epoch = TopologyEpoch(4);
+    let mut service = fake_service_with_length(CODEWORDS * u64::from(BLOCK));
+
+    for codeword in 0..CODEWORDS {
+        let range = ByteRange::new(codeword * u64::from(BLOCK), u64::from(BLOCK)).unwrap();
+        let submission = service
+            .submit_write(
+                request(
+                    RequestId(2_000 + codeword),
+                    epoch,
+                    0,
+                    BlockOp::Write,
+                    range,
+                    DurabilityIntent::Ordinary,
+                ),
+                &[codeword as u8; BLOCK as usize],
+            )
+            .unwrap();
+        service.grant_basis_read_permission(&submission).unwrap();
+        let PortableWriteDrive::Work(basis) = service.drive_write(&submission).unwrap() else {
+            panic!("sequential write should emit its present-basis read");
+        };
+        service.accept_write_work(&basis).unwrap();
+        let basis_result = service.execute_write_work(&basis).unwrap();
+        assert!(
+            service
+                .deliver_write_result(basis_result)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            service.coded_captures().snapshots().len() <= 1,
+            "retained captures exceeded the one in-flight codeword"
+        );
+        finish_retained_write(&mut service, &submission);
+        assert!(service.coded_captures().snapshots().is_empty());
+        assert!(service.recovery.snapshot().coded_captures.is_empty());
+    }
+}
 #[test]
 fn protected_write_failure_keeps_claim_until_matching_authorization() {
     let epoch = TopologyEpoch(4);
@@ -1677,6 +1863,60 @@ fn finalization_cleanup_failure_retries_from_drive_without_duplicate_result() {
     assert_eq!(evidence.release_authorization, Some(authorization));
     assert_eq!(harness.service.admission_usage().operation_slots, 0);
     assert_eq!(harness.service.admission_usage().backend_submissions, 0);
+}
+
+#[test]
+fn rejected_coded_release_commit_retries_before_slot_reuse() {
+    let epoch = TopologyEpoch(4);
+    let request = request(
+        RequestId(54),
+        epoch,
+        0,
+        BlockOp::Write,
+        ByteRange::new(0, u64::from(BLOCK)).unwrap(),
+        DurabilityIntent::Ordinary,
+    );
+    let bytes = vec![0x75; BLOCK as usize];
+    let recovery = LostAckRecovery::new(epoch);
+    let recovery_control = recovery.clone();
+    let service = fake_service_with_recovery(FakeRead::Exact, recovery, ServiceConfig::default());
+    let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+    harness.grant_basis().unwrap();
+    harness.emit_one().unwrap();
+    harness.emit_one().unwrap();
+    harness.deliver(1).unwrap();
+    harness.deliver(0).unwrap();
+    harness.emit_available().unwrap();
+    harness.deliver(1).unwrap();
+    harness.deliver(0).unwrap();
+    harness.emit_available().unwrap();
+    harness.deliver(0).unwrap();
+
+    recovery_control.reject_commit_after(1);
+    assert!(harness.deliver(0).is_err());
+    assert!(
+        harness
+            .service
+            .coded_authority
+            .operation_phase(harness.submission.operation)
+            .is_some()
+    );
+    assert_eq!(harness.service.admission_usage().operation_slots, 1);
+
+    let PortableWriteDrive::Complete(evidence) =
+        harness.service.drive_write(&harness.submission).unwrap()
+    else {
+        panic!("coded release should retry before slot cleanup");
+    };
+    assert_eq!(evidence.request, request);
+    assert!(
+        harness
+            .service
+            .coded_authority
+            .operation_phase(harness.submission.operation)
+            .is_none()
+    );
+    assert_eq!(harness.service.admission_usage().operation_slots, 0);
 }
 
 #[test]

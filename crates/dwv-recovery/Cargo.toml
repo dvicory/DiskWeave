@@ -6,8 +6,6 @@ edition = "2024"
 [lib]
 path = "src/lib.rs"
 
-[features]
-test-support = []
 
 [dependencies]
 blake3 = "1"

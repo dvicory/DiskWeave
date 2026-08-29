@@ -337,10 +337,6 @@ impl CodedRangeAuthority {
         }
     }
 
-    pub fn advance_admission_high_water(&mut self, sequence: u64) {
-        self.admission_high_water = self.admission_high_water.max(sequence);
-    }
-
     /// Consume the exact generation-qualified lifecycle release fact.
     ///
     /// The caller supplies only the operation token carried by the canonical

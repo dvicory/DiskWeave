@@ -39,12 +39,20 @@ pub use coded_authority::{
     CodedRangeAuthority,
 };
 pub use coded_clean::{
-    CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision, CodedCaptureError,
-    CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts,
-    CodedCapturePhase, CodedCaptureReconciliationReceipt, CodedCaptureRemoval,
-    CodedCaptureSnapshot, CodedCaptureUpdate, CodedCleanCommitObservation,
-    CodedCleanReconciliation, CodedLaterCutObservation, CodedLaterCutReconciliation,
-    ValidatedCodedCaptureScope,
+    CodedCaptureCleanAuthorization, CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision,
+    CodedCaptureError, CodedCaptureFrontier, CodedCaptureId, CodedCaptureLifecycleOwner,
+    CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
+    CodedCaptureReconciliationReceipt, CodedCaptureRemoval, CodedCaptureRetentionOwner,
+    CodedCaptureSnapshot, CodedCaptureUpdate, CodedCleanAttempt, CodedCleanAttemptPhase,
+    CodedCleanCommitObservation, CodedCleanKnownCleanupAuthorization, CodedCleanReconciliation,
+    CodedGeometryOwner, CodedIncludedOperationEvidence,
+    CodedInheritedCaptureAbandonmentAuthorization, CodedLaterCutAttempt, CodedLaterCutAttemptPhase,
+    CodedLaterCutObservation, CodedLaterCutReconciliation, CodedLifecycleEvidenceIssuer,
+    CodedMembershipCompactionAuthorization, CodedRefusedCleanupAuthorization,
+    CodedReopenResolution, PreparedCodedCaptureUpdates, PreparedCodedCleanCommit,
+    PreparedCodedCleanKnownCleanup, PreparedCodedInheritedCaptureAbandonment,
+    PreparedCodedLaterCut, PreparedCodedMembershipCompaction, PreparedCodedRefusal,
+    PreparedCodedRefusedCleanup, ValidatedCodedCaptureScope,
 };
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
@@ -168,7 +176,7 @@ pub struct RecoveryCursor(pub u64);
 )]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(5);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(6);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -219,6 +227,7 @@ pub enum RecoveryMigrationStep {
     AddOfflineRebuildV3,
     AddChecksumBaselineV4,
     AddCodedCleanCaptureV5,
+    AddCodedCaptureReleaseEvidenceV6,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -253,6 +262,7 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ],
             (RecoverySchemaVersion(1), RecoverySchemaVersion(2)) => {
                 vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
@@ -266,6 +276,7 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ],
             (RecoverySchemaVersion(2), RecoverySchemaVersion(3)) => {
                 vec![RecoveryMigrationStep::AddOfflineRebuildV3]
@@ -274,13 +285,19 @@ impl RecoveryMigrationPlan {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ],
             (RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA) => vec![
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ],
-            (RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA) => {
-                vec![RecoveryMigrationStep::AddCodedCleanCaptureV5]
+            (RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA) => vec![
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+            ],
+            (RecoverySchemaVersion(5), CURRENT_RECOVERY_SCHEMA) => {
+                vec![RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6]
             }
             _ => {
                 return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
@@ -378,6 +395,48 @@ impl DurableRecoveryCommit {
                 mutation,
                 RecoveryMutation::UpsertCodedCapture { update }
                     if update.proposed() == snapshot
+            )
+        })
+    }
+
+    pub fn committed_coded_capture_removal(&self, expected: &CodedCaptureRemoval) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                RecoveryMutation::RemoveCodedCapture { removal }
+                    if removal == expected
+            )
+        })
+    }
+
+    pub fn committed_region_dirty(
+        &self,
+        region: RegionId,
+        mutation_generation: RecoveryGeneration,
+    ) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                RecoveryMutation::MarkRegionDirty {
+                    region: observed_region,
+                    mutation_generation: observed_generation,
+                } if *observed_region == region && *observed_generation == mutation_generation
+            )
+        })
+    }
+
+    pub fn committed_integrity_stale(
+        &self,
+        extent: IntegrityExtentId,
+        stale_generation: RecoveryGeneration,
+    ) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                RecoveryMutation::MarkIntegrityStale {
+                    extent: observed_extent,
+                    stale_generation: observed_generation,
+                } if *observed_extent == extent && *observed_generation == stale_generation
             )
         })
     }
@@ -743,6 +802,7 @@ pub enum TransitionError {
     IntegrityContentGenerationFuture,
     IntegrityBindingMismatch,
     CodedCaptureIdentityMismatch,
+    CodedCaptureClosureMismatch,
     CodedCaptureMissing,
     CodedCaptureTopologyMismatch,
 }
@@ -796,6 +856,9 @@ impl fmt::Display for RecoveryError {
 
 impl std::error::Error for RecoveryError {}
 
+// Exact predecessor-bound mutations stay inline; boxing would allocate on every
+// coded recovery-state transition to save a small transaction enum stack slot.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RecoveryMutation {
     BeginWritableSession {
@@ -1398,6 +1461,11 @@ impl MemoryRecoveryStore {
                     .ok_or(RecoveryError::InvalidTransition(
                         TransitionError::CodedCaptureMissing,
                     ))?;
+                if !removal.validates_clean_closure(snapshot) {
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::CodedCaptureClosureMismatch,
+                    ));
+                }
                 snapshot.coded_captures.remove(index);
             }
         }
@@ -2100,6 +2168,7 @@ mod tests {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ]
         );
         assert_eq!(
@@ -2111,6 +2180,7 @@ mod tests {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ]
         );
         assert_eq!(
@@ -2121,6 +2191,7 @@ mod tests {
                 RecoveryMigrationStep::AddOfflineRebuildV3,
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ]
         );
         assert_eq!(
@@ -2130,13 +2201,23 @@ mod tests {
             vec![
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
             ]
         );
         assert_eq!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::AddCodedCleanCaptureV5]
+            vec![
+                RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+            ]
+        );
+        assert_eq!(
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(5), CURRENT_RECOVERY_SCHEMA)
+                .unwrap()
+                .steps,
+            vec![RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6]
         );
         assert!(
             current_recovery_schema()
