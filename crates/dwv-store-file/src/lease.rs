@@ -183,10 +183,15 @@ impl FileLease {
         self.incarnation
     }
 
+    /// Unlocks and closes the marker only after unlock succeeds.
+    ///
+    /// On error the descriptor remains owned so the same owner can retry.
     pub fn release(&mut self) -> Result<(), FileLeaseError> {
-        if let Some(marker) = self.marker.take() {
-            File::unlock(&marker).map_err(FileLeaseError::Io)?;
-        }
+        let Some(marker) = self.marker.as_ref() else {
+            return Ok(());
+        };
+        File::unlock(marker).map_err(FileLeaseError::Io)?;
+        drop(self.marker.take());
         Ok(())
     }
 }

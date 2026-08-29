@@ -14,7 +14,15 @@ pub use control::{
     CONTROL_SCHEMA_VERSION, ControlEntry, ControlError, ControlExport, ControlProjection,
 };
 pub use file_store::{
-    FileStore, FileStoreConfig, FileStoreError, FileSyncMode, ReadProgress, SyncEvidence,
+    AcceptedFileStore, AcceptedFileWriterSet, FileBackedReleaseDisposition,
+    FileBackedReleaseObservation, FileOwnershipResource, FileReleaseCause, FileReleaseCauseKind,
+    FileStore, FileStoreConfig, FileStoreError, FileSyncMode, FileWriterAcquisitionId,
+    FileWriterAliasBinding, FileWriterClaimBinding, FileWriterClaimDisposition,
+    FileWriterClaimReleaseObservation, FileWriterClaimToken, FileWriterQuarantineId,
+    FileWriterQuarantineRetryError, FileWriterQuarantineRetryFailure, FileWriterQuarantineStatus,
+    FileWriterSetAcceptanceError, FileWriterSetAcceptanceFailure, FileWriterSetReleaseResult,
+    ReadProgress, ReleasedFileWriterSet, SyncEvidence, UnresolvedFileWriterSet,
+    quarantined_file_writer_sets, retry_quarantined_file_writer_set,
 };
 pub use lease::{
     AliasError, FileIdentityError, FileLease, FileLeaseError, IdentityComparison,
