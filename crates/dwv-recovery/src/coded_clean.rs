@@ -1,11 +1,10 @@
-use crate::coded_authority::CodedAdmissionAuthorityId;
+use crate::coded_authority::{CodedAdmissionAuthorityId, CodedCaptureEstablishment};
 use crate::{
     ChecksumProfile, ChecksumProfileId, ChecksumSetGeneration, CodedAdmission,
-    CodedAuthorityFrontier, CodedCaptureEstablishment, CodedClaimRelease, CodedGeometryOwner,
-    DirtyRegionRecord, DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityRecord,
-    IntegrityState, InvalidationTarget, RecoveryCleanPermit, RecoveryCleanRefusalPermit,
-    RecoveryError, RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RegionId, RegionState,
-    TransitionError,
+    CodedAuthorityFrontier, CodedClaimRelease, CodedGeometryOwner, DirtyRegionRecord,
+    DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityRecord, IntegrityState,
+    InvalidationTarget, RecoveryCleanPermit, RecoveryCleanRefusalPermit, RecoveryError,
+    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RegionId, RegionState, TransitionError,
 };
 use dwv_core::{CodedUnitId, TopologyEpoch, TopologySnapshot};
 use dwv_lifecycle_authority::{
@@ -1250,6 +1249,7 @@ pub enum CodedCaptureError {
     EmptyScope,
     IncompleteScope,
     UnvalidatedScope,
+    CaptureSequenceExhausted,
     LowerFrontierUncovered,
     InvalidScopeGeometry,
     ScopeIdentityOutOfRange,
@@ -1261,6 +1261,8 @@ pub enum CodedCaptureError {
     RetentionSummaryInvalid(CodedCaptureId),
     ClaimBindingInvalid,
     ForeignAdmissionAuthority,
+    ForeignCaptureAuthority,
+    AuthorityInvalidated,
     RetentionFrontierStale(CodedCaptureId),
     CaptureOperationUnresolved {
         capture: CodedCaptureId,
@@ -1298,6 +1300,9 @@ impl fmt::Display for CodedCaptureError {
             Self::EmptyScope => formatter.write_str("coded capture scope is empty"),
             Self::IncompleteScope => formatter.write_str("coded capture scope is incomplete"),
             Self::UnvalidatedScope => formatter.write_str("coded capture scope is not validated"),
+            Self::CaptureSequenceExhausted => {
+                formatter.write_str("coded capture sequence is exhausted")
+            }
             Self::LowerFrontierUncovered => {
                 formatter.write_str("coded capture lower frontier is not covered")
             }
@@ -1316,6 +1321,12 @@ impl fmt::Display for CodedCaptureError {
             Self::ForeignAdmissionAuthority => {
                 formatter.write_str("coded admission came from another authority graph")
             }
+            Self::ForeignCaptureAuthority => {
+                formatter.write_str("coded transition came from another live capture owner")
+            }
+            Self::AuthorityInvalidated => formatter.write_str(
+                "coded capture authority was invalidated by an uncertain durable transition",
+            ),
             Self::PreparedTransitionStale(capture) => {
                 write!(
                     formatter,
@@ -1478,6 +1489,15 @@ impl CaptureRecord {
         !matches!(self.phase, CodedCapturePhase::Refused)
     }
 
+    fn recorded_membership_permits_effect(&self, operation: OperationSlotToken) -> bool {
+        matches!(
+            self.membership.get(&operation),
+            Some(CodedCaptureMembership::Included)
+                | Some(CodedCaptureMembership::LaterDurableAfterClean)
+                | Some(CodedCaptureMembership::LaterDurableStalesClean)
+        )
+    }
+
     fn mutation_set_closed(&self) -> bool {
         !self.scope.is_empty()
             && !self.membership.values().any(|membership| {
@@ -1541,7 +1561,6 @@ fn next_coded_capture_authority_id() -> u64 {
         .expect("coded capture authority identity exhausted")
 }
 
-#[derive(Clone)]
 pub struct CodedCaptureCoordinator {
     authority_id: u64,
     admission_authority: CodedAdmissionAuthorityId,
@@ -1557,6 +1576,18 @@ impl Default for CodedCaptureCoordinator {
 }
 
 impl CodedCaptureCoordinator {
+    fn fork_candidate(&self) -> Self {
+        Self {
+            authority_id: self.authority_id,
+            admission_authority: self.admission_authority,
+            lifecycle_authority: self.lifecycle_authority.clone(),
+            captures: self.captures.clone(),
+        }
+    }
+    pub(crate) const fn authority_id(&self) -> u64 {
+        self.authority_id
+    }
+
     pub fn new() -> Self {
         Self::default()
     }
@@ -1593,7 +1624,7 @@ impl CodedCaptureCoordinator {
     }
     /// Refresh recovery-state evidence while consuming the existing
     /// capture-owner acceptance witness.
-    pub fn refresh_clean_authorization(
+    pub(crate) fn refresh_clean_authorization(
         &self,
         recovery: &RecoverySnapshot,
         authorization: CodedCaptureCleanAuthorization,
@@ -1615,7 +1646,7 @@ impl CodedCaptureCoordinator {
     /// Resolve a capture using only retained history established by this live
     /// owner. A compacted summary loaded after restart remains untrusted and
     /// can only take the conservative inherited-abandonment path.
-    pub fn resolve_capture(
+    pub(crate) fn resolve_capture(
         &self,
         recovery: &RecoverySnapshot,
         capture: CodedCaptureId,
@@ -1781,7 +1812,7 @@ impl CodedCaptureCoordinator {
         )
     }
 
-    pub fn confirm_prepared_updates(
+    pub(crate) fn confirm_prepared_updates(
         &mut self,
         prepared: PreparedCodedCaptureUpdates,
         receipt: &DurableRecoveryCommit,
@@ -1808,7 +1839,7 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
-    pub fn prepare_admission_observation(
+    pub(crate) fn prepare_admission_observation(
         &self,
         admission: &CodedAdmission,
         expected_generation: RecoveryGeneration,
@@ -1816,29 +1847,29 @@ impl CodedCaptureCoordinator {
         if !admission.belongs_to(self.admission_authority) {
             return Err(CodedCaptureError::ForeignAdmissionAuthority);
         }
-        let mut proposed = self.clone();
+        let mut proposed = self.fork_candidate();
         proposed.observe_admitted_claim(admission);
         self.prepare_updates(proposed, expected_generation)
     }
 
-    pub fn prepare_release_observation(
+    pub(crate) fn prepare_release_observation(
         &self,
         release: &CodedClaimRelease,
         certificate: Option<&FenceCertificate>,
         expected_generation: RecoveryGeneration,
     ) -> Result<Option<PreparedCodedCaptureUpdates>, CodedCaptureError> {
-        let mut proposed = self.clone();
+        let mut proposed = self.fork_candidate();
         proposed.observe_release_allowed(release, certificate)?;
         self.prepare_updates(proposed, expected_generation)
     }
 
-    pub fn prepare_reconciliation(
+    pub(crate) fn prepare_reconciliation(
         &self,
         receipt: CodedCaptureReconciliationReceipt,
         expected_generation: RecoveryGeneration,
     ) -> Result<PreparedCodedCaptureUpdates, CodedCaptureError> {
         let capture = receipt.capture();
-        let mut proposed = self.clone();
+        let mut proposed = self.fork_candidate();
         proposed.apply_reconciliation(receipt)?;
         self.prepare_updates(proposed, expected_generation)?
             .ok_or(CodedCaptureError::PreparedTransitionStale(capture))
@@ -1859,7 +1890,7 @@ impl CodedCaptureCoordinator {
         })
     }
 
-    pub fn prepare_capture_start(
+    pub(crate) fn prepare_capture_start(
         &self,
         capture: CodedCaptureId,
         expected_generation: RecoveryGeneration,
@@ -1870,7 +1901,7 @@ impl CodedCaptureCoordinator {
         let recovery_generation = expected_generation.checked_next().ok_or(
             CodedCaptureError::CaptureFrontierGenerationMismatch(capture),
         )?;
-        let mut proposed = self.clone();
+        let mut proposed = self.fork_candidate();
         proposed.start_capture(
             capture,
             recovery_generation,
@@ -2023,24 +2054,31 @@ impl CodedCaptureCoordinator {
         }
     }
 
-    /// Return whether every applicable active capture permits the operation's effect.
-    pub fn effect_allowed(&self, operation: OperationSlotToken) -> bool {
+    #[cfg(test)]
+    /// Return whether every active capture's recorded membership permits the effect.
+    pub(crate) fn effect_allowed(&self, operation: OperationSlotToken) -> bool {
         // Rejected and uncertain cuts remain blocked; a refused capture stops tracking.
         self.captures.values().all(|capture| {
-            if !capture.tracks_future() {
-                return true;
-            }
-            matches!(
-                capture.membership.get(&operation),
-                None | Some(CodedCaptureMembership::Included)
-                    | Some(CodedCaptureMembership::LaterDurableAfterClean)
-                    | Some(CodedCaptureMembership::LaterDurableStalesClean)
-            )
+            !capture.tracks_future()
+                || !capture.membership.contains_key(&operation)
+                || capture.recorded_membership_permits_effect(operation)
+        })
+    }
+
+    pub(crate) fn effect_allowed_for(
+        &self,
+        operation: OperationSlotToken,
+        units: &BTreeSet<CodedUnitId>,
+    ) -> bool {
+        self.captures.values().all(|capture| {
+            !capture.tracks_future()
+                || !capture.intersects(units)
+                || capture.recorded_membership_permits_effect(operation)
         })
     }
 
     /// Prepare exact resolved-capture membership compaction.
-    pub fn prepare_membership_compaction(
+    pub(crate) fn prepare_membership_compaction(
         &self,
         authorization: CodedMembershipCompactionAuthorization,
     ) -> Result<PreparedCodedMembershipCompaction, CodedCaptureError> {
@@ -2079,7 +2117,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Install exact compaction only after its proposed snapshot is durable.
-    pub fn confirm_membership_compaction(
+    pub(crate) fn confirm_membership_compaction(
         &mut self,
         prepared: PreparedCodedMembershipCompaction,
         receipt: &DurableRecoveryCommit,
@@ -2101,7 +2139,7 @@ impl CodedCaptureCoordinator {
 
     /// Prepare exact cleanup for one currently revalidated refused capture or
     /// one inherited Open capture with a current exact refusal.
-    pub fn prepare_refused_cleanup(
+    pub(crate) fn prepare_refused_cleanup(
         &self,
         authorization: CodedRefusedCleanupAuthorization,
     ) -> Result<PreparedCodedRefusedCleanup, CodedCaptureError> {
@@ -2137,7 +2175,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Prepare exact cleanup for one owner-certified settled clean capture.
-    pub fn prepare_clean_known_cleanup(
+    pub(crate) fn prepare_clean_known_cleanup(
         &self,
         authorization: CodedCleanKnownCleanupAuthorization,
     ) -> Result<PreparedCodedCleanKnownCleanup, CodedCaptureError> {
@@ -2153,7 +2191,7 @@ impl CodedCaptureCoordinator {
 
     /// Prepare exact invalidation/removal for an inherited capture whose
     /// prior-process closure authority cannot be reconstructed.
-    pub fn prepare_inherited_capture_abandonment(
+    pub(crate) fn prepare_inherited_capture_abandonment(
         &self,
         authorization: CodedInheritedCaptureAbandonmentAuthorization,
     ) -> Result<PreparedCodedInheritedCaptureAbandonment, CodedCaptureError> {
@@ -2190,7 +2228,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Install refused cleanup only after exact durable invalidation/removal.
-    pub fn confirm_refused_cleanup(
+    pub(crate) fn confirm_refused_cleanup(
         &mut self,
         prepared: PreparedCodedRefusedCleanup,
         receipt: &DurableRecoveryCommit,
@@ -2200,7 +2238,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Install clean-known cleanup only after exact durable removal.
-    pub fn confirm_clean_known_cleanup(
+    pub(crate) fn confirm_clean_known_cleanup(
         &mut self,
         prepared: PreparedCodedCleanKnownCleanup,
         receipt: &DurableRecoveryCommit,
@@ -2210,7 +2248,7 @@ impl CodedCaptureCoordinator {
 
     /// Install inherited capture abandonment only after the exact atomic
     /// dirty invalidation and capture removal are durable.
-    pub fn confirm_inherited_capture_abandonment(
+    pub(crate) fn confirm_inherited_capture_abandonment(
         &mut self,
         prepared: PreparedCodedInheritedCaptureAbandonment,
         receipt: &DurableRecoveryCommit,
@@ -2335,7 +2373,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Prepare one exact recovery-owner refusal without installing it.
-    pub fn prepare_clean_refusal(
+    pub(crate) fn prepare_clean_refusal(
         &self,
         capture: CodedCaptureId,
         refusal: &RecoveryCleanRefusalPermit,
@@ -2343,7 +2381,7 @@ impl CodedCaptureCoordinator {
         let prior = self
             .capture_snapshot(capture)
             .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
-        let mut candidate = self.clone();
+        let mut candidate = self.fork_candidate();
         let record = candidate.record_mut(capture)?;
         if record.phase != CodedCapturePhase::Open
             || record.decision.is_some()
@@ -2374,7 +2412,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Install a refused capture only after exact durable persistence.
-    pub fn confirm_clean_refusal(
+    pub(crate) fn confirm_clean_refusal(
         &mut self,
         prepared: PreparedCodedRefusal,
         receipt: &DurableRecoveryCommit,
@@ -2395,7 +2433,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Prepare one accepted CLEAN result without installing it as durable state.
-    pub fn prepare_clean_commit(
+    pub(crate) fn prepare_clean_commit(
         &self,
         authorization: CodedCaptureCleanAuthorization,
     ) -> Result<PreparedCodedCleanCommit, CodedCaptureError> {
@@ -2413,7 +2451,7 @@ impl CodedCaptureCoordinator {
         {
             return Err(CodedCaptureError::PreparedTransitionStale(capture));
         }
-        let mut candidate = self.clone();
+        let mut candidate = self.fork_candidate();
         let record = candidate.record_mut(capture)?;
         if !record.owner_revalidated || !record.mutation_set_closed() {
             return Err(CodedCaptureError::CleanNotEligible(capture));
@@ -2434,7 +2472,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Install a prepared CLEAN only under the exact recovery-owner receipt.
-    pub fn confirm_clean_commit(
+    pub(crate) fn confirm_clean_commit(
         &mut self,
         prepared: PreparedCodedCleanCommit,
         receipt: &DurableRecoveryCommit,
@@ -2456,7 +2494,7 @@ impl CodedCaptureCoordinator {
     }
 
     /// Prepare an owner-derived later cut without installing it as durable state.
-    pub fn prepare_later_cut(
+    pub(crate) fn prepare_later_cut(
         &self,
         capture: CodedCaptureId,
         admission: &CodedAdmission,
@@ -2473,7 +2511,7 @@ impl CodedCaptureCoordinator {
             .capture_snapshot(capture)
             .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
         let target = admission.invalidation_target().clone();
-        let mut candidate = self.clone();
+        let mut candidate = self.fork_candidate();
         let cut = CodedCaptureCut::new(
             topology_epoch,
             committed_generation,
@@ -2503,7 +2541,7 @@ impl CodedCaptureCoordinator {
         })
     }
 
-    pub fn confirm_later_cut(
+    pub(crate) fn confirm_later_cut(
         &mut self,
         prepared: PreparedCodedLaterCut,
         receipt: &DurableRecoveryCommit,

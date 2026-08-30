@@ -251,7 +251,7 @@ impl CodedAdmission {
 /// Owner-issued proof that all earlier coded admissions are either represented
 /// by the supplied active set or were released under lifecycle authority.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CodedHistoryCoverage {
+pub(crate) struct CodedHistoryCoverage {
     through_sequence: u64,
 }
 
@@ -263,18 +263,18 @@ impl CodedHistoryCoverage {
 
 /// Owner-issued closed-set boundary. No admission can cross this cut.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CodedCaptureBoundary {
+pub(crate) struct CodedCaptureBoundary {
     capture_sequence: u64,
 }
 
 impl CodedCaptureBoundary {
-    pub const fn capture_sequence(self) -> u64 {
+    pub(crate) const fn capture_sequence(self) -> u64 {
         self.capture_sequence
     }
 }
 
 /// One atomic owner-issued capture seed binding history, cut, and active claims.
-pub struct CodedCaptureEstablishment {
+pub(crate) struct CodedCaptureEstablishment {
     history: CodedHistoryCoverage,
     boundary: CodedCaptureBoundary,
     active_admissions: Vec<CodedAdmission>,
@@ -376,6 +376,7 @@ pub enum CodedAuthorityError {
     OperationNotAdmitted(OperationSlotToken),
     EffectAlreadyPermitted(OperationSlotToken),
     AdmissionSequenceExhausted,
+    StateRevisionExhausted,
 }
 
 impl fmt::Display for CodedAuthorityError {
@@ -422,6 +423,9 @@ impl fmt::Display for CodedAuthorityError {
             Self::AdmissionSequenceExhausted => {
                 formatter.write_str("coded admission sequence is exhausted")
             }
+            Self::StateRevisionExhausted => {
+                formatter.write_str("coded authority state revision is exhausted")
+            }
         }
     }
 }
@@ -448,7 +452,6 @@ impl std::error::Error for CodedAuthorityError {}
 ///     authority.release(authorization, permit);
 /// }
 /// ```
-#[derive(Clone)]
 pub struct CodedRangeAuthority {
     admission_authority: CodedAdmissionAuthorityId,
     geometry_authority: CodedGeometryAuthorityId,
@@ -457,6 +460,7 @@ pub struct CodedRangeAuthority {
     admission_sequences: BTreeMap<OperationSlotToken, u64>,
     effect_possible: BTreeSet<OperationSlotToken>,
     admission_high_water: u64,
+    state_revision: u64,
 }
 
 impl CodedRangeAuthority {
@@ -492,7 +496,35 @@ impl CodedRangeAuthority {
             admission_sequences: BTreeMap::new(),
             effect_possible: BTreeSet::new(),
             admission_high_water: 0,
+            state_revision: 0,
         }
+    }
+    pub(crate) fn fork_candidate(&self) -> Self {
+        Self {
+            admission_authority: self.admission_authority,
+            geometry_authority: self.geometry_authority,
+            lifecycle_authority: self.lifecycle_authority.clone(),
+            claims: self.claims.clone(),
+            admission_sequences: self.admission_sequences.clone(),
+            effect_possible: self.effect_possible.clone(),
+            admission_high_water: self.admission_high_water,
+            state_revision: self.state_revision,
+        }
+    }
+
+    pub(crate) const fn state_revision(&self) -> u64 {
+        self.state_revision
+    }
+
+    pub(crate) const fn belongs_to_same_owner(&self, other: &Self) -> bool {
+        self.admission_authority.0 == other.admission_authority.0
+            && self.geometry_authority.0 == other.geometry_authority.0
+    }
+
+    fn next_state_revision(&self) -> Result<u64, CodedAuthorityError> {
+        self.state_revision
+            .checked_add(1)
+            .ok_or(CodedAuthorityError::StateRevisionExhausted)
     }
 
     /// Admit one complete claim before any dependent effect.
@@ -536,7 +568,9 @@ impl CodedRangeAuthority {
             .admission_high_water
             .checked_add(1)
             .ok_or(CodedAuthorityError::AdmissionSequenceExhausted)?;
+        let state_revision = self.next_state_revision()?;
         self.admission_high_water = admission_sequence;
+        self.state_revision = state_revision;
         self.admission_sequences
             .insert(operation, admission_sequence);
         self.claims.insert(operation, claim.clone());
@@ -549,16 +583,18 @@ impl CodedRangeAuthority {
     }
 
     /// Issue permission for the dependent effect only after coded admission.
-    pub fn permit_effect(
+    pub(crate) fn permit_effect(
         &mut self,
         operation: OperationSlotToken,
     ) -> Result<CodedEffectPermit, CodedAuthorityError> {
         if !self.claims.contains_key(&operation) {
             return Err(CodedAuthorityError::OperationNotAdmitted(operation));
         }
+        let state_revision = self.next_state_revision()?;
         if !self.effect_possible.insert(operation) {
             return Err(CodedAuthorityError::EffectAlreadyPermitted(operation));
         }
+        self.state_revision = state_revision;
         Ok(CodedEffectPermit { operation })
     }
 
@@ -603,14 +639,14 @@ impl CodedRangeAuthority {
     }
 
     /// Establish one atomic owner-produced history, cut, and active set.
-    pub fn capture_boundary(&mut self) -> Result<CodedCaptureEstablishment, CodedAuthorityError> {
+    pub(crate) fn capture_boundary(&mut self) -> Option<CodedCaptureEstablishment> {
         let active_admissions = self.active_admissions();
         let through_sequence = self.admission_high_water;
-        let capture_sequence = through_sequence
-            .checked_add(1)
-            .ok_or(CodedAuthorityError::AdmissionSequenceExhausted)?;
+        let capture_sequence = through_sequence.checked_add(1)?;
+        let state_revision = self.state_revision.checked_add(1)?;
         self.admission_high_water = capture_sequence;
-        Ok(CodedCaptureEstablishment {
+        self.state_revision = state_revision;
+        Some(CodedCaptureEstablishment {
             history: CodedHistoryCoverage { through_sequence },
             boundary: CodedCaptureBoundary { capture_sequence },
             active_admissions,
@@ -668,10 +704,12 @@ impl CodedRangeAuthority {
         if !self.claims.contains_key(&operation) {
             return Err(CodedAuthorityError::OperationNotAdmitted(operation));
         }
+        let state_revision = self.next_state_revision()?;
         let admission_sequence = self.admission_sequences[&operation];
         self.claims.remove(&operation);
         self.effect_possible.remove(&operation);
         self.admission_sequences.remove(&operation);
+        self.state_revision = state_revision;
         Ok(CodedClaimRelease {
             operation,
             frontier: CodedAuthorityFrontier { admission_sequence },

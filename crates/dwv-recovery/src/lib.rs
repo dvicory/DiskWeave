@@ -38,6 +38,39 @@ use dwv_recovery::CodedCaptureCoordinator;
 let (_, verifier) = LifecycleAuthorityOwner::new();
 let _ = CodedCaptureCoordinator::new_with_lifecycle_authority(verifier);
 ```
+
+Capture cuts cannot be issued from a stale cloned range authority:
+
+```compile_fail
+use dwv_recovery::CodedRangeAuthority;
+
+fn stale_cut(range: &mut CodedRangeAuthority) {
+    let _ = range.capture_boundary();
+}
+```
+
+Raw range authority cannot issue media-effect permission without the paired
+capture owner:
+
+```compile_fail
+use dwv_recovery::CodedRangeAuthority;
+use dwv_store::OperationSlotToken;
+
+fn bypass_capture(range: &mut CodedRangeAuthority, operation: OperationSlotToken) {
+    let _ = range.permit_effect(operation);
+}
+```
+
+Capture establishment cannot bypass the lifecycle owner with a caller-built
+geometry scope:
+
+```compile_fail
+use dwv_recovery::CodedCaptureCoordinator;
+
+fn substitute_scope(coordinator: &CodedCaptureCoordinator) {
+    let _ = CodedCaptureCoordinator::prepare_capture_start;
+}
+```
 "#]
 pub use dwv_lifecycle_authority::IncludedLifecycleAuthorization;
 use dwv_store::{StoreFenceRef, StoreId};
@@ -69,9 +102,8 @@ pub use baseline::{
     new_checksum_baseline, pending_checksum_baseline_extents,
 };
 pub use coded_authority::{
-    CodedAdmission, CodedAdmissionOutcome, CodedAuthorityError, CodedAuthorityFrontier,
-    CodedCaptureBoundary, CodedCaptureEstablishment, CodedClaim, CodedClaimInput,
-    CodedClaimRelease, CodedEffectPermit, CodedHistoryCoverage, CodedOperationPhase,
+    CodedAdmission, CodedAdmissionOutcome, CodedAuthorityError, CodedAuthorityFrontier, CodedClaim,
+    CodedClaimInput, CodedClaimRelease, CodedEffectPermit, CodedOperationPhase,
     CodedRangeAuthority,
 };
 pub use coded_clean::{
@@ -89,7 +121,11 @@ pub use coded_clean::{
     PreparedCodedRefusedCleanup, ValidatedCodedCaptureScope,
 };
 pub use coded_geometry::CodedGeometryOwner;
-pub use coded_lifecycle::{CodedIncludedAuthority, CodedLifecycleAuthority, CodedReleaseAuthority};
+pub use coded_lifecycle::{
+    CodedIncludedAuthority, CodedLifecycleAuthority, CodedLifecycleError, CodedOwnerCleanAttempt,
+    CodedOwnerLaterCutAttempt, CodedReleaseAuthority, PreparedCodedAdmission,
+    PreparedCodedOwnerTransition, PreparedCodedRelease,
+};
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
 pub use inspection::{

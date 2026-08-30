@@ -4,12 +4,13 @@ use dwv_core::{
     BlockOp, ByteRange, CodedUnitId, DurabilityIntent, FenceDomain, RequestId, TopologyEpoch,
 };
 use dwv_recovery::{
-    CodedCaptureCleanAuthorization, CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership,
-    CodedCapturePhase, CodedCaptureSnapshot, CodedCleanAttempt, CodedCleanAttemptPhase,
-    CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutAttempt,
+    CodedCaptureCleanAuthorization, CodedCaptureDecision, CodedCaptureError, CodedCaptureId,
+    CodedCaptureMembership, CodedCapturePhase, CodedCaptureSnapshot, CodedCleanAttemptPhase,
+    CodedCleanCommitObservation, CodedCleanReconciliation, CodedGeometryOwner,
     CodedLaterCutAttemptPhase, CodedLaterCutObservation, CodedLaterCutReconciliation,
+    CodedLifecycleError, CodedOwnerCleanAttempt, CodedOwnerLaterCutAttempt, CodedRangeAuthority,
     FenceCertificate, IntegrityExtentId, InvalidationTarget, MemoryRecoveryStore,
-    PreparedCodedCleanCommit, PreparedCodedLaterCut, RecoveryCleanDecision,
+    PreparedCodedCleanCommit, PreparedCodedLaterCut, PreparedCodedOwnerTransition,
     RecoveryCleanRefusalPermit, RecoveryCleanRequest, RecoveryMutation, RecoverySnapshot,
     RecoveryStateStore, RecoveryTxn, RegionId,
 };
@@ -212,8 +213,8 @@ struct BridgeDriver {
     projection_fault: Option<ProjectionFault>,
     clean_authorization: Option<CodedCaptureCleanAuthorization>,
     clean_certificate: Option<FenceCertificate>,
-    clean_attempt: Option<CodedCleanAttempt>,
-    later_cut_attempt: Option<CodedLaterCutAttempt>,
+    clean_attempt: Option<CodedOwnerCleanAttempt>,
+    later_cut_attempt: Option<CodedOwnerLaterCutAttempt>,
 }
 
 impl BridgeDriver {
@@ -376,7 +377,7 @@ impl BridgeDriver {
             .coded_captures
             .prepare_clean_commit(authorization)?;
         self.clean_certificate = Some(certificate);
-        self.clean_attempt = Some(CodedCleanAttempt::new(prepared));
+        self.clean_attempt = Some(prepared.into_attempt());
         Ok(())
     }
 
@@ -436,7 +437,7 @@ impl BridgeDriver {
                 commit_connect_later_cut(self.service_mut()?, prepared)?;
             }
             CodedLaterCutObservation::Unknown | CodedLaterCutObservation::Rejected => {
-                self.later_cut_attempt = Some(CodedLaterCutAttempt::new(prepared, observation)?);
+                self.later_cut_attempt = Some(prepared.into_attempt(observation)?);
             }
         }
         Ok(())
@@ -460,18 +461,13 @@ impl BridgeDriver {
         Ok(())
     }
 
-    fn prepare_later_cut(&mut self) -> Result<PreparedCodedLaterCut> {
+    fn prepare_later_cut(&mut self) -> Result<PreparedCodedOwnerTransition<PreparedCodedLaterCut>> {
         let operation = self.token("opC")?;
         let service = self.service_mut()?;
         let current = service.recovery.load_assembly_snapshot()?;
-        let admission = service
-            .coded_captures
-            .range()
-            .admission(operation)
-            .context("coded admission is missing")?;
         Ok(service.coded_captures.prepare_later_cut(
             CodedCaptureId(0),
-            &admission,
+            operation,
             service.topology.topology_epoch(),
             current.generation,
         )?)
@@ -1003,7 +999,7 @@ fn prepare_connect_clean_authorization<R: RecoveryStateStore>(
 
 fn commit_connect_clean<R: RecoveryStateStore>(
     service: &mut HealthyPortableService<FakeStore, R>,
-    prepared: PreparedCodedCleanCommit,
+    prepared: PreparedCodedOwnerTransition<PreparedCodedCleanCommit>,
 ) -> Result<()> {
     let current = service.recovery.load_assembly_snapshot()?;
     let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
@@ -1020,7 +1016,7 @@ fn commit_connect_clean<R: RecoveryStateStore>(
 
 fn commit_connect_later_cut<R: RecoveryStateStore>(
     service: &mut HealthyPortableService<FakeStore, R>,
-    prepared: PreparedCodedLaterCut,
+    prepared: PreparedCodedOwnerTransition<PreparedCodedLaterCut>,
 ) -> Result<()> {
     let target = prepared.invalidation_target().clone();
     commit_connect_later_cut_with_target(service, prepared, target)
@@ -1028,7 +1024,7 @@ fn commit_connect_later_cut<R: RecoveryStateStore>(
 
 fn commit_connect_later_cut_with_target<R: RecoveryStateStore>(
     service: &mut HealthyPortableService<FakeStore, R>,
-    prepared: PreparedCodedLaterCut,
+    prepared: PreparedCodedOwnerTransition<PreparedCodedLaterCut>,
     target: InvalidationTarget,
 ) -> Result<()> {
     let transition = prepared.transition();
@@ -1362,13 +1358,18 @@ fn paired_range_rejects_claim_from_foreign_geometry_owner() {
         foreign_admission.invalidation_target()
     );
 
-    assert_eq!(
-        service
-            .coded_captures
-            .range_mut()
-            .admit(operation, request, foreign_claim),
-        Err(CodedAuthorityError::ForeignGeometryAuthority)
-    );
+    let current = service.recovery.load_assembly_snapshot().unwrap();
+    assert!(matches!(
+        service.coded_captures.prepare_admission(
+            operation,
+            request,
+            foreign_claim,
+            current.generation,
+        ),
+        Err(CodedLifecycleError::Authority(
+            CodedAuthorityError::ForeignGeometryAuthority
+        ))
+    ));
     assert!(service.coded_authority().active_claim(operation).is_none());
 }
 
@@ -1474,11 +1475,17 @@ fn coded_release_rejects_authorization_from_foreign_owner_domain() {
         .expect("foreign lifecycle owner sees complete facts in its own domain");
     let authorization = ReleaseAuthorization::from_lifecycle(authorization);
 
+    let current = service.recovery.load_assembly_snapshot().unwrap();
     assert!(matches!(
-        service
-            .coded_captures
-            .prepare_release(&authorization, permit),
-        Err(CodedAuthorityError::ReleaseAuthorityDomainMismatch(found)) if found == operation
+        service.coded_captures.prepare_release(
+            &authorization,
+            permit,
+            None,
+            current.generation,
+        ),
+        Err(CodedLifecycleError::Authority(
+            CodedAuthorityError::ReleaseAuthorityDomainMismatch(found)
+        )) if found == operation
     ));
     assert!(service.coded_authority().active_claim(operation).is_some());
 }
@@ -2087,6 +2094,319 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
             .membership
             .get(&included),
         Some(&CodedCaptureMembership::Included)
+    );
+}
+
+#[test]
+fn capture_start_uses_the_paired_geometry_scope() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let foreign_geometry = CodedGeometryOwner::new(
+        service.topology.clone(),
+        DIRTY_REGION_BYTES / 2,
+        BLAKE3_256_PROFILE,
+    )
+    .unwrap();
+    let foreign_scope = foreign_geometry.capture_scope([RegionId(0)], []).unwrap();
+    let paired_scope = service
+        .coded_geometry
+        .capture_scope([RegionId(0)], [])
+        .unwrap();
+    assert_ne!(foreign_scope.units(), paired_scope.units());
+
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [])
+        .unwrap();
+    let snapshot = service
+        .coded_captures()
+        .capture_snapshot(CodedCaptureId(0))
+        .unwrap();
+    assert_eq!(&snapshot.scope, paired_scope.units());
+    assert_ne!(&snapshot.scope, foreign_scope.units());
+}
+
+#[test]
+fn lifecycle_effect_authority_rejects_unresolved_capture_ordering() {
+    let range = ByteRange::new(0, BLOCK as u64).expect("bounded coded range");
+
+    let mut observed = fake_service(FakeRead::Exact, ServiceConfig::default());
+    observed
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let observed_operation = observed
+        .reserve(request(
+            RequestId(962),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&observed, observed_operation, [CodedUnitId(0)]).unwrap();
+    assert!(matches!(
+        observed.coded_admit(observed_operation, claim).unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    assert_eq!(
+        observed
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&observed_operation),
+        Some(&CodedCaptureMembership::Later)
+    );
+    assert_eq!(
+        observed
+            .coded_captures
+            .permit_effect(observed_operation)
+            .unwrap(),
+        None
+    );
+
+    assert_eq!(
+        observed.coded_captures.operation_phase(observed_operation),
+        Some(CodedOperationPhase::Held)
+    );
+}
+
+#[test]
+fn lifecycle_owner_rejects_stale_prepared_range_successor() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let first = service
+        .reserve(request(
+            RequestId(963),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let second = service
+        .reserve(request(
+            RequestId(964),
+            TopologyEpoch(4),
+            1,
+            BlockOp::Write,
+            ByteRange::new(BLOCK as u64, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let first_request = service.admission.snapshot(first).unwrap().request;
+    let second_request = service.admission.snapshot(second).unwrap().request;
+    let first_claim = issued_coded_unit_claim(&service, first, [CodedUnitId(0)]).unwrap();
+    let second_claim = issued_coded_unit_claim(&service, second, [CodedUnitId(1)]).unwrap();
+    let generation = service
+        .recovery
+        .load_assembly_snapshot()
+        .unwrap()
+        .generation;
+    let first_prepared = service
+        .coded_captures
+        .prepare_admission(first, first_request, first_claim, generation)
+        .unwrap();
+    let stale_prepared = service
+        .coded_captures
+        .prepare_admission(second, second_request, second_claim, generation)
+        .unwrap();
+
+    assert!(matches!(
+        service
+            .coded_captures
+            .confirm_admission(first_prepared, None),
+        Ok(CodedAdmissionOutcome::Admitted(_))
+    ));
+    assert_eq!(
+        service
+            .coded_captures
+            .confirm_admission(stale_prepared, None),
+        Err(CodedLifecycleError::PreparedRangeStale)
+    );
+    assert!(service.coded_captures.active_claim(first).is_some());
+    assert!(service.coded_captures.active_claim(second).is_none());
+}
+
+#[test]
+fn lifecycle_owner_rejects_foreign_prepared_capture_successor() {
+    let mut source = fake_service(FakeRead::Exact, ServiceConfig::default());
+    source
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let (authorization, _) = prepare_connect_clean_authorization(&mut source, None).unwrap();
+    let prepared = source
+        .coded_captures
+        .prepare_clean_commit(authorization)
+        .unwrap();
+
+    let mut destination = fake_service(FakeRead::Exact, ServiceConfig::default());
+    destination
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let destination_snapshot = destination.recovery.load_assembly_snapshot().unwrap();
+    let mut txn = RecoveryTxn::new(
+        destination_snapshot.generation,
+        destination.topology.topology_epoch(),
+    );
+    txn.push(RecoveryMutation::ApplyCodedTransition {
+        transition: prepared.transition(),
+    });
+    let receipt = destination.recovery.commit_durable_receipt(txn).unwrap();
+
+    assert_eq!(
+        destination
+            .coded_captures
+            .confirm_clean_commit(prepared, &receipt),
+        Err(CodedCaptureError::ForeignCaptureAuthority)
+    );
+}
+
+#[test]
+fn capture_start_holds_owner_until_durable_installation() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+
+    assert_eq!(service.coded_captures.capture_count(), 1);
+    assert!(
+        service
+            .coded_captures
+            .capture_snapshot(CodedCaptureId(0))
+            .is_some()
+    );
+}
+
+#[test]
+fn rejected_capture_persistence_keeps_the_live_range_predecessor() {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    let prior_high_water = service.coded_captures.admission_high_water();
+
+    recovery.reject_commit_after(0);
+    assert!(
+        service
+            .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+
+    assert_eq!(service.state(), ServiceState::Serving);
+    assert_eq!(
+        service.coded_captures.admission_high_water(),
+        prior_high_water
+    );
+    assert_eq!(service.coded_captures.capture_count(), 0);
+    assert!(service.coded_captures.is_usable());
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .is_empty()
+    );
+}
+
+#[test]
+fn lost_capture_ack_invalidates_process_local_coded_authority() {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    let operation = service
+        .reserve(request(
+            RequestId(965),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+    assert!(matches!(
+        service.coded_admit(operation, claim).unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+
+    recovery.lose_next_commit();
+    assert!(
+        service
+            .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(!service.coded_captures.is_usable());
+    assert_eq!(
+        service.coded_captures.permit_effect(operation).unwrap(),
+        None
+    );
+    assert!(matches!(
+        service.coded_captures.prepare_later_cut(
+            CodedCaptureId(0),
+            operation,
+            epoch,
+            RecoveryGeneration::ZERO,
+        ),
+        Err(CodedLifecycleError::AuthorityInvalidated)
+    ));
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .iter()
+            .any(|snapshot| snapshot.capture == CodedCaptureId(0))
+    );
+}
+
+#[test]
+fn mismatched_durable_capture_receipt_invalidates_process_local_coded_authority() {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    let operation = service
+        .reserve(request(
+            RequestId(966),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+    assert!(matches!(
+        service.coded_admit(operation, claim).unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+
+    recovery.misreport_next_generation();
+    assert!(
+        service
+            .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(!service.coded_captures.is_usable());
+    assert_eq!(
+        service.coded_captures.permit_effect(operation).unwrap(),
+        None
+    );
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .iter()
+            .any(|snapshot| snapshot.capture == CodedCaptureId(0))
     );
 }
 

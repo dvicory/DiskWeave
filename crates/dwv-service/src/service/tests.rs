@@ -34,6 +34,7 @@ struct LostAckRecovery {
     inner: Rc<RefCell<MemoryRecoveryStore>>,
     commits_until_lost_ack: Rc<Cell<Option<usize>>>,
     commits_until_rejection: Rc<Cell<Option<usize>>>,
+    misreport_next_generation: Rc<Cell<bool>>,
 }
 
 impl LostAckRecovery {
@@ -46,6 +47,7 @@ impl LostAckRecovery {
             inner: Rc::new(RefCell::new(store)),
             commits_until_lost_ack: Rc::new(Cell::new(None)),
             commits_until_rejection: Rc::new(Cell::new(None)),
+            misreport_next_generation: Rc::new(Cell::new(false)),
         }
     }
 
@@ -58,6 +60,10 @@ impl LostAckRecovery {
     }
     fn reject_commit_after(&self, successful_commits: usize) {
         self.commits_until_rejection.set(Some(successful_commits));
+    }
+
+    fn misreport_next_generation(&self) {
+        self.misreport_next_generation.set(true);
     }
 
     fn durable_store(&self) -> MemoryRecoveryStore {
@@ -103,6 +109,11 @@ impl RecoveryStateStore for LostAckRecovery {
             None => {}
         }
         let committed = self.inner.borrow_mut().commit_durable(txn)?;
+        if self.misreport_next_generation.replace(false) {
+            return Ok(committed
+                .checked_next()
+                .expect("test generation has remaining capacity"));
+        }
         match self.commits_until_lost_ack.get() {
             Some(0) => {
                 self.commits_until_lost_ack.set(None);
@@ -1179,9 +1190,8 @@ fn coded_capture_capacity_parks_admitted_write_until_retirement_progresses() {
     assert_eq!(service.state(), ServiceState::Serving);
     let admission_sequence = service
         .coded_authority()
-        .admission(waiting.operation)
-        .unwrap()
-        .sequence();
+        .admission_sequence(waiting.operation)
+        .unwrap();
     let waiting_driver = service.write_drivers[usize::try_from(waiting.operation.index).unwrap()]
         .as_ref()
         .unwrap();
@@ -1207,9 +1217,8 @@ fn coded_capture_capacity_parks_admitted_write_until_retirement_progresses() {
     assert_eq!(
         service
             .coded_authority()
-            .admission(waiting.operation)
-            .unwrap()
-            .sequence(),
+            .admission_sequence(waiting.operation)
+            .unwrap(),
         admission_sequence
     );
 }
@@ -1991,7 +2000,6 @@ fn rejected_coded_release_commit_retries_before_slot_reuse() {
         harness
             .service
             .coded_captures
-            .range()
             .operation_phase(harness.submission.operation)
             .is_some()
     );
@@ -2007,7 +2015,6 @@ fn rejected_coded_release_commit_retries_before_slot_reuse() {
         harness
             .service
             .coded_captures
-            .range()
             .operation_phase(harness.submission.operation)
             .is_none()
     );
