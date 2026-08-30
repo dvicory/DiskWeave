@@ -1,15 +1,27 @@
+use crate::coded_authority::CodedAdmissionAuthorityId;
 use crate::{
     ChecksumProfile, ChecksumProfileId, ChecksumSetGeneration, CodedAdmission,
-    CodedAuthorityFrontier, CodedCaptureEstablishment, CodedClaimInput, CodedClaimRelease,
-    DirtyRegionRecord, DurableRecoveryCommit, FenceCertificate, IntegrityExtentId,
-    RecoveryCleanPermit, RecoveryCleanRefusalPermit, RecoveryGeneration, RecoverySnapshot,
-    RegionId, RegionState,
+    CodedAuthorityFrontier, CodedCaptureEstablishment, CodedClaimRelease, CodedGeometryOwner,
+    DirtyRegionRecord, DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityRecord,
+    IntegrityState, InvalidationTarget, RecoveryCleanPermit, RecoveryCleanRefusalPermit,
+    RecoveryError, RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RegionId, RegionState,
+    TransitionError,
 };
-use dwv_core::{ByteRange, CodedUnitId, TopologyEpoch, TopologySnapshot};
+use dwv_core::{CodedUnitId, TopologyEpoch, TopologySnapshot};
+use dwv_lifecycle_authority::{
+    IncludedLifecycleAuthorization, LifecycleAuthorityOwner, LifecycleAuthorityVerifier,
+};
 use dwv_store::OperationSlotToken;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
+
+mod transition;
+
+pub(crate) use transition::CodedCaptureRemoval;
+pub use transition::CodedCaptureTransition;
+#[cfg(test)]
+use transition::CodedCaptureTransitionKind;
 
 mod operation_map_serde {
     use dwv_store::OperationSlotToken;
@@ -250,137 +262,6 @@ impl CodedCaptureOwnerFacts {
     }
 }
 
-/// Canonical mapper for per-write claims and future-inclusive capture scope.
-#[derive(Clone)]
-pub struct CodedGeometryOwner {
-    topology: TopologySnapshot,
-    dirty_region_bytes: u64,
-    checksum_profile: ChecksumProfile,
-}
-
-impl CodedGeometryOwner {
-    pub fn new(
-        topology: TopologySnapshot,
-        dirty_region_bytes: u64,
-        checksum_profile: ChecksumProfile,
-    ) -> Result<Self, CodedCaptureError> {
-        if dirty_region_bytes == 0
-            || checksum_profile.extent_size == 0
-            || topology.geometry().logical_block_size() == 0
-        {
-            return Err(CodedCaptureError::InvalidScopeGeometry);
-        }
-        Ok(Self {
-            topology,
-            dirty_region_bytes,
-            checksum_profile,
-        })
-    }
-
-    /// Map normalized member ranges to every shared coded unit they affect.
-    pub fn claim_for_ranges(
-        &self,
-        ranges: impl IntoIterator<Item = ByteRange>,
-    ) -> Result<CodedClaimInput, CodedCaptureError> {
-        let logical_block = u64::from(self.topology.geometry().logical_block_size());
-        let protected_length = self.topology.geometry().protected_length();
-        let mut units = BTreeSet::new();
-        for range in ranges {
-            let end = range
-                .offset
-                .checked_add(range.length)
-                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
-            if range.is_empty()
-                || !range.offset.is_multiple_of(logical_block)
-                || !range.length.is_multiple_of(logical_block)
-                || end > protected_length
-            {
-                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
-            }
-            let first = range.offset / logical_block;
-            let last = (end - 1) / logical_block;
-            units.extend((first..=last).map(CodedUnitId));
-        }
-        if units.is_empty() {
-            return Err(CodedCaptureError::EmptyScope);
-        }
-        Ok(CodedClaimInput::mapped(units))
-    }
-
-    /// Map selected dirty/checksum identities through the same coded geometry.
-    pub fn capture_scope(
-        &self,
-        dirty_regions: impl IntoIterator<Item = RegionId>,
-        checksum_extents: impl IntoIterator<Item = IntegrityExtentId>,
-    ) -> Result<ValidatedCodedCaptureScope, CodedCaptureError> {
-        let dirty_regions = dirty_regions.into_iter().collect::<BTreeSet<_>>();
-        let checksum_extents = checksum_extents.into_iter().collect::<BTreeSet<_>>();
-        let protected_length = self.topology.geometry().protected_length();
-        let logical_block = u64::from(self.topology.geometry().logical_block_size());
-        let checksum_extents_per_member =
-            protected_length.div_ceil(self.checksum_profile.extent_size);
-        let coding_positions = self
-            .topology
-            .assignments()
-            .iter()
-            .map(|assignment| u32::from(assignment.coding_position().0))
-            .collect::<BTreeSet<_>>();
-        let mut units = BTreeSet::new();
-        let mut add_range = |offset: u64, length: u64| -> Result<(), CodedCaptureError> {
-            let end = offset
-                .checked_add(length)
-                .map(|end| end.min(protected_length))
-                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
-            if offset >= end {
-                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
-            }
-            let first = offset / logical_block;
-            let last = (end - 1) / logical_block;
-            units.extend((first..=last).map(CodedUnitId));
-            Ok(())
-        };
-        for region in &dirty_regions {
-            let coding_position = u32::try_from(region.0 >> 32)
-                .map_err(|_| CodedCaptureError::ScopeIdentityOutOfRange)?;
-            if !coding_positions.contains(&coding_position) {
-                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
-            }
-            let region_index = region.0 & u64::from(u32::MAX);
-            let offset = region_index
-                .checked_mul(self.dirty_region_bytes)
-                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
-            add_range(offset, self.dirty_region_bytes)?;
-        }
-        for extent in &checksum_extents {
-            if checksum_extents_per_member == 0 {
-                return Err(CodedCaptureError::InvalidScopeGeometry);
-            }
-            let coding_position = extent.0 / checksum_extents_per_member;
-            let coding_position = u32::try_from(coding_position)
-                .map_err(|_| CodedCaptureError::ScopeIdentityOutOfRange)?;
-            if !coding_positions.contains(&coding_position) {
-                return Err(CodedCaptureError::ScopeIdentityOutOfRange);
-            }
-            let extent_index = extent.0 % checksum_extents_per_member;
-            let offset = extent_index
-                .checked_mul(self.checksum_profile.extent_size)
-                .ok_or(CodedCaptureError::ScopeArithmeticOverflow)?;
-            add_range(offset, self.checksum_profile.extent_size)?;
-        }
-        if units.is_empty() {
-            return Err(CodedCaptureError::EmptyScope);
-        }
-        Ok(ValidatedCodedCaptureScope::validated(
-            units,
-            self.topology.clone(),
-            dirty_regions,
-            checksum_extents,
-            self.dirty_region_bytes,
-            self.checksum_profile,
-        ))
-    }
-}
-
 /// Exact future-inclusive coded scope computed from owner geometry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ValidatedCodedCaptureScope {
@@ -398,7 +279,7 @@ struct CaptureScopeBinding {
 }
 
 impl ValidatedCodedCaptureScope {
-    fn validated(
+    pub(crate) fn validated(
         units: BTreeSet<CodedUnitId>,
         topology: TopologySnapshot,
         dirty_regions: BTreeSet<RegionId>,
@@ -626,60 +507,6 @@ impl CodedCaptureSnapshot {
     }
 }
 
-/// Capability held by the live coded-capture owner while it observes one
-/// Included operation's exact lifecycle disposition and persistence proof.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct CodedLifecycleEvidenceIssuer {
-    authority_id: u64,
-}
-
-impl CodedLifecycleEvidenceIssuer {
-    pub fn live(
-        self,
-        operation: OperationSlotToken,
-        certificate: FenceCertificate,
-    ) -> CodedIncludedOperationEvidence {
-        CodedIncludedOperationEvidence {
-            authority_id: self.authority_id,
-            operation,
-            released: false,
-            certificate,
-        }
-    }
-
-    pub fn released(
-        self,
-        operation: OperationSlotToken,
-        certificate: FenceCertificate,
-    ) -> CodedIncludedOperationEvidence {
-        CodedIncludedOperationEvidence {
-            authority_id: self.authority_id,
-            operation,
-            released: true,
-            certificate,
-        }
-    }
-}
-
-/// Opaque owner-issued evidence for one Included operation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodedIncludedOperationEvidence {
-    authority_id: u64,
-    operation: OperationSlotToken,
-    released: bool,
-    certificate: FenceCertificate,
-}
-
-impl CodedIncludedOperationEvidence {
-    pub const fn operation(&self) -> OperationSlotToken {
-        self.operation
-    }
-
-    pub fn certificate(&self) -> &FenceCertificate {
-        &self.certificate
-    }
-}
-
 /// Capture-wide CLEAN authority issued after every Included lifecycle and
 /// persistence proof has been evaluated.
 pub struct CodedCaptureCleanAuthorization {
@@ -737,12 +564,108 @@ impl CodedCleanClosureEvidence {
     }
 }
 
+/// Exact current-owner proof that all selected state is already conservative.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct CodedConservativeStateProof {
+    expected_generation: RecoveryGeneration,
+    predecessor: CodedCaptureSnapshot,
+    dirty_regions: Vec<DirtyRegionRecord>,
+    integrity_records: Vec<IntegrityRecord>,
+}
+
+impl CodedConservativeStateProof {
+    fn from_recovery(
+        recovery: &RecoverySnapshot,
+        predecessor: &CodedCaptureSnapshot,
+    ) -> Option<Self> {
+        let dirty_regions = predecessor
+            .dirty_regions
+            .iter()
+            .map(|region| {
+                recovery
+                    .dirty_regions
+                    .iter()
+                    .find(|record| {
+                        record.region == *region
+                            && matches!(
+                                record.state,
+                                RegionState::Dirty { .. } | RegionState::Indeterminate
+                            )
+                    })
+                    .cloned()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        let integrity_records = predecessor
+            .checksum_extents
+            .iter()
+            .map(|extent| {
+                recovery
+                    .integrity_records
+                    .iter()
+                    .find(|record| {
+                        record.extent == *extent
+                            && matches!(record.state, IntegrityState::Stale { .. })
+                    })
+                    .cloned()
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(Self {
+            expected_generation: recovery.generation,
+            predecessor: predecessor.clone(),
+            dirty_regions,
+            integrity_records,
+        })
+    }
+
+    fn validates(&self, recovery: &RecoverySnapshot, predecessor: &CodedCaptureSnapshot) -> bool {
+        self.expected_generation == recovery.generation
+            && &self.predecessor == predecessor
+            && predecessor.topology.topology_epoch() == recovery.topology_epoch
+            && recovery
+                .coded_captures
+                .iter()
+                .any(|capture| capture == predecessor)
+            && self.dirty_regions.iter().all(|expected| {
+                predecessor.dirty_regions.contains(&expected.region)
+                    && recovery
+                        .dirty_regions
+                        .iter()
+                        .any(|record| record == expected)
+                    && matches!(
+                        expected.state,
+                        RegionState::Dirty { .. } | RegionState::Indeterminate
+                    )
+            })
+            && self
+                .dirty_regions
+                .iter()
+                .map(|record| record.region)
+                .collect::<BTreeSet<_>>()
+                == predecessor.dirty_regions
+            && self.integrity_records.iter().all(|expected| {
+                predecessor.checksum_extents.contains(&expected.extent)
+                    && recovery
+                        .integrity_records
+                        .iter()
+                        .any(|record| record == expected)
+                    && matches!(expected.state, IntegrityState::Stale { .. })
+            })
+            && self
+                .integrity_records
+                .iter()
+                .map(|record| record.extent)
+                .collect::<BTreeSet<_>>()
+                == predecessor.checksum_extents
+    }
+}
+
 /// Current-owner proof that one persisted refused capture remains
 /// conservatively dirty and may be removed.
 pub struct CodedRefusedCleanupAuthorization {
     expected_generation: RecoveryGeneration,
     prior: CodedCaptureSnapshot,
     refusal: Option<RecoveryCleanRefusalPermit>,
+    conservative_state: Option<CodedConservativeStateProof>,
 }
 
 /// Current-owner proof that one empty `CleanKnown` capture has complete
@@ -757,6 +680,7 @@ pub struct CodedCleanKnownCleanupAuthorization {
 pub struct CodedInheritedCaptureAbandonmentAuthorization {
     expected_generation: RecoveryGeneration,
     prior: CodedCaptureSnapshot,
+    conservative_state: Option<CodedConservativeStateProof>,
 }
 
 pub enum CodedReopenResolution {
@@ -770,7 +694,7 @@ pub enum CodedReopenResolution {
 /// Persisted flags and frontiers are inputs. These methods issue live
 /// capabilities only after validating the exact durable capture and the
 /// independent region/fence evidence retained by recovery state.
-pub struct CodedCaptureLifecycleOwner;
+struct CodedCaptureLifecycleOwner;
 pub struct CodedCaptureRetentionOwner;
 
 impl CodedCaptureLifecycleOwner {
@@ -807,6 +731,13 @@ impl CodedCaptureLifecycleOwner {
         evidence.validates(recovery, capture).then_some(evidence)
     }
 
+    fn selected_conservative_state(
+        recovery: &RecoverySnapshot,
+        capture: &CodedCaptureSnapshot,
+    ) -> Option<CodedConservativeStateProof> {
+        CodedConservativeStateProof::from_recovery(recovery, capture)
+    }
+
     fn clean_permit_applies(
         recovery: &RecoverySnapshot,
         capture: &CodedCaptureSnapshot,
@@ -840,15 +771,18 @@ impl CodedCaptureLifecycleOwner {
 
     fn authorize_clean(
         authority_id: u64,
+        lifecycle_authority: &LifecycleAuthorityVerifier,
         recovery: &RecoverySnapshot,
         capture: CodedCaptureId,
         permit: RecoveryCleanPermit,
-        included: impl IntoIterator<Item = CodedIncludedOperationEvidence>,
+        included: impl IntoIterator<Item = (IncludedLifecycleAuthorization, FenceCertificate)>,
     ) -> Result<CodedCaptureCleanAuthorization, CodedCaptureError> {
         let prior = Self::durable_capture(recovery, capture)?.clone();
         let included = included
             .into_iter()
-            .map(|evidence| (evidence.operation, evidence))
+            .map(|(authorization, certificate)| {
+                (authorization.operation(), (authorization, certificate))
+            })
             .collect::<BTreeMap<_, _>>();
         let expected = prior
             .membership
@@ -860,27 +794,26 @@ impl CodedCaptureLifecycleOwner {
         let observed = included.keys().copied().collect::<BTreeSet<_>>();
         let included_certificates = included
             .iter()
-            .map(|(operation, evidence)| (*operation, evidence.certificate.clone()))
+            .map(|(operation, (_, certificate))| (*operation, certificate.clone()))
             .collect::<BTreeMap<_, _>>();
-        let dispositions_valid = included.values().all(|evidence| {
-            evidence.authority_id == authority_id
-                && evidence.certificate.topology_epoch == prior.topology.topology_epoch()
-                && evidence.certificate.fence_domain == permit.certificate().fence_domain
-                && Self::permit_covers_certificate(&permit, &evidence.certificate)
-                && if evidence.released {
-                    prior
-                        .release_certificates
-                        .get(&evidence.operation)
-                        .is_some_and(|certificate| certificate == &evidence.certificate)
-                        && prior
-                            .release_authorized_operations
-                            .contains(&evidence.operation)
-                } else {
-                    !prior
-                        .release_authorized_operations
-                        .contains(&evidence.operation)
-                }
-        });
+        let dispositions_valid =
+            included
+                .iter()
+                .all(|(&operation, (authorization, certificate))| {
+                    lifecycle_authority.accepts_included(authorization)
+                        && certificate.fence_domain == permit.certificate().fence_domain
+                        && Self::permit_covers_certificate(&permit, certificate)
+                        && if authorization.is_released() {
+                            prior
+                                .release_certificates
+                                .get(&operation)
+                                .is_some_and(|recorded| recorded == certificate)
+                                && prior.release_authorized_operations.contains(&operation)
+                        } else {
+                            !prior.release_authorized_operations.contains(&operation)
+                                && !prior.release_certificates.contains_key(&operation)
+                        }
+                });
         if !Self::clean_permit_applies(recovery, &prior, &permit)
             || prior.phase != CodedCapturePhase::Open
             || prior.decision.is_some()
@@ -936,16 +869,6 @@ impl CodedCaptureLifecycleOwner {
         })
     }
 
-    pub fn reopen_resolution(
-        recovery: &RecoverySnapshot,
-        capture: CodedCaptureId,
-        refusal: Option<RecoveryCleanRefusalPermit>,
-    ) -> Result<CodedReopenResolution, CodedCaptureError> {
-        let prior = Self::durable_capture(recovery, capture)?.clone();
-        let retained_history_revalidated = prior.retained_frontier == prior.lower_frontier;
-        Self::resolve(recovery, prior, refusal, retained_history_revalidated)
-    }
-
     fn resolve(
         recovery: &RecoverySnapshot,
         prior: CodedCaptureSnapshot,
@@ -961,8 +884,9 @@ impl CodedCaptureLifecycleOwner {
             CodedCapturePhase::Refused => Ok(CodedReopenResolution::Refused(
                 CodedRefusedCleanupAuthorization {
                     expected_generation: recovery.generation,
-                    prior,
                     refusal: None,
+                    conservative_state: Self::selected_conservative_state(recovery, &prior),
+                    prior,
                 },
             )),
             CodedCapturePhase::CleanKnown
@@ -989,14 +913,16 @@ impl CodedCaptureLifecycleOwner {
                 Ok(CodedReopenResolution::Refused(
                     CodedRefusedCleanupAuthorization {
                         expected_generation: recovery.generation,
-                        prior,
                         refusal: Some(refusal),
+                        conservative_state: Self::selected_conservative_state(recovery, &prior),
+                        prior,
                     },
                 ))
             }
             CodedCapturePhase::CleanKnown => Ok(CodedReopenResolution::Abandon(
                 CodedInheritedCaptureAbandonmentAuthorization {
                     expected_generation: recovery.generation,
+                    conservative_state: Self::selected_conservative_state(recovery, &prior),
                     prior,
                 },
             )),
@@ -1072,7 +998,7 @@ impl CodedCaptureRetentionOwner {
 /// This capability is intentionally not deserializable: persisted snapshots
 /// are data, while a transition must be issued by the live coordinator.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodedCaptureUpdate {
+pub(crate) struct CodedCaptureUpdate {
     expected: Option<CodedCaptureSnapshot>,
     proposed: CodedCaptureSnapshot,
 }
@@ -1116,6 +1042,7 @@ pub struct PreparedCodedCleanCommit {
     expected_generation: RecoveryGeneration,
     durable_prior: CodedCaptureSnapshot,
     live_prior: CodedCaptureSnapshot,
+    fence: FenceCertificate,
     proposed: CodedCaptureSnapshot,
     proposed_record: CaptureRecord,
 }
@@ -1130,56 +1057,6 @@ pub struct PreparedCodedRefusal {
     proposed_record: CaptureRecord,
 }
 
-impl PreparedCodedRefusal {
-    pub fn update(&self) -> CodedCaptureUpdate {
-        CodedCaptureUpdate {
-            expected: Some(self.prior.clone()),
-            proposed: self.proposed.clone(),
-        }
-    }
-
-    pub fn removal(&self) -> CodedCaptureRemoval {
-        CodedCaptureRemoval {
-            expected: self.proposed.clone(),
-            clean_closure: None,
-        }
-    }
-}
-
-/// Coordinator-issued proof that one exact durable capture is retirable.
-///
-/// This capability is intentionally not deserializable or reconstructible from
-/// a persisted snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct CodedCaptureRemoval {
-    expected: CodedCaptureSnapshot,
-    clean_closure: Option<CodedCleanClosureEvidence>,
-}
-
-impl CodedCaptureRemoval {
-    pub(crate) fn expected(&self) -> &CodedCaptureSnapshot {
-        &self.expected
-    }
-
-    pub(crate) fn validates_clean_closure(&self, recovery: &RecoverySnapshot) -> bool {
-        self.clean_closure
-            .as_ref()
-            .is_none_or(|evidence| evidence.validates(recovery, &self.expected))
-    }
-}
-
-impl PreparedCodedCleanCommit {
-    pub fn snapshot(&self) -> &CodedCaptureSnapshot {
-        &self.proposed
-    }
-
-    pub fn update(&self) -> CodedCaptureUpdate {
-        CodedCaptureUpdate {
-            expected: Some(self.durable_prior.clone()),
-            proposed: self.proposed.clone(),
-        }
-    }
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodedCleanAttemptPhase {
     Pending,
@@ -1263,23 +1140,12 @@ pub struct PreparedCodedLaterCut {
     capture: CodedCaptureId,
     expected_generation: RecoveryGeneration,
     operation: OperationSlotToken,
+    target: InvalidationTarget,
     prior: CodedCaptureSnapshot,
     proposed: CodedCaptureSnapshot,
     proposed_record: CaptureRecord,
 }
 
-impl PreparedCodedLaterCut {
-    pub fn snapshot(&self) -> &CodedCaptureSnapshot {
-        &self.proposed
-    }
-
-    pub fn update(&self) -> CodedCaptureUpdate {
-        CodedCaptureUpdate {
-            expected: Some(self.prior.clone()),
-            proposed: self.proposed.clone(),
-        }
-    }
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum CodedLaterCutAttemptPhase {
     Unknown,
@@ -1349,15 +1215,6 @@ pub struct PreparedCodedMembershipCompaction {
     proposed_record: CaptureRecord,
 }
 
-impl PreparedCodedMembershipCompaction {
-    pub fn update(&self) -> CodedCaptureUpdate {
-        CodedCaptureUpdate {
-            expected: Some(self.prior.clone()),
-            proposed: self.proposed.clone(),
-        }
-    }
-}
-
 /// Exact refused-capture cleanup awaiting its recovery commit.
 #[must_use = "prepared refused cleanup must be committed or discarded"]
 pub struct PreparedCodedRefusedCleanup(PreparedCodedCaptureRemoval);
@@ -1373,60 +1230,10 @@ pub struct PreparedCodedInheritedCaptureAbandonment(PreparedCodedCaptureRemoval)
 
 struct PreparedCodedCaptureRemoval {
     clean_closure: Option<CodedCleanClosureEvidence>,
+    conservative_state: Option<CodedConservativeStateProof>,
     capture: CodedCaptureId,
     expected_generation: RecoveryGeneration,
     prior: CodedCaptureSnapshot,
-}
-
-impl PreparedCodedRefusedCleanup {
-    pub fn removal(&self) -> CodedCaptureRemoval {
-        self.0.removal()
-    }
-
-    pub fn dirty_regions(&self) -> &BTreeSet<RegionId> {
-        &self.0.prior.dirty_regions
-    }
-
-    pub fn checksum_extents(&self) -> &BTreeSet<IntegrityExtentId> {
-        &self.0.prior.checksum_extents
-    }
-
-    pub fn invalidation_generation(&self) -> RecoveryGeneration {
-        self.0.expected_generation
-    }
-}
-
-impl PreparedCodedCleanKnownCleanup {
-    pub fn removal(&self) -> CodedCaptureRemoval {
-        self.0.removal()
-    }
-}
-
-impl PreparedCodedInheritedCaptureAbandonment {
-    pub fn removal(&self) -> CodedCaptureRemoval {
-        self.0.removal()
-    }
-
-    pub fn dirty_regions(&self) -> &BTreeSet<RegionId> {
-        &self.0.prior.dirty_regions
-    }
-
-    pub fn checksum_extents(&self) -> &BTreeSet<IntegrityExtentId> {
-        &self.0.prior.checksum_extents
-    }
-
-    pub fn invalidation_generation(&self) -> RecoveryGeneration {
-        self.0.expected_generation
-    }
-}
-
-impl PreparedCodedCaptureRemoval {
-    fn removal(&self) -> CodedCaptureRemoval {
-        CodedCaptureRemoval {
-            expected: self.prior.clone(),
-            clean_closure: self.clean_closure.clone(),
-        }
-    }
 }
 
 /// Exact coordinator-issued capture updates awaiting one recovery commit.
@@ -1436,12 +1243,6 @@ pub struct PreparedCodedCaptureUpdates {
     prior: Vec<CodedCaptureSnapshot>,
     proposed: CodedCaptureCoordinator,
     updates: Vec<CodedCaptureUpdate>,
-}
-
-impl PreparedCodedCaptureUpdates {
-    pub fn updates(&self) -> Vec<CodedCaptureUpdate> {
-        self.updates.clone()
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1458,6 +1259,8 @@ pub enum CodedCaptureError {
     SnapshotInvalid(CodedCaptureId),
     CaptureFrontierGenerationMismatch(CodedCaptureId),
     RetentionSummaryInvalid(CodedCaptureId),
+    ClaimBindingInvalid,
+    ForeignAdmissionAuthority,
     RetentionFrontierStale(CodedCaptureId),
     CaptureOperationUnresolved {
         capture: CodedCaptureId,
@@ -1506,6 +1309,12 @@ impl fmt::Display for CodedCaptureError {
             }
             Self::ScopeArithmeticOverflow => {
                 formatter.write_str("coded capture scope arithmetic overflowed")
+            }
+            Self::ClaimBindingInvalid => {
+                formatter.write_str("coded claim binding is not the exact admitted mutation")
+            }
+            Self::ForeignAdmissionAuthority => {
+                formatter.write_str("coded admission came from another authority graph")
             }
             Self::PreparedTransitionStale(capture) => {
                 write!(
@@ -1735,15 +1544,15 @@ fn next_coded_capture_authority_id() -> u64 {
 #[derive(Clone)]
 pub struct CodedCaptureCoordinator {
     authority_id: u64,
+    admission_authority: CodedAdmissionAuthorityId,
+    lifecycle_authority: LifecycleAuthorityVerifier,
     captures: BTreeMap<CodedCaptureId, CaptureRecord>,
 }
 
 impl Default for CodedCaptureCoordinator {
     fn default() -> Self {
-        Self {
-            authority_id: next_coded_capture_authority_id(),
-            captures: BTreeMap::new(),
-        }
+        let (_, lifecycle_authority) = LifecycleAuthorityOwner::new();
+        Self::new_with_authorities(lifecycle_authority, CodedAdmissionAuthorityId::new())
     }
 }
 
@@ -1752,25 +1561,30 @@ impl CodedCaptureCoordinator {
         Self::default()
     }
 
-    pub fn new_with_lifecycle_evidence_issuer() -> (Self, CodedLifecycleEvidenceIssuer) {
-        let coordinator = Self::new();
-        let issuer = CodedLifecycleEvidenceIssuer {
-            authority_id: coordinator.authority_id,
-        };
-        (coordinator, issuer)
+    pub(crate) fn new_with_authorities(
+        lifecycle_authority: LifecycleAuthorityVerifier,
+        admission_authority: CodedAdmissionAuthorityId,
+    ) -> Self {
+        Self {
+            authority_id: next_coded_capture_authority_id(),
+            admission_authority,
+            lifecycle_authority,
+            captures: BTreeMap::new(),
+        }
     }
 
     /// Issue capture-wide CLEAN authority only from observations produced by
     /// this exact live coordinator owner.
-    pub fn authorize_clean(
+    pub(crate) fn authorize_clean(
         &self,
         recovery: &RecoverySnapshot,
         capture: CodedCaptureId,
         permit: RecoveryCleanPermit,
-        included: impl IntoIterator<Item = CodedIncludedOperationEvidence>,
+        included: impl IntoIterator<Item = (IncludedLifecycleAuthorization, FenceCertificate)>,
     ) -> Result<CodedCaptureCleanAuthorization, CodedCaptureError> {
         CodedCaptureLifecycleOwner::authorize_clean(
             self.authority_id,
+            &self.lifecycle_authority,
             recovery,
             capture,
             permit,
@@ -1838,15 +1652,18 @@ impl CodedCaptureCoordinator {
         }
         Ok(coordinator)
     }
-    pub fn from_snapshots_for_owner(
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_snapshots_for_owner(
         snapshots: impl IntoIterator<Item = CodedCaptureSnapshot>,
         topology: &TopologySnapshot,
         recovery_generation: RecoveryGeneration,
         checksum_profile: ChecksumProfile,
         checksum_set_generation: ChecksumSetGeneration,
         dirty_region_bytes: u64,
+        lifecycle_authority: LifecycleAuthorityVerifier,
+        admission_authority: CodedAdmissionAuthorityId,
     ) -> Result<Self, CodedCaptureError> {
-        let mut coordinator = Self::new();
+        let mut coordinator = Self::new_with_authorities(lifecycle_authority, admission_authority);
         for snapshot in snapshots {
             let capture = snapshot.capture;
             let scope = CodedCaptureOwnerFacts::selected_invalidation_scope(
@@ -1885,27 +1702,6 @@ impl CodedCaptureCoordinator {
         }
         Ok(coordinator)
     }
-    pub fn from_snapshots_with_lifecycle_evidence_issuer(
-        snapshots: impl IntoIterator<Item = CodedCaptureSnapshot>,
-        topology: &TopologySnapshot,
-        recovery_generation: RecoveryGeneration,
-        checksum_profile: ChecksumProfile,
-        checksum_set_generation: ChecksumSetGeneration,
-        dirty_region_bytes: u64,
-    ) -> Result<(Self, CodedLifecycleEvidenceIssuer), CodedCaptureError> {
-        let coordinator = Self::from_snapshots_for_owner(
-            snapshots,
-            topology,
-            recovery_generation,
-            checksum_profile,
-            checksum_set_generation,
-            dirty_region_bytes,
-        )?;
-        let issuer = CodedLifecycleEvidenceIssuer {
-            authority_id: coordinator.authority_id,
-        };
-        Ok((coordinator, issuer))
-    }
     fn restore_snapshot_state(
         &mut self,
         snapshot: CodedCaptureSnapshot,
@@ -1925,7 +1721,7 @@ impl CodedCaptureCoordinator {
         record.resolved_later_cuts = snapshot.resolved_later_cuts;
         record.release_authorized_operations = snapshot.release_authorized_operations;
         record.retained_frontier = snapshot.retained_frontier;
-        record.retained_history_revalidated = snapshot.retained_frontier == snapshot.lower_frontier;
+        record.retained_history_revalidated = false;
         record.release_frontiers = snapshot.release_frontiers;
         record.release_certificates = snapshot.release_certificates;
         record.retirement_frontier = snapshot.retirement_frontier;
@@ -2017,6 +1813,9 @@ impl CodedCaptureCoordinator {
         admission: &CodedAdmission,
         expected_generation: RecoveryGeneration,
     ) -> Result<Option<PreparedCodedCaptureUpdates>, CodedCaptureError> {
+        if !admission.belongs_to(self.admission_authority) {
+            return Err(CodedCaptureError::ForeignAdmissionAuthority);
+        }
         let mut proposed = self.clone();
         proposed.observe_admitted_claim(admission);
         self.prepare_updates(proposed, expected_generation)
@@ -2332,6 +2131,7 @@ impl CodedCaptureCoordinator {
             authorization.prior,
             expected_phase,
             None,
+            authorization.conservative_state,
         )
         .map(PreparedCodedRefusedCleanup)
     }
@@ -2346,6 +2146,7 @@ impl CodedCaptureCoordinator {
             authorization.prior,
             CodedCapturePhase::CleanKnown,
             Some(authorization.clean_closure),
+            None,
         )
         .map(PreparedCodedCleanKnownCleanup)
     }
@@ -2361,6 +2162,7 @@ impl CodedCaptureCoordinator {
             authorization.prior,
             CodedCapturePhase::CleanKnown,
             None,
+            authorization.conservative_state,
         )
         .map(PreparedCodedInheritedCaptureAbandonment)
     }
@@ -2371,6 +2173,7 @@ impl CodedCaptureCoordinator {
         prior: CodedCaptureSnapshot,
         expected_phase: CodedCapturePhase,
         clean_closure: Option<CodedCleanClosureEvidence>,
+        conservative_state: Option<CodedConservativeStateProof>,
     ) -> Result<PreparedCodedCaptureRemoval, CodedCaptureError> {
         let capture = prior.capture;
         if self.capture_snapshot(capture).as_ref() != Some(&prior) || prior.phase != expected_phase
@@ -2382,6 +2185,7 @@ impl CodedCaptureCoordinator {
             expected_generation,
             prior,
             clean_closure,
+            conservative_state,
         })
     }
 
@@ -2432,6 +2236,7 @@ impl CodedCaptureCoordinator {
             || prepared.expected_generation.checked_next() != Some(receipt.generation())
             || !receipt.committed_coded_capture_removal(&prepared.removal())
             || (requires_invalidation
+                && prepared.conservative_state.is_none()
                 && (!prepared.prior.dirty_regions.iter().all(|region| {
                     receipt.committed_region_dirty(*region, prepared.expected_generation)
                 }) || !prepared.prior.checksum_extents.iter().all(|extent| {
@@ -2589,27 +2394,6 @@ impl CodedCaptureCoordinator {
         Ok(())
     }
 
-    /// Install atomic refused-and-removed cleanup only after exact persistence.
-    pub fn confirm_clean_refusal_cleanup(
-        &mut self,
-        prepared: PreparedCodedRefusal,
-        receipt: &DurableRecoveryCommit,
-    ) -> Result<(), CodedCaptureError> {
-        if self.capture_snapshot(prepared.capture).as_ref() != Some(&prepared.prior) {
-            return Err(CodedCaptureError::PreparedTransitionStale(prepared.capture));
-        }
-        if receipt.expected_generation() != prepared.expected_generation
-            || receipt.topology_epoch() != prepared.proposed.topology.topology_epoch()
-            || prepared.expected_generation.checked_next() != Some(receipt.generation())
-            || !receipt.committed_coded_capture(&prepared.proposed)
-            || !receipt.committed_coded_capture_removal(&prepared.removal())
-        {
-            return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
-        }
-        self.captures.remove(&prepared.capture);
-        Ok(())
-    }
-
     /// Prepare one accepted CLEAN result without installing it as durable state.
     pub fn prepare_clean_commit(
         &self,
@@ -2641,6 +2425,7 @@ impl CodedCaptureCoordinator {
         Ok(PreparedCodedCleanCommit {
             capture,
             expected_generation: authorization.permit.generation(),
+            fence: authorization.permit.certificate().clone(),
             durable_prior: authorization.durable_prior,
             live_prior: prior,
             proposed,
@@ -2657,10 +2442,11 @@ impl CodedCaptureCoordinator {
         if self.capture_snapshot(prepared.capture).as_ref() != Some(&prepared.live_prior) {
             return Err(CodedCaptureError::PreparedTransitionStale(prepared.capture));
         }
+        let expected_transition = prepared.transition();
         if receipt.expected_generation() != prepared.expected_generation
             || receipt.topology_epoch() != prepared.proposed.topology.topology_epoch()
             || prepared.expected_generation.checked_next() != Some(receipt.generation())
-            || !receipt.committed_coded_capture(&prepared.proposed)
+            || !receipt.committed_coded_transition(&expected_transition)
         {
             return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
         }
@@ -2677,12 +2463,16 @@ impl CodedCaptureCoordinator {
         topology_epoch: TopologyEpoch,
         expected_generation: RecoveryGeneration,
     ) -> Result<PreparedCodedLaterCut, CodedCaptureError> {
+        if !admission.belongs_to(self.admission_authority) {
+            return Err(CodedCaptureError::ForeignAdmissionAuthority);
+        }
         let committed_generation = expected_generation
             .checked_next()
             .ok_or(CodedCaptureError::LaterCutEvidenceInvalid(capture))?;
         let prior = self
             .capture_snapshot(capture)
             .ok_or(CodedCaptureError::CaptureNotFound(capture))?;
+        let target = admission.invalidation_target().clone();
         let mut candidate = self.clone();
         let cut = CodedCaptureCut::new(
             topology_epoch,
@@ -2705,6 +2495,7 @@ impl CodedCaptureCoordinator {
         Ok(PreparedCodedLaterCut {
             capture,
             operation: admission.operation(),
+            target,
             expected_generation,
             prior,
             proposed,
@@ -2723,7 +2514,7 @@ impl CodedCaptureCoordinator {
         if receipt.expected_generation() != prepared.expected_generation
             || receipt.topology_epoch() != prepared.proposed.topology.topology_epoch()
             || prepared.expected_generation.checked_next() != Some(receipt.generation())
-            || !receipt.committed_coded_capture(&prepared.proposed)
+            || !receipt.committed_coded_transition(&prepared.transition())
         {
             return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
         }
@@ -3007,6 +2798,7 @@ impl CodedCaptureCoordinator {
             expected_generation,
             prior,
             refusal: None,
+            conservative_state: None,
         })
     }
 
@@ -3065,6 +2857,42 @@ mod tests {
 
     fn token(index: u32) -> OperationSlotToken {
         OperationSlotToken::new(index, 1)
+    }
+    fn live_lifecycle_authorization(
+        owner: &LifecycleAuthorityOwner,
+        operation: OperationSlotToken,
+    ) -> IncludedLifecycleAuthorization {
+        use dwv_core::{
+            BlockOp, BlockRequest, BufferToken, ByteRange, DurabilityIntent, FrontendId,
+            OrderingIntent, RequestId, SlotId, SubmissionSequence,
+        };
+        use dwv_store::{OperationSlotTable, ResourceLimits};
+
+        let range = ByteRange::new(0, 1).unwrap();
+        let mut operations = OperationSlotTable::new(ResourceLimits::new(1, 1, 1, 1, 1, 1));
+        let reserved = operations
+            .reserve(BlockRequest::new(
+                RequestId(1),
+                FrontendId(1),
+                SlotId::from_bytes([1; 16]),
+                TopologyEpoch(1),
+                BlockOp::Write,
+                range,
+                Some(BufferToken::new(0, 1)),
+                OrderingIntent {
+                    submission_sequence: SubmissionSequence(1),
+                    preflush: false,
+                    fence_domain: dwv_store::FenceDomain(1),
+                },
+                DurabilityIntent::Ordinary,
+            ))
+            .unwrap();
+        assert_eq!(reserved, operation);
+        let child = operations.register_child(operation, range).unwrap();
+        operations.refuse_submission(operation, child).unwrap();
+        owner
+            .authorize_included_live(&operations, operation, true)
+            .expect("terminal operation produces live lifecycle evidence")
     }
 
     fn release(operation: OperationSlotToken) -> CodedClaimRelease {
@@ -3972,8 +3800,8 @@ mod tests {
             expected_generation: RecoveryGeneration::ZERO,
             topology_epoch,
             committed_generation: RecoveryGeneration(1),
-            mutations: vec![crate::RecoveryMutation::UpsertCodedCapture {
-                update: stale_compaction.update(),
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: stale_compaction.transition(),
             }],
         };
         assert!(
@@ -3994,8 +3822,8 @@ mod tests {
             expected_generation: RecoveryGeneration::ZERO,
             topology_epoch,
             committed_generation: RecoveryGeneration(1),
-            mutations: vec![crate::RecoveryMutation::UpsertCodedCapture {
-                update: compaction.update(),
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: compaction.transition(),
             }],
         };
         captures
@@ -4023,19 +3851,9 @@ mod tests {
             expected_generation: RecoveryGeneration(1),
             topology_epoch,
             committed_generation: RecoveryGeneration(2),
-            mutations: vec![
-                crate::RecoveryMutation::MarkRegionDirty {
-                    region: RegionId(0),
-                    mutation_generation: RecoveryGeneration(1),
-                },
-                crate::RecoveryMutation::MarkIntegrityStale {
-                    extent: IntegrityExtentId(0),
-                    stale_generation: RecoveryGeneration(1),
-                },
-                crate::RecoveryMutation::RemoveCodedCapture {
-                    removal: cleanup.removal(),
-                },
-            ],
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: cleanup.transition(),
+            }],
         };
         captures
             .confirm_refused_cleanup(cleanup, &cleanup_receipt)
@@ -4059,21 +3877,27 @@ mod tests {
             BLAKE3_256_PROFILE,
         )
         .unwrap();
+        let (_, lifecycle_authority) = LifecycleAuthorityOwner::new();
+        let admission_authority = CodedAdmissionAuthorityId::new();
         let mut captures = CodedCaptureCoordinator::new();
         captures
             .start_capture_unchecked(capture, owner_facts(scope), [])
             .unwrap();
         let snapshot = captures.capture_snapshot(capture).unwrap();
+        let reopened_exact = CodedCaptureCoordinator::from_snapshots_for_owner(
+            [snapshot.clone()],
+            &topology,
+            RecoveryGeneration::ZERO,
+            BLAKE3_256_PROFILE,
+            ChecksumSetGeneration::INITIAL,
+            DIRTY_REGION_BYTES,
+            lifecycle_authority.clone(),
+            admission_authority,
+        )
+        .unwrap();
         assert!(
-            CodedCaptureCoordinator::from_snapshots_for_owner(
-                [snapshot.clone()],
-                &topology,
-                RecoveryGeneration::ZERO,
-                BLAKE3_256_PROFILE,
-                ChecksumSetGeneration::INITIAL,
-                DIRTY_REGION_BYTES,
-            )
-            .is_ok()
+            !reopened_exact.captures[&capture].retained_history_revalidated,
+            "restart must not mint retained-history authority from snapshot equality"
         );
 
         let mut forged_frontier = snapshot.clone();
@@ -4085,6 +3909,8 @@ mod tests {
             BLAKE3_256_PROFILE,
             ChecksumSetGeneration::INITIAL,
             DIRTY_REGION_BYTES,
+            lifecycle_authority.clone(),
+            admission_authority,
         )
         .unwrap();
         assert!(
@@ -4103,16 +3929,105 @@ mod tests {
                 BLAKE3_256_PROFILE,
                 ChecksumSetGeneration::INITIAL,
                 DIRTY_REGION_BYTES,
+                lifecycle_authority,
+                admission_authority,
             ),
             Err(CodedCaptureError::SnapshotInvalid(found)) if found == capture
         ));
     }
     #[test]
-    fn lifecycle_evidence_from_another_coordinator_is_rejected() {
+    fn later_cut_binds_admission_target_and_requires_exact_transition_receipt() {
+        let capture = CodedCaptureId(26);
+        let included = token(0);
+        let later = token(1);
+        let target = InvalidationTarget::new(vec![RegionId(0)], vec![IntegrityExtentId(0)]);
+        let mut owner = CodedCaptureCoordinator::new();
+        let admission = CodedAdmission::for_test(
+            owner.admission_authority,
+            later,
+            [CodedUnitId(0)],
+            target.clone(),
+            2,
+        );
+        owner
+            .start_capture_unchecked(
+                capture,
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                [(included, units([0]))],
+            )
+            .unwrap();
+        owner.observe_admitted_claim_unchecked(later, admission.units());
+
+        let prepared = owner
+            .prepare_later_cut(
+                capture,
+                &admission,
+                TopologyEpoch(1),
+                RecoveryGeneration::ZERO,
+            )
+            .unwrap();
+        assert_eq!(prepared.invalidation_target(), &target);
+        let mut substituted_snapshot = prepared.transition();
+        match &mut substituted_snapshot.kind {
+            CodedCaptureTransitionKind::LaterCut { update, .. } => {
+                update
+                    .proposed
+                    .membership
+                    .insert(later, CodedCaptureMembership::LaterRejected);
+            }
+            _ => unreachable!("prepared later cut emitted a non-later-cut transition"),
+        }
+        let substituted_receipt = crate::DurableRecoveryCommit {
+            expected_generation: RecoveryGeneration::ZERO,
+            topology_epoch: TopologyEpoch(1),
+            committed_generation: RecoveryGeneration(1),
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: substituted_snapshot,
+            }],
+        };
+        assert_eq!(
+            owner.confirm_later_cut(prepared, &substituted_receipt),
+            Err(CodedCaptureError::DurableReceiptMismatch(capture))
+        );
+
+        let prepared = owner
+            .prepare_later_cut(
+                capture,
+                &admission,
+                TopologyEpoch(1),
+                RecoveryGeneration::ZERO,
+            )
+            .unwrap();
+        let mut wrong_transition = prepared.transition();
+        match &mut wrong_transition.kind {
+            CodedCaptureTransitionKind::LaterCut { target, .. } => {
+                target.regions.push(RegionId(99));
+            }
+            _ => unreachable!("prepared later cut emitted a non-later-cut transition"),
+        }
+        let wrong_transition_receipt = crate::DurableRecoveryCommit {
+            expected_generation: RecoveryGeneration::ZERO,
+            topology_epoch: TopologyEpoch(1),
+            committed_generation: RecoveryGeneration(1),
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: wrong_transition,
+            }],
+        };
+        assert_eq!(
+            owner.confirm_later_cut(prepared, &wrong_transition_receipt),
+            Err(CodedCaptureError::DurableReceiptMismatch(capture))
+        );
+    }
+
+    #[test]
+    fn owner_issued_lifecycle_evidence_is_accepted() {
         let capture = CodedCaptureId(23);
-        let operation = token(23);
-        let (mut owner, owner_evidence_issuer) =
-            CodedCaptureCoordinator::new_with_lifecycle_evidence_issuer();
+        let operation = token(0);
+        let (lifecycle_owner, lifecycle_authority) = LifecycleAuthorityOwner::new();
+        let mut owner = CodedCaptureCoordinator::new_with_authorities(
+            lifecycle_authority,
+            CodedAdmissionAuthorityId::new(),
+        );
         owner
             .start_capture_unchecked(
                 capture,
@@ -4136,22 +4051,63 @@ mod tests {
             RecoveryCleanDecision::Clear(permit) => permit,
             RecoveryCleanDecision::Refused { .. } => panic!("complete CLEAN evidence was refused"),
         };
-        let evidence = owner_evidence_issuer.live(operation, certificate);
-        let foreign =
-            CodedCaptureCoordinator::from_snapshots(recovery.coded_captures.clone()).unwrap();
-
+        let (foreign_owner, _) = LifecycleAuthorityOwner::new();
         assert!(matches!(
-            foreign.authorize_clean(&recovery, capture, permit, [evidence]),
+            owner.authorize_clean(
+                &recovery,
+                capture,
+                permit.clone(),
+                [(
+                    live_lifecycle_authorization(&foreign_owner, operation),
+                    certificate.clone(),
+                )],
+            ),
             Err(CodedCaptureError::CleanNotEligible(found)) if found == capture
         ));
+        let evidence = (
+            live_lifecycle_authorization(&lifecycle_owner, operation),
+            certificate.clone(),
+        );
+        let authorization = owner
+            .authorize_clean(&recovery, capture, permit, [evidence])
+            .unwrap();
+        let prepared = owner.prepare_clean_commit(authorization).unwrap();
+        let transition = prepared.transition();
+        assert!(matches!(
+            &transition.kind,
+            CodedCaptureTransitionKind::Clean { fence, .. } if fence == &certificate
+        ));
+
+        let mut substituted = transition;
+        match &mut substituted.kind {
+            CodedCaptureTransitionKind::Clean { fence, .. } => {
+                fence.stores[0].capability_evidence_id = dwv_store::CapabilityEvidenceId(u64::MAX);
+            }
+            _ => unreachable!("prepared CLEAN emitted a non-CLEAN transition"),
+        }
+        let substituted_receipt = crate::DurableRecoveryCommit {
+            expected_generation: RecoveryGeneration::ZERO,
+            topology_epoch: TopologyEpoch(1),
+            committed_generation: RecoveryGeneration(1),
+            mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
+                transition: substituted,
+            }],
+        };
+        assert_eq!(
+            owner.confirm_clean_commit(prepared, &substituted_receipt),
+            Err(CodedCaptureError::DurableReceiptMismatch(capture))
+        );
     }
 
     #[test]
     fn refreshed_clean_permit_cannot_weaken_included_persistence_bounds() {
         let capture = CodedCaptureId(24);
-        let operation = token(24);
-        let (mut owner, evidence_issuer) =
-            CodedCaptureCoordinator::new_with_lifecycle_evidence_issuer();
+        let operation = token(0);
+        let (lifecycle_owner, lifecycle_authority) = LifecycleAuthorityOwner::new();
+        let mut owner = CodedCaptureCoordinator::new_with_authorities(
+            lifecycle_authority,
+            CodedAdmissionAuthorityId::new(),
+        );
         owner
             .start_capture_unchecked(
                 capture,
@@ -4183,7 +4139,10 @@ mod tests {
                 &recovery,
                 capture,
                 strong_permit,
-                [evidence_issuer.live(operation, strong_certificate)],
+                [(
+                    live_lifecycle_authorization(&lifecycle_owner, operation),
+                    strong_certificate,
+                )],
             )
             .unwrap();
         let mut weaker_certificate = fence_certificate();
@@ -4231,36 +4190,394 @@ mod tests {
             last_clean_fence: Some(fence.clone()),
         }];
         store.snapshot.fences = vec![fence];
-        let authorization =
-            match CodedCaptureLifecycleOwner::reopen_resolution(&store.snapshot, capture, None)
-                .unwrap()
-            {
-                CodedReopenResolution::CleanKnown(authorization) => authorization,
-                _ => panic!("complete durable closure did not authorize cleanup"),
-            };
+        let authorization = match captures
+            .resolve_capture(&store.snapshot, capture, None)
+            .unwrap()
+        {
+            CodedReopenResolution::CleanKnown(authorization) => authorization,
+            _ => panic!("live owner history did not authorize cleanup"),
+        };
         let cleanup = captures.prepare_clean_known_cleanup(authorization).unwrap();
-        let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
-        txn.push(RecoveryMutation::MarkRegionDirty {
-            region: RegionId(0),
-            mutation_generation: RecoveryGeneration::ZERO,
-        });
-        txn.push(RecoveryMutation::RemoveCodedCapture {
-            removal: cleanup.removal(),
-        });
+        let transition = cleanup.transition();
+        for raw_first in [true, false] {
+            let mut candidate = store.clone();
+            let raw = RecoveryMutation::MarkRegionDirty {
+                region: RegionId(0),
+                mutation_generation: RecoveryGeneration::ZERO,
+            };
+            let coded = RecoveryMutation::ApplyCodedTransition {
+                transition: transition.clone(),
+            };
+            let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+            if raw_first {
+                txn.push(raw);
+                txn.push(coded);
+            } else {
+                txn.push(coded);
+                txn.push(raw);
+            }
+            assert_eq!(
+                candidate.commit_durable(txn),
+                Err(RecoveryError::InvalidTransition(
+                    TransitionError::CodedSemanticTransactionConflict
+                ))
+            );
+            assert_eq!(candidate.snapshot, store.snapshot);
+        }
+    }
 
+    #[test]
+    fn every_coded_transition_kind_rejects_ordinary_co_mutations_in_both_orders() {
+        let capture = CodedCaptureId(30);
+        let mut captures = CodedCaptureCoordinator::new();
+        captures
+            .start_capture_unchecked(
+                capture,
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                [],
+            )
+            .unwrap();
+        let snapshot = captures.capture_snapshot(capture).unwrap();
+        let update = || CodedCaptureUpdate {
+            expected: Some(snapshot.clone()),
+            proposed: snapshot.clone(),
+        };
+        let removal = || CodedCaptureRemoval {
+            expected: snapshot.clone(),
+            clean_closure: None,
+        };
+        let transitions = [
+            CodedCaptureTransition::updates(vec![update()]),
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::Clean {
+                    update: update(),
+                    fence: fence_certificate(),
+                    dirty_regions: snapshot.dirty_regions.clone(),
+                    checksum_extents: snapshot.checksum_extents.clone(),
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::LaterCut {
+                    update: update(),
+                    target: InvalidationTarget::new(
+                        snapshot.dirty_regions.iter().copied().collect(),
+                        snapshot.checksum_extents.iter().copied().collect(),
+                    ),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::InvalidatingRemoval {
+                    removal: removal(),
+                    dirty_regions: snapshot.dirty_regions.clone(),
+                    checksum_extents: snapshot.checksum_extents.clone(),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                    conservative_state: None,
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::CleanRemoval(removal()),
+            },
+        ];
+        for transition in transitions {
+            for raw_first in [true, false] {
+                let raw = RecoveryMutation::MarkRegionDirty {
+                    region: RegionId(99),
+                    mutation_generation: RecoveryGeneration::ZERO,
+                };
+                let coded = RecoveryMutation::ApplyCodedTransition {
+                    transition: transition.clone(),
+                };
+                let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+                if raw_first {
+                    txn.push(raw);
+                    txn.push(coded);
+                } else {
+                    txn.push(coded);
+                    txn.push(raw);
+                }
+                assert_eq!(
+                    txn.validate_coded_composition(),
+                    Err(RecoveryError::InvalidTransition(
+                        TransitionError::CodedSemanticTransactionConflict
+                    ))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn coded_group_composition_rejects_conflicts_and_accepts_compatible_captures() {
+        let mut captures = CodedCaptureCoordinator::new();
+        for capture in [CodedCaptureId(31), CodedCaptureId(32)] {
+            captures
+                .start_capture_unchecked(
+                    capture,
+                    owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                    [],
+                )
+                .unwrap();
+        }
+        let first = captures.capture_snapshot(CodedCaptureId(31)).unwrap();
+        let second = captures.capture_snapshot(CodedCaptureId(32)).unwrap();
+        let update = |snapshot: &CodedCaptureSnapshot| CodedCaptureUpdate {
+            expected: Some(snapshot.clone()),
+            proposed: snapshot.clone(),
+        };
+        let first_update = CodedCaptureTransition::updates(vec![update(&first)]);
+        let second_update = CodedCaptureTransition::updates(vec![update(&second)]);
+
+        let mut same_capture = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        for transition in [first_update.clone(), first_update.clone()] {
+            same_capture.push(RecoveryMutation::ApplyCodedTransition { transition });
+        }
+        assert_eq!(
+            same_capture.validate_coded_composition(),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::CodedSemanticTransactionConflict
+            ))
+        );
+
+        let clean = CodedCaptureTransition {
+            kind: CodedCaptureTransitionKind::Clean {
+                update: update(&first),
+                fence: fence_certificate(),
+                dirty_regions: first.dirty_regions.clone(),
+                checksum_extents: first.checksum_extents.clone(),
+            },
+        };
+        let dirty = CodedCaptureTransition {
+            kind: CodedCaptureTransitionKind::LaterCut {
+                update: update(&second),
+                target: InvalidationTarget::new(
+                    second.dirty_regions.iter().copied().collect(),
+                    second.checksum_extents.iter().copied().collect(),
+                ),
+                invalidation_generation: RecoveryGeneration::ZERO,
+            },
+        };
+        let mut incompatible = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        for transition in [clean, dirty] {
+            incompatible.push(RecoveryMutation::ApplyCodedTransition { transition });
+        }
+        assert_eq!(
+            incompatible.validate_coded_composition(),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::CodedSemanticTransactionConflict
+            ))
+        );
+
+        let mut store = MemoryRecoveryStore::new(TopologyEpoch(1));
+        store.snapshot.coded_captures = vec![first.clone(), second.clone()];
+        let mut compatible = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        for transition in [first_update, second_update] {
+            compatible.push(RecoveryMutation::ApplyCodedTransition { transition });
+        }
+        assert_eq!(store.commit_durable(compatible), Ok(RecoveryGeneration(1)));
+        assert_eq!(store.snapshot.coded_captures, vec![first, second]);
+    }
+    #[test]
+    fn conservative_state_proof_allows_omitted_effects_but_rejects_stale_replay() {
+        let capture = CodedCaptureId(25);
+        let mut captures = CodedCaptureCoordinator::new();
+        captures
+            .start_capture_unchecked(
+                capture,
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                [],
+            )
+            .unwrap();
+        captures
+            .observe_decision(capture, CodedCaptureDecision::Accepted)
+            .unwrap();
+        captures.request_clean(capture).unwrap();
+        captures
+            .observe_clean_commit(capture, CodedCleanCommitObservation::Rejected)
+            .unwrap();
+
+        let mut store = MemoryRecoveryStore::new(TopologyEpoch(1));
+        store.snapshot.coded_captures = captures.snapshots();
+        store.snapshot.dirty_regions = vec![DirtyRegionRecord {
+            region: RegionId(0),
+            state: RegionState::Dirty {
+                dirty_since: RecoveryGeneration::ZERO,
+            },
+            last_clean_fence: None,
+        }];
+        store.snapshot.integrity_records = vec![IntegrityRecord {
+            extent: IntegrityExtentId(0),
+            state: IntegrityState::Stale {
+                stale_generation: RecoveryGeneration::ZERO,
+            },
+        }];
+
+        let authorization = match captures
+            .resolve_capture(&store.snapshot, capture, None)
+            .unwrap()
+        {
+            CodedReopenResolution::Refused(authorization) => authorization,
+            _ => panic!("refused capture did not produce cleanup authority"),
+        };
+        let cleanup = captures.prepare_refused_cleanup(authorization).unwrap();
+        let stale_authorization = match captures
+            .resolve_capture(&store.snapshot, capture, None)
+            .unwrap()
+        {
+            CodedReopenResolution::Refused(authorization) => authorization,
+            _ => panic!("refused capture did not reproduce cleanup authority"),
+        };
+        let stale_cleanup = captures
+            .prepare_refused_cleanup(stale_authorization)
+            .unwrap();
+
+        let transition = cleanup.transition();
+        assert!(!transition.contains_region_dirty(RegionId(0), RecoveryGeneration::ZERO));
+        assert!(
+            !transition.contains_integrity_stale(IntegrityExtentId(0), RecoveryGeneration::ZERO)
+        );
+        let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        txn.push(RecoveryMutation::ApplyCodedTransition { transition });
+        let receipt = store.commit_durable_receipt(txn).unwrap();
+        captures.confirm_refused_cleanup(cleanup, &receipt).unwrap();
+        assert!(store.snapshot.coded_captures.is_empty());
+        assert!(matches!(
+            store.snapshot.dirty_regions[0].state,
+            RegionState::Dirty { .. }
+        ));
+        assert!(matches!(
+            store.snapshot.integrity_records[0].state,
+            IntegrityState::Stale { .. }
+        ));
+
+        let mut replay_store = MemoryRecoveryStore::new(TopologyEpoch(1));
+        replay_store.snapshot.coded_captures = vec![stale_cleanup.0.prior.clone()];
+        replay_store.snapshot.dirty_regions = vec![DirtyRegionRecord {
+            region: RegionId(0),
+            state: RegionState::Clean,
+            last_clean_fence: None,
+        }];
+        replay_store.snapshot.integrity_records = vec![IntegrityRecord {
+            extent: IntegrityExtentId(0),
+            state: IntegrityState::Stale {
+                stale_generation: RecoveryGeneration::ZERO,
+            },
+        }];
+        let prior = replay_store.snapshot.clone();
+        let mut replay = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        replay.push(RecoveryMutation::ApplyCodedTransition {
+            transition: stale_cleanup.transition(),
+        });
+        assert_eq!(
+            replay_store.commit_durable(replay),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::CodedSemanticTransitionIncomplete
+            ))
+        );
+        assert_eq!(replay_store.snapshot, prior);
+    }
+
+    #[test]
+    fn recovery_store_rejects_malformed_coded_semantic_transition_groups() {
+        let capture = CodedCaptureId(26);
+        let mut captures = CodedCaptureCoordinator::new();
+        captures
+            .start_capture_unchecked(
+                capture,
+                owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)])),
+                [],
+            )
+            .unwrap();
+        let snapshot = captures.capture_snapshot(capture).unwrap();
+        let mut store = MemoryRecoveryStore::new(TopologyEpoch(1));
+        store.snapshot.coded_captures = vec![snapshot.clone()];
+        let durable = store.snapshot.clone();
+
+        let malformed = [
+            CodedCaptureTransition::updates(Vec::new()),
+            CodedCaptureTransition::updates(vec![
+                CodedCaptureUpdate {
+                    expected: Some(snapshot.clone()),
+                    proposed: snapshot.clone(),
+                },
+                CodedCaptureUpdate {
+                    expected: Some(snapshot.clone()),
+                    proposed: snapshot.clone(),
+                },
+            ]),
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::LaterCut {
+                    update: CodedCaptureUpdate {
+                        expected: Some(snapshot.clone()),
+                        proposed: snapshot.clone(),
+                    },
+                    target: InvalidationTarget::new(Vec::new(), Vec::new()),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::InvalidatingRemoval {
+                    removal: CodedCaptureRemoval {
+                        expected: snapshot.clone(),
+                        clean_closure: None,
+                    },
+                    dirty_regions: BTreeSet::new(),
+                    checksum_extents: [IntegrityExtentId(0)].into_iter().collect(),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                    conservative_state: None,
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::InvalidatingRemoval {
+                    removal: CodedCaptureRemoval {
+                        expected: snapshot.clone(),
+                        clean_closure: None,
+                    },
+                    dirty_regions: [RegionId(0)].into_iter().collect(),
+                    checksum_extents: BTreeSet::new(),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                    conservative_state: None,
+                },
+            },
+            CodedCaptureTransition {
+                kind: CodedCaptureTransitionKind::InvalidatingRemoval {
+                    removal: CodedCaptureRemoval {
+                        expected: snapshot.clone(),
+                        clean_closure: None,
+                    },
+                    dirty_regions: [RegionId(0), RegionId(999)].into_iter().collect(),
+                    checksum_extents: [IntegrityExtentId(0)].into_iter().collect(),
+                    invalidation_generation: RecoveryGeneration::ZERO,
+                    conservative_state: None,
+                },
+            },
+        ];
+        for transition in malformed {
+            let mut candidate = store.clone();
+            let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+            txn.push(RecoveryMutation::ApplyCodedTransition { transition });
+            assert_eq!(
+                candidate.commit_durable(txn),
+                Err(RecoveryError::InvalidTransition(
+                    TransitionError::CodedSemanticTransitionIncomplete
+                ))
+            );
+            assert_eq!(candidate.snapshot, durable);
+        }
+
+        let mut wrong_predecessor = snapshot.clone();
+        wrong_predecessor.recovery_generation = RecoveryGeneration(99);
+        let transition = CodedCaptureTransition::updates(vec![CodedCaptureUpdate {
+            expected: Some(wrong_predecessor),
+            proposed: snapshot,
+        }]);
+        let mut txn = RecoveryTxn::new(RecoveryGeneration::ZERO, TopologyEpoch(1));
+        txn.push(RecoveryMutation::ApplyCodedTransition { transition });
         assert_eq!(
             store.commit_durable(txn),
             Err(RecoveryError::InvalidTransition(
-                TransitionError::CodedCaptureClosureMismatch
+                TransitionError::CodedCaptureIdentityMismatch
             ))
         );
-        assert_eq!(store.snapshot.coded_captures, captures.snapshots());
-        assert!(matches!(
-            store.snapshot.dirty_regions.as_slice(),
-            [DirtyRegionRecord {
-                state: RegionState::Clean,
-                ..
-            }]
-        ));
+        assert_eq!(store.snapshot, durable);
     }
 }

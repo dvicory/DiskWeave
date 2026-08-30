@@ -228,6 +228,9 @@ impl OperationAdmission {
     ) -> Result<dwv_store::SlotSnapshot, SlotError> {
         self.table.snapshot(token)
     }
+    pub(crate) const fn lifecycle_slots(&self) -> &OperationSlotTable {
+        &self.table
+    }
 }
 #[cfg(test)]
 pub(crate) fn completion(

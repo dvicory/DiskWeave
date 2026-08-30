@@ -1,9 +1,9 @@
 use crate::{
     admission::{AdmissionConfig, OperationAdmission, slot_error},
     evidence::{
-        BasisConformance, CompletionEvidence, OperationEffect, OperationEffectObservation,
-        OperationEvidence, PersistenceClaim, RecoveryReconciliation, ReleaseAuthorization,
-        ReleaseReconciliation, ReleaseRequirement, ReleaseScope,
+        BasisConformance, CompletionEvidence, IncludedLifecycleAuthorization, OperationEffect,
+        OperationEffectObservation, OperationEvidence, PersistenceClaim, RecoveryReconciliation,
+        ReleaseAuthorization, ReleaseReconciliation, ReleaseRequirement, ReleaseScope,
     },
     failure::{FailureClass, ServiceError},
     lifecycle::ServiceState,
@@ -18,19 +18,21 @@ use dwv_core::{
     AssignmentGeneration, AssignmentInstanceId, BlockOp, BlockRequest, ByteRange, CodingPosition,
     DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
 };
+use dwv_lifecycle_authority::LifecycleAuthorityOwner;
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
     ChecksumPersistenceEvidence, ChecksumRecord, ChecksumSetGeneration, ChecksumTarget,
-    CodedCaptureCoordinator, CodedCaptureId, CodedCaptureLifecycleOwner, CodedCaptureMembership,
-    CodedCaptureOwnerFacts, CodedCapturePhase, CodedCaptureReconciliationReceipt,
-    CodedCaptureRetentionOwner, CodedGeometryOwner, CodedIncludedOperationEvidence,
-    CodedLifecycleEvidenceIssuer, CodedReopenResolution, ContentGeneration, DIRTY_REGION_BYTES,
-    FenceCertificate, IntegrityExtentId, IntegrityState, InvalidationTarget, RecoveryCleanDecision,
+    CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
+    CodedCaptureReconciliationReceipt, CodedCaptureRetentionOwner, CodedGeometryOwner,
+    CodedLifecycleAuthority, CodedReopenResolution, ContentGeneration, DIRTY_REGION_BYTES,
+    FenceCertificate, IntegrityExtentId, IntegrityState, RecoveryCleanDecision,
     RecoveryCleanRefusalPermit, RecoveryCleanRequest, RecoveryCommitObservation, RecoveryError,
     RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
     RecoveryStoreHealth, RecoveryTxn, RegionId, WriteRecoveryRecordEvidence,
     assess_checksum_baseline, dirty_regions_for_range, evaluate_recovery_clean,
 };
+#[cfg(test)]
+use dwv_recovery::{CodedCaptureCoordinator, CodedRangeAuthority, InvalidationTarget};
 use dwv_store::{
     ChildOperationId, CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment,
     IdentityComparison, IdentityObservationSet, IdentitySourceKind, OperationSlotToken,
@@ -40,16 +42,18 @@ use dwv_store::{
 };
 use dwv_transaction_ref::{
     ActionKind, ActionResult, CodedAdmissionOutcome, CodedClaimInput, CodedClaimRelease,
-    CodedEffectPermit, CodedRangeAuthority, CommittedRecoveryGeneration, ComputationResult,
-    ErrorClass, ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken,
-    ResultKind, SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits,
-    TransactionMachine, TransactionPersistenceEvidence, TransactionPlan,
-    WriteRecoveryRecordRequirement,
+    CodedEffectPermit, CommittedRecoveryGeneration, ComputationResult, ErrorClass,
+    ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
+    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
+    TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
+type IncludedLifecycleEvidence = (IncludedLifecycleAuthorization, FenceCertificate);
+type CaptureCleanEvaluation = (RecoveryCleanDecision, Vec<IncludedLifecycleEvidence>);
+
 /// Runnable/waiting bookkeeping stays in the service driver. It records why
 /// an operation is waiting without assigning wakeup, retry, or fairness policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -272,6 +276,7 @@ pub enum BasisReadPermission {
 pub enum PortableWriteWait {
     CodedRangeContention,
     CaptureBlocked,
+    CodedCaptureCapacity,
     BasisReadPermission,
     PhysicalResults,
     OwnerReconciliation,
@@ -514,10 +519,9 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     release_authorizations: Vec<Option<ReleaseAuthorization>>,
     release_scopes: Vec<Option<(OperationSlotToken, ReleaseScope)>>,
     basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
-    coded_authority: CodedRangeAuthority,
+    lifecycle_authority: LifecycleAuthorityOwner,
+    coded_captures: CodedLifecycleAuthority<ReleaseAuthorization, IncludedLifecycleAuthorization>,
     coded_geometry: CodedGeometryOwner,
-    coded_captures: CodedCaptureCoordinator,
-    coded_lifecycle_evidence_issuer: CodedLifecycleEvidenceIssuer,
     reopened_captures: BTreeSet<CodedCaptureId>,
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
@@ -585,25 +589,23 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "coded capture reopen requires the supported checksum profile",
             ));
         }
-        let (coded_captures, coded_lifecycle_evidence_issuer) =
-            CodedCaptureCoordinator::from_snapshots_with_lifecycle_evidence_issuer(
+        let (lifecycle_authority, lifecycle_verifier) = LifecycleAuthorityOwner::new();
+        let (coded_lifecycle, coded_geometry) =
+            CodedLifecycleAuthority::from_snapshots_with_verifier(
                 snapshot.coded_captures.clone(),
                 &topology,
                 generation,
                 BLAKE3_256_PROFILE,
                 checksums.active_set,
                 DIRTY_REGION_BYTES,
+                lifecycle_verifier,
             )
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let coded_geometry =
-            CodedGeometryOwner::new(topology.clone(), DIRTY_REGION_BYTES, BLAKE3_256_PROFILE)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let reopened_captures = snapshot
             .coded_captures
             .iter()
             .map(|capture| capture.capture)
             .collect::<BTreeSet<_>>();
-        let coded_authority = CodedRangeAuthority::new();
         let state = if snapshot.topology_epoch != topology.topology_epoch() {
             ServiceState::Blocked(FailureClass::StaleTopology)
         } else if snapshot
@@ -632,10 +634,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             release_authorizations: vec![None; config.admission.limits.operation_slots],
             release_scopes: vec![None; config.admission.limits.operation_slots],
             basis_observations: vec![None; config.admission.limits.operation_slots],
-            coded_authority,
+            lifecycle_authority,
+            coded_captures: coded_lifecycle,
             coded_geometry,
-            coded_captures,
-            coded_lifecycle_evidence_issuer,
             reopened_captures,
             #[cfg(test)]
             terminalization_fault: None,
@@ -692,12 +693,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
 
     #[cfg(test)]
     pub(crate) fn coded_authority(&self) -> &CodedRangeAuthority {
-        &self.coded_authority
-    }
-
-    #[cfg(test)]
-    pub(crate) fn coded_authority_mut(&mut self) -> &mut CodedRangeAuthority {
-        &mut self.coded_authority
+        self.coded_captures.range()
     }
 
     #[cfg(test)]
@@ -742,9 +738,30 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 ),
             ));
         }
-        let mut authority_candidate = self.coded_authority.clone();
+        let assignment = self
+            .topology
+            .assignment_for_slot(snapshot.request.slot_id)
+            .ok_or_else(|| {
+                ServiceError::invalid(
+                    FailureClass::InvalidRequest,
+                    "coded admission request slot has no current topology assignment",
+                )
+            })?;
+        if !self.coded_geometry.validates_claim_for_mutation(
+            operation,
+            &snapshot.request,
+            assignment,
+            &claim,
+        ) {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "coded claim is not bound to the admitted request or the current topology and \
+                 geometry owner",
+            ));
+        }
+        let mut authority_candidate = self.coded_captures.range().clone();
         let outcome = authority_candidate
-            .admit(operation, claim)
+            .admit(operation, snapshot.request, claim)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         match &outcome {
             CodedAdmissionOutcome::Contended => {
@@ -765,9 +782,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 if let Some(prepared) = prepared {
                     let mut txn =
                         RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                    for update in prepared.updates() {
-                        txn.push(RecoveryMutation::UpsertCodedCapture { update });
-                    }
+                    txn.push(RecoveryMutation::ApplyCodedTransition {
+                        transition: prepared.transition(),
+                    });
                     let receipt = self.recovery.commit_durable_receipt(txn).map_err(|error| {
                         ServiceError::io(FailureClass::Recovery, error.to_string())
                     })?;
@@ -778,7 +795,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         })?;
                     self.checksums.recovery_generation = receipt.generation();
                 }
-                self.coded_authority = authority_candidate;
+                *self.coded_captures.range_mut() = authority_candidate;
                 self.set_release_scope(operation, ReleaseScope::InScope);
                 self.set_readiness(operation, OperationReadiness::Runnable);
             }
@@ -840,7 +857,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             )
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let establishment = self
-            .coded_authority
+            .coded_captures
+            .range_mut()
             .capture_boundary()
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         let prepared = self
@@ -854,9 +872,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             )
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let mut txn = RecoveryTxn::new(snapshot.generation, self.topology.topology_epoch());
-        for update in prepared.updates() {
-            txn.push(RecoveryMutation::UpsertCodedCapture { update });
-        }
+        txn.push(RecoveryMutation::ApplyCodedTransition {
+            transition: prepared.transition(),
+        });
         let receipt = self
             .recovery
             .commit_durable_receipt(txn)
@@ -891,7 +909,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        let resolution = CodedCaptureLifecycleOwner::reopen_resolution(&current, capture, refusal)
+        let resolution = self
+            .coded_captures
+            .resolve_capture(&current, capture, refusal)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         match resolution {
             CodedReopenResolution::Refused(authorization) => {
@@ -900,20 +920,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .prepare_refused_cleanup(authorization)
                     .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
                 let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                for region in prepared.dirty_regions() {
-                    txn.push(RecoveryMutation::MarkRegionDirty {
-                        region: *region,
-                        mutation_generation: prepared.invalidation_generation(),
-                    });
-                }
-                for extent in prepared.checksum_extents() {
-                    txn.push(RecoveryMutation::MarkIntegrityStale {
-                        extent: *extent,
-                        stale_generation: prepared.invalidation_generation(),
-                    });
-                }
-                txn.push(RecoveryMutation::RemoveCodedCapture {
-                    removal: prepared.removal(),
+                txn.push(RecoveryMutation::ApplyCodedTransition {
+                    transition: prepared.transition(),
                 });
                 let receipt = self
                     .recovery
@@ -930,8 +938,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .prepare_clean_known_cleanup(authorization)
                     .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
                 let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                txn.push(RecoveryMutation::RemoveCodedCapture {
-                    removal: prepared.removal(),
+                txn.push(RecoveryMutation::ApplyCodedTransition {
+                    transition: prepared.transition(),
                 });
                 let receipt = self
                     .recovery
@@ -948,20 +956,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .prepare_inherited_capture_abandonment(authorization)
                     .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
                 let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                for region in prepared.dirty_regions() {
-                    txn.push(RecoveryMutation::MarkRegionDirty {
-                        region: *region,
-                        mutation_generation: prepared.invalidation_generation(),
-                    });
-                }
-                for extent in prepared.checksum_extents() {
-                    txn.push(RecoveryMutation::MarkIntegrityStale {
-                        extent: *extent,
-                        stale_generation: prepared.invalidation_generation(),
-                    });
-                }
-                txn.push(RecoveryMutation::RemoveCodedCapture {
-                    removal: prepared.removal(),
+                txn.push(RecoveryMutation::ApplyCodedTransition {
+                    transition: prepared.transition(),
                 });
                 let receipt = self
                     .recovery
@@ -1015,9 +1011,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .prepare_reconciliation(reconciliation, current.generation)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-        for update in prepared.updates() {
-            txn.push(RecoveryMutation::UpsertCodedCapture { update });
-        }
+        txn.push(RecoveryMutation::ApplyCodedTransition {
+            transition: prepared.transition(),
+        });
         let receipt = self
             .recovery
             .commit_durable_receipt(txn)
@@ -1042,7 +1038,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             return Ok(CodedEffectOutcome::BlockedByCapture);
         }
         let permit = self
-            .coded_authority
+            .coded_captures
+            .range_mut()
             .permit_effect(operation)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         self.set_readiness(operation, OperationReadiness::Runnable);
@@ -1077,10 +1074,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .admission
             .release_permit(operation)
             .map_err(slot_error)?;
-        let mut authority_candidate = self.coded_authority.clone();
-        let release = authority_candidate.release(permit).map_err(|error| {
-            ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
-        })?;
+        let (authority_candidate, release) = self
+            .coded_captures
+            .prepare_release(authorization, permit)
+            .map_err(|error| {
+                ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
+            })?;
         if affects_capture {
             let current = self
                 .recovery
@@ -1092,9 +1091,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
             if let Some(prepared) = prepared {
                 let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                for update in prepared.updates() {
-                    txn.push(RecoveryMutation::UpsertCodedCapture { update });
-                }
+                txn.push(RecoveryMutation::ApplyCodedTransition {
+                    transition: prepared.transition(),
+                });
                 let receipt = match self.recovery.commit_durable_receipt(txn) {
                     Ok(receipt) => receipt,
                     Err(error) => {
@@ -1110,7 +1109,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 self.checksums.recovery_generation = receipt.generation();
             }
         }
-        self.coded_authority = authority_candidate;
+        *self.coded_captures.range_mut() = authority_candidate;
         Ok(release)
     }
     fn record_coded_release_commit_failure(
@@ -1136,7 +1135,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         certificate: Option<&FenceCertificate>,
     ) -> Result<(), ServiceError> {
         let operation = authorization.operation();
-        if self.coded_authority.operation_phase(operation).is_some() {
+        if self
+            .coded_captures
+            .range()
+            .operation_phase(operation)
+            .is_some()
+        {
             self.coded_release_claim_with_certificate(operation, authorization, certificate)?;
         }
         Ok(())
@@ -1622,7 +1626,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         )
         .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let establishment = self
-            .coded_authority
+            .coded_captures
+            .range_mut()
             .capture_boundary()
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         let prepared = self
@@ -1636,9 +1641,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             )
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
         let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-        for update in prepared.updates() {
-            txn.push(RecoveryMutation::UpsertCodedCapture { update });
-        }
+        txn.push(RecoveryMutation::ApplyCodedTransition {
+            transition: prepared.transition(),
+        });
         let receipt = self
             .recovery
             .commit_durable_receipt(txn)
@@ -2212,6 +2217,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             ));
         }
         if driver.clean_capture.is_none() {
+            if self.coded_captures.capture_count() >= self.config.max_coded_captures {
+                self.compact_resolved_capture_membership()?;
+                self.retire_resolved_captures()?;
+                if self.coded_captures.capture_count() >= self.config.max_coded_captures {
+                    return Ok(PortableWriteDrive::Wait(
+                        PortableWriteWait::CodedCaptureCapacity,
+                    ));
+                }
+            }
             let capture = self.allocate_clean_capture()?;
             self.establish_clean_capture(driver, capture)?;
         }
@@ -2509,10 +2523,28 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
     fn coded_claim_for_plan(
         &self,
+        member_index: usize,
+        request: BlockRequest,
         plan: &crate::range::RangePlan,
+        operation: OperationSlotToken,
     ) -> Result<CodedClaimInput, ServiceError> {
+        let assignment = self
+            .topology
+            .assignment_for_slot(request.slot_id)
+            .ok_or_else(|| {
+                ServiceError::invalid(
+                    FailureClass::InvalidRequest,
+                    "coded claim member is not in the admitted topology",
+                )
+            })?;
+        if member_index_for_assignment(&self.members, assignment)? != member_index {
+            return Err(ServiceError::invalid(
+                FailureClass::InvalidRequest,
+                "coded claim member does not match the admitted request",
+            ));
+        }
         self.coded_geometry
-            .claim_for_ranges(plan.ranges.iter().copied())
+            .claim_for_mutation(operation, request, assignment, plan.ranges.iter().copied())
             .map_err(|error| ServiceError::invalid(FailureClass::InvalidRequest, error.to_string()))
     }
 
@@ -2525,7 +2557,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         plan: &crate::range::RangePlan,
         token: OperationSlotToken,
     ) -> Result<WriteDriver, ServiceError> {
-        let coded_claim = self.coded_claim_for_plan(plan)?;
+        let coded_claim = self.coded_claim_for_plan(member_index, request, plan, token)?;
         let generation = self.recovery_generation()?;
         if generation != self.checksums.recovery_generation {
             return Err(ServiceError::io(
@@ -2725,12 +2757,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             driver.transaction_plan = transaction_plan;
             driver.machine = machine;
         }
-        let target =
-            InvalidationTarget::new(driver.regions.clone(), driver.checksum_extents.clone());
         let mut prepared_cuts = Vec::new();
         let mut capture_mutations = Vec::new();
         let admission = self
-            .coded_authority
+            .coded_captures
+            .range()
             .admission(driver.operation)
             .ok_or_else(|| {
                 ServiceError::io(
@@ -2738,6 +2769,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     "coded admission witness is unavailable",
                 )
             })?;
+        let target = admission.invalidation_target().clone();
         for snapshot in self.coded_captures.snapshots() {
             if snapshot.membership.get(&driver.operation) != Some(&CodedCaptureMembership::Later) {
                 continue;
@@ -2751,14 +2783,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     generation,
                 )
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            capture_mutations.push(RecoveryMutation::UpsertCodedCapture {
-                update: prepared.update(),
-            });
+            capture_mutations.push(prepared.transition());
             prepared_cuts.push(prepared);
         }
         let result = self
             .checksums
-            .invalidate_with_write_recovery_record_and_receipt(
+            .invalidate_with_write_recovery_record_and_coded_transitions(
                 &mut self.recovery,
                 target,
                 capture_mutations,
@@ -2969,15 +2999,21 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &self,
         capture: CodedCaptureId,
         operation: OperationSlotToken,
-    ) -> Option<CodedIncludedOperationEvidence> {
+    ) -> Option<(IncludedLifecycleAuthorization, FenceCertificate)> {
         let snapshot = self.coded_captures.capture_snapshot(capture)?;
         let certificate = snapshot.release_certificates.get(&operation)?;
-        (snapshot.membership.get(&operation) == Some(&CodedCaptureMembership::Included)
-            && snapshot.release_authorized_operations.contains(&operation))
-        .then(|| {
-            self.coded_lifecycle_evidence_issuer
-                .released(operation, certificate.clone())
-        })
+        if snapshot.membership.get(&operation) != Some(&CodedCaptureMembership::Included)
+            || !snapshot.release_authorized_operations.contains(&operation)
+        {
+            return None;
+        }
+        let index = usize::try_from(operation.index).ok()?;
+        let release = self.release_authorizations.get(index)?.as_ref()?;
+        let authorization = self
+            .lifecycle_authority
+            .authorize_included_released(release.lifecycle())
+            .map(IncludedLifecycleAuthorization::from_lifecycle)?;
+        Some((authorization, certificate.clone()))
     }
 
     fn evaluate_capture_clean(
@@ -2986,14 +3022,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         current: &RecoverySnapshot,
         write_recovery_record: &WriteRecoveryRecordEvidence,
         certificate: &FenceCertificate,
-    ) -> Result<
-        Option<(
-            RecoveryCleanDecision,
-            Vec<CodedIncludedOperationEvidence>,
-            FenceCertificate,
-        )>,
-        ServiceError,
-    > {
+    ) -> Result<Option<CaptureCleanEvaluation>, ServiceError> {
         let capture = driver.clean_capture.ok_or_else(|| {
             ServiceError::io(
                 FailureClass::ReconciliationRequired,
@@ -3074,8 +3103,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 continue;
             }
             let lifecycle_evidence = if *operation == driver.operation {
-                self.coded_lifecycle_evidence_issuer
-                    .live(*operation, certificate.clone())
+                let Some(authorization) = self
+                    .lifecycle_authority
+                    .authorize_included_live(
+                        self.admission.lifecycle_slots(),
+                        *operation,
+                        driver.finalization >= WriteFinalizationPhase::FlushesCompleted,
+                    )
+                    .map(IncludedLifecycleAuthorization::from_lifecycle)
+                else {
+                    return Ok(None);
+                };
+                (authorization, certificate.clone())
             } else if let Some(evidence) =
                 self.released_coded_lifecycle_evidence(capture, *operation)
             {
@@ -3090,12 +3129,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 })
                 .and_then(|other| other.certificate.as_ref())
             {
-                self.coded_lifecycle_evidence_issuer
-                    .live(*operation, certificate.clone())
+                let Some(authorization) = self
+                    .lifecycle_authority
+                    .authorize_included_live(self.admission.lifecycle_slots(), *operation, true)
+                    .map(IncludedLifecycleAuthorization::from_lifecycle)
+                else {
+                    return Ok(None);
+                };
+                (authorization, certificate.clone())
             } else {
                 return Ok(None);
             };
-            certificates.push(lifecycle_evidence.certificate().clone());
+            certificates.push(lifecycle_evidence.1.clone());
             evidence.push(lifecycle_evidence);
         }
 
@@ -3175,7 +3220,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         let decision = evaluate_recovery_clean(current, &request, &aggregate_certificate)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        Ok(Some((decision, evidence, aggregate_certificate)))
+        Ok(Some((decision, evidence)))
     }
 
     fn finish_write_driver(
@@ -3307,13 +3352,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     .clone()
                     .expect("flush finalization retains its certificate");
                 let capture = driver.clean_capture.expect("validated capture is bound");
-                let Some((decision, included_evidence, aggregate_certificate)) = self
-                    .evaluate_capture_clean(
-                        driver,
-                        &current,
-                        &write_recovery_record,
-                        &certificate,
-                    )?
+                let Some((decision, included_evidence)) = self.evaluate_capture_clean(
+                    driver,
+                    &current,
+                    &write_recovery_record,
+                    &certificate,
+                )?
                 else {
                     return Ok(None);
                 };
@@ -3329,8 +3373,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                             })?;
                         let mut refused =
                             RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                        refused.push(RecoveryMutation::UpsertCodedCapture {
-                            update: prepared.update(),
+                        refused.push(RecoveryMutation::ApplyCodedTransition {
+                            transition: prepared.transition(),
                         });
                         let durable =
                             self.recovery
@@ -3365,17 +3409,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 };
                 let mut recovery_clean =
                     RecoveryTxn::new(current.generation, self.topology.topology_epoch());
-                recovery_clean.push(RecoveryMutation::RecordDataParityFence {
-                    fence: aggregate_certificate,
-                });
-                for region in driver.regions.iter().copied() {
-                    recovery_clean.push(RecoveryMutation::MarkRegionClean {
-                        region,
-                        through_generation: current.generation,
-                    });
-                }
-                recovery_clean.push(RecoveryMutation::UpsertCodedCapture {
-                    update: prepared.update(),
+                recovery_clean.push(RecoveryMutation::ApplyCodedTransition {
+                    transition: prepared.transition(),
                 });
                 let receipt = self
                     .recovery
@@ -3581,6 +3616,36 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         observation: &ReleaseReconciliation,
         certificate: Option<&FenceCertificate>,
     ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
+        let authorization = self.release_authorization_candidate(observation)?;
+        if let Some(authorization) = authorization.as_ref() {
+            // LifecycleRelease owns this monotonic exact-generation fact.
+            // Retain it before invoking downstream coded-claim removal so a
+            // coded cleanup failure cannot retroactively erase authorization.
+            self.remember_release_authorization(authorization.clone());
+            self.release_coded_claim_if_authorized(authorization, certificate)?;
+        }
+        Ok(authorization)
+    }
+
+    #[cfg(test)]
+    fn included_lifecycle_authorization_for_test(
+        &mut self,
+        observation: &ReleaseReconciliation,
+    ) -> Result<Option<IncludedLifecycleAuthorization>, ServiceError> {
+        self.release_authorization_candidate(observation)
+            .map(|authorization| {
+                authorization.and_then(|authorization| {
+                    self.lifecycle_authority
+                        .authorize_included_live_from_release(authorization.lifecycle())
+                        .map(IncludedLifecycleAuthorization::from_lifecycle)
+                })
+            })
+    }
+
+    fn release_authorization_candidate(
+        &mut self,
+        observation: &ReleaseReconciliation,
+    ) -> Result<Option<ReleaseAuthorization>, ServiceError> {
         let token = observation.operation;
         if !self.release_scope(token).is_in_scope() {
             return Err(ServiceError::io(
@@ -3613,15 +3678,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         // The slot owner must observe every child terminal before reclaiming.
         self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
-        let authorization = self.authorization_candidate(token, &snapshot, observation);
-        if let Some(authorization) = authorization.as_ref() {
-            // LifecycleRelease owns this monotonic exact-generation fact.
-            // Retain it before invoking downstream coded-claim removal so a
-            // coded cleanup failure cannot retroactively erase authorization.
-            self.remember_release_authorization(authorization.clone());
-            self.release_coded_claim_if_authorized(authorization, certificate)?;
-        }
-        Ok(authorization)
+        Ok(self.authorization_candidate(token, &snapshot, observation))
     }
 
     fn release(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
@@ -3671,8 +3728,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 .coded_captures
                 .prepare_membership_compaction(authorization)
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            txn.push(RecoveryMutation::UpsertCodedCapture {
-                update: compaction.update(),
+            txn.push(RecoveryMutation::ApplyCodedTransition {
+                transition: compaction.transition(),
             });
             prepared.push(compaction);
         }
@@ -3716,20 +3773,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         .map_err(|error| {
                             ServiceError::io(FailureClass::Recovery, error.to_string())
                         })?;
-                    for region in cleanup.dirty_regions() {
-                        txn.push(RecoveryMutation::MarkRegionDirty {
-                            region: *region,
-                            mutation_generation: cleanup.invalidation_generation(),
-                        });
-                    }
-                    for extent in cleanup.checksum_extents() {
-                        txn.push(RecoveryMutation::MarkIntegrityStale {
-                            extent: *extent,
-                            stale_generation: cleanup.invalidation_generation(),
-                        });
-                    }
-                    txn.push(RecoveryMutation::RemoveCodedCapture {
-                        removal: cleanup.removal(),
+                    txn.push(RecoveryMutation::ApplyCodedTransition {
+                        transition: cleanup.transition(),
                     });
                     refused.push(cleanup);
                 }
@@ -3740,8 +3785,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         .map_err(|error| {
                             ServiceError::io(FailureClass::Recovery, error.to_string())
                         })?;
-                    txn.push(RecoveryMutation::RemoveCodedCapture {
-                        removal: cleanup.removal(),
+                    txn.push(RecoveryMutation::ApplyCodedTransition {
+                        transition: cleanup.transition(),
                     });
                     clean_known.push(cleanup);
                 }
@@ -3770,7 +3815,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     fn release_after_reclaim(&mut self, token: OperationSlotToken) -> Result<(), ServiceError> {
-        if self.coded_authority.operation_phase(token).is_some() {
+        if self.coded_captures.range().operation_phase(token).is_some() {
             return Err(ServiceError::io(
                 FailureClass::ReconciliationRequired,
                 "operation slot cannot be released while its coded claim remains active",
@@ -3850,7 +3895,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         {
             return None;
         }
-        Some(ReleaseAuthorization::issue_from_lifecycle_owner(token))
+        self.lifecycle_authority
+            .authorize_release(
+                self.admission.lifecycle_slots(),
+                token,
+                matches!(
+                    observation.operation_effect,
+                    OperationEffect::Terminal | OperationEffect::AuthoritativelyReconciled
+                ),
+                observation.requirement.is_satisfied(),
+                matches!(observation.recovery, RecoveryReconciliation::Authoritative),
+                observation.basis.is_conformant(),
+            )
+            .map(ReleaseAuthorization::from_lifecycle)
     }
 
     fn operation_effect_observation(

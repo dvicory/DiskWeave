@@ -8,15 +8,18 @@ use dwv_recovery::{
     CodedCapturePhase, CodedCaptureSnapshot, CodedCleanAttempt, CodedCleanAttemptPhase,
     CodedCleanCommitObservation, CodedCleanReconciliation, CodedLaterCutAttempt,
     CodedLaterCutAttemptPhase, CodedLaterCutObservation, CodedLaterCutReconciliation,
-    FenceCertificate, IntegrityExtentId, MemoryRecoveryStore, PreparedCodedCleanCommit,
-    PreparedCodedLaterCut, RecoveryCleanDecision, RecoveryCleanRefusalPermit, RecoveryCleanRequest,
-    RecoveryMutation, RecoverySnapshot, RecoveryStateStore, RecoveryTxn, RegionId,
+    FenceCertificate, IntegrityExtentId, InvalidationTarget, MemoryRecoveryStore,
+    PreparedCodedCleanCommit, PreparedCodedLaterCut, RecoveryCleanDecision,
+    RecoveryCleanRefusalPermit, RecoveryCleanRequest, RecoveryMutation, RecoverySnapshot,
+    RecoveryStateStore, RecoveryTxn, RegionId,
 };
 use dwv_store::{
-    CapabilityEvidenceId, FenceId, OperationSlotToken, ReconciliationOutcome, StoreFenceRef,
-    StoreId, StoreIncarnationId, StoreWriteWatermark,
+    CapabilityEvidenceId, FenceId, OperationSlotToken, StoreFenceRef, StoreId, StoreIncarnationId,
+    StoreWriteWatermark,
 };
-use dwv_transaction_ref::{CodedAdmissionOutcome, CodedClaimInput, CodedOperationPhase};
+use dwv_transaction_ref::{
+    CodedAdmissionOutcome, CodedAuthorityError, CodedClaimInput, CodedOperationPhase,
+};
 use quint_connect::{Config, Driver, Result, State, Step, quint_run};
 use serde::Deserialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
@@ -34,6 +37,66 @@ fn release_certificate(topology_epoch: TopologyEpoch) -> FenceCertificate {
             capability_evidence_id: CapabilityEvidenceId(1),
         }],
         Vec::new(),
+    )
+}
+
+fn issued_coded_claim<R: RecoveryStateStore>(
+    service: &HealthyPortableService<FakeStore, R>,
+    operation: OperationSlotToken,
+    member_index: usize,
+    ranges: impl IntoIterator<Item = ByteRange>,
+) -> std::result::Result<CodedClaimInput, ServiceError> {
+    let ranges = ranges.into_iter().collect::<Vec<_>>();
+    let request_range = match (ranges.first(), ranges.last()) {
+        (Some(first), Some(last)) => {
+            ByteRange::new(first.offset, last.end() - first.offset).expect("test coded claim range")
+        }
+        _ => ByteRange::empty(),
+    };
+    let request = request(
+        RequestId(9_000),
+        service.topology.topology_epoch(),
+        member_index,
+        BlockOp::Write,
+        request_range,
+        DurabilityIntent::Ordinary,
+    );
+    service.coded_claim_for_plan(
+        member_index,
+        request,
+        &crate::range::RangePlan { ranges },
+        operation,
+    )
+}
+
+fn issued_coded_unit_claim<R: RecoveryStateStore>(
+    service: &HealthyPortableService<FakeStore, R>,
+    operation: OperationSlotToken,
+    units: impl IntoIterator<Item = CodedUnitId>,
+) -> std::result::Result<CodedClaimInput, ServiceError> {
+    let snapshot = service.admission.snapshot(operation).map_err(slot_error)?;
+    let member_index = service
+        .members
+        .iter()
+        .position(|member| member.slot_id == snapshot.request.slot_id)
+        .ok_or_else(|| {
+            ServiceError::invalid(
+                FailureClass::InvalidRequest,
+                "admitted request has no member binding",
+            )
+        })?;
+    let ranges = units
+        .into_iter()
+        .map(|unit| {
+            ByteRange::new(unit.0 * u64::from(BLOCK), u64::from(BLOCK))
+                .expect("test coded unit range")
+        })
+        .collect();
+    service.coded_claim_for_plan(
+        member_index,
+        snapshot.request,
+        &crate::range::RangePlan { ranges },
+        operation,
     )
 }
 fn reopened_refusal_permit(
@@ -235,7 +298,10 @@ impl BridgeDriver {
             .expect("bounded model request"),
             DurabilityIntent::Ordinary,
         );
-        let claim = self.service()?.coded_claim_for_plan(&plan)?;
+        let token = self.service_mut()?.reserve(request)?;
+        let claim = self
+            .service()?
+            .coded_claim_for_plan(data_slot, request, &plan, token)?;
         let expected = units
             .iter()
             .copied()
@@ -244,7 +310,6 @@ impl BridgeDriver {
         if claim.units() != &expected {
             bail!("production geometry owner disagreed with the model coded claim");
         }
-        let token = self.service_mut()?.reserve(request)?;
         if !matches!(
             self.service_mut()?.coded_admit(token, claim)?,
             CodedAdmissionOutcome::Admitted(_)
@@ -322,15 +387,10 @@ impl BridgeDriver {
             .context("CLEAN commit was observed without an exact prepared transaction")?;
         match observation {
             CodedCleanCommitObservation::Durable => {
-                let certificate = self
-                    .clean_certificate
+                self.clean_certificate
                     .take()
                     .context("prepared CLEAN transaction lost its fence certificate")?;
-                commit_connect_clean(
-                    self.service_mut()?,
-                    attempt.into_pending_prepared()?,
-                    certificate,
-                )?;
+                commit_connect_clean(self.service_mut()?, attempt.into_pending_prepared()?)?;
             }
             CodedCleanCommitObservation::Unknown | CodedCleanCommitObservation::Rejected => {
                 attempt.observe(observation)?;
@@ -350,15 +410,10 @@ impl BridgeDriver {
             .context("CLEAN reconciliation had no exact unknown transaction")?;
         match reconciliation {
             CodedCleanReconciliation::Durable => {
-                let certificate = self
-                    .clean_certificate
+                self.clean_certificate
                     .take()
                     .context("unknown CLEAN transaction lost its fence certificate")?;
-                commit_connect_clean(
-                    self.service_mut()?,
-                    attempt.into_unknown_prepared()?,
-                    certificate,
-                )?;
+                commit_connect_clean(self.service_mut()?, attempt.into_unknown_prepared()?)?;
             }
             CodedCleanReconciliation::Rejected => {
                 attempt.reject_unknown()?;
@@ -410,7 +465,8 @@ impl BridgeDriver {
         let service = self.service_mut()?;
         let current = service.recovery.load_assembly_snapshot()?;
         let admission = service
-            .coded_authority
+            .coded_captures
+            .range()
             .admission(operation)
             .context("coded admission is missing")?;
         Ok(service.coded_captures.prepare_later_cut(
@@ -428,6 +484,15 @@ impl BridgeDriver {
         ) {
             bail!("model effect permission remained blocked in production");
         }
+        let service = self.service_mut()?;
+        let current = service.recovery.load_assembly_snapshot()?;
+        let mut txn = service
+            .recovery
+            .begin_protocol_txn(current.generation, service.topology.topology_epoch());
+        txn.mark_region_dirty(RegionId(0), current.generation)
+            .mark_integrity_stale(IntegrityExtentId(0), current.generation);
+        let receipt = service.recovery.commit_durable_receipt(txn)?;
+        service.checksums.recovery_generation = receipt.generation();
         Ok(())
     }
 
@@ -487,9 +552,8 @@ impl BridgeDriver {
             ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
-        let outcome = self
-            .service_mut()?
-            .coded_admit(hidden, CodedClaimInput::mapped([CodedUnitId(0)]))?;
+        let claim = issued_coded_unit_claim(self.service()?, hidden, [CodedUnitId(0)])?;
+        let outcome = self.service_mut()?.coded_admit(hidden, claim)?;
         if !matches!(outcome, CodedAdmissionOutcome::Contended)
             || self.service()?.operation_readiness(hidden)
                 != Some(OperationReadiness::Waiting(
@@ -503,7 +567,7 @@ impl BridgeDriver {
     }
 
     fn probe_incomplete_claim(&mut self) -> Result<()> {
-        if self.service()?.coded_geometry.claim_for_ranges([]).is_ok() {
+        if issued_coded_claim(self.service()?, OperationSlotToken::new(0, 1), 0, []).is_ok() {
             bail!("production geometry owner accepted an empty coded claim");
         }
         Ok(())
@@ -512,11 +576,7 @@ impl BridgeDriver {
     fn probe_unvalidated_claim(&mut self) -> Result<()> {
         let end = self.service()?.topology.geometry().protected_length();
         let outside = ByteRange::new(end, u64::from(BLOCK)).expect("non-empty outside range");
-        if self
-            .service()?
-            .coded_geometry
-            .claim_for_ranges([outside])
-            .is_ok()
+        if issued_coded_claim(self.service()?, OperationSlotToken::new(0, 1), 0, [outside]).is_ok()
         {
             bail!("production geometry owner accepted an out-of-range coded claim");
         }
@@ -540,7 +600,7 @@ impl BridgeDriver {
             TopologyEpoch(4),
             0,
             BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            ByteRange::new(u64::from(BLOCK), u64::from(BLOCK)).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
         self.service_mut()?.admission.reclaim(old, false)?;
@@ -549,15 +609,15 @@ impl BridgeDriver {
             TopologyEpoch(4),
             0,
             BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            ByteRange::new(u64::from(BLOCK), u64::from(BLOCK)).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
         if old.index != current.index || old.generation == current.generation {
             bail!("hidden stale-generation probe did not reuse one slot with a new generation");
         }
+        let claim = issued_coded_unit_claim(self.service()?, current, [CodedUnitId(1)])?;
         if !matches!(
-            self.service_mut()?
-                .coded_admit(current, CodedClaimInput::mapped([CodedUnitId(1)]))?,
+            self.service_mut()?.coded_admit(current, claim)?,
             CodedAdmissionOutcome::Admitted(_)
         ) {
             bail!("stale-generation probe failed to admit its current generation");
@@ -566,12 +626,17 @@ impl BridgeDriver {
         if service.admission.release_permit(old).is_ok() {
             bail!("stale generation produced a lifecycle release permit");
         }
-        service
-            .admission
-            .record_reconciliation(current, ReconciliationOutcome::Durable)?;
-        let permit = service.admission.release_permit(current)?;
-        service.coded_authority_mut().release(permit)?;
-        service.admission.release(current)?;
+        let certificate = release_certificate(service.topology.topology_epoch());
+        let authorization = service
+            .establish_release_authorization_for_test(
+                &authoritative_release(current),
+                &certificate,
+            )?
+            .context("lifecycle owner withheld the current release authorization")?;
+        if authorization.operation() != current {
+            bail!("lifecycle owner authorized the stale generation");
+        }
+        service.release(current)?;
         Ok(())
     }
 
@@ -581,13 +646,12 @@ impl BridgeDriver {
             TopologyEpoch(4),
             1,
             BlockOp::Write,
-            ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
+            ByteRange::new(0, 2 * u64::from(BLOCK)).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
-        let outcome = self.service_mut()?.coded_admit(
-            hidden,
-            CodedClaimInput::mapped([CodedUnitId(0), CodedUnitId(1)]),
-        )?;
+        let claim =
+            issued_coded_unit_claim(self.service()?, hidden, [CodedUnitId(0), CodedUnitId(1)])?;
+        let outcome = self.service_mut()?.coded_admit(hidden, claim)?;
         if !matches!(outcome, CodedAdmissionOutcome::Contended) {
             bail!("non-transitive coded overlap did not report contention");
         }
@@ -643,9 +707,9 @@ impl BridgeDriver {
             ByteRange::new(0, BLOCK as u64).expect("bounded hidden range"),
             DurabilityIntent::Ordinary,
         ))?;
+        let claim = issued_coded_unit_claim(self.service()?, hidden, [CodedUnitId(0)])?;
         if !matches!(
-            self.service_mut()?
-                .coded_admit(hidden, CodedClaimInput::mapped([CodedUnitId(0)]))?,
+            self.service_mut()?.coded_admit(hidden, claim)?,
             CodedAdmissionOutcome::Admitted(_)
         ) {
             bail!("future admission unexpectedly contended after capture refusal");
@@ -659,12 +723,14 @@ impl BridgeDriver {
             bail!("rejected capture retained a future membership obligation");
         }
         let service = self.service_mut()?;
-        service
-            .admission
-            .record_reconciliation(hidden, ReconciliationOutcome::Durable)?;
-        let permit = service.admission.release_permit(hidden)?;
-        service.coded_authority_mut().release(permit)?;
-        service.admission.release(hidden)?;
+        let certificate = release_certificate(service.topology.topology_epoch());
+        let authorization = service
+            .establish_release_authorization_for_test(&authoritative_release(hidden), &certificate)?
+            .context("lifecycle owner withheld rejected-capture release")?;
+        if authorization.operation() != hidden {
+            bail!("lifecycle owner authorized the wrong rejected-capture generation");
+        }
+        service.release(hidden)?;
         Ok(())
     }
 
@@ -938,26 +1004,11 @@ fn prepare_connect_clean_authorization<R: RecoveryStateStore>(
 fn commit_connect_clean<R: RecoveryStateStore>(
     service: &mut HealthyPortableService<FakeStore, R>,
     prepared: PreparedCodedCleanCommit,
-    certificate: FenceCertificate,
 ) -> Result<()> {
     let current = service.recovery.load_assembly_snapshot()?;
-    let proposed = prepared.snapshot().clone();
     let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
-    for region in proposed.dirty_regions.iter().copied() {
-        txn.push(RecoveryMutation::MarkRegionDirty {
-            region,
-            mutation_generation: current.generation,
-        });
-    }
-    txn.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
-    for region in proposed.dirty_regions.iter().copied() {
-        txn.push(RecoveryMutation::MarkRegionClean {
-            region,
-            through_generation: current.generation,
-        });
-    }
-    txn.push(RecoveryMutation::UpsertCodedCapture {
-        update: prepared.update(),
+    txn.push(RecoveryMutation::ApplyCodedTransition {
+        transition: prepared.transition(),
     });
     let receipt = service.recovery.commit_durable_receipt(txn)?;
     service
@@ -971,16 +1022,29 @@ fn commit_connect_later_cut<R: RecoveryStateStore>(
     service: &mut HealthyPortableService<FakeStore, R>,
     prepared: PreparedCodedLaterCut,
 ) -> Result<()> {
-    let current = service.recovery.load_assembly_snapshot()?;
-    let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
-    txn.push(RecoveryMutation::UpsertCodedCapture {
-        update: prepared.update(),
-    });
-    let receipt = service.recovery.commit_durable_receipt(txn)?;
+    let target = prepared.invalidation_target().clone();
+    commit_connect_later_cut_with_target(service, prepared, target)
+}
+
+fn commit_connect_later_cut_with_target<R: RecoveryStateStore>(
+    service: &mut HealthyPortableService<FakeStore, R>,
+    prepared: PreparedCodedLaterCut,
+    target: InvalidationTarget,
+) -> Result<()> {
+    let transition = prepared.transition();
+    let result = service
+        .checksums
+        .invalidate_with_write_recovery_record_and_coded_transitions(
+            &mut service.recovery,
+            target,
+            [transition],
+        )?;
+    let receipt = result
+        .receipt
+        .context("Connect later cut omitted its write-recovery receipt")?;
     service
         .coded_captures
         .confirm_later_cut(prepared, &receipt)?;
-    service.checksums.recovery_generation = receipt.generation();
     Ok(())
 }
 
@@ -1035,31 +1099,21 @@ fn persist_test_clean_resolution<R: RecoveryStateStore>(
     }
     match evaluate_recovery_clean(&current, &request, &certificate)? {
         RecoveryCleanDecision::Clear(permit) if clean => {
-            let (_, foreign_issuer) =
-                dwv_recovery::CodedCaptureCoordinator::new_with_lifecycle_evidence_issuer();
-            let foreign_included = capture
-                .membership
-                .iter()
-                .filter(|(_, membership)| **membership == CodedCaptureMembership::Included)
-                .map(|(operation, _)| foreign_issuer.live(*operation, certificate.clone()));
-            assert!(
-                service
-                    .coded_captures
-                    .authorize_clean(
-                        &current,
-                        CodedCaptureId(0),
-                        permit.clone(),
-                        foreign_included,
-                    )
-                    .is_err(),
-                "evidence from another coordinator authorized production CLEAN"
-            );
-            let evidence_issuer = service.coded_lifecycle_evidence_issuer;
             let included = capture
                 .membership
                 .iter()
                 .filter(|(_, membership)| **membership == CodedCaptureMembership::Included)
-                .map(|(operation, _)| evidence_issuer.live(*operation, certificate.clone()));
+                .map(|(operation, _)| {
+                    service
+                        .included_lifecycle_authorization_for_test(&authoritative_release(
+                            *operation,
+                        ))?
+                        .map(|authorization| (authorization, certificate.clone()))
+                        .context(
+                            "Connect CLEAN resolution requires production lifecycle-owner evidence",
+                        )
+                })
+                .collect::<Result<Vec<_>>>()?;
             let authorization = service.coded_captures.authorize_clean(
                 &current,
                 CodedCaptureId(0),
@@ -1068,23 +1122,8 @@ fn persist_test_clean_resolution<R: RecoveryStateStore>(
             )?;
             let prepared = service.coded_captures.prepare_clean_commit(authorization)?;
             let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
-            for region in capture.dirty_regions.iter().copied() {
-                txn.push(RecoveryMutation::MarkRegionDirty {
-                    region,
-                    mutation_generation: current.generation,
-                });
-            }
-            txn.push(RecoveryMutation::RecordDataParityFence {
-                fence: certificate.clone(),
-            });
-            for region in capture.dirty_regions.iter().copied() {
-                txn.push(RecoveryMutation::MarkRegionClean {
-                    region,
-                    through_generation: current.generation,
-                });
-            }
-            txn.push(RecoveryMutation::UpsertCodedCapture {
-                update: prepared.update(),
+            txn.push(RecoveryMutation::ApplyCodedTransition {
+                transition: prepared.transition(),
             });
             let receipt = service.recovery.commit_durable_receipt(txn)?;
             service
@@ -1097,8 +1136,8 @@ fn persist_test_clean_resolution<R: RecoveryStateStore>(
                 .coded_captures
                 .prepare_clean_refusal(CodedCaptureId(0), &receipt)?;
             let mut txn = RecoveryTxn::new(current.generation, service.topology.topology_epoch());
-            txn.push(RecoveryMutation::UpsertCodedCapture {
-                update: prepared.update(),
+            txn.push(RecoveryMutation::ApplyCodedTransition {
+                transition: prepared.transition(),
             });
             let receipt = service.recovery.commit_durable_receipt(txn)?;
             service
@@ -1194,6 +1233,145 @@ fn unit_name(unit: CodedUnitId) -> String {
     format!("u{}", unit.0)
 }
 
+#[test]
+fn coded_admission_rejects_claim_for_another_request() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let range = ByteRange::new(0, BLOCK as u64).unwrap();
+    let operation = service
+        .reserve(request(
+            RequestId(949),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            range,
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_claim(&service, operation, 0, [range]).unwrap();
+    let error = service.coded_admit(operation, claim).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("not bound to the admitted request")
+    );
+    assert!(service.coded_authority().active_claim(operation).is_none());
+}
+
+#[test]
+fn coded_admission_rejects_claim_from_foreign_topology_owner() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let range = ByteRange::new(0, BLOCK as u64).unwrap();
+    let request = request(
+        RequestId(950),
+        TopologyEpoch(4),
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let operation = service.reserve(request).unwrap();
+    let assignments = service
+        .topology
+        .assignments()
+        .iter()
+        .map(|assignment| {
+            TopologyAssignment::new(
+                assignment.slot_id(),
+                assignment.role(),
+                assignment.coding_position(),
+                assignment.assignment_instance(),
+                AssignmentGeneration(2),
+            )
+        })
+        .collect();
+    let foreign_topology = TopologySnapshot::new(
+        service.topology.array_id(),
+        service.topology.topology_epoch(),
+        service.topology.profile(),
+        service.topology.geometry(),
+        assignments,
+    )
+    .unwrap();
+    let foreign_assignment = foreign_topology
+        .assignment_for_slot(request.slot_id)
+        .cloned()
+        .unwrap();
+    let foreign_owner =
+        CodedGeometryOwner::new(foreign_topology, DIRTY_REGION_BYTES, BLAKE3_256_PROFILE).unwrap();
+    let claim = foreign_owner
+        .claim_for_mutation(operation, request, &foreign_assignment, [range])
+        .unwrap();
+
+    let error = service.coded_admit(operation, claim).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("current topology and geometry owner")
+    );
+    assert!(service.coded_authority().active_claim(operation).is_none());
+}
+
+#[test]
+fn paired_range_rejects_claim_from_foreign_geometry_owner() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let range = ByteRange::new(DIRTY_REGION_BYTES / 2, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(951),
+        TopologyEpoch(4),
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let operation = service.reserve(request).unwrap();
+    let assignment = service
+        .topology
+        .assignment_for_slot(request.slot_id)
+        .cloned()
+        .unwrap();
+    let canonical_claim = service
+        .coded_geometry
+        .claim_for_mutation(operation, request, &assignment, [range])
+        .unwrap();
+    let foreign_owner = CodedGeometryOwner::new(
+        service.topology.clone(),
+        DIRTY_REGION_BYTES / 2,
+        BLAKE3_256_PROFILE,
+    )
+    .unwrap();
+    let foreign_claim = foreign_owner
+        .claim_for_mutation(operation, request, &assignment, [range])
+        .unwrap();
+
+    let mut canonical_range = CodedRangeAuthority::new(&service.coded_geometry);
+    let CodedAdmissionOutcome::Admitted(canonical_admission) = canonical_range
+        .admit(operation, request, canonical_claim)
+        .unwrap()
+    else {
+        panic!("canonical claim unexpectedly contended");
+    };
+    let mut foreign_range = CodedRangeAuthority::new(&foreign_owner);
+    let CodedAdmissionOutcome::Admitted(foreign_admission) = foreign_range
+        .admit(operation, request, foreign_claim.clone())
+        .unwrap()
+    else {
+        panic!("foreign claim unexpectedly contended in its own graph");
+    };
+    assert_ne!(
+        canonical_admission.invalidation_target(),
+        foreign_admission.invalidation_target()
+    );
+
+    assert_eq!(
+        service
+            .coded_captures
+            .range_mut()
+            .admit(operation, request, foreign_claim),
+        Err(CodedAuthorityError::ForeignGeometryAuthority)
+    );
+    assert!(service.coded_authority().active_claim(operation).is_none());
+}
+
 fn model_membership(membership: CodedCaptureMembership) -> ModelMembership {
     match membership {
         CodedCaptureMembership::Included => ModelMembership::CaptureIncluded,
@@ -1223,10 +1401,9 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&service, old, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(old, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(old, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     // Lifecycle composition produces the only exact-generation release permit.
@@ -1249,10 +1426,9 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
         .unwrap();
     assert_eq!(old.index, current.index);
     assert_ne!(old.generation, current.generation);
+    let claim = issued_coded_unit_claim(&service, current, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(current, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(current, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     let error = service
@@ -1260,6 +1436,51 @@ fn coded_release_certificate_survives_slot_cleanup_and_rejects_stale_generation(
         .unwrap_err();
     assert!(error.to_string().contains("does not match"), "{error}");
     assert!(service.coded_authority().active_claim(current).is_some());
+}
+
+#[test]
+fn coded_release_rejects_authorization_from_foreign_owner_domain() {
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let operation = service
+        .reserve(request(
+            RequestId(9_503),
+            TopologyEpoch(4),
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).expect("bounded coded release range"),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+    assert!(matches!(
+        service.coded_admit(operation, claim).unwrap(),
+        CodedAdmissionOutcome::Admitted(_)
+    ));
+    service
+        .admission
+        .record_reconciliation(operation, ReconciliationOutcome::Durable)
+        .unwrap();
+    let permit = service.admission.release_permit(operation).unwrap();
+    let (foreign_owner, _) = LifecycleAuthorityOwner::new();
+    let authorization = foreign_owner
+        .authorize_release(
+            service.admission.lifecycle_slots(),
+            operation,
+            true,
+            true,
+            true,
+            true,
+        )
+        .expect("foreign lifecycle owner sees complete facts in its own domain");
+    let authorization = ReleaseAuthorization::from_lifecycle(authorization);
+
+    assert!(matches!(
+        service
+            .coded_captures
+            .prepare_release(&authorization, permit),
+        Err(CodedAuthorityError::ReleaseAuthorityDomainMismatch(found)) if found == operation
+    ));
+    assert!(service.coded_authority().active_claim(operation).is_some());
 }
 #[test]
 fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup() {
@@ -1275,10 +1496,9 @@ fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup(
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(operation, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
 
@@ -1290,9 +1510,8 @@ fn coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup(
         .expect("complete lifecycle facts authorize coded release");
     assert_eq!(authorization.operation(), operation);
 
-    let error = service
-        .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(1)]))
-        .unwrap_err();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+    let error = service.coded_admit(operation, claim).unwrap_err();
     assert!(
         error
             .to_string()
@@ -1334,10 +1553,9 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(operation, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     service
@@ -1435,10 +1653,9 @@ fn reopened_refusal_lost_ack_installs_neither_candidate_until_reopen() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(operation, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     service
@@ -1518,10 +1735,9 @@ fn started_lost_ack_coded_service(
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        service
-            .coded_admit(operation, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        service.coded_admit(operation, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     service
@@ -1829,10 +2045,9 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&capture_first, later, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        capture_first
-            .coded_admit(later, CodedClaimInput::mapped([CodedUnitId(1)]))
-            .unwrap(),
+        capture_first.coded_admit(later, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     assert_eq!(
@@ -1856,10 +2071,9 @@ fn coded_capture_and_admission_linearize_at_service_boundary() {
             DurabilityIntent::Ordinary,
         ))
         .unwrap();
+    let claim = issued_coded_unit_claim(&admit_first, included, [CodedUnitId(0)]).unwrap();
     assert!(matches!(
-        admit_first
-            .coded_admit(included, CodedClaimInput::mapped([CodedUnitId(0)]))
-            .unwrap(),
+        admit_first.coded_admit(included, claim).unwrap(),
         CodedAdmissionOutcome::Admitted(_)
     ));
     admit_first
@@ -2123,6 +2337,27 @@ fn coded_range_connect_rejects_false_projections() {
         "admissionStep",
         5,
     ));
+}
+
+#[test]
+fn coded_range_connect_rejects_later_cut_outside_write_recovery_target() {
+    let mut driver = BridgeDriver::new();
+    driver.init();
+    driver.admit("opA", &[0]).unwrap();
+    driver.start_capture().unwrap();
+    driver.admit("opC", &[1]).unwrap();
+    let prepared = driver.prepare_later_cut().unwrap();
+    let mismatched_target = InvalidationTarget::new(vec![RegionId(1)], vec![IntegrityExtentId(0)]);
+
+    assert!(
+        commit_connect_later_cut_with_target(
+            driver.service_mut().unwrap(),
+            prepared,
+            mismatched_target,
+        )
+        .is_err(),
+        "Connect accepted a later cut outside the production write-recovery target"
+    );
 }
 #[test]
 
@@ -2416,26 +2651,35 @@ mod generated_coded_operation_properties {
             }
         }
 
-        fn reserve(&mut self, data_slot: u8) -> OperationSlotToken {
+        fn reserve(&mut self, data_slot: u8, claim: ClaimKind) -> OperationSlotToken {
             let request_id = RequestId(20_000 + self.next_request_id);
             self.next_request_id += 1;
+            let units = claim.units();
+            let first = units.first().expect("generated claim is non-empty").0;
+            let last = units.last().expect("generated claim is non-empty").0;
             self.service
                 .reserve(request(
                     request_id,
                     TopologyEpoch(4),
                     usize::from(data_slot),
                     BlockOp::Write,
-                    ByteRange::new(0, BLOCK as u64).expect("bounded generated range"),
+                    ByteRange::new(
+                        first * u64::from(BLOCK),
+                        (last - first + 1) * u64::from(BLOCK),
+                    )
+                    .expect("bounded generated range"),
                     DurabilityIntent::Ordinary,
                 ))
                 .expect("generated operation admission")
         }
 
         fn admit(&mut self, operation: u8, data_slot: u8, claim: ClaimKind) {
-            let token = self.reserve(data_slot);
+            let token = self.reserve(data_slot, claim);
+            let input = issued_coded_unit_claim(&self.service, token, claim.units())
+                .expect("generated coded claim");
             assert!(matches!(
                 self.service
-                    .coded_admit(token, CodedClaimInput::mapped(claim.units()))
+                    .coded_admit(token, input)
                     .expect("generated coded admission"),
                 CodedAdmissionOutcome::Admitted(_)
             ));
@@ -2447,10 +2691,12 @@ mod generated_coded_operation_properties {
         }
 
         fn contend(&mut self, _operation: u8, data_slot: u8, claim: ClaimKind) {
-            let token = self.reserve(data_slot);
+            let token = self.reserve(data_slot, claim);
+            let input = issued_coded_unit_claim(&self.service, token, claim.units())
+                .expect("generated coded claim");
             assert_eq!(
                 self.service
-                    .coded_admit(token, CodedClaimInput::mapped(claim.units()))
+                    .coded_admit(token, input)
                     .expect("generated contention admission"),
                 CodedAdmissionOutcome::Contended
             );

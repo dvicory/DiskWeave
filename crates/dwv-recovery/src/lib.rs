@@ -6,12 +6,48 @@
 //! SQLite layout or durability configuration.
 
 use dwv_core::{FenceDomain, TopologyEpoch};
+#[doc = r#"
+An exact-generation Included-operation lifecycle capability.
+
+Ordinary recovery consumers cannot synthesize one:
+
+```compile_fail
+use dwv_recovery::IncludedLifecycleAuthorization;
+use dwv_store::OperationSlotToken;
+
+fn mint(operation: OperationSlotToken) -> IncludedLifecycleAuthorization {
+    IncludedLifecycleAuthorization {
+        operation,
+        released: false,
+    }
+}
+```
+
+```compile_fail
+use dwv_lifecycle_authority::LifecycleAuthorityOwner;
+use dwv_recovery::CodedRangeAuthority;
+
+let (_, verifier) = LifecycleAuthorityOwner::new();
+let _ = CodedRangeAuthority::new_with_lifecycle_authority(verifier);
+```
+
+```compile_fail
+use dwv_lifecycle_authority::LifecycleAuthorityOwner;
+use dwv_recovery::CodedCaptureCoordinator;
+
+let (_, verifier) = LifecycleAuthorityOwner::new();
+let _ = CodedCaptureCoordinator::new_with_lifecycle_authority(verifier);
+```
+"#]
+pub use dwv_lifecycle_authority::IncludedLifecycleAuthorization;
 use dwv_store::{StoreFenceRef, StoreId};
 use std::fmt;
 
 mod baseline;
 mod coded_authority;
 mod coded_clean;
+mod coded_geometry;
+mod coded_lifecycle;
 mod extent;
 mod generation;
 mod inspection;
@@ -40,20 +76,20 @@ pub use coded_authority::{
 };
 pub use coded_clean::{
     CodedCaptureCleanAuthorization, CodedCaptureCoordinator, CodedCaptureCut, CodedCaptureDecision,
-    CodedCaptureError, CodedCaptureFrontier, CodedCaptureId, CodedCaptureLifecycleOwner,
-    CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
-    CodedCaptureReconciliationReceipt, CodedCaptureRemoval, CodedCaptureRetentionOwner,
-    CodedCaptureSnapshot, CodedCaptureUpdate, CodedCleanAttempt, CodedCleanAttemptPhase,
-    CodedCleanCommitObservation, CodedCleanKnownCleanupAuthorization, CodedCleanReconciliation,
-    CodedGeometryOwner, CodedIncludedOperationEvidence,
-    CodedInheritedCaptureAbandonmentAuthorization, CodedLaterCutAttempt, CodedLaterCutAttemptPhase,
-    CodedLaterCutObservation, CodedLaterCutReconciliation, CodedLifecycleEvidenceIssuer,
+    CodedCaptureError, CodedCaptureFrontier, CodedCaptureId, CodedCaptureMembership,
+    CodedCaptureOwnerFacts, CodedCapturePhase, CodedCaptureReconciliationReceipt,
+    CodedCaptureRetentionOwner, CodedCaptureSnapshot, CodedCaptureTransition, CodedCleanAttempt,
+    CodedCleanAttemptPhase, CodedCleanCommitObservation, CodedCleanKnownCleanupAuthorization,
+    CodedCleanReconciliation, CodedInheritedCaptureAbandonmentAuthorization, CodedLaterCutAttempt,
+    CodedLaterCutAttemptPhase, CodedLaterCutObservation, CodedLaterCutReconciliation,
     CodedMembershipCompactionAuthorization, CodedRefusedCleanupAuthorization,
     CodedReopenResolution, PreparedCodedCaptureUpdates, PreparedCodedCleanCommit,
     PreparedCodedCleanKnownCleanup, PreparedCodedInheritedCaptureAbandonment,
     PreparedCodedLaterCut, PreparedCodedMembershipCompaction, PreparedCodedRefusal,
     PreparedCodedRefusedCleanup, ValidatedCodedCaptureScope,
 };
+pub use coded_geometry::CodedGeometryOwner;
+pub use coded_lifecycle::{CodedIncludedAuthority, CodedLifecycleAuthority, CodedReleaseAuthority};
 pub use extent::{ChecksumExtent, ChecksumTarget, ExtentError};
 pub use generation::{GenerationCapture, RecoveryGeneration};
 pub use inspection::{
@@ -389,55 +425,70 @@ impl DurableRecoveryCommit {
         self.topology_epoch
     }
 
-    pub fn committed_coded_capture(&self, snapshot: &CodedCaptureSnapshot) -> bool {
+    pub(crate) fn committed_coded_capture(&self, snapshot: &CodedCaptureSnapshot) -> bool {
         self.mutations.iter().any(|mutation| {
             matches!(
                 mutation,
-                RecoveryMutation::UpsertCodedCapture { update }
-                    if update.proposed() == snapshot
+                RecoveryMutation::ApplyCodedTransition { transition }
+                    if transition.contains_capture(snapshot)
             )
         })
     }
 
-    pub fn committed_coded_capture_removal(&self, expected: &CodedCaptureRemoval) -> bool {
+    pub(crate) fn committed_coded_transition(&self, expected: &CodedCaptureTransition) -> bool {
         self.mutations.iter().any(|mutation| {
             matches!(
                 mutation,
-                RecoveryMutation::RemoveCodedCapture { removal }
-                    if removal == expected
+                RecoveryMutation::ApplyCodedTransition { transition }
+                    if transition == expected
             )
         })
     }
 
-    pub fn committed_region_dirty(
+    pub(crate) fn committed_coded_capture_removal(
+        &self,
+        expected: &coded_clean::CodedCaptureRemoval,
+    ) -> bool {
+        self.mutations.iter().any(|mutation| {
+            matches!(
+                mutation,
+                RecoveryMutation::ApplyCodedTransition { transition }
+                    if transition.contains_removal(expected)
+            )
+        })
+    }
+
+    pub(crate) fn committed_region_dirty(
         &self,
         region: RegionId,
         mutation_generation: RecoveryGeneration,
     ) -> bool {
-        self.mutations.iter().any(|mutation| {
-            matches!(
-                mutation,
-                RecoveryMutation::MarkRegionDirty {
-                    region: observed_region,
-                    mutation_generation: observed_generation,
-                } if *observed_region == region && *observed_generation == mutation_generation
-            )
+        self.mutations.iter().any(|mutation| match mutation {
+            RecoveryMutation::MarkRegionDirty {
+                region: observed_region,
+                mutation_generation: observed_generation,
+            } => *observed_region == region && *observed_generation == mutation_generation,
+            RecoveryMutation::ApplyCodedTransition { transition } => {
+                transition.contains_region_dirty(region, mutation_generation)
+            }
+            _ => false,
         })
     }
 
-    pub fn committed_integrity_stale(
+    pub(crate) fn committed_integrity_stale(
         &self,
         extent: IntegrityExtentId,
         stale_generation: RecoveryGeneration,
     ) -> bool {
-        self.mutations.iter().any(|mutation| {
-            matches!(
-                mutation,
-                RecoveryMutation::MarkIntegrityStale {
-                    extent: observed_extent,
-                    stale_generation: observed_generation,
-                } if *observed_extent == extent && *observed_generation == stale_generation
-            )
+        self.mutations.iter().any(|mutation| match mutation {
+            RecoveryMutation::MarkIntegrityStale {
+                extent: observed_extent,
+                stale_generation: observed_generation,
+            } => *observed_extent == extent && *observed_generation == stale_generation,
+            RecoveryMutation::ApplyCodedTransition { transition } => {
+                transition.contains_integrity_stale(extent, stale_generation)
+            }
+            _ => false,
         })
     }
 }
@@ -805,6 +856,8 @@ pub enum TransitionError {
     CodedCaptureClosureMismatch,
     CodedCaptureMissing,
     CodedCaptureTopologyMismatch,
+    CodedSemanticTransitionIncomplete,
+    CodedSemanticTransactionConflict,
 }
 
 impl fmt::Display for RecoveryError {
@@ -907,11 +960,8 @@ pub enum RecoveryMutation {
     CompleteOfflineRebuild {
         receipt: RebuildCompletionReceipt,
     },
-    UpsertCodedCapture {
-        update: CodedCaptureUpdate,
-    },
-    RemoveCodedCapture {
-        removal: CodedCaptureRemoval,
+    ApplyCodedTransition {
+        transition: CodedCaptureTransition,
     },
 }
 
@@ -937,6 +987,41 @@ impl RecoveryTxn {
     pub fn push(&mut self, mutation: RecoveryMutation) -> &mut Self {
         self.mutations.push(mutation);
         self
+    }
+
+    fn validate_coded_composition(&self) -> Result<(), RecoveryError> {
+        let has_coded_transition = self
+            .mutations
+            .iter()
+            .any(|mutation| matches!(mutation, RecoveryMutation::ApplyCodedTransition { .. }));
+        if !has_coded_transition {
+            return Ok(());
+        }
+        if self
+            .mutations
+            .iter()
+            .any(|mutation| !matches!(mutation, RecoveryMutation::ApplyCodedTransition { .. }))
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::CodedSemanticTransactionConflict,
+            ));
+        }
+        for (index, mutation) in self.mutations.iter().enumerate() {
+            let RecoveryMutation::ApplyCodedTransition { transition } = mutation else {
+                unreachable!("mixed coded transaction rejected above");
+            };
+            for other in &self.mutations[index + 1..] {
+                let RecoveryMutation::ApplyCodedTransition { transition: other } = other else {
+                    unreachable!("mixed coded transaction rejected above");
+                };
+                if transition.conflicts_with(other) {
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::CodedSemanticTransactionConflict,
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn mark_region_dirty(
@@ -1417,56 +1502,8 @@ impl MemoryRecoveryStore {
                     .apply_completion_receipt(receipt, snapshot.generation)
                     .map_err(RecoveryError::Rebuild)?;
             }
-            RecoveryMutation::UpsertCodedCapture { update } => {
-                let capture_snapshot = update.proposed().clone();
-                if capture_snapshot.topology.topology_epoch() != expected_topology_epoch
-                    || !capture_snapshot.validates_internal_state()
-                {
-                    return Err(RecoveryError::InvalidTransition(
-                        TransitionError::CodedCaptureTopologyMismatch,
-                    ));
-                }
-                let existing_index = snapshot
-                    .coded_captures
-                    .iter()
-                    .position(|existing| existing.capture == capture_snapshot.capture);
-                match (existing_index, update.expected()) {
-                    (Some(index), Some(expected))
-                        if snapshot.coded_captures.get(index) == Some(expected) =>
-                    {
-                        snapshot.coded_captures[index] = capture_snapshot;
-                    }
-                    (None, None)
-                        if capture_snapshot.capture.0 == snapshot.next_coded_capture_id =>
-                    {
-                        snapshot.next_coded_capture_id = snapshot
-                            .next_coded_capture_id
-                            .checked_add(1)
-                            .ok_or(RecoveryError::GenerationExhausted)?;
-                        snapshot.coded_captures.push(capture_snapshot);
-                    }
-                    _ => {
-                        return Err(RecoveryError::InvalidTransition(
-                            TransitionError::CodedCaptureIdentityMismatch,
-                        ));
-                    }
-                }
-            }
-            RecoveryMutation::RemoveCodedCapture { removal } => {
-                let expected = removal.expected();
-                let index = snapshot
-                    .coded_captures
-                    .iter()
-                    .position(|existing| existing == expected)
-                    .ok_or(RecoveryError::InvalidTransition(
-                        TransitionError::CodedCaptureMissing,
-                    ))?;
-                if !removal.validates_clean_closure(snapshot) {
-                    return Err(RecoveryError::InvalidTransition(
-                        TransitionError::CodedCaptureClosureMismatch,
-                    ));
-                }
-                snapshot.coded_captures.remove(index);
+            RecoveryMutation::ApplyCodedTransition { transition } => {
+                transition.apply(snapshot, expected_topology_epoch)?;
             }
         }
         Ok(())
@@ -1509,6 +1546,8 @@ impl RecoveryStateStore for MemoryRecoveryStore {
                 actual: self.snapshot.topology_epoch,
             });
         }
+
+        txn.validate_coded_composition()?;
 
         let mut candidate = self.snapshot.clone();
         for mutation in txn.mutations {

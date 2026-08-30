@@ -28,7 +28,35 @@ pub use dwv_transaction_ref::{
     CodedAdmissionOutcome, CodedAuthorityError, CodedClaim, CodedClaimInput, CodedClaimRelease,
     CodedOperationPhase, CodedRangeAuthority,
 };
-pub use evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim, ReleaseAuthorization};
+#[doc = r#"
+An exact-generation release capability produced by the service lifecycle owner.
+
+Ordinary consumers cannot mint one from a slot token or promote the lower
+lifecycle signing primitive:
+
+```compile_fail
+use dwv_service::ReleaseAuthorization;
+use dwv_store::OperationSlotToken;
+
+fn mint(operation: OperationSlotToken) -> ReleaseAuthorization {
+    ReleaseAuthorization { operation }
+}
+```
+
+```compile_fail
+fn promote(
+    authorization: dwv_lifecycle_authority::ReleaseAuthorization,
+) -> dwv_service::ReleaseAuthorization {
+    authorization
+}
+```
+
+```compile_fail
+use dwv_service::IncludedLifecycleAuthorization;
+```
+"#]
+pub use evidence::ReleaseAuthorization;
+pub use evidence::{CompletionEvidence, OperationEvidence, PersistenceClaim};
 pub use failure::{FailureClass, ServiceError};
 pub use lifecycle::ServiceState;
 pub use metadata_loss::classify_metadata_loss_verification;

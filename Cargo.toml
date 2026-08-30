@@ -12,6 +12,7 @@ members = [
     "crates/dwv-core",
     "crates/dwv-codec",
     "crates/dwv-store",
+    "crates/dwv-lifecycle-authority",
     "crates/dwv-sim",
     "crates/dwv-recovery",
     "crates/dwv-recovery-sqlite",

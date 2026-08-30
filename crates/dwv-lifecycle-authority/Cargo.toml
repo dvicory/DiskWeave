@@ -1,0 +1,8 @@
+[package]
+name = "dwv-lifecycle-authority"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+dwv-store = { path = "../dwv-store" }

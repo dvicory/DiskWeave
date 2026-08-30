@@ -838,7 +838,17 @@ fn coded_claim_mapping_matches_independent_codeword_overlap_oracle() {
                     cursor = chunk_end;
                 }
                 let plan = crate::range::RangePlan { ranges };
-                let actual = service.coded_claim_for_plan(&plan).unwrap();
+                let request = request(
+                    RequestId(9_000),
+                    TopologyEpoch(4),
+                    0,
+                    BlockOp::Write,
+                    ByteRange::new(start * block, block_count * block).unwrap(),
+                    DurabilityIntent::Ordinary,
+                );
+                let actual = service
+                    .coded_claim_for_plan(0, request, &plan, OperationSlotToken::new(0, 1))
+                    .unwrap();
                 let expected = (0..8)
                     .filter(|unit| {
                         let unit_start = unit * block;
@@ -1119,6 +1129,89 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
     assert_eq!(evidence.request, contender.request);
     assert!(service.coded_captures().snapshots().is_empty());
     assert!(service.recovery.snapshot().coded_captures.is_empty());
+}
+
+#[test]
+fn coded_capture_capacity_parks_admitted_write_until_retirement_progresses() {
+    let epoch = TopologyEpoch(4);
+    let separation = DIRTY_REGION_BYTES.max(BLAKE3_256_PROFILE.extent_size);
+    let mut service = fake_service_with_length(2 * separation);
+    service.config.max_coded_captures = 1;
+    let first_range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let second_range = ByteRange::new(separation, u64::from(BLOCK)).unwrap();
+
+    let holder = service
+        .submit_write(
+            request(
+                RequestId(427),
+                epoch,
+                0,
+                BlockOp::Write,
+                first_range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x41; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&holder).unwrap();
+    let PortableWriteDrive::Work(holder_basis) = service.drive_write(&holder).unwrap() else {
+        panic!("holder should establish the only retained capture");
+    };
+
+    let waiting = service
+        .submit_write(
+            request(
+                RequestId(428),
+                epoch,
+                0,
+                BlockOp::Write,
+                second_range,
+                DurabilityIntent::Ordinary,
+            ),
+            &[0x42; BLOCK as usize],
+        )
+        .unwrap();
+    service.grant_basis_read_permission(&waiting).unwrap();
+    assert_eq!(
+        service.drive_write(&waiting).unwrap(),
+        PortableWriteDrive::Wait(PortableWriteWait::CodedCaptureCapacity)
+    );
+    assert_eq!(service.state(), ServiceState::Serving);
+    let admission_sequence = service
+        .coded_authority()
+        .admission(waiting.operation)
+        .unwrap()
+        .sequence();
+    let waiting_driver = service.write_drivers[usize::try_from(waiting.operation.index).unwrap()]
+        .as_ref()
+        .unwrap();
+    assert!(waiting_driver.coded_admitted);
+    assert!(!waiting_driver.failed);
+    assert!(waiting_driver.clean_capture.is_none());
+
+    service.accept_write_work(&holder_basis).unwrap();
+    let holder_basis_result = service.execute_write_work(&holder_basis).unwrap();
+    assert!(
+        service
+            .deliver_write_result(holder_basis_result)
+            .unwrap()
+            .is_none()
+    );
+    finish_retained_write(&mut service, &holder);
+    assert!(service.coded_captures().snapshots().is_empty());
+
+    let PortableWriteDrive::Work(waiting_basis) = service.drive_write(&waiting).unwrap() else {
+        panic!("capacity-blocked write should resume from its retained admission");
+    };
+    assert_eq!(waiting_basis.submission.operation, waiting.operation);
+    assert_eq!(
+        service
+            .coded_authority()
+            .admission(waiting.operation)
+            .unwrap()
+            .sequence(),
+        admission_sequence
+    );
 }
 
 #[test]
@@ -1897,7 +1990,8 @@ fn rejected_coded_release_commit_retries_before_slot_reuse() {
     assert!(
         harness
             .service
-            .coded_authority
+            .coded_captures
+            .range()
             .operation_phase(harness.submission.operation)
             .is_some()
     );
@@ -1912,7 +2006,8 @@ fn rejected_coded_release_commit_retries_before_slot_reuse() {
     assert!(
         harness
             .service
-            .coded_authority
+            .coded_captures
+            .range()
             .operation_phase(harness.submission.operation)
             .is_none()
     );
@@ -3547,6 +3642,91 @@ fn cleanup_failure_and_success_do_not_revoke_authorization() {
         .unwrap();
     assert!(unrelated.release_authorization.is_none());
     assert_eq!(service.release_authorization(token), Some(&authorization));
+}
+#[test]
+fn lifecycle_owner_withholds_authority_from_every_incomplete_fact_set() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let admitted = request(
+        RequestId(6_501),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    service.inject_terminalization_failure(TerminalizationFault::Reclaim);
+    write_with_test_clean_capture(&mut service, admitted, &[0x65; BLOCK as usize]).unwrap_err();
+    let operation = OperationSlotToken::new(0, 1);
+
+    assert!(
+        service
+            .lifecycle_authority
+            .authorize_release(
+                service.admission.lifecycle_slots(),
+                operation,
+                true,
+                true,
+                true,
+                true,
+            )
+            .is_some()
+    );
+    for (effect, transaction, recovery, basis) in [
+        (false, true, true, true),
+        (true, false, true, true),
+        (true, true, false, true),
+        (true, true, true, false),
+    ] {
+        assert!(
+            service
+                .lifecycle_authority
+                .authorize_release(
+                    service.admission.lifecycle_slots(),
+                    operation,
+                    effect,
+                    transaction,
+                    recovery,
+                    basis,
+                )
+                .is_none()
+        );
+    }
+    assert!(
+        service
+            .lifecycle_authority
+            .authorize_included_live(service.admission.lifecycle_slots(), operation, false)
+            .is_none()
+    );
+
+    let mut incomplete = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let incomplete_operation = incomplete.reserve(admitted).unwrap();
+    assert!(
+        incomplete
+            .lifecycle_authority
+            .authorize_release(
+                incomplete.admission.lifecycle_slots(),
+                incomplete_operation,
+                true,
+                true,
+                true,
+                true,
+            )
+            .is_none(),
+        "a token without terminal child, reconciliation, and Reclaimable state is insufficient"
+    );
+    assert!(
+        incomplete
+            .lifecycle_authority
+            .authorize_included_live(
+                incomplete.admission.lifecycle_slots(),
+                incomplete_operation,
+                true,
+            )
+            .is_none(),
+        "a token without exact live finalization is insufficient"
+    );
 }
 
 #[test]

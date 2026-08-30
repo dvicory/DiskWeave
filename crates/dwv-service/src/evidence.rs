@@ -1,7 +1,53 @@
 use dwv_core::{BlockRequest, ByteRange};
+use dwv_lifecycle_authority::{
+    IncludedLifecycleAuthorization as LifecycleIncludedAuthorization,
+    ReleaseAuthorization as LifecycleReleaseAuthorization,
+};
+use dwv_recovery::{CodedIncludedAuthority, CodedReleaseAuthority};
 use dwv_store::{
     CompletedRangeSet, CompletionDisposition, OperationSlotToken, PersistenceEvidence,
 };
+/// Exact-generation release capability composed by the healthy service.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReleaseAuthorization {
+    lifecycle: LifecycleReleaseAuthorization,
+}
+
+impl ReleaseAuthorization {
+    pub(crate) const fn from_lifecycle(lifecycle: LifecycleReleaseAuthorization) -> Self {
+        Self { lifecycle }
+    }
+
+    pub const fn operation(&self) -> OperationSlotToken {
+        self.lifecycle.operation()
+    }
+    pub(crate) const fn lifecycle(&self) -> &LifecycleReleaseAuthorization {
+        &self.lifecycle
+    }
+}
+
+impl CodedReleaseAuthority for ReleaseAuthorization {
+    fn lifecycle_release(&self) -> &LifecycleReleaseAuthorization {
+        &self.lifecycle
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IncludedLifecycleAuthorization {
+    lifecycle: LifecycleIncludedAuthorization,
+}
+
+impl IncludedLifecycleAuthorization {
+    pub(crate) const fn from_lifecycle(lifecycle: LifecycleIncludedAuthorization) -> Self {
+        Self { lifecycle }
+    }
+}
+
+impl CodedIncludedAuthority for IncludedLifecycleAuthorization {
+    fn lifecycle_included(&self) -> &LifecycleIncludedAuthorization {
+        &self.lifecycle
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PersistenceClaim {
@@ -94,23 +140,6 @@ pub(crate) struct ReleaseReconciliation {
     pub(crate) requirement: ReleaseRequirement,
     pub(crate) recovery: RecoveryReconciliation,
     pub(crate) basis: BasisConformance,
-}
-
-/// Immutable service-level proof that the lifecycle owner found all seven
-/// required observations for one exact operation generation.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReleaseAuthorization {
-    operation: OperationSlotToken,
-}
-
-impl ReleaseAuthorization {
-    pub(crate) const fn issue_from_lifecycle_owner(operation: OperationSlotToken) -> Self {
-        Self { operation }
-    }
-
-    pub const fn operation(&self) -> OperationSlotToken {
-        self.operation
-    }
 }
 
 /// dwv:req req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics

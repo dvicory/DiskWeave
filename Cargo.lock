@@ -689,11 +689,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dwv-lifecycle-authority"
+version = "0.1.0"
+dependencies = [
+ "dwv-store",
+]
+
+[[package]]
 name = "dwv-recovery"
 version = "0.1.0"
 dependencies = [
  "blake3",
  "dwv-core",
+ "dwv-lifecycle-authority",
  "dwv-store",
  "serde",
 ]
@@ -717,6 +725,7 @@ dependencies = [
  "blake3",
  "dwv-codec",
  "dwv-core",
+ "dwv-lifecycle-authority",
  "dwv-recovery",
  "dwv-store",
  "dwv-store-file",

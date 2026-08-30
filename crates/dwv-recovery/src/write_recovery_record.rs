@@ -1,9 +1,9 @@
 //! Durable write-recovery record operations over the recovery-state adapter.
 
 use crate::{
-    DurableRecoveryCommit, InvalidationTarget, RecoveryCommitObservation, RecoveryError,
-    RecoveryGeneration, RecoveryMutation, RecoveryStateStore, WriteRecoveryRecordDecision,
-    WriteRecoveryRecordEvidence, assess_write_recovery_record,
+    CodedCaptureTransition, DurableRecoveryCommit, InvalidationTarget, RecoveryCommitObservation,
+    RecoveryError, RecoveryGeneration, RecoveryMutation, RecoveryStateStore, TransitionError,
+    WriteRecoveryRecordDecision, WriteRecoveryRecordEvidence, assess_write_recovery_record,
 };
 use dwv_core::TopologyEpoch;
 
@@ -12,7 +12,7 @@ pub struct WriteRecoveryRecordCommit<'a, S: RecoveryStateStore + ?Sized> {
     topology_epoch: TopologyEpoch,
     expected_generation: RecoveryGeneration,
     target: InvalidationTarget,
-    additional_mutations: Vec<RecoveryMutation>,
+    additional_coded_transitions: Vec<CodedCaptureTransition>,
 }
 
 pub struct WriteRecoveryRecordCommitResult {
@@ -32,12 +32,15 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
             topology_epoch,
             expected_generation,
             target,
-            additional_mutations: Vec::new(),
+            additional_coded_transitions: Vec::new(),
         }
     }
 
-    pub fn with_mutations(mut self, mutations: impl IntoIterator<Item = RecoveryMutation>) -> Self {
-        self.additional_mutations.extend(mutations);
+    pub fn with_coded_transitions(
+        mut self,
+        transitions: impl IntoIterator<Item = CodedCaptureTransition>,
+    ) -> Self {
+        self.additional_coded_transitions.extend(transitions);
         self
     }
 
@@ -58,7 +61,7 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
     pub fn commit_with_receipt(self) -> Result<WriteRecoveryRecordCommitResult, RecoveryError> {
         let decision = self.assess()?;
         let already_covered = matches!(&decision, WriteRecoveryRecordDecision::AlreadyCovered(_));
-        if self.additional_mutations.is_empty()
+        if self.additional_coded_transitions.is_empty()
             && let WriteRecoveryRecordDecision::AlreadyCovered(coverage) = decision
         {
             return Ok(WriteRecoveryRecordCommitResult {
@@ -75,16 +78,26 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
         let mut txn = self
             .store
             .begin_protocol_txn(self.expected_generation, self.topology_epoch);
-        if !already_covered {
-            for region in &target.regions {
-                txn.mark_region_dirty(*region, self.expected_generation);
+        if self.additional_coded_transitions.is_empty() {
+            if !already_covered {
+                for region in &target.regions {
+                    txn.mark_region_dirty(*region, self.expected_generation);
+                }
+                for extent in &target.checksum_extents {
+                    txn.mark_integrity_stale(*extent, self.expected_generation);
+                }
             }
-            for extent in &target.checksum_extents {
-                txn.mark_integrity_stale(*extent, self.expected_generation);
+        } else {
+            if self.additional_coded_transitions.iter().any(|transition| {
+                !transition.matches_invalidation(&target, self.expected_generation)
+            }) {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::CodedSemanticTransitionIncomplete,
+                ));
             }
-        }
-        for mutation in self.additional_mutations {
-            txn.push(mutation);
+            for transition in self.additional_coded_transitions {
+                txn.push(RecoveryMutation::ApplyCodedTransition { transition });
+            }
         }
         let receipt = self.store.commit_durable_receipt(txn)?;
         let committed_generation = receipt.generation();

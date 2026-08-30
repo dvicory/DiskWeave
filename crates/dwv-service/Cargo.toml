@@ -8,6 +8,7 @@ publish = false
 blake3 = "1"
 dwv-codec = { path = "../dwv-codec" }
 dwv-core = { path = "../dwv-core" }
+dwv-lifecycle-authority = { path = "../dwv-lifecycle-authority" }
 dwv-recovery = { path = "../dwv-recovery" }
 dwv-store = { path = "../dwv-store" }
 dwv-transaction-ref = { path = "../dwv-transaction-ref" }
