@@ -769,7 +769,7 @@ impl BridgeDriver {
             );
         }
         self.service_mut()?
-            .recovery_mut()
+            .recovery
             .set_health(RecoveryStoreHealth::Corrupt);
         let result = self
             .service_mut()?
@@ -781,7 +781,7 @@ impl BridgeDriver {
                 basis: BasisConformance::Consumed,
             });
         self.service_mut()?
-            .recovery_mut()
+            .recovery
             .set_health(RecoveryStoreHealth::Healthy);
         if result.is_ok_and(|authorization| authorization.is_some())
             || self.service()?.release_authorization(token).is_some()

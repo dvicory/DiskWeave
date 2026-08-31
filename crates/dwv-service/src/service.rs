@@ -694,9 +694,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     pub fn recovery(&self) -> &R {
         &self.recovery
     }
-    pub fn recovery_mut(&mut self) -> &mut R {
-        &mut self.recovery
-    }
     pub fn checksums(&self) -> &ChecksumAuthority {
         &self.checksums
     }

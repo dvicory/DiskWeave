@@ -88,10 +88,25 @@ fn report(work: PortableWriteWork, completion: StoreCompletion) -> PortableWrite
 ```
 "#]
 pub use service::AcceptedPortableWriteWork;
+#[doc = r#"
+The service does not expose its mutable recovery owner.
+
+```compile_fail
+use dwv_recovery::RecoveryStateStore;
+use dwv_service::HealthyPortableService;
+use dwv_store::RandomAccessStore;
+
+fn recovery_owner<'a, S: RandomAccessStore, R: RecoveryStateStore>(
+    service: &'a mut HealthyPortableService<S, R>,
+) -> &'a mut R {
+    service.recovery_mut()
+}
+```
+"#]
+pub use service::HealthyPortableService;
 pub use service::{
-    BasisReadPermission, HealthyPortableService, MemberBinding, PortableOperationSubmission,
-    PortableReadPayload, PortableWriteAction, PortableWriteDrive, PortableWriteResult,
-    PortableWriteSubmission, PortableWriteWait, PortableWriteWork, PublicationIdentity,
-    PublicationIdentityError, ServiceConfig, WritableStartAssessment, assess_writable_start,
-    publication_identity,
+    BasisReadPermission, MemberBinding, PortableOperationSubmission, PortableReadPayload,
+    PortableWriteAction, PortableWriteDrive, PortableWriteResult, PortableWriteSubmission,
+    PortableWriteWait, PortableWriteWork, PublicationIdentity, PublicationIdentityError,
+    ServiceConfig, WritableStartAssessment, assess_writable_start, publication_identity,
 };
