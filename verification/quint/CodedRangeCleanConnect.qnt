@@ -42,6 +42,7 @@ module CodedRangeCleanConnect {
     init,
   }
 
+
   // Negative probes report rejected implementation facts without changing the
   // delegated relation state.
   action probeConflict: bool = all { state' = state }
@@ -74,22 +75,23 @@ module CodedRangeCleanConnect {
   action captureStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, admitOpC },
-    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
-    all { pathPhase == 5, pathPhase' = 6, cleanDurable },
-    all { pathPhase == 6, pathPhase' = 7, laterAfterClean },
-    all { pathPhase == 7, pathPhase' = 8, permitOpC },
-    all { pathPhase == 8, pathPhase' = 9, removeOpA },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, admitOpC },
+    all { pathPhase == 5, pathPhase' = 6, requestCleanPath },
+    all { pathPhase == 6, pathPhase' = 7, cleanDurable },
+    all { pathPhase == 7, pathPhase' = 8, laterAfterClean },
+    all { pathPhase == 8, pathPhase' = 9, permitOpC },
+    all { pathPhase == 9, pathPhase' = 10, compactOpA },
   }
 
   action unknownCleanStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, requestCleanPath },
-    all { pathPhase == 4, pathPhase' = 5, cleanUnknown },
-    all { pathPhase == 5, pathPhase' = 6, removeOpA },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanUnknown },
     all { pathPhase == 6, pathPhase' = 7, admitOpC },
     all { pathPhase == 7, pathPhase' = 8, laterUnknown },
     all { pathPhase == 8, pathPhase' = 9, probeEffectBeforeLaterCut },
@@ -101,34 +103,50 @@ module CodedRangeCleanConnect {
     all { pathPhase == 0, pathPhase' = 1, startCapturePath },
     all { pathPhase == 1, pathPhase' = 2, rejectCapture },
     all { pathPhase == 2, pathPhase' = 3, probeRejectedFutureAdmission },
+    all { pathPhase == 3, pathPhase' = 4, cleanupRefusedCapturePath },
+  }
+
+  // A quiescent last write reaches clean retirement without a later mutation.
+  action cleanRetirementStep: bool = any {
+    all { pathPhase == 0, pathPhase' = 1, admitOpA },
+    all { pathPhase == 1, pathPhase' = 2, startCapturePath },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanDurable },
+    all { pathPhase == 6, pathPhase' = 7, compactOpA },
+    all { pathPhase == 7, pathPhase' = 8, cleanupCleanCapturePath },
   }
 
   action staleLaterCutStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, admitOpC },
-    all { pathPhase == 4, pathPhase' = 5, laterStalesClean },
-    all { pathPhase == 5, pathPhase' = 6, permitOpC },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, admitOpC },
+    all { pathPhase == 5, pathPhase' = 6, laterStalesClean },
+    all { pathPhase == 6, pathPhase' = 7, permitOpC },
   }
 
   action laterRejectedStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, admitOpC },
-    all { pathPhase == 4, pathPhase' = 5, laterRejectedObservation },
-    all { pathPhase == 5, pathPhase' = 6, probeEffectAfterLaterRejection },
-
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, admitOpC },
+    all { pathPhase == 5, pathPhase' = 6, laterRejectedObservation },
+    all { pathPhase == 6, pathPhase' = 7, probeEffectAfterLaterRejection },
   }
+
   action preCleanUnknownStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, admitOpC },
-    all { pathPhase == 4, pathPhase' = 5, laterUnknown },
-    all { pathPhase == 5, pathPhase' = 6, probeCleanBeforeLaterReconciliation },
-    all { pathPhase == 6, pathPhase' = 7, laterStalesCleanReconciled },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, admitOpC },
+    all { pathPhase == 5, pathPhase' = 6, laterUnknown },
+    all { pathPhase == 6, pathPhase' = 7, probeCleanBeforeLaterReconciliation },
+    all { pathPhase == 7, pathPhase' = 8, laterStalesCleanReconciled },
   }
 
   action nonTransitiveStep: bool = any {
@@ -140,28 +158,31 @@ module CodedRangeCleanConnect {
   action cleanReconcileStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, requestCleanPath },
-    all { pathPhase == 4, pathPhase' = 5, cleanUnknown },
-    all { pathPhase == 5, pathPhase' = 6, cleanReconciledDurable },
-    all { pathPhase == 6, pathPhase' = 7, removeOpA },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanUnknown },
+    all { pathPhase == 6, pathPhase' = 7, cleanReconciledDurable },
+    all { pathPhase == 7, pathPhase' = 8, compactOpA },
   }
 
   action cleanReconcileRejectedStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, requestCleanPath },
-    all { pathPhase == 4, pathPhase' = 5, cleanUnknown },
-    all { pathPhase == 5, pathPhase' = 6, cleanReconciledRejected },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanUnknown },
+    all { pathPhase == 6, pathPhase' = 7, cleanReconciledRejected },
   }
 
   action cleanRejectedStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, requestCleanPath },
-    all { pathPhase == 4, pathPhase' = 5, cleanRejected },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanRejected },
   }
 
   action noCleanStep: bool = any {
@@ -173,10 +194,10 @@ module CodedRangeCleanConnect {
   action unknownAfterCleanReconcileStep: bool = any {
     all { pathPhase == 0, pathPhase' = 1, admitOpA },
     all { pathPhase == 1, pathPhase' = 2, startCapturePath },
-    all { pathPhase == 2, pathPhase' = 3, acceptCapture },
-    all { pathPhase == 3, pathPhase' = 4, requestCleanPath },
-    all { pathPhase == 4, pathPhase' = 5, cleanDurable },
-    all { pathPhase == 5, pathPhase' = 6, removeOpA },
+    all { pathPhase == 2, pathPhase' = 3, removeOpA },
+    all { pathPhase == 3, pathPhase' = 4, acceptCapture },
+    all { pathPhase == 4, pathPhase' = 5, requestCleanPath },
+    all { pathPhase == 5, pathPhase' = 6, cleanDurable },
     all { pathPhase == 6, pathPhase' = 7, admitOpC },
     all { pathPhase == 7, pathPhase' = 8, laterUnknown },
     all { pathPhase == 8, pathPhase' = 9, laterAfterCleanReconciled },
@@ -191,6 +212,27 @@ module CodedRangeCleanConnect {
     all { pathPhase == 4, pathPhase' = 5, probeUnauthorizedRemoval },
     all { pathPhase == 5, pathPhase' = 6, probeStaleGeneration },
   }
+
+  // Sampled operation/capture coverage deliberately excludes CLEAN and later
+  // cuts; those owner-ordering paths retain their explicit profiles below.
+  // The runner's explicit max-steps bound limits sampled evidence; pathPhase
+  // remains only a trace counter and does not constrain this action.
+  action sampledStep: bool = {
+    nondet choice = 0.to(9).oneOf()
+    any {
+      all { pathPhase' = pathPhase + 1, choice == 0, admitOpA },
+      all { pathPhase' = pathPhase + 1, choice == 1, admitOpB },
+      all { pathPhase' = pathPhase + 1, choice == 2, admitOpC },
+      all { pathPhase' = pathPhase + 1, choice == 3, startCapturePath },
+      all { pathPhase' = pathPhase + 1, choice == 4, permitOpA },
+      all { pathPhase' = pathPhase + 1, choice == 5, permitOpB },
+      all { pathPhase' = pathPhase + 1, choice == 6, permitOpC },
+      all { pathPhase' = pathPhase + 1, choice == 7, removeOpA },
+      all { pathPhase' = pathPhase + 1, choice == 8, removeOpB },
+      all { pathPhase' = pathPhase + 1, choice == 9, removeOpC },
+    }
+  }
+
 
   action admitOpA: bool = all {
     admitComplete("opA", ClaimU0),
@@ -282,6 +324,27 @@ module CodedRangeCleanConnect {
   action removeOpA: bool = all {
     removeCodedClaim("opA", ReleaseAllowed),
   }
+
+  action compactOpA: bool = all {
+    compactReleasedMembership(
+      "capture0",
+      "opA",
+      MembershipCompactionAllowed,
+    ),
+  }
+
+  action cleanupRefusedCapturePath: bool = all {
+    cleanupResolvedCapture("capture0", RefusedCaptureCleanupAllowed),
+  }
+
+  action cleanupCleanCapturePath: bool = all {
+    cleanupResolvedCapture("capture0", CleanKnownCaptureCleanupAllowed),
+  }
+
+  val cleanRetirementWithoutLaterMutationReached: bool =
+    pathPhase == 8
+    and state.operations.get("opA").phase == Released
+    and state.captures.get("capture0").phase == CaptureAbsent
 
   action removeOpC: bool = all {
     removeCodedClaim("opC", ReleaseAllowed),

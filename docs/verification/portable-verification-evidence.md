@@ -655,6 +655,7 @@ Sources:
 - `verification/quint/CodedRangeCleanCompositionExhaustive.qnt`
 - `verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt`
 - `verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt`
+- `verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt`
 
 Semantic and delegation repairs:
 
@@ -705,7 +706,8 @@ quint typecheck verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt
 quint typecheck verification/quint/CodedRangeCleanCompositionExhaustive.qnt
 quint typecheck verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt
 quint typecheck verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt
-=> all ten exited 0 with no output
+quint typecheck verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt
+=> all eleven exited 0 with no output
 ```
 
 Deterministic scenarios:
@@ -774,6 +776,11 @@ quint verify verification/quint/CodedRangeCleanCompositionExhaustive.qnt \
   --main CodedRangeCleanCompositionExhaustive --max-steps 6 \
   --invariants ProfileInvariants --verbosity 0
 => no violation found; completed depth 6
+
+quint verify verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt \
+  --main CodedRangeCleanTwoCapturePhaseCut --init profileInit --max-steps 14 \
+  --invariants ProfileInvariants --verbosity 0
+=> no violation found; completed depth 14
 ```
 
 The uncertainty profile also produced direct sampled witness evidence at the
@@ -798,11 +805,15 @@ and one coded unit; both `CleanCommitUnknown` and `LaterCutUnknown` are
 witnessed from canonical `init` at its completed depth 4. That bound does not
 reach every deeper reconciliation prefix, so the explicit phase-cut profiles
 carry that evidence. The composition profile has two operations, one capture,
-and two coded units; its strongest completed bound is depth 6.
+and two coded units; its strongest completed bound is depth 6. The two-capture
+phase-cut profile has two operations, two captures, and one coded unit; its
+fixed `profileInit`/`step` phase cut completed at depth 14 and requires both
+applicable durable later cuts before the later effect.
 
-The attempted capture depth 7 and composition depth 13 checks timed out
-without a result (300 seconds and 900 seconds, respectively) and are not
-claimed. No deeper bound is claimed.
+The attempted capture depth 7, composition depth 13, and unconstrained
+two-capture exploration timed out without a result and are not claimed. This
+two-capture result is only the declared fixed phase cut; no broader
+multi-capture bound is claimed.
 
 Phase-cut profiles were checked with their actual `phaseStep` action:
 
@@ -817,6 +828,27 @@ quint verify verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt \
   --invariants ProfileInvariants --verbosity 0
 => no violation found; completed depth 6
 ```
+
+The two-capture necessity checks also cover the negative prefixes for two overlapping captures:
+
+```text
+quint test verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt \
+  --main CodedRangeCleanTwoCapturePhaseCut \
+  --match '^(noCaptureCutDoesNotPermit|oneCaptureCutDoesNotPermit)$' \
+  --max-samples 1 --seed 22082026
+=> 2 passing; effect is refused before either cut and after only capture0's cut
+
+cargo test -p dwv-recovery every_applicable_capture_must_satisfy_its_later_cut_before_effect -- --nocapture
+=> 1 passed; production coordinator requires both applicable overlapping cuts
+
+cargo test -p dwv-recovery disjoint_active_capture_does_not_gate_later_effect -- --nocapture
+=> 1 passed; a disjoint active capture creates no membership or effect gate
+```
+
+The Quint checks use the existing task-4.1 relation and the task-4.3
+capture/frontier relation. The production task-4.3 path separately persists
+capture state, integrates durable completion, and commits `MarkRegionClean`
+with the accepted CLEAN decision.
 
 The later phase-cut depth 10 attempt timed out at 300 seconds and is not
 claimed. Both profiles begin at canonical `init` and establish their modeled
@@ -901,8 +933,10 @@ Non-claims and unresolved seams:
 - This is bounded delegated-model evidence, not arbitrary-width proof, Rust
   correctness, Connect conformance, or production concurrency evidence.
 - Completed end-to-end bounds are exactly depths 3, 5, 4, and 6 for conflict,
-  capture, uncertainty, and composition. Phase-cut bounds are depth 6 each.
-  Timed-out depth 7, depth 10, and depth 13 attempts are not successes.
+  capture, uncertainty, and composition; the fixed two-capture phase bound is
+  depth 14. Phase-cut bounds are depth 6 each.
+- Timed-out depth 7, depth 10, depth 13, and unconstrained two-capture
+  attempts are not successes.
 - Phase cuts begin at canonical `init` and establish their modeled prefixes;
   they do not establish external lifecycle preconditions or end-to-end
   production coverage.
@@ -918,7 +952,12 @@ correspondence and Rust focused tests are recorded in the next section.
 OpenSpec tasks 2.4 and 2.5 are complete. Task 4.1 is complete: the repaired
 coded/CLEAN Connect candidate preserves non-terminal contention, consumes
 opaque lifecycle authorization, and binds coded admission to a live pre-I/O
-operation generation without reconstructing lifecycle predicates.
+operation generation without reconstructing lifecycle predicates. Task 4.3 is
+complete: production capture scope is derived from the selected dirty regions
+and checksum extents under captured topology/profile geometry; CLEAN decisions,
+durable commit outcomes, later write-recovery cuts, release authorization,
+bounded retention, and unresolved reopen state are persisted through the
+recovery owner.
 
 # CodedRangeClean Connect projection (focused, bounded)
 
@@ -931,28 +970,48 @@ Source:
 - `crates/dwv-transaction-ref/src/coded.rs`
 - `crates/dwv-recovery/src/coded_clean.rs`
 Canonical `models/quint/CodedRangeClean.qnt` SHA-256:
-`dc75a93cba0724d12235e5a73a2c7b237b45330aa9a715714ceb75cbd8cf3b9d`.
+`7df99510cdfe985000ecca5cf5a66636252af67053f960fb16cbe6de06056873`.
 
 The in-crate driver uses production `HealthyPortableService`,
 `OperationAdmission`, `CodedRangeAuthority`, and
 `CodedCaptureCoordinator` instances. `BridgeState` projects model state from
 exact generation-qualified operation tokens and production coordinator
-snapshots. Ordinary overlap and capture exclusion are normalized
-non-terminal outcomes. Lifecycle authorization is an external typed input;
-basis coherence remains separate provider/conformance evidence and is not a
-CodedRangeClean bridge input. The bridge does not reconstruct either policy,
-retain a model-shaped coordinator, or use a second semantic state machine.
+snapshots. The same topology/profile geometry mapping produces per-write coded
+claims and future-inclusive capture scopes. The service holds a process-local
+issuer bound to its exact coordinator and produces Included lifecycle evidence
+only after validating the exact live slot/finalization/certificate or persisted
+release receipt. Accepted Connect profiles use the persisted release-owner
+path; they do not mint live lifecycle evidence from model state. Ordinary
+overlap and capture exclusion are normalized non-terminal outcomes. Basis
+coherence remains separate provider/conformance
+evidence and is not a CodedRangeClean bridge input. The bridge does not
+reconstruct either policy, retain a model-shaped coordinator, or use a second
+semantic state machine.
 
 Projection table:
 
 | Model distinction | Direct provider correspondence | Typed external owner input |
 |---|---|---|
-| Exact operation identity, complete coded claim admission, disjoint coexistence, and effect phase | `BridgeDriver::admit` → `reserve` → `coded_admit`; the service requires the exact slot to remain `Reserved` at coded admission; active phase/claims project from exact-token `CodedRangeAuthority`; released model claim fields retain only admitted claim evidence needed for the model comparison; `permit_effect` → `coded_permit_effect` | Complete validated claims are typed external mapping inputs; ordinary overlap is `CodedAdmissionOutcome::Contended`; blocker identity and scheduling are not part of this result |
-| Capture scope, Included/Later membership, and capture phase | `start_capture` → `coded_start_capture`; `bridge_state` → `CodedCaptureSnapshot` | Complete validated `CodedCaptureScopeInput` with covered lower frontier |
-| Capture-wide accepted/rejected decision and no-false-CLEAN gating | `request_clean` → `CodedCaptureCoordinator::request_clean` | `accept_capture`/`reject_capture` supply `CodedCaptureDecision` |
-| CLEAN Durable/Rejected/Unknown and authoritative reconciliation | `clean_commit` → `observe_clean_commit`; `reconcile_clean` → `reconcile_clean_commit` | `CodedCleanCommitObservation` and `CodedCleanReconciliation` are recovery-owner observations |
-| Later durable-cut ordering, Unknown blocking, and reconciliation | `later_cut`/`later_cut_reconcile` call the production coordinator; effect attempts call `coded_permit_effect` and return `BlockedByCapture` when excluded | Later-cut commit and reconciliation observations are typed owner evidence |
-| Exact release authorization and coded claim removal | `release_operation` passes an exact typed `ReleaseAuthorization` to `coded_release_claim`; the returned exact generation is retained as bounded observed ledger evidence | LifecycleRelease provider correctness, physical cleanup ordering, lifecycle predicates, and basis coherence are external evidence; this bridge does not reconstruct them |
+| Exact operation identity, complete coded claim admission, disjoint coexistence, and effect phase | `BridgeDriver::admit` → `reserve` → `coded_admit`; production maps the requested range to exact coded units and requires the exact slot to remain `Reserved`; active phase/claims project from exact-token `CodedRangeAuthority`; released model claim fields retain only admitted claim evidence needed for comparison; `permit_effect` → `coded_permit_effect` | Complete claims are topology/profile geometry outputs; ordinary overlap is `CodedAdmissionOutcome::Contended`; blocker identity and scheduling are not part of this result |
+| Capture scope, Included/Later membership, capture phase, and owner boundary | `start_capture` → `coded_start_capture`; production capture allocation derives the complete union of selected dirty regions and checksum extents under the same topology/profile geometry and durably persists the capture boundary; `bridge_state` → revalidated `CodedCaptureSnapshot` | `ValidatedCodedCaptureScope` binds current topology, recovery generation, checksum profile/set, and selected dirty/checksum geometry; `CodedCaptureEstablishment` binds owner-issued history and the atomic admission cut |
+| Capture-wide accepted/rejected decision and no-false-CLEAN gating | The Connect-only transition adapter invokes test-sealed raw model actions. Production consumes `RecoveryCleanPermit` or `RecoveryCleanRefusalPermit` from `evaluate_recovery_clean`; accepted CLEAN and refusal are separately prepared and installed only under the exact `DurableRecoveryCommit` | Recovery CLEAN policy, fence/checksum/write-recovery coverage, and durable commit authority remain external owner facts |
+| CLEAN commit uncertainty and authoritative reconciliation | Connect exercises Durable/Rejected/Unknown model transitions through the sealed test adapter. Production cannot pass those raw observations; uncertain persisted state changes only through `CodedCaptureReconciliationReceipt` issued by recovery inspection | Rejected or unknown outcomes do not authorize CLEAN; the receipt binds the expected uncertain snapshot and one exact resolved snapshot |
+| Later durable-cut ordering, Unknown blocking, and reconciliation | Production prepares a cut from the admitted claim and persists it with the write-recovery transaction before permitting media effect. Accepted Connect paths call the same `ChecksumAuthority::invalidate_with_write_recovery_record_and_coded_transitions` producer; a mismatched-target negative control must fail there. The owner result is installed only under the matching `DurableRecoveryCommit`; uncertain cuts change only through `CodedCaptureReconciliationReceipt`. | Effect attempts return `BlockedByCapture` for unresolved `Later`/`LaterUnknown`; exact membership and cut evidence survive reopen. |
+| Exact release authorization, capture-wide lifecycle evidence, membership compaction, and phase-specific capture cleanup | `release_operation` consumes exact lifecycle-owned `ReleaseAuthorization`; `CodedRangeAuthority::release` requires that capability in addition to `OperationReleasePermit`, verifies the service-held owner domain, then returns `CodedClaimRelease`, which production durably records before claim removal. The service supplies owner-domain-bound live/released `IncludedLifecycleAuthorization` only after validating exact write-driver finalization or persisted release receipts. The former process-global positive issuers are absent, and a foreign owner domain cannot authorize release or CLEAN. `PreparedCodedMembershipCompaction` forgets only resolved receipt-authorized membership. Distinct refused, clean-known, and inherited-clean-abandonment preparations remove only their exact predecessor after durable commit. Every process-local transition installs only after its matching durable receipt. | Lifecycle, recovery, geometry, retention, and capture-lifecycle authority remain distinct; no token, permit, capture identity, phase, foreign owner domain, or deserialized snapshot grants release, positive Included evidence, compaction, or cleanup authority. |
+
+Authority table:
+
+| Correctness assumption | Consumed capability or receipt | Producer | Consumer validation | Failure or uncertainty behavior |
+|---|---|---|---|---|
+| Per-write claims and capture invalidation scope cover the same complete coded geometry | Exact coded-unit sets and `ValidatedCodedCaptureScope` | Topology/profile range mapper and `CodedCaptureOwnerFacts::selected_invalidation_scope` | Independent brute-force oracles compare exact 512-byte coded units, 4-KiB dirty regions, 4-MiB checksum extents, boundaries, shared containers, and disjoint cases | Mapping overflow, incompleteness, empty scope, or owner-binding mismatch fails before admission or capture publication |
+| Capture history includes every earlier active coded admission and no concurrent admission crosses the cut | `CodedCaptureEstablishment` | `CodedRangeAuthority::capture_boundary` | Scope binding is complete and non-empty; lower/capture frontiers share the capture recovery generation; admission sequences are monotonic and non-exhausted | Capture creation fails before durable publication |
+| A coded claim may be removed only after the exact operation generation satisfies the complete lifecycle policy | Owner-domain-bound `ReleaseAuthorization` → `OperationReleasePermit` → `CodedClaimRelease` | LifecycleRelease composition; `OperationAdmission::release_permit`; `CodedRangeAuthority::release` | Authorization binds all required lifecycle observations to the exact generation and the verifier domain retained by the service; the prerequisite permit is opaque; coded authority requires a currently active matching claim. | Claim remains active; foreign authority domain, missing facts, stale generation, known non-commit, or lost acknowledgement fails closed until reopen reconciles. |
+| CLEAN policy covers the exact capture regions, integrity extents, topology, fence, and recovery generation | `RecoveryCleanPermit` or `RecoveryCleanRefusalPermit` | `evaluate_recovery_clean` | `prepare_clean_commit` retains the permit's exact aggregate certificate and emits a complete transition with no caller-supplied evidence; `prepare_clean_refusal` matches complete owner facts, exact predecessor, and a closed mutation set. | Refusal persists conservatively; missing or mismatched evidence cannot become `CleanKnown`. |
+| Every Included operation has an exact owner-observed lifecycle disposition and aggregate persistence proof | Owner-domain-bound `IncludedLifecycleAuthorization` plus its exact `FenceCertificate` and `RecoveryCleanPermit` | `HealthyPortableService` after exact write-driver finalization or persisted release-receipt validation | `CodedCaptureCoordinator::authorize_clean` requires the exact Included-operation set and rejects foreign authority domains, mismatched operations, stale topology/fence domains, uncovered certificates, and released/live dispositions that disagree with persisted owner state. Compile-fail checks cover the removed process-global positive issuers; runtime controls reject same-token capabilities from another owner domain. | The capture remains Open; no `CodedCaptureCleanAuthorization` or prepared CLEAN transition is issued. |
+| A prepared transition became durable in the exact recovery transaction | `DurableRecoveryCommit` | `RecoveryStateStore::commit_durable_receipt` | CLEAN confirmation compares the exact committed `CodedCaptureTransition`, including its owner-approved aggregate certificate; other phase-specific confirmations match their exact committed update or removal plus generation and topology. | The process-local candidate is discarded; certificate substitution fails confirmation, and a lost acknowledgement installs neither candidate until exact predecessor/successor reopen reconciliation. |
+| An uncertain CLEAN commit or later cut has one authoritative exact resolution | `CodedCaptureReconciliationReceipt` | Recovery inspection reconciliation | Expected snapshot must equal the live uncertain snapshot; proposed snapshot must be internally valid and match capture identity/topology. | Reconciliation fails without mutating durable state. |
+| Reopen preserves every future-exclusion and release-retention obligation | Owner-bound reconstruction from persisted `CodedCaptureSnapshot` facts | Durable recovery store plus current topology/profile/checksum owner | Scope and lower-frontier coverage are recomputed; serialized proof flags are ignored; exact unresolved membership, cuts, release receipts, generations, and frontiers must agree. Restart never derives retained-history authority from `retained_frontier == lower_frontier`; no inherited retained-history assertion is trusted without a separate current owner witness. | Every inherited capture keeps the service Recovering until durable retirement. Because the current implementation cannot recreate that live witness after process loss, a settled inherited capture cannot authorize further compaction or clean cleanup and is conservatively abandoned by invalidating selected dirty/integrity state before removal. |
+| Released membership may be forgotten and a settled capture removed only under exact owner authority | `PreparedCodedMembershipCompaction`, `PreparedCodedRefusedCleanup`, `PreparedCodedCleanKnownCleanup`, or `PreparedCodedInheritedCaptureAbandonment` | `CodedCaptureCoordinator` after current owner revalidation | Same-process compaction requires exact persisted release receipts and complete retained history. Refused cleanup binds the exact predecessor; inherited Open cleanup additionally consumes a current exact refusal; clean cleanup requires an empty owner-compacted durable-`CleanKnown` predecessor whose retained history remains live-owner-revalidated. Any predecessor reopened after process loss lacks that live history witness and takes inherited abandonment. | Membership or capture remains durably retained; known non-commit preserves the predecessor, lost acknowledgement installs neither local candidate, repeated crash before cleanup remains admission-blocking, and unverifiable inherited history is invalidated rather than treated as clean. |
 
 The profiles cover complete/disjoint/overlapping and non-transitive coded
 claims; ordinary overlap as non-terminal contention; incomplete and
@@ -968,20 +1027,121 @@ quint typecheck verification/quint/CodedRangeCleanConnect.qnt
 => exited 0 with no output
 
 cargo test -p dwv-recovery coded_clean -- --nocapture
-=> 4 passed
+=> 10 passed
 
-cargo test -p dwv-service coded_range_connect -- --nocapture
-=> 15 passed
+cargo test -p dwv-service coded_range_clean_connect -- --nocapture
+=> 25 passed
 
-cargo test -p dwv-service coded_release_certificate -- --nocapture
-=> 1 passed
-
-cargo test -p dwv-service coded_capture_and_admission -- --nocapture
-=> 1 passed
+cargo test -p dwv-service coded_capture -- --nocapture
+=> 3 passed
 
 cargo test -p dwv-service coded_same_generation_cannot_be_readmitted_after_release_before_slot_cleanup -- --nocapture
 => 1 passed
 ```
+
+Repair verification on 2026-08-27:
+
+```text
+cargo test -p dwv-recovery
+=> 58 passed
+
+cargo test -p dwv-recovery-sqlite
+=> 18 passed
+
+cargo test -p dwv-service --lib
+=> 108 passed
+
+cargo test -p dwv-service --lib coded_range_clean_connect -- --nocapture
+=> 25 passed
+
+cargo test -p dwv-frontend-ublk fixture::tests::
+=> 6 passed
+
+quint typecheck models/quint/CodedRangeClean.qnt
+=> exited 0 with no output
+
+openspec validate --all --strict
+=> 32 passed, 0 failed
+```
+
+
+Completion repair verification on 2026-08-29:
+
+```text
+quint typecheck models/quint/CodedRangeClean.qnt
+quint typecheck verification/quint/CodedRangeCleanAnalysis.qnt
+quint typecheck verification/quint/CodedRangeCleanConnect.qnt
+quint test models/quint/CodedRangeClean.qnt
+=> all exited 0
+
+quint test verification/quint/CodedRangeCleanAnalysis.qnt \
+  --main CodedRangeCleanAnalysis \
+  --match '^(boundedAssumptionsTest|disjointClaimsCanCoexist|sameCodedClaimConflicts|nonTransitiveOverlapLeavesDisjointClaimsAvailable|incompleteClaimCannotReachEffect|unadmittedClaimCannotReachEffect|captureMembershipIsIncludedThenLater|includedOperationCanCommitAndClean|missingCleanDecisionCannotClean|cleanOwnerDecisionEnablesClean|rejectedCleanDecisionRefusesCapture|unknownCleanDoesNotNegateExternalRelease|unknownCleanCanReconcileDurably|laterMutationUsesDurableAfterCleanCut|unknownLaterCutAfterDurableCleanReconcilesDurably|unknownLaterCutBeforeDurableCleanBlocksCleanCommit|unknownLaterCutAfterDurableCleanReconcilesRejected|unknownLaterCutAfterDurableCleanCannotReconcileStale|staleLaterCutAfterDurableCleanIsRejected|newerDurableBoundaryStalesOlderClean|resolvingOneCaptureDoesNotDischargeAnother|unknownLaterCutBeforeCleanCannotReconcileAfterClean|rejectedLaterCutRefusesEffect|removalNeedsExactExternalAuthorization|releasedHistoryNeedNotRemainEnumerable|activeHistoryRemainsEnumerable|openCaptureRetainsReleasedMembership|unknownCaptureRetainsReleasedMembership)$' \
+  --max-samples 1 --seed 22082026
+=> 28 passing
+
+quint verify verification/quint/CodedRangeCleanConflictExhaustive.qnt --main CodedRangeCleanConflictExhaustive --max-steps 3 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanCaptureExhaustive.qnt --main CodedRangeCleanCaptureExhaustive --max-steps 5 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt --main CodedRangeCleanUncertaintyExhaustive --max-steps 4 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanCompositionExhaustive.qnt --main CodedRangeCleanCompositionExhaustive --max-steps 6 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt --main CodedRangeCleanTwoCapturePhaseCut --init profileInit --max-steps 14 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt --main CodedRangeCleanCleanCommitPhaseCut --step phaseStep --max-steps 6 --invariants ProfileInvariants --verbosity 1
+quint verify verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt --main CodedRangeCleanLaterCutPhaseCut --step phaseStep --max-steps 6 --invariants ProfileInvariants --verbosity 1
+=> no violation found at every declared bound
+
+quint test verification/quint/CodedRangeCleanMutants.qnt --main CodedRangeCleanMutants \
+  --match 'perMemberInsteadOfCodedConflictFails|connectedComponentSerializationKillsDisjointWitness|partialAdmissionBeforeEffectFails|unclassifiedAdmissionFailsExhaustiveness|disappearingIncludedOperationFailsRetention|laterEffectWithoutCutFails|unsatisfiedIncludedWorkCannotBeClean|rejectedSatisfactionCannotRemainActive|unknownCleanCannotBecomeKnown|unknownLaterCutCannotAllowEffect|staleCaptureCannotRemainClean|removalWithoutExternalReleaseAllowedFails' \
+  --max-samples 1 --seed 22082026
+=> all 12 deliberately bad paths failed their expected safety predicate
+   (`QNT508`); the negative-suite command exit is intentionally non-zero
+
+cargo test -p dwv-recovery -p dwv-transaction-ref -p dwv-service --lib
+=> 205 passed
+
+cargo test -p dwv-service coded_range_clean_connect -- --nocapture
+=> 32 passed
+
+cargo test -p dwv-service generated_coded_operation_histories -- --nocapture
+=> 10,000 deterministic histories passed with fixed seed 22082026
+
+cargo test -p dwv-recovery capture_scope_matches_independent_block_overlap_oracle
+cargo test -p dwv-service coded_range_connect_clean_retirement
+cargo test -p dwv-service persisted_refused_cleanup_handles_known_noncommit_and_lost_ack
+cargo test -p dwv-service inherited_clean_known_abandonment_handles_known_noncommit_and_lost_ack
+cargo test -p dwv-service repeated_crash_before_empty_clean_cleanup_blocks_admission_until_retired
+cargo test -p dwv-service coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen
+cargo test -p dwv-service reopened_refusal_lost_ack_installs_neither_candidate_until_reopen
+cargo test -p dwv-service rejected_coded_release_commit_retries_before_slot_reuse
+cargo test -p dwv-recovery coded_clean::tests -- --nocapture
+cargo test -p dwv-service coded_ -- --nocapture
+=> 19 recovery lifecycle tests and 37 coded service/Connect tests passed
+
+=> each focused regression passed
+
+cargo test --workspace --all-features -- --test-threads=1
+=> 463 passed, 1 ignored
+
+cargo check --workspace --all-targets --all-features
+cargo clippy -p dwv-recovery -p dwv-service --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+=> all exited 0
+
+openspec validate --all --strict
+=> 33 passed, 0 failed
+
+cargo xtask docs knowledge readiness
+=> ready: true; 169 requirements; every gate count 0
+
+cargo xtask docs check
+cargo xtask docs build
+=> both exited 0; 169 documentation objects built
+```
+
+The full workspace test command ran with one test thread so retained global
+fixtures could not contend. Full-workspace Clippy currently stops in unchanged
+`xtask/src/knowledge.rs:3835` on Rust 1.97's `clippy::type_complexity`; the
+changed-crate command above passed with all warnings denied. This check does not
+claim that unrelated workspace lint is clean.
 
 Non-claims:
 
@@ -993,3 +1153,399 @@ Non-claims:
   coherence, topology/profile mapping, request/store/dirty/checksum geometry,
   persistence admissibility, startup, shutdown, publication, currentization,
   and Linux behavior remain separate evidence or later work.
+
+# Verification-preparation machinery (bounded, 2026-08-25)
+
+The existing Connect bridge, retained-operation harness, `dwv-sim` schedules,
+and recovery manifest/reopen APIs were reused. No second CodedRangeClean
+state machine, timing scheduler, or production mutation framework was added.
+
+Connect sampling (bounded diversity/replay) and false-projection controls:
+
+```text
+cargo test -p dwv-service coded_range_connect_sampled_operation_capture_paths -- --nocapture
+=> 1 passed; 16 seeded legal traces, max-steps 12; deterministic
+   diversity/replay evidence only
+
+cargo test -p dwv-service coded_range_connect_rejects_false_projections -- --nocapture
+=> 1 passed; four deliberately false projections were rejected
+```
+
+The false projections are premature effect permission, a dropped active claim,
+swapped capture membership, and suppressed release. Production state still
+comes from service/coordinator observations; the model action only selects the
+requested transition.
+
+The 16 sampled seeds do not carry an aggregate category-coverage or witness-
+frequency claim. Explicit Connect profiles and the bounded model profiles own
+the operation-admission, capture, effect, release, and uncertainty witnesses.
+
+Generated stateful operation evidence:
+
+```text
+cargo test -p dwv-service generated_coded_operation_histories -- --nocapture
+=> 1 passed; 64 generated cases, 1-23 transitions per case, including legal
+   no-active-operation crash/restart transitions
+
+cargo test -p dwv-service generated_operation_identity_is_independent_of_target_member -- --nocapture
+=> 1 passed; operation identity is independent of target-member input
+
+cargo test -p dwv-service minimized_coded_operation_history_replays_deterministically -- --nocapture
+=> 1 passed; the retained history includes two crash/restart boundaries
+
+cargo test -p dwv-service generated_property_rejects_corrupted_observation_and_replays -- --nocapture
+=> 1 passed; the ordinary property oracle rejected a hidden active claim,
+   proptest shrank it to one transition, and the minimized history replayed
+   with the same failure
+```
+
+The generated machine uses independent operation identities and target-member
+inputs. Operation identity keys reference and release state; target-member
+input only feeds the request. A restart is legal only with no active operation;
+the production reopen path atomically invalidates inherited capture regions and
+checksum extents before removal, then starts a new bounded capture. The
+deterministic retained history exercises two such boundaries. The ordinary
+invariant/correspondence checker consumes a test-only observation that hides an
+actually active claim. Its normal failure path is what shrinks and replays; no
+second CodedRangeClean machine or custom property assertion is substituted.
+
+Deterministic capture and crash/reopen boundaries:
+
+```text
+cargo test -p dwv-service protected_write_contention_parks_until_capture_cut_progresses -- --nocapture
+=> 1 passed; accepted work pauses, capture starts, a later operation is admitted,
+   capture blocks its effect, and the retained operation resumes after a durable cut
+
+cargo test -p dwv-recovery durable_reopen_cut_discards_uncommitted_owner_state -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-sim daemon_crash_and_power_loss_have_distinct_effects -- --nocapture
+=> 1 passed
+```
+
+`RecoveryReopenCut` captures only durable exported owner state. `dwv-sim`
+continues to own volatile-media and power-loss behavior. These checks prepare
+the capture/reopen handoff boundary without defining durable CLEAN clearing or
+healthy-service persistence transitions.
+
+# Protected-write coded authority integration (focused)
+
+Source:
+
+- `crates/dwv-service/src/service.rs`
+- `crates/dwv-service/src/service/tests.rs`
+- `crates/dwv-service/src/service/tests/coded_range_clean_connect.rs`
+
+The retained protected-write driver now derives complete coded-unit coverage
+from the validated captured topology's logical codeword blocks. The mapping
+does not use member or store identity, so operations on different data members
+that affect one codeword contend while disjoint codeword ranges can progress
+independently.
+
+The independent overlap oracle test enumerates every non-empty contiguous
+request within an eight-codeword geometry under every fixed-size chunking of
+that request. It derives expected coded units from half-open interval overlap,
+not from the production mapping loop, and compares the complete unit set.
+
+The retained path observes coded admission before the first basis work, keeps
+the claim through both basis results, permits the consuming effect only after
+the basis phase, and consumes the exact lifecycle `ReleaseAuthorization` before
+removing the coded claim. Ordinary contention returns a non-terminal wait and
+the same `PortableWriteSubmission` resumes after the holder releases. Capture
+blocking remains a non-terminal wait without coded re-admission. Failed or
+uncertain basis work retains the claim until matching owner-approved
+reconciliation supplies the exact release authorization. The blocking `write`
+facade drives this same retained path; a pre-admission coded contender is
+released locally and reported as explicit retry/backpressure, not I/O failure.
+The current ublk profile serializes `execute_service` under the opened-service
+mutex, so ordinary coded contention is unreachable between Linux requests.
+`Retry` remains a portable retained-execution result; this profile does not
+claim ordinary Linux request parking or `EAGAIN` completion semantics.
+
+Focused evidence:
+
+```text
+cargo test -p dwv-service protected_write_ -- --nocapture
+=> 5 passed
+cargo test -p dwv-service blocking_write_ -- --nocapture
+=> 2 passed
+
+cargo test -p dwv-service blocking_contention_rejects_only_the_unstarted_request -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-frontend-ublk coded_contention_maps_to_retryable_result -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service blocking_cancel_refuses_after_transaction_range_acquired -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service failed_child_admission_is_a_pre_transaction_bounded_refusal -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-transaction-ref coded_claim_supports_unit_above_u32_boundary -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service coded_claim_supports_unit_above_u32_boundary_without_large_fixture -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service coded_claim_mapping_matches_independent_codeword_overlap_oracle -- --nocapture
+=> 1 passed
+
+cargo test --bin dwv -- --nocapture
+=> 3 passed
+
+cargo test -p dwv-service coded_range_connect_protected_write_holds_claim_through_basis_and_write -- --nocapture
+=> 1 passed
+```
+
+Non-claims:
+
+- These are focused Rust and production-side Connect observations, not
+  arbitrary-width concurrency proof, basis-content correctness, durability
+  certification, or hardware evidence.
+- The CodedRangeClean model remains bounded and does not model basis lifecycle,
+  topology mapping, persistence admissibility, or recovery-owner correctness.
+- Capture/frontier production, durable completion, `MarkRegionClean`, and
+  owner-approved bounded retention are integrated here. This evidence does not
+  establish arbitrary-width liveness, production hardware durability, or
+  future retention-policy adequacy.
+
+# Coded CLEAN structural-authority repair (focused, bounded, Round 18, 2026-08-30)
+
+The corrective implementation makes one opaque coded semantic transition own
+each durable capture successor and every required selected-state side effect.
+Production coded claims are issued by the geometry owner for the exact admitted
+operation and request. Retained capture-capacity exhaustion now parks the
+existing admitted write until durable retirement makes capacity available.
+
+The Round-9 repair moves final lifecycle composition back to
+`HealthyPortableService`. The service wraps lower process-domain signing
+primitives in service-owned opaque release and Included types. The generic
+`CodedLifecycleAuthority` consumer is specialized on those exact types and
+exposes no lifecycle fact issuer; raw range release and capture CLEAN
+authorization are crate-private. A lower lifecycle capability, slot permit,
+capture identity, coordinator, or fence certificate cannot be promoted into
+the service-owned capability type. Released Included evidence is produced only
+inside the service path after the installed capture snapshot carries the exact
+durably confirmed release operation and certificate.
+
+The Round-10 repair binds every `CodedClaimInput` and `CodedRangeAuthority` to
+the same unforgeable geometry-authority identity. The paired range rejects a
+claim issued by a separately constructed geometry owner before stamping a
+local admission, even when topology and request identity remain valid. The
+existing admission-authority identity separately prevents an admission from
+one range from entering another capture graph. Admission observation and
+later-cut preparation therefore accept only the paired geometry/range graph
+before membership or target authority can emerge. Later cuts still derive
+their invalidation target from the accepted admission, and confirmation still
+requires the exact committed target-bearing transition. Prepared CLEAN retains
+the owner-approved aggregate certificate and requires its exact committed
+transition. Restart still refuses to reconstruct retained-history authority
+from frontier equality, and Connect later cuts still use the production
+write-recovery producer.
+
+The Round-11 repair closes the Round-10 external P1 by moving capture
+establishment behind one mutable `CodedLifecycleAuthority` operation. That
+owner derives the capture boundary from its current paired range authority and
+the future-inclusive scope from its paired geometry owner. The raw boundary
+issuer and coordinator acceptor are crate-private, and the former public
+capture-establishment types are no longer exported. A stale range clone can no
+longer issue a cut, and a foreign geometry owner can no longer submit a scope.
+The maintained regressions retain the exact stale-clone and foreign-geometry
+constructions while verifying that the installed capture contains the live
+admission and the paired geometry scope.
+
+The Round-12 repair makes `CodedLifecycleAuthority` the only ordinary producer
+of media-effect authority. The raw range permit issuer is crate-private. The
+composed owner requires the exact active range claim and checks its coded units
+against every active capture: missing membership and unresolved `Later`
+membership both block effect authority, while only owner-recorded permitted
+membership can reach the raw issuer.
+
+The Round-13 repair closes the Round-12 external P1 by making that composition
+exclusive rather than another mutable authority path. The lifecycle owner no
+longer exposes mutable range or capture owners through accessors or dereference,
+and neither lower mutable owner is cloneable. Admission prepares candidate
+range and capture successors from one predecessor and installs both together
+only after exact capture persistence is confirmed. Capture-start scope and cut
+come from the same paired owner. Every prepared capture successor carries its
+issuing owner identity through CLEAN and later-cut uncertainty handling, so a
+different live owner rejects it before installation. Runtime regressions cover
+stale range preparations, cross-owner prepared capture successors, capture
+ordering bypasses, and paired capture scope. Compile-fail barriers cover owner
+extraction, replacement, cloning, raw effect issuance, raw capture start, and
+raw prepared-transition installation. No Round-13 change alters the delegated
+Quint model.
+
+The corrected Round-14 external P1 was not accepted on review authority alone.
+A temporary regression independently reproduced the claimed sequence: the
+capture transition became durable, the caller returned an error, and the old
+process-local owner still issued media-effect authority. The repair removes
+caller-supplied capture persistence. `start_capture` now constructs and submits
+the exact recovery transaction itself while retaining its exclusive owner
+borrow. An explicit rejected observation leaves the exact predecessor usable.
+A lost, corrupt, or otherwise uncertain observation invalidates the complete
+process-local coded authority and forces the service into `Recovering`; every
+dependent admission, effect, release, CLEAN, later-cut, compaction, and cleanup
+transition then fails closed until durable reopen constructs a new owner.
+Durable success installs only the exact receipt-validated capture and range
+successors. A mismatched post-durability receipt also invalidates the owner.
+Permanent regressions cover rejected, lost-acknowledgement, and mismatched
+durable-receipt branches.
+
+The Round-15 external P1 was also reproduced independently before repair. An
+emitted but unaccepted physical write retained an earlier coded effect permit,
+then crossed backend acceptance after a lost capture acknowledgement had
+invalidated the complete process-local lifecycle owner. Retained write driving
+now emits no new work while the service or lifecycle owner requires
+reconciliation, and backend acceptance rechecks both conditions. The accepted
+side of that boundary is also structural: `accept_write_work` returns one
+opaque, non-cloneable `AcceptedPortableWriteWork`, and both normalized physical
+execution and `PortableWriteResult::new` consume that proof. Raw emitted work
+cannot invoke those paths. Work accepted before invalidation may complete under
+the existing conservative in-flight rules; emitted-but-unaccepted, planned,
+and fresh work cannot cross a new backend-submission boundary. The permanent
+regression distinguishes all four cases, and compile-fail checks prevent
+ordinary callers from forging accepted-work proof or reporting raw emitted
+work as completed.
+
+The corrected Round-16 external P1 was independently reproduced across the
+production sibling transition graph before repair. Lost acknowledgements for
+coded admission, write-recovery later cut, CLEAN commit, release, membership
+compaction, refused and `CleanKnown` cleanup, and inherited abandonment could
+leave the exact process-local predecessor installed and still usable after the
+durable store accepted the successor. The service now routes every
+`ApplyCodedTransition` persistence result through one conservative boundary.
+Only explicit `Rejected` preserves the predecessor. Lost, corrupt, or any
+other non-rejection observation invalidates the complete lifecycle authority
+and moves the service to `Recovering`. Every post-durability confirmation,
+including receipt-generation or predecessor mismatch, passes through the same
+invalidation rule. Capture start retains its existing owner-internal equivalent.
+Permanent regressions cover explicit rejection, lost and corrupt
+acknowledgements, admission, later cut, CLEAN commit, release, compaction,
+phase-specific cleanup, inherited abandonment, exact durable reopen, and a
+mismatched durable compaction receipt.
+
+The Round-17 final-angle external P2 identified one remaining ordinary
+production escape: `HealthyPortableService::recovery_mut` returned the raw
+mutable recovery owner, allowing a caller to bypass the service-mediated coded
+transition boundary and submit arbitrary recovery mutations. Repository-wide
+references confirmed that only an internal service test used the accessor.
+The repair deletes it; that descendant test reaches the service's private
+recovery field only to inject recovery-health failure. A compile-fail barrier
+proves that an ordinary consumer cannot obtain the mutable recovery owner.
+
+Fresh focused results:
+
+```text
+cargo test -p dwv-recovery --lib
+=> 80 passed
+
+cargo test -p dwv-service coded_range_clean_connect
+=> 49 passed
+
+cargo test -p dwv-service lifecycle_owner_withholds_authority_from_every_incomplete_fact_set
+cargo test -p dwv-service coded_release_rejects_authorization_from_foreign_owner_domain
+cargo test -p dwv-recovery foreign_admission_cannot_enter_another_capture_authority_graph
+cargo test -p dwv-service paired_range_rejects_claim_from_foreign_geometry_owner
+=> 1 passed each
+
+cargo test -p dwv-service coded_capture_and_admission_linearize_at_service_boundary
+cargo test -p dwv-service capture_start_uses_the_paired_geometry_scope
+=> 1 passed each
+
+cargo test -p dwv-service lifecycle_effect_authority_rejects_capture_ordering_bypasses
+=> 1 passed
+
+cargo test -p dwv-service lifecycle_owner_rejects_
+=> 2 passed
+
+cargo test -p dwv-service rejected_capture_persistence_keeps_the_live_range_predecessor -- --test-threads=1
+cargo test -p dwv-service lost_capture_ack_invalidates_process_local_coded_authority -- --test-threads=1
+cargo test -p dwv-service mismatched_durable_capture_receipt_invalidates_process_local_coded_authority -- --test-threads=1
+=> 1 passed each
+
+cargo test -p dwv-service uncertain_coded_admission_revokes_process_local_authority -- --test-threads=1
+cargo test -p dwv-service corrupt_coded_admission_ack_revokes_process_local_authority -- --test-threads=1
+cargo test -p dwv-service uncertain_later_cut_revokes_process_local_coded_authority -- --test-threads=1
+cargo test -p dwv-service uncertain_clean_commit_revokes_process_local_coded_authority -- --test-threads=1
+cargo test -p dwv-service coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen -- --test-threads=1
+cargo test -p dwv-service mismatched_durable_compaction_receipt_revokes_process_local_authority -- --test-threads=1
+=> 1 passed each
+
+cargo test -p dwv-service capture_invalidation_revokes_only_unaccepted_physical_work -- --test-threads=1
+=> 1 passed
+
+cargo test -p dwv-recovery disjoint_active_capture_does_not_gate_later_effect -- --test-threads=1
+=> 1 passed
+
+cargo test -p dwv-service coded_capture_capacity_parks_admitted_write_until_retirement_progresses -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-recovery --doc
+=> 13 compile-fail barriers passed
+
+cargo test -p dwv-service --doc
+=> 6 compile-fail barriers passed, including the mutable recovery-owner
+   boundary and 2 accepted-work barriers
+
+cargo test --workspace --all-features -- --test-threads=1
+=> 515 passed, 1 ignored
+
+cargo check --workspace --all-targets --all-features
+cargo clippy -p dwv-lifecycle-authority -p dwv-recovery -p dwv-service --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+openspec validate --all --strict
+cargo xtask docs knowledge readiness
+cargo xtask docs check
+cargo xtask docs build
+=> all completed successfully; strict OpenSpec validation passed 33 items,
+   knowledge readiness covered 169 requirements with every gate count zero,
+   and the documentation build produced 169 objects
+```
+
+The Round-8 Quint results remain the current bounded model evidence; Rounds
+9-18 changed Rust authority composition and maintained evidence, not the Quint
+sources or commands:
+
+```text
+quint typecheck models/quint/CodedRangeClean.qnt
+quint typecheck verification/quint/CodedRangeCleanAnalysis.qnt
+quint typecheck verification/quint/CodedRangeCleanConnect.qnt
+quint test models/quint/CodedRangeClean.qnt
+=> all completed successfully
+
+quint test verification/quint/CodedRangeCleanAnalysis.qnt \
+  --main CodedRangeCleanAnalysis --match <maintained-28-scenario-selector> \
+  --max-samples 1 --seed 22082026
+=> 28 passing
+
+quint verify verification/quint/CodedRangeCleanConflictExhaustive.qnt ...
+quint verify verification/quint/CodedRangeCleanCaptureExhaustive.qnt ...
+quint verify verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt ...
+quint verify verification/quint/CodedRangeCleanCompositionExhaustive.qnt ...
+quint verify verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt ...
+quint verify verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt ...
+quint verify verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt ...
+=> no violation found in six profiles; the CompositionExhaustive retry
+   reached its 600-second limit without a result
+
+quint test verification/quint/CodedRangeCleanMutants.qnt ...
+=> all 12 deliberately bad paths failed their expected safety predicate
+   (`QNT508`); the command's non-zero exit is expected
+```
+
+The Round-8 rerun executed the seven maintained bounded verification profiles
+concurrently. These finite results do not establish arbitrary-width concurrency
+or liveness.
+
+Non-claims:
+
+- Complete transition-group validation is deterministic in the in-memory
+  recovery adapter. It is not hardware durability certification.
+- The Rust and Connect checks exercise production composition at their stated
+  finite bounds. They are not arbitrary-width concurrency or liveness proof.
+- The Round-8 CompositionExhaustive timeout remains an open input to the
+  external completion gate.
+- A fresh exact-snapshot external review remains required after the Round-17
+  final-angle repair; this evidence does not claim external completion.

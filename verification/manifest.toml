@@ -619,6 +619,7 @@ scope = [
   "verification/quint/CodedRangeCleanCaptureExhaustive.qnt",
   "verification/quint/CodedRangeCleanUncertaintyExhaustive.qnt",
   "verification/quint/CodedRangeCleanCompositionExhaustive.qnt",
+  "verification/quint/CodedRangeCleanTwoCapturePhaseCut.qnt",
   "verification/quint/CodedRangeCleanCleanCommitPhaseCut.qnt",
   "verification/quint/CodedRangeCleanLaterCutPhaseCut.qnt",
   "three operation identities and two capture identities in sampled analysis",
@@ -628,9 +629,11 @@ scope = [
   "capture exhaustive profile: 2 operations, 1 capture, 1 coded unit, completed depth 5",
   "uncertainty exhaustive profile: 2 operations, 1 capture, 1 coded unit, completed depth 4",
   "composition exhaustive profile: 2 operations, 1 capture, 2 coded units, completed depth 6",
+  "two-capture phase-cut profile: 2 operations, 2 captures, 1 coded unit, profileInit/step completed depth 14",
   "CLEAN-commit phase cut: 1 operation, 1 capture, 1 coded unit, phaseStep depth 6",
   "later-cut phase cut: 2 operations, 1 capture, 1 coded unit, phaseStep depth 6",
-  "26 direct canonical scenarios plus 3 conflict, 2 composition, and 4 phase-cut predicates",
+  "28 direct canonical scenarios plus 3 conflict, 2 composition, and 4 phase-cut predicates",
+  "two overlapping tracked captures gate one later effect; both applicable durable later cuts are required",
   "sampled analysis max-steps 24 and max-samples 100000",
   "uncertainty-profile Unknown witnesses at max-steps 4 and max-samples 100000",
   "deterministic replay seed 22082026",
@@ -650,8 +653,8 @@ requirements = [
 ]
 non_claims = [
   "This is bounded delegated-model evidence, not arbitrary-width proof, Rust correctness, Connect conformance, or production concurrency evidence.",
-  "Completed end-to-end bounds are exactly 3, 5, 4, and 6 for conflict, capture, uncertainty, and composition; phaseStep bounds are depth 6 each.",
-  "Capture depth 7, later phase-cut depth 10, and composition depth 13 timed out and are not claimed.",
+  "Completed end-to-end bounds are exactly 3, 5, 4, and 6 for conflict, capture, uncertainty, and composition; phaseStep bounds are depth 6 each, and the fixed two-capture phase-cut profile completed depth 14.",
+  "Capture depth 7, later phase-cut depth 10, composition depth 13, and unconstrained two-capture exploration timed out or are not claimed.",
   "Phase-cut profiles begin at canonical init and establish their modeled prefixes; they do not establish external lifecycle preconditions or end-to-end production coverage.",
   "It does not establish topology/profile mapping, request/store/dirty/checksum geometry, persistence admissibility, recovery-adapter correctness, lifecycle terminality, sessions, startup, shutdown, publication, currentization, physical locking, or hardware durability.",
   "RecoveryProtocol.qnt and its existing analysis/Connect evidence remain separate and are not evidence for this relation.",
@@ -659,9 +662,62 @@ non_claims = [
 ]
 
 [[evidence]]
+id = "evidence.coded-contention-backpressure"
+path = "crates/dwv-frontend-ublk/src/lib.rs"
+claim = "A pre-admission coded overlap reaching the blocking portable facade is released without physical I/O or service recovery, classified as explicit retryable contention, and mapped by the frontend boundary to a retry result rather than an I/O failure."
+tier = "portable-reference-comparison"
+fault_model = [
+  "blocking facade converts coded overlap into ordinary I/O failure",
+  "pre-admission contention changes service state to Recovering",
+  "unstarted contention cleanup releases only the contender; the holder's claim remains",
+  "frontend maps retryable contention to TerminalResult::Retry rather than TerminalResult::Io",
+]
+scope = [
+  "crates/dwv-service/src/service/tests.rs::blocking_contention_rejects_only_the_unstarted_request",
+  "crates/dwv-frontend-ublk/src/lib.rs::tests::coded_contention_maps_to_retryable_result",
+  "src/cli.rs::ublk_error and src/operator.rs::frontend_error consume Retry as blocked/backpressure",
+  "crates/dwv-service/src/service/tests.rs::blocking_cancel_refuses_after_transaction_range_acquired",
+  "crates/dwv-service/src/service/tests.rs::failed_child_admission_is_a_pre_transaction_bounded_refusal",
+  "serialized Linux ublk profile: execute_service is called under the opened-service mutex",
+  "pre-admission coded contention only; retained submit/drive resumption remains the production path",
+]
+requirements = [
+  "req.normalized-block-semantics.adapters-expose-bounded-deterministic-conformance-behavior",
+  "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
+]
+non_claims = [
+  "This is focused portable boundary evidence, not Linux kernel, ublk, throughput, fairness, or hardware evidence.",
+  "The retry result is explicit backpressure for an unstarted convenience-facade attempt; it does not claim the retained operation was restarted or that coded authority owns scheduler policy.",
+  "The current Linux profile makes ordinary coded contention unreachable between requests; it does not claim Linux request parking or EAGAIN equivalence.",
+]
+
+[[evidence]]
+id = "evidence.coded-unit-identity-range"
+path = "crates/dwv-service/src/service/tests.rs"
+claim = "Production coded-unit mapping represents a protected codeword above the former u32 unit-index boundary as a u64 identity without allocating storage proportional to the protected offset."
+tier = "portable-reference-comparison"
+fault_model = [
+  "u32 coded-unit conversion rejects an otherwise representable protected offset",
+  "formal-model cardinality becomes a production capacity limit",
+  "high-index claim evidence requires a correspondingly enormous fixture",
+]
+scope = [
+  "crates/dwv-service/src/service/tests.rs::coded_claim_supports_unit_above_u32_boundary_without_large_fixture",
+  "crates/dwv-transaction-ref/src/coded.rs::coded_claim_supports_unit_above_u32_boundary",
+  "production CodedUnitId(u64) and bounded in-memory claim identity only",
+]
+requirements = [
+  "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
+]
+non_claims = [
+  "Finite CodedRangeClean model domains remain evidence bounds and do not establish product capacity.",
+  "This does not allocate or scan a large backing store and does not certify physical storage capacity or Linux behavior.",
+]
+
+[[evidence]]
 id = "evidence.coded-range-clean-connect"
 path = "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs"
-claim = "The bounded in-crate Connect bridge projects every delegated CodedRangeClean distinction through production service/coordinator seams while consuming explicitly typed owner decisions and evidence for complete claims, capture scope, CLEAN commits, later cuts, and exact generation-qualified release; lifecycle and basis policy remain external."
+claim = "The bounded in-crate Connect bridge projects every delegated CodedRangeClean distinction through production service/coordinator seams while consuming the real geometry owner, service-owned opaque lifecycle capabilities, producer-bound coded admissions, complete lifecycle release evaluation, owner-approved CLEAN certificates, admission-bound write-recovery later cuts, compaction, phase-specific cleanup, and inherited-capture owners; repeated seeded legal operation/capture traces compare normalized production observations without a second model, and focused tests reject false projections, foreign lifecycle and admission authority graphs, caller-selected or substituted later cuts, non-authoritative persisted proof flags, stale preparations, phase-confused reopen cleanup, incomplete coded semantic transitions, and lost acknowledgements."
 tier = "portable-reference-comparison"
 fault_model = [
   "model-shaped shadow coordinator",
@@ -676,15 +732,87 @@ fault_model = [
   "later-cut ordering reversed",
   "rejected later cut incorrectly permits effect",
   "unauthorized or stale coded-claim removal",
+  "serialized capture proof flags trusted on reopen",
+  "prerequisite-only operation release accepted as full lifecycle authority",
+  "membership compacted without exact release receipts",
+  "refused cleanup used as clean-known cleanup or vice versa",
+  "lost commit acknowledgement installed as process-local success or failure",
+  "coded consumer accepts lifecycle authority from an independently constructed owner/verifier graph",
+  "capture owner accepts an admission issued by another range authority graph",
+  "paired range launders a claim issued by a foreign geometry authority into local admission and later-cut target authority",
+  "capture start formed from a stale range-authority clone omits an already-admitted operation",
+  "capture start accepts future-inclusive scope from a foreign geometry owner",
+  "raw range effect permit bypasses active capture ordering after Later admission or missing durable observation",
+  "separately mutable range and capture owners admit or permit a transition from different live predecessors",
+  "prepared capture successor from one lifecycle owner installs in another lifecycle owner",
+  "capture frontier advances before its capture is live, allowing an overlapping later effect before stale capture confirmation",
+  "may-have-committed capture establishment leaves old process-local coded authority usable without durable reopen",
+  "post-durability capture receipt mismatch leaves old process-local coded authority usable",
+  "may-have-committed sibling coded transition leaves process-local predecessor authority usable",
+  "post-durability sibling coded transition confirmation mismatch leaves process-local predecessor authority usable",
+  "emitted but unaccepted physical work crosses backend acceptance after coded lifecycle authority invalidation",
+  "raw emitted physical work executes or reports completion without opaque accepted-work proof",
+  "raw mutable recovery owner bypasses service-mediated coded lifecycle transitions",
+  "refreshed CLEAN permit weakens an Included operation's persistence bound",
+  "compacted operation identities accumulate without a fixed retained-state bound",
+  "Connect acceptance fabricates live lifecycle evidence outside the production owner",
+  "Connect later-cut bypasses the admission-bound production write-recovery target or accepts a substituted transition",
+  "inherited Open capture retired without a current exact CLEAN refusal",
+  "settled inherited capture bypassed before durable retirement",
 ]
 scope = [
   "verification/quint/CodedRangeCleanConnect.qnt",
   "production HealthyPortableService and OperationAdmission seams",
   "production CodedRangeAuthority and CodedCaptureCoordinator seams",
-  "15 deterministic Connect profiles",
+  "16 deterministic Connect profiles",
+  "16 seeded sampled operation/capture Connect runs with max-steps 12, retained as deterministic diversity/replay evidence only",
+  "four test-only false projections rejected: premature effect, dropped active claim, swapped capture membership, and suppressed release",
   "complete/disjoint/overlapping/non-transitive coded claims",
+  "single topology/profile geometry owner for exact per-write claims and future-inclusive capture scope",
+  "independent block-overlap oracle for future-inclusive 512-byte/4-KiB/4-MiB capture geometry",
   "coded admission restricted to an exact live Reserved operation generation",
-  "post-cleanup release, same-generation re-admission rejection, and capture/admission linearization unit tests",
+  "service-owned opaque lifecycle capability types mediate full release and Included authority; lower lifecycle primitives and slot permits cannot invoke raw coded removal or CLEAN authorization",
+  "released Included authority is created only after the installed capture successor records the exact durably confirmed release operation and certificate",
+  "producer-bound coded admissions reject both foreign range admissions and foreign geometry claims passed through the paired range before admission observation or later-cut target authority",
+  "owner-atomic capture start derives the current closed mutation set and future-inclusive scope on a private range candidate, constructs and submits the exact recovery transaction under the exclusive owner borrow, preserves the predecessor only for explicit rejection, invalidates all process-local coded authority on uncertainty or receipt mismatch, and installs range plus capture successors only after exact durable confirmation",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::coded_capture_and_admission_linearize_at_service_boundary",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::capture_start_uses_the_paired_geometry_scope",
+  "paired lifecycle effect authority requires a live admitted claim plus permitted recorded membership from every intersecting active capture before raw range effect issuance",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::lifecycle_effect_authority_rejects_capture_ordering_bypasses",
+  "crates/dwv-recovery/src/lib.rs::raw range effect compile-fail barrier",
+  "exclusive lifecycle authority exposes no mutable subowner, clone, raw permit, raw capture start, or raw prepared-transition installation path to ordinary callers",
+  "owner-bound range and capture preparations reject stale or foreign-owner successors before live installation",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::lifecycle_owner_rejects_stale_prepared_range_successor",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::lifecycle_owner_rejects_foreign_prepared_capture_successor",
+  "crates/dwv-recovery/src/coded_lifecycle.rs::exclusive owner compile-fail barriers",
+  "crates/dwv-recovery/src/coded_lifecycle.rs::owner-controlled capture persistence compile-fail barrier",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::capture_start_holds_owner_until_durable_installation",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::rejected_capture_persistence_keeps_the_live_range_predecessor",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::lost_capture_ack_invalidates_process_local_coded_authority",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::mismatched_durable_capture_receipt_invalidates_process_local_coded_authority",
+  "one conservative service boundary preserves process-local coded authority only for explicit Rejected persistence; every other coded transition error invalidates the owner and moves the service to Recovering",
+  "every successful coded transition confirmation routes through the same owner invalidation boundary on receipt or predecessor mismatch",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::uncertain_coded_admission_revokes_process_local_authority",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::corrupt_coded_admission_ack_revokes_process_local_authority",
+  "crates/dwv-service/src/service/tests.rs::uncertain_later_cut_revokes_process_local_coded_authority",
+  "crates/dwv-service/src/service/tests.rs::uncertain_clean_commit_revokes_process_local_coded_authority",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::mismatched_durable_compaction_receipt_revokes_process_local_authority",
+  "lost acknowledgement coverage for persisted Refused cleanup, CleanKnown cleanup, and inherited-capture abandonment preserves neither local candidate and accepts only the exact durable successor after reopen",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::capture_invalidation_revokes_only_unaccepted_physical_work",
+  "crates/dwv-service/src/lib.rs::accepted physical-work proof compile-fail barriers",
+  "crates/dwv-service/src/lib.rs::mutable recovery-owner compile-fail barrier",
+  "crates/dwv-recovery/src/coded_clean.rs::disjoint_active_capture_does_not_gate_later_effect positive control",
+  "crates/dwv-recovery/src/coded_authority.rs::foreign_admission_cannot_enter_another_capture_authority_graph",
+  "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs::paired_range_rejects_claim_from_foreign_geometry_owner",
+  "accepted Connect profiles obtain lifecycle capabilities through the same complete HealthyPortableService evaluation path",
+  "fixed-size retained frontier; every inherited retained-history assertion remains quarantined because restart cannot re-establish its live owner evidence, so settled inherited captures take conservative abandonment",
+  "owner-issued exact membership compaction plus distinct refused and clean-known cleanup",
+  "bounded unresolved retention and 64 sequential distinct-codeword retirement",
+  "owner-bound scope reconstruction that ignores serialized proof flags while refusing to derive retained-history authority from scalar frontier equality",
+  "known-noncommit and true lost-acknowledgement reconciliation separately exercised for persisted Refused cleanup and inherited nonempty CleanKnown abandonment",
+  "repeated crash before empty CleanKnown cleanup keeps service admission blocked until durable retirement",
+  "retained protected-write observation: coded claim before basis reads, effect permission before writes, and exact-authorized release",
   "later-cut durable ordering, rejection, Unknown, and reconciliation",
   "exact generation-qualified external release certificate and unresolved-capture coexistence",
 ]
@@ -694,10 +822,75 @@ requirements = [
   "req.dirty-integrity-invalidation.recovery-clean-requires-persistence-evidence",
   "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
   "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+  "req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity",
   "req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts",
 ]
 non_claims = [
   "This is bounded correspondence evidence, not arbitrary-width model checking, production concurrency or throughput evidence, or hardware durability proof.",
   "Typed owner decisions and evidence are consumed at exact seams but do not prove the underlying owner semantics; LifecycleRelease provider correctness, physical cleanup ordering, and basis coherence remain separate evidence.",
   "It does not establish topology/profile mapping, request/store/dirty/checksum geometry, persistence admissibility, startup, shutdown, publication, currentization, or Linux behavior.",
+  "No aggregate category coverage or witness frequency is claimed for the sampled seed corpus; category claims come from explicit profiles.",
+]
+
+[[evidence]]
+id = "evidence.coded-operation-stateful-properties"
+path = "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs"
+claim = "A small proptest-state-machine layer generates legal coded-operation histories with independent operation identities and target-member inputs, including no-active-operation crash/restart transitions that drive production inherited-capture invalidation and fresh capture start; it checks production observations for complete admission, overlap contention, disjoint progress, exact release cleanup, stale-generation rejection, and conservative restart state. A test-only corrupted observation is rejected by the ordinary oracle, shrinks to a minimal history, and replays with the same failure while the oracle remains separate from CodedRangeClean."
+tier = "portable-reference-comparison"
+fault_model = [
+  "overlapping coded claim admitted instead of remaining contended",
+  "disjoint coded progress incorrectly blocked",
+  "stale release authorization succeeds",
+  "release leaves active coded authority or operation resources",
+  "corrupted active-claim observation accepted by the ordinary oracle",
+  "restart leaves inherited capture state installed or selected state falsely clean",
+]
+scope = [
+  "proptest 1.11 and proptest-state-machine 0.8",
+  "64 generated cases with 1-23 legal transitions per case",
+  "three independent operation identities and three target data-member inputs",
+  "three complete claim shapes over two coded units",
+  "operation identity keys reference and release state; target-member input only feeds the request",
+  "deterministic fixed minimized-history replay",
+  "no-active-operation restart resolves inherited captures through production recovery and begins a fresh bounded capture",
+  "deterministic replay includes two crash/restart boundaries",
+  "test-only hidden active-claim observation shrinks to a one-transition failure and replays with the same oracle claim",
+  "production HealthyPortableService and CodedRangeAuthority observations",
+]
+requirements = [
+  "req.explicit-transaction-machine.transactions-emit-normalized-semantic-actions",
+  "req.explicit-transaction-machine.reference-traces-are-deterministic-and-implementation-independent",
+  "req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+]
+non_claims = [
+  "Generated sequential histories do not prove concurrent interleavings, arbitrary-width coverage, CLEAN-owner correctness, physical durability, or hardware behavior.",
+  "The generated state tracks only preconditions and active slots; it is not a CodedRangeClean reference implementation.",
+  "Target-member inputs are not topology evidence; the property layer exercises the coded authority and persisted reopen seams without modeling topology.",
+]
+
+[[evidence]]
+id = "evidence.recovery-reopen-cut"
+path = "crates/dwv-recovery/src/lib.rs"
+claim = "RecoveryReopenCut captures a bounded durable owner manifest and reopens it without process state; existing dwv-sim crash/power-loss schedules separately prove that durable and volatile media effects remain distinct."
+tier = "portable-reference-comparison"
+fault_model = [
+  "uncommitted recovery mutation appears after reopen",
+  "durable owner generation changes across reopen",
+  "process crash and power loss are treated as identical media effects",
+  "reopened manifest is not exact prior or proposed state",
+]
+scope = [
+  "RecoveryReopenCut::capture and ::reopen",
+  "durable_reopen_cut_discards_uncommitted_owner_state",
+  "dwv-sim daemon_crash_and_power_loss_have_distinct_effects",
+  "bounded exported RecoveryManifest owner state",
+]
+requirements = [
+  "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+  "req.dirty-integrity-invalidation.failures-and-restart-are-conservative",
+]
+non_claims = [
+  "The cut helper does not define task-4.3 persistence transitions or physical media semantics.",
+  "It does not establish service startup, recovery authority, topology publication, or hardware durability.",
 ]

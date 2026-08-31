@@ -192,6 +192,9 @@ module CodedRangeCleanAnalysis {
     laterCutStep,
   }
 
+  val opAIncludedInCapture0: bool =
+    state.captures.get("capture0").membership.get("opA") == CaptureIncluded
+
   run boundedAssumptionsTest = all {
     Operations == Set("opA", "opB", "opC"),
     Captures == Set("capture0", "capture1"),
@@ -451,4 +454,40 @@ module CodedRangeCleanAnalysis {
       .then(admitComplete("opA", ClaimU0))
       .then(startCapture("capture0", ScopeU0))
       .expect(activeHistoryRetainedReachable)
+
+  run openCaptureRetainsReleasedMembership =
+    init
+      .then(admitComplete("opA", ClaimU0))
+      .then(startCapture("capture0", ScopeU0))
+      .then(removeCodedClaim("opA", ReleaseAllowed))
+      .expect(all {
+        opAIncludedInCapture0,
+        UnresolvedCaptureMembershipNotCompactable,
+      })
+      .then(compactReleasedMembership(
+        "capture0",
+        "opA",
+        MembershipCompactionAllowed,
+      ).fail())
+
+  run unknownCaptureRetainsReleasedMembership =
+    init
+      .then(admitComplete("opA", ClaimU0))
+      .then(startCapture("capture0", ScopeU0))
+      .then(observeCaptureSatisfaction(
+        "capture0",
+        CaptureSatisfactionAccepted,
+      ))
+      .then(requestClean("capture0"))
+      .then(observeCleanCommit("capture0", CleanCommitUnknown))
+      .then(removeCodedClaim("opA", ReleaseAllowed))
+      .expect(all {
+        opAIncludedInCapture0,
+        UnresolvedCaptureMembershipNotCompactable,
+      })
+      .then(compactReleasedMembership(
+        "capture0",
+        "opA",
+        MembershipCompactionAllowed,
+      ).fail())
 }
