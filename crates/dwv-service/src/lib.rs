@@ -65,6 +65,29 @@ pub use rebuild::{
     OfflineRebuildCommitError, RebuildStore, commit_verified_rebuild_chunk,
     commit_verified_rebuild_completion, validate_rebuild_resume,
 };
+#[doc = r#"
+Proof that one exact emitted action crossed the backend-acceptance boundary.
+
+Ordinary executors cannot forge the proof or report an unaccepted action:
+
+```compile_fail
+use dwv_service::{AcceptedPortableWriteWork, PortableWriteWork};
+
+fn forge(work: PortableWriteWork) -> AcceptedPortableWriteWork {
+    AcceptedPortableWriteWork { work }
+}
+```
+
+```compile_fail
+use dwv_service::{PortableWriteResult, PortableWriteWork};
+use dwv_store::StoreCompletion;
+
+fn report(work: PortableWriteWork, completion: StoreCompletion) -> PortableWriteResult {
+    PortableWriteResult::new(work, completion, None)
+}
+```
+"#]
+pub use service::AcceptedPortableWriteWork;
 pub use service::{
     BasisReadPermission, HealthyPortableService, MemberBinding, PortableOperationSubmission,
     PortableReadPayload, PortableWriteAction, PortableWriteDrive, PortableWriteResult,

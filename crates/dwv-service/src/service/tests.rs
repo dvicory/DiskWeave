@@ -613,7 +613,7 @@ fn fake_service_with_length(length: u64) -> HealthyPortableService<FakeStore, Me
 struct DeterministicWriteHarness<S: RandomAccessStore, R: RecoveryStateStore> {
     service: HealthyPortableService<S, R>,
     submission: PortableWriteSubmission,
-    accepted: Vec<PortableWriteWork>,
+    accepted: Vec<AcceptedPortableWriteWork>,
     ready: Vec<PortableWriteResult>,
 }
 
@@ -639,15 +639,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> DeterministicWriteHarness<S, R
     fn emit_without_execution(&mut self) -> Result<PortableWriteDrive, ServiceError> {
         let turn = self.service.drive_write(&self.submission)?;
         if let PortableWriteDrive::Work(work) = &turn {
-            self.service.accept_write_work(work)?;
-            self.accepted.push(work.clone());
+            let accepted = self.service.accept_write_work(work)?;
+            self.accepted.push(accepted);
         }
         Ok(turn)
     }
 
     fn execute_accepted(&mut self, index: usize) -> Result<(), ServiceError> {
-        let work = self.accepted.swap_remove(index);
-        self.ready.push(self.service.execute_write_work(&work)?);
+        let accepted = self.accepted.swap_remove(index);
+        self.ready.push(self.service.execute_write_work(accepted)?);
         Ok(())
     }
 
@@ -684,8 +684,8 @@ fn finish_retained_write<S: RandomAccessStore, R: RecoveryStateStore>(
                 service.grant_basis_read_permission(submission).unwrap();
             }
             PortableWriteDrive::Work(work) => {
-                service.accept_write_work(&work).unwrap();
-                let result = service.execute_write_work(&work).unwrap();
+                let accepted = service.accept_write_work(&work).unwrap();
+                let result = service.execute_write_work(accepted).unwrap();
                 if let Some(evidence) = service.deliver_write_result(result).unwrap() {
                     return evidence;
                 }
@@ -958,8 +958,8 @@ fn protected_write_claim_covers_basis_and_releases_with_authorization() {
     );
     assert!(driver.write_recovery_record.is_some());
     assert_eq!(service.members[0].store.physical_reads, 0);
-    service.accept_write_work(&basis_data).unwrap();
-    let basis_data_result = service.execute_write_work(&basis_data).unwrap();
+    let accepted = service.accept_write_work(&basis_data).unwrap();
+    let basis_data_result = service.execute_write_work(accepted).unwrap();
     assert!(
         service
             .deliver_write_result(basis_data_result)
@@ -976,8 +976,8 @@ fn protected_write_claim_covers_basis_and_releases_with_authorization() {
             .operation_phase(submission.operation),
         Some(dwv_transaction_ref::CodedOperationPhase::Held)
     );
-    service.accept_write_work(&basis_parity).unwrap();
-    let basis_parity_result = service.execute_write_work(&basis_parity).unwrap();
+    let accepted = service.accept_write_work(&basis_parity).unwrap();
+    let basis_parity_result = service.execute_write_work(accepted).unwrap();
     assert!(
         service
             .deliver_write_result(basis_parity_result)
@@ -995,8 +995,8 @@ fn protected_write_claim_covers_basis_and_releases_with_authorization() {
         Some(dwv_transaction_ref::CodedOperationPhase::EffectPossible)
     );
     assert_eq!(service.members[0].store.physical_writes, 0);
-    service.accept_write_work(&first_write).unwrap();
-    let first_write_result = service.execute_write_work(&first_write).unwrap();
+    let accepted = service.accept_write_work(&first_write).unwrap();
+    let first_write_result = service.execute_write_work(accepted).unwrap();
     assert!(
         service
             .deliver_write_result(first_write_result)
@@ -1037,7 +1037,7 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
     let PortableWriteDrive::Work(holder_basis) = service.drive_write(&holder).unwrap() else {
         panic!("holder should emit its first basis read");
     };
-    service.accept_write_work(&holder_basis).unwrap();
+    let accepted_holder_basis = service.accept_write_work(&holder_basis).unwrap();
     assert_eq!(
         service
             .coded_captures()
@@ -1091,7 +1091,7 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
     assert_eq!(service.members[0].store.physical_reads, 0);
     assert_eq!(service.members[1].store.physical_reads, 0);
 
-    let holder_basis_result = service.execute_write_work(&holder_basis).unwrap();
+    let holder_basis_result = service.execute_write_work(accepted_holder_basis).unwrap();
     assert!(
         service
             .deliver_write_result(holder_basis_result)
@@ -1128,8 +1128,8 @@ fn protected_write_contention_parks_until_capture_cut_progresses() {
             .get(&contender.operation),
         Some(&CodedCaptureMembership::Included)
     );
-    service.accept_write_work(&later_basis).unwrap();
-    let later_basis_result = service.execute_write_work(&later_basis).unwrap();
+    let accepted = service.accept_write_work(&later_basis).unwrap();
+    let later_basis_result = service.execute_write_work(accepted).unwrap();
     assert!(
         service
             .deliver_write_result(later_basis_result)
@@ -1199,8 +1199,8 @@ fn coded_capture_capacity_parks_admitted_write_until_retirement_progresses() {
     assert!(!waiting_driver.failed);
     assert!(waiting_driver.clean_capture.is_none());
 
-    service.accept_write_work(&holder_basis).unwrap();
-    let holder_basis_result = service.execute_write_work(&holder_basis).unwrap();
+    let accepted = service.accept_write_work(&holder_basis).unwrap();
+    let holder_basis_result = service.execute_write_work(accepted).unwrap();
     assert!(
         service
             .deliver_write_result(holder_basis_result)
@@ -1248,8 +1248,8 @@ fn sixty_four_sequential_codewords_leave_no_resolved_capture_history() {
         let PortableWriteDrive::Work(basis) = service.drive_write(&submission).unwrap() else {
             panic!("sequential write should emit its present-basis read");
         };
-        service.accept_write_work(&basis).unwrap();
-        let basis_result = service.execute_write_work(&basis).unwrap();
+        let accepted = service.accept_write_work(&basis).unwrap();
+        let basis_result = service.execute_write_work(accepted).unwrap();
         assert!(
             service
                 .deliver_write_result(basis_result)
@@ -1291,8 +1291,8 @@ fn protected_write_failure_keeps_claim_until_matching_authorization() {
             .operation_phase(submission.operation),
         Some(dwv_transaction_ref::CodedOperationPhase::Held)
     );
-    service.accept_write_work(&work).unwrap();
-    let result = service.execute_write_work(&work).unwrap();
+    let accepted = service.accept_write_work(&work).unwrap();
+    let result = service.execute_write_work(accepted).unwrap();
     assert!(service.deliver_write_result(result).is_err());
     assert!(
         service
@@ -1405,8 +1405,8 @@ fn protected_write_persists_owner_later_cut_before_effect() {
         let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
             panic!("basis reads should remain runnable under the held claim");
         };
-        service.accept_write_work(&work).unwrap();
-        let result = service.execute_write_work(&work).unwrap();
+        let accepted = service.accept_write_work(&work).unwrap();
+        let result = service.execute_write_work(accepted).unwrap();
         assert!(service.deliver_write_result(result).unwrap().is_none());
     }
 
@@ -1847,8 +1847,8 @@ fn abandonment_refuses_unaccepted_children_but_retains_accepted_work() {
     let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
         panic!("basis read should be emitted");
     };
-    service.accept_write_work(&work).unwrap();
-    let result = service.execute_write_work(&work).unwrap();
+    let accepted = service.accept_write_work(&work).unwrap();
+    let result = service.execute_write_work(accepted).unwrap();
     service.abandon(submission.operation).unwrap();
     assert_eq!(service.state(), ServiceState::Recovering);
     assert!(service.submit_write(request, &bytes).is_err());

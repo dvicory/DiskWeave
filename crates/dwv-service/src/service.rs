@@ -306,6 +306,19 @@ pub struct PortableWriteWork {
     pub action: PortableWriteAction,
 }
 
+/// Proof that the service accepted one exact emitted action before backend
+/// submission. Only [`HealthyPortableService::accept_write_work`] can create it.
+#[derive(Debug, Eq, PartialEq)]
+pub struct AcceptedPortableWriteWork {
+    work: PortableWriteWork,
+}
+
+impl AcceptedPortableWriteWork {
+    pub const fn work(&self) -> &PortableWriteWork {
+        &self.work
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PortableWriteResult {
     pub work: PortableWriteWork,
@@ -315,12 +328,12 @@ pub struct PortableWriteResult {
 
 impl PortableWriteResult {
     pub fn new(
-        work: PortableWriteWork,
+        accepted: AcceptedPortableWriteWork,
         completion: StoreCompletion,
         read_payload: Option<Vec<u8>>,
     ) -> Self {
         Self {
-            work,
+            work: accepted.work,
             completion,
             read_payload,
         }
@@ -1606,8 +1619,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
 
     /// Tell the slot table that the executor accepted exactly this emitted
     /// work. Store execution must happen only after this method succeeds.
-    pub fn accept_write_work(&mut self, work: &PortableWriteWork) -> Result<(), ServiceError> {
+    pub fn accept_write_work(
+        &mut self,
+        work: &PortableWriteWork,
+    ) -> Result<AcceptedPortableWriteWork, ServiceError> {
         let index = self.write_index(&work.submission)?;
+        self.state.require_writes()?;
+        if !self.coded_captures.is_usable() {
+            return Err(ServiceError::io(
+                FailureClass::ReconciliationRequired,
+                "coded lifecycle authority requires durable reopen reconciliation",
+            ));
+        }
         let mut driver = self.write_drivers[index]
             .take()
             .expect("validated write driver remains retained");
@@ -1651,7 +1674,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         }
         pending.state = WriteWorkState::Accepted;
         self.write_drivers[index] = Some(driver);
-        Ok(())
+        Ok(AcceptedPortableWriteWork { work: work.clone() })
     }
 
     /// Deliver a checked result for previously accepted work and resume the
@@ -1944,8 +1967,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     }
                     PortableWriteDrive::Complete(evidence) => return Ok(evidence),
                     PortableWriteDrive::Work(work) => {
-                        self.accept_write_work(&work)?;
-                        let result = self.execute_write_work(&work)?;
+                        let accepted = self.accept_write_work(&work)?;
+                        let result = self.execute_write_work(accepted)?;
                         if let Some(evidence) = self.deliver_write_result(result)? {
                             return Ok(evidence);
                         }
@@ -2105,6 +2128,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             } else {
                 PortableWriteWait::OwnerReconciliation
             }));
+        }
+        if !self.state.accepts_writes() || !self.coded_captures.is_usable() {
+            return Ok(PortableWriteDrive::Wait(
+                PortableWriteWait::OwnerReconciliation,
+            ));
         }
         if !driver.coded_admitted {
             match self.coded_admit(driver.operation, driver.coded_claim.clone())? {
@@ -2266,8 +2294,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
     fn execute_write_work(
         &mut self,
-        work: &PortableWriteWork,
+        accepted: AcceptedPortableWriteWork,
     ) -> Result<PortableWriteResult, ServiceError> {
+        let work = accepted.work();
         let Some(member_index) = self.write_work_member_index(work) else {
             return Err(ServiceError::io(
                 FailureClass::Identity,
@@ -2299,11 +2328,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 member.store.flush(work.identity.operation_id, *through)
             }
         };
-        Ok(PortableWriteResult::new(
-            work.clone(),
-            completion,
-            read_payload,
-        ))
+        Ok(PortableWriteResult::new(accepted, completion, read_payload))
     }
     pub fn flush(&mut self, request: BlockRequest) -> Result<OperationEvidence, ServiceError> {
         self.state.require_reads()?;

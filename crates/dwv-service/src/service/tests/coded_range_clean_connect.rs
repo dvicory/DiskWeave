@@ -2410,6 +2410,95 @@ fn mismatched_durable_capture_receipt_invalidates_process_local_coded_authority(
     );
 }
 
+#[test]
+fn capture_invalidation_revokes_only_unaccepted_physical_work() {
+    let epoch = TopologyEpoch(4);
+    let advance_to_write_boundary = || {
+        let recovery = LostAckRecovery::new(epoch);
+        let mut service =
+            fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+        let request = request(
+            RequestId(967),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        );
+        let bytes = vec![0x71; BLOCK as usize];
+        let submission = service.submit_write(request, &bytes).unwrap();
+        service.grant_basis_read_permission(&submission).unwrap();
+        for _ in 0..2 {
+            let PortableWriteDrive::Work(work) = service.drive_write(&submission).unwrap() else {
+                panic!("basis work should be emitted");
+            };
+            let accepted = service.accept_write_work(&work).unwrap();
+            let result = service.execute_write_work(accepted).unwrap();
+            assert!(service.deliver_write_result(result).unwrap().is_none());
+        }
+        (service, recovery, submission, request, bytes)
+    };
+
+    let (mut emitted, recovery, submission, request, bytes) = advance_to_write_boundary();
+    let PortableWriteDrive::Work(write) = emitted.drive_write(&submission).unwrap() else {
+        panic!("physical write should be emitted");
+    };
+    let submissions_before_invalidation = emitted.admission_usage().backend_submissions;
+    assert!(matches!(write.action, PortableWriteAction::Write { .. }));
+    recovery.lose_next_commit();
+    assert!(
+        emitted
+            .coded_start_capture(CodedCaptureId(1), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+    assert_eq!(emitted.state(), ServiceState::Recovering);
+    assert!(!emitted.coded_captures.is_usable());
+    assert!(emitted.accept_write_work(&write).is_err());
+    assert_eq!(
+        emitted.admission_usage().backend_submissions,
+        submissions_before_invalidation
+    );
+    assert_eq!(emitted.members[0].store.physical_writes, 0);
+    assert!(matches!(
+        emitted.drive_write(&submission).unwrap(),
+        PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+    ));
+    assert!(emitted.submit_write(request, &bytes).is_err());
+
+    let (mut accepted, recovery, submission, _, _) = advance_to_write_boundary();
+    let PortableWriteDrive::Work(write) = accepted.drive_write(&submission).unwrap() else {
+        panic!("physical write should be emitted");
+    };
+    let accepted_work = accepted.accept_write_work(&write).unwrap();
+    recovery.lose_next_commit();
+    assert!(
+        accepted
+            .coded_start_capture(CodedCaptureId(1), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+    let result = accepted.execute_write_work(accepted_work).unwrap();
+    assert_eq!(accepted.members[0].store.physical_writes, 1);
+    assert!(accepted.deliver_write_result(result).unwrap().is_none());
+
+    let (mut planned, recovery, submission, _, _) = advance_to_write_boundary();
+    let submissions_before_invalidation = planned.admission_usage().backend_submissions;
+    recovery.lose_next_commit();
+    assert!(
+        planned
+            .coded_start_capture(CodedCaptureId(1), [RegionId(0)], [IntegrityExtentId(0)])
+            .is_err()
+    );
+    assert!(matches!(
+        planned.drive_write(&submission).unwrap(),
+        PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation)
+    ));
+    assert_eq!(
+        planned.admission_usage().backend_submissions,
+        submissions_before_invalidation
+    );
+    assert_eq!(planned.members[0].store.physical_writes, 0);
+}
+
 #[quint_run(
     spec = "../../verification/quint/CodedRangeCleanConnect.qnt",
     main = "CodedRangeCleanConnect",
@@ -2738,11 +2827,11 @@ fn coded_range_connect_protected_write_holds_claim_through_basis_and_write() {
                 .operation_phase(submission.operation),
             Some(CodedOperationPhase::Held)
         );
-        service
+        let accepted = service
             .accept_write_work(&work)
             .expect("basis work acceptance");
         let result = service
-            .execute_write_work(&work)
+            .execute_write_work(accepted)
             .expect("basis work execution");
         assert!(
             service
@@ -2765,11 +2854,11 @@ fn coded_range_connect_protected_write_holds_claim_through_basis_and_write() {
         Some(CodedOperationPhase::EffectPossible)
     );
     assert_eq!(service.members[0].store.physical_writes, 0);
-    service
+    let accepted = service
         .accept_write_work(&write)
         .expect("protected write acceptance");
     let result = service
-        .execute_write_work(&write)
+        .execute_write_work(accepted)
         .expect("protected write execution");
     assert!(
         service
