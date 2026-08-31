@@ -26,11 +26,12 @@ use dwv_recovery::{
     CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
     CodedCaptureReconciliationReceipt, CodedCaptureRetentionOwner, CodedGeometryOwner,
     CodedLifecycleAuthority, CodedReopenResolution, ContentGeneration, DIRTY_REGION_BYTES,
-    FenceCertificate, IntegrityExtentId, IntegrityState, RecoveryCleanDecision,
-    RecoveryCleanRefusalPermit, RecoveryCleanRequest, RecoveryCommitObservation, RecoveryError,
-    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RecoveryStateStore,
-    RecoveryStoreHealth, RecoveryTxn, RegionId, WriteRecoveryRecordEvidence,
-    assess_checksum_baseline, dirty_regions_for_range, evaluate_recovery_clean,
+    DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityState,
+    RecoveryCleanDecision, RecoveryCleanRefusalPermit, RecoveryCleanRequest,
+    RecoveryCommitObservation, RecoveryError, RecoveryGeneration, RecoveryMutation,
+    RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId,
+    WriteRecoveryRecordEvidence, assess_checksum_baseline, dirty_regions_for_range,
+    evaluate_recovery_clean,
 };
 use dwv_store::{
     ChildOperationId, CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment,
@@ -739,6 +740,52 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             })
     }
 
+    fn invalidate_coded_transition_authority(&mut self) {
+        self.coded_captures.invalidate_after_uncertain_persistence();
+        self.state = ServiceState::Recovering;
+    }
+
+    fn finish_coded_persistence<T>(
+        &mut self,
+        result: Result<T, RecoveryError>,
+    ) -> Result<T, ServiceError> {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error @ RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected)) => {
+                Err(ServiceError::io(FailureClass::Recovery, error.to_string()))
+            }
+            Err(error) => {
+                self.invalidate_coded_transition_authority();
+                Err(ServiceError::io(FailureClass::Recovery, error.to_string()))
+            }
+        }
+    }
+
+    fn commit_coded_transition(
+        &mut self,
+        transaction: RecoveryTxn,
+    ) -> Result<DurableRecoveryCommit, ServiceError> {
+        let result = self.recovery.commit_durable_receipt(transaction);
+        self.finish_coded_persistence(result)
+    }
+
+    fn finish_coded_confirmation<T, E>(
+        &mut self,
+        result: Result<T, E>,
+        failure_class: FailureClass,
+    ) -> Result<T, ServiceError>
+    where
+        E: std::fmt::Display,
+    {
+        match result {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.invalidate_coded_transition_authority();
+                Err(ServiceError::io(failure_class, error.to_string()))
+            }
+        }
+    }
+
     pub(crate) fn coded_admit(
         &mut self,
         operation: OperationSlotToken,
@@ -793,19 +840,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let receipt = if let Some(transition) = prepared.transition() {
             let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
             txn.push(RecoveryMutation::ApplyCodedTransition { transition });
-            let receipt = self
-                .recovery
-                .commit_durable_receipt(txn)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            let receipt = self.commit_coded_transition(txn)?;
             self.checksums.recovery_generation = receipt.generation();
             Some(receipt)
         } else {
             None
         };
-        let outcome = self
+        let confirmation = self
             .coded_captures
-            .confirm_admission(prepared, receipt.as_ref())
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            .confirm_admission(prepared, receipt.as_ref());
+        let outcome = self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         self.set_release_scope(operation, ReleaseScope::InScope);
         self.set_readiness(operation, OperationReadiness::Runnable);
         Ok(outcome)
@@ -921,13 +965,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 txn.push(RecoveryMutation::ApplyCodedTransition {
                     transition: prepared.transition(),
                 });
-                let receipt = self
-                    .recovery
-                    .commit_durable_receipt(txn)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-                self.coded_captures
-                    .confirm_refused_cleanup(prepared, &receipt)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let receipt = self.commit_coded_transition(txn)?;
+                let confirmation = self
+                    .coded_captures
+                    .confirm_refused_cleanup(prepared, &receipt);
+                self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
                 self.checksums.recovery_generation = receipt.generation();
             }
             CodedReopenResolution::CleanKnown(authorization) => {
@@ -939,13 +981,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 txn.push(RecoveryMutation::ApplyCodedTransition {
                     transition: prepared.transition(),
                 });
-                let receipt = self
-                    .recovery
-                    .commit_durable_receipt(txn)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-                self.coded_captures
-                    .confirm_clean_known_cleanup(prepared, &receipt)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let receipt = self.commit_coded_transition(txn)?;
+                let confirmation = self
+                    .coded_captures
+                    .confirm_clean_known_cleanup(prepared, &receipt);
+                self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
                 self.checksums.recovery_generation = receipt.generation();
             }
             CodedReopenResolution::Abandon(authorization) => {
@@ -957,13 +997,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 txn.push(RecoveryMutation::ApplyCodedTransition {
                     transition: prepared.transition(),
                 });
-                let receipt = self
-                    .recovery
-                    .commit_durable_receipt(txn)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-                self.coded_captures
-                    .confirm_inherited_capture_abandonment(prepared, &receipt)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let receipt = self.commit_coded_transition(txn)?;
+                let confirmation = self
+                    .coded_captures
+                    .confirm_inherited_capture_abandonment(prepared, &receipt);
+                self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
                 self.checksums.recovery_generation = receipt.generation();
             }
         }
@@ -1012,13 +1050,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         txn.push(RecoveryMutation::ApplyCodedTransition {
             transition: prepared.transition(),
         });
-        let receipt = self
-            .recovery
-            .commit_durable_receipt(txn)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        self.coded_captures
-            .confirm_prepared_updates(prepared, &receipt)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let receipt = self.commit_coded_transition(txn)?;
+        let confirmation = self
+            .coded_captures
+            .confirm_prepared_updates(prepared, &receipt);
+        self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         self.checksums.recovery_generation = receipt.generation();
         self.compact_resolved_capture_membership()
     }
@@ -1085,25 +1121,20 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let receipt = if let Some(transition) = prepared.transition() {
             let mut txn = RecoveryTxn::new(current.generation, self.topology.topology_epoch());
             txn.push(RecoveryMutation::ApplyCodedTransition { transition });
-            let receipt = match self.recovery.commit_durable_receipt(txn) {
-                Ok(receipt) => receipt,
-                Err(error) => {
-                    if let RecoveryError::CommitNotDurable(observation) = error {
-                        self.record_coded_release_commit_failure(operation, observation);
-                    }
-                    return Err(ServiceError::io(FailureClass::Recovery, error.to_string()));
-                }
-            };
+            let result = self.recovery.commit_durable_receipt(txn);
+            if let Err(RecoveryError::CommitNotDurable(observation)) = &result {
+                self.record_coded_release_commit_failure(operation, *observation);
+            }
+            let receipt = self.finish_coded_persistence(result)?;
             self.checksums.recovery_generation = receipt.generation();
             Some(receipt)
         } else {
             None
         };
-        self.coded_captures
-            .confirm_release(prepared, receipt.as_ref())
-            .map_err(|error| {
-                ServiceError::io(FailureClass::ReconciliationRequired, error.to_string())
-            })
+        let confirmation = self
+            .coded_captures
+            .confirm_release(prepared, receipt.as_ref());
+        self.finish_coded_confirmation(confirmation, FailureClass::ReconciliationRequired)
     }
     fn record_coded_release_commit_failure(
         &mut self,
@@ -2728,19 +2759,23 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 &mut self.recovery,
                 target,
                 capture_mutations,
-            )
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            );
+        let result = if prepared_cuts.is_empty() {
+            result.map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?
+        } else {
+            self.finish_coded_persistence(result)?
+        };
         if !prepared_cuts.is_empty() {
-            let receipt = result.receipt.as_ref().ok_or_else(|| {
-                ServiceError::io(
+            let Some(receipt) = result.receipt.as_ref() else {
+                self.invalidate_coded_transition_authority();
+                return Err(ServiceError::io(
                     FailureClass::Recovery,
                     "write-recovery commit omitted its coded-cut receipt",
-                )
-            })?;
+                ));
+            };
             for prepared in prepared_cuts {
-                self.coded_captures
-                    .confirm_later_cut(prepared, receipt)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let confirmation = self.coded_captures.confirm_later_cut(prepared, receipt);
+                self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
             }
         }
         let record = result.evidence;
@@ -3312,17 +3347,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         refused.push(RecoveryMutation::ApplyCodedTransition {
                             transition: prepared.transition(),
                         });
-                        let durable =
-                            self.recovery
-                                .commit_durable_receipt(refused)
-                                .map_err(|error| {
-                                    ServiceError::io(FailureClass::Recovery, error.to_string())
-                                })?;
-                        self.coded_captures
-                            .confirm_clean_refusal(prepared, &durable)
-                            .map_err(|error| {
-                                ServiceError::io(FailureClass::Recovery, error.to_string())
-                            })?;
+                        let durable = self.commit_coded_transition(refused)?;
+                        let confirmation = self
+                            .coded_captures
+                            .confirm_clean_refusal(prepared, &durable);
+                        self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
                         self.checksums.recovery_generation = durable.generation();
                         return Err(ServiceError::io(
                             FailureClass::Recovery,
@@ -3348,14 +3377,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 recovery_clean.push(RecoveryMutation::ApplyCodedTransition {
                     transition: prepared.transition(),
                 });
-                let receipt = self
-                    .recovery
-                    .commit_durable_receipt(recovery_clean)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let receipt = self.commit_coded_transition(recovery_clean)?;
                 let committed = receipt.generation();
-                self.coded_captures
-                    .confirm_clean_commit(prepared, &receipt)
-                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                let confirmation = self.coded_captures.confirm_clean_commit(prepared, &receipt);
+                self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
                 self.checksums.recovery_generation = committed;
                 driver.recovery_committed = Some(committed);
                 committed
@@ -3672,14 +3697,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         if prepared.is_empty() {
             return Ok(());
         }
-        let receipt = self
-            .recovery
-            .commit_durable_receipt(txn)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let receipt = self.commit_coded_transition(txn)?;
         for compaction in prepared {
-            self.coded_captures
-                .confirm_membership_compaction(compaction, &receipt)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            let confirmation = self
+                .coded_captures
+                .confirm_membership_compaction(compaction, &receipt);
+            self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         }
         self.checksums.recovery_generation = receipt.generation();
         Ok(())
@@ -3732,19 +3755,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         if refused.is_empty() && clean_known.is_empty() {
             return Ok(());
         }
-        let receipt = self
-            .recovery
-            .commit_durable_receipt(txn)
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        let receipt = self.commit_coded_transition(txn)?;
         for cleanup in refused {
-            self.coded_captures
-                .confirm_refused_cleanup(cleanup, &receipt)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            let confirmation = self
+                .coded_captures
+                .confirm_refused_cleanup(cleanup, &receipt);
+            self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         }
         for cleanup in clean_known {
-            self.coded_captures
-                .confirm_clean_known_cleanup(cleanup, &receipt)
-                .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+            let confirmation = self
+                .coded_captures
+                .confirm_clean_known_cleanup(cleanup, &receipt);
+            self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         }
         self.checksums.recovery_generation = receipt.generation();
         Ok(())

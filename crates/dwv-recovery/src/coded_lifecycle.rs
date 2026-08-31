@@ -374,6 +374,14 @@ impl<R, I> CodedLifecycleAuthority<R, I> {
         self.authority_usable
     }
 
+    /// Revoke process-local authority when durable coded state may differ from it.
+    ///
+    /// Only reconstruction from authoritative recovery state can establish a
+    /// usable owner after this boundary.
+    pub fn invalidate_after_uncertain_persistence(&mut self) {
+        self.authority_usable = false;
+    }
+
     fn require_lifecycle_authority(&self) -> Result<(), CodedLifecycleError> {
         self.authority_usable
             .then_some(())

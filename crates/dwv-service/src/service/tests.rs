@@ -34,6 +34,7 @@ struct LostAckRecovery {
     inner: Rc<RefCell<MemoryRecoveryStore>>,
     commits_until_lost_ack: Rc<Cell<Option<usize>>>,
     commits_until_rejection: Rc<Cell<Option<usize>>>,
+    corrupt_next_commit_ack: Rc<Cell<bool>>,
     misreport_next_generation: Rc<Cell<bool>>,
 }
 
@@ -47,6 +48,7 @@ impl LostAckRecovery {
             inner: Rc::new(RefCell::new(store)),
             commits_until_lost_ack: Rc::new(Cell::new(None)),
             commits_until_rejection: Rc::new(Cell::new(None)),
+            corrupt_next_commit_ack: Rc::new(Cell::new(false)),
             misreport_next_generation: Rc::new(Cell::new(false)),
         }
     }
@@ -60,6 +62,9 @@ impl LostAckRecovery {
     }
     fn reject_commit_after(&self, successful_commits: usize) {
         self.commits_until_rejection.set(Some(successful_commits));
+    }
+    fn corrupt_next_commit_ack(&self) {
+        self.corrupt_next_commit_ack.set(true);
     }
 
     fn misreport_next_generation(&self) {
@@ -113,6 +118,11 @@ impl RecoveryStateStore for LostAckRecovery {
             return Ok(committed
                 .checked_next()
                 .expect("test generation has remaining capacity"));
+        }
+        if self.corrupt_next_commit_ack.replace(false) {
+            return Err(dwv_recovery::RecoveryError::CommitNotDurable(
+                dwv_recovery::RecoveryCommitObservation::Corrupt,
+            ));
         }
         match self.commits_until_lost_ack.get() {
             Some(0) => {
@@ -1441,6 +1451,58 @@ fn protected_write_persists_owner_later_cut_before_effect() {
 }
 
 #[test]
+fn uncertain_later_cut_revokes_process_local_coded_authority() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(430),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let recovery = LostAckRecovery::new(epoch);
+    let recovery_control = recovery.clone();
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery, ServiceConfig::default());
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let submission = service
+        .submit_write(request, &[0x46; BLOCK as usize])
+        .unwrap();
+    service.grant_basis_read_permission(&submission).unwrap();
+
+    recovery_control.lose_commit_after(2);
+    assert!(service.drive_write(&submission).is_err());
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(!service.coded_captures.is_usable());
+    assert_eq!(
+        service
+            .coded_captures
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&submission.operation),
+        Some(&CodedCaptureMembership::Later)
+    );
+    assert_eq!(
+        recovery_control
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .into_iter()
+            .find(|capture| capture.capture == CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&submission.operation),
+        Some(&CodedCaptureMembership::LaterDurableStalesClean)
+    );
+}
+
+#[test]
 fn blocking_write_uses_the_retained_coded_path() {
     let epoch = TopologyEpoch(4);
     let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
@@ -2019,6 +2081,57 @@ fn rejected_coded_release_commit_retries_before_slot_reuse() {
             .is_none()
     );
     assert_eq!(harness.service.admission_usage().operation_slots, 0);
+}
+
+#[test]
+fn uncertain_clean_commit_revokes_process_local_coded_authority() {
+    let epoch = TopologyEpoch(4);
+    let request = request(
+        RequestId(55),
+        epoch,
+        0,
+        BlockOp::Write,
+        ByteRange::new(0, u64::from(BLOCK)).unwrap(),
+        DurabilityIntent::Ordinary,
+    );
+    let bytes = vec![0x76; BLOCK as usize];
+    let recovery = LostAckRecovery::new(epoch);
+    let recovery_control = recovery.clone();
+    let service = fake_service_with_recovery(FakeRead::Exact, recovery, ServiceConfig::default());
+    let mut harness = DeterministicWriteHarness::new(service, request, &bytes).unwrap();
+    harness.grant_basis().unwrap();
+    harness.emit_one().unwrap();
+    harness.emit_one().unwrap();
+    harness.deliver(1).unwrap();
+    harness.deliver(0).unwrap();
+    harness.emit_available().unwrap();
+    harness.deliver(1).unwrap();
+    harness.deliver(0).unwrap();
+    harness.emit_available().unwrap();
+    harness.deliver(0).unwrap();
+
+    recovery_control.lose_next_commit();
+    assert!(harness.deliver(0).is_err());
+    assert_eq!(harness.service.state(), ServiceState::Recovering);
+    assert!(!harness.service.coded_captures.is_usable());
+    let local = harness
+        .service
+        .coded_captures
+        .snapshots()
+        .into_iter()
+        .find(|capture| capture.phase == CodedCapturePhase::Open)
+        .expect("lost acknowledgement must retain the local predecessor");
+    assert!(
+        recovery_control
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .into_iter()
+            .any(|capture| {
+                capture.capture == local.capture && capture.phase == CodedCapturePhase::CleanKnown
+            })
+    );
 }
 
 #[test]

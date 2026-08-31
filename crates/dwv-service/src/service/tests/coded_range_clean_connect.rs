@@ -1701,6 +1701,7 @@ fn reopened_refusal_lost_ack_installs_neither_candidate_until_reopen() {
             .resolve_reopened_coded_capture(CodedCaptureId(0), Some(refusal))
             .is_err()
     );
+    assert!(!reopened.coded_captures().is_usable());
     assert!(
         reopened
             .coded_captures()
@@ -1754,6 +1755,80 @@ fn started_lost_ack_coded_service(
 }
 
 #[test]
+fn uncertain_coded_admission_revokes_process_local_authority() {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let operation = service
+        .reserve(request(
+            RequestId(968),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+
+    recovery.lose_next_commit();
+    assert!(service.coded_admit(operation, claim).is_err());
+    assert!(!service.coded_captures().is_usable());
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(service.coded_authority().active_claim(operation).is_none());
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .iter()
+            .any(|capture| capture.membership.contains_key(&operation))
+    );
+}
+
+#[test]
+fn corrupt_coded_admission_ack_revokes_process_local_authority() {
+    let epoch = TopologyEpoch(4);
+    let recovery = LostAckRecovery::new(epoch);
+    let mut service =
+        fake_service_with_recovery(FakeRead::Exact, recovery.clone(), ServiceConfig::default());
+    service
+        .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+        .unwrap();
+    let operation = service
+        .reserve(request(
+            RequestId(970),
+            epoch,
+            0,
+            BlockOp::Write,
+            ByteRange::new(0, BLOCK as u64).unwrap(),
+            DurabilityIntent::Ordinary,
+        ))
+        .unwrap();
+    let claim = issued_coded_unit_claim(&service, operation, [CodedUnitId(0)]).unwrap();
+
+    recovery.corrupt_next_commit_ack();
+    assert!(service.coded_admit(operation, claim).is_err());
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(!service.coded_captures().is_usable());
+    assert!(service.coded_authority().active_claim(operation).is_none());
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .iter()
+            .any(|capture| capture.membership.contains_key(&operation))
+    );
+}
+
+#[test]
 fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen() {
     let (mut release, release_recovery, release_operation) = started_lost_ack_coded_service(955);
     release_recovery.lose_next_commit();
@@ -1765,6 +1840,10 @@ fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen(
                 &release_receipt,
             )
             .is_err()
+    );
+    assert!(
+        !release.coded_captures().is_usable(),
+        "lost acknowledgement must revoke process-local coded authority"
     );
     assert!(
         release
@@ -1800,6 +1879,7 @@ fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen(
         .unwrap();
     compaction_recovery.lose_next_commit();
     assert!(compaction.compact_resolved_capture_membership().is_err());
+    assert!(!compaction.coded_captures().is_usable());
     assert_eq!(
         compaction
             .coded_captures()
@@ -1837,6 +1917,7 @@ fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen(
     cleanup.compact_resolved_capture_membership().unwrap();
     cleanup_recovery.lose_next_commit();
     assert!(cleanup.retire_resolved_captures().is_err());
+    assert!(!cleanup.coded_captures().is_usable());
     assert!(
         cleanup
             .coded_captures()
@@ -1856,6 +1937,43 @@ fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen(
         "reopen must accept the durably committed cleanup successor"
     );
 }
+#[test]
+fn mismatched_durable_compaction_receipt_revokes_process_local_authority() {
+    let (mut service, recovery, operation) = started_lost_ack_coded_service(969);
+    persist_test_clean_resolution(&mut service, false).unwrap();
+    let certificate = release_certificate(service.topology.topology_epoch());
+    service
+        .establish_release_authorization_for_test(&authoritative_release(operation), &certificate)
+        .unwrap()
+        .unwrap();
+
+    recovery.misreport_next_generation();
+    assert!(service.compact_resolved_capture_membership().is_err());
+    assert_eq!(service.state(), ServiceState::Recovering);
+    assert!(!service.coded_captures().is_usable());
+    assert_eq!(
+        service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&operation),
+        Some(&CodedCaptureMembership::Included)
+    );
+    assert!(
+        recovery
+            .durable_store()
+            .load_assembly_snapshot()
+            .unwrap()
+            .coded_captures
+            .into_iter()
+            .find(|capture| capture.capture == CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .is_empty()
+    );
+}
+
 #[test]
 fn persisted_refused_cleanup_handles_known_noncommit_and_lost_ack() {
     let (mut known, known_recovery, _) = started_lost_ack_coded_service(958);
@@ -1902,6 +2020,7 @@ fn persisted_refused_cleanup_handles_known_noncommit_and_lost_ack() {
             .resolve_reopened_coded_capture(CodedCaptureId(0), None)
             .is_err()
     );
+    assert!(!reopened.coded_captures().is_usable());
     assert!(
         reopened
             .coded_captures()
@@ -1963,6 +2082,7 @@ fn inherited_clean_known_abandonment_handles_known_noncommit_and_lost_ack() {
             .resolve_reopened_coded_capture(CodedCaptureId(0), None)
             .is_err()
     );
+    assert!(!reopened.coded_captures().is_usable());
     assert!(
         reopened
             .coded_captures()
