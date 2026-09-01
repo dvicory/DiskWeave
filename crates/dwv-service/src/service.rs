@@ -433,18 +433,6 @@ impl PortableReadPayload {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct PendingOperation {
-    request: BlockRequest,
-    child: ChildOperationId,
-    identity: StoreSubmissionIdentity,
-}
-
-impl PendingOperation {
-    const fn operation(self) -> OperationSlotToken {
-        self.child.slot
-    }
-}
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WritableStartAssessment {
     Available,
     RecoveryUnavailable,
@@ -522,7 +510,6 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     topology: TopologySnapshot,
     members: Vec<MemberBinding<S>>,
     recovery: R,
-    pending_operations: Vec<Option<PendingOperation>>,
     write_drivers: Vec<Option<WriteDriver>>,
     operation_readiness: Vec<Option<(OperationSlotToken, OperationReadiness)>>,
     checksums: ChecksumAuthority,
@@ -635,7 +622,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             topology,
             members,
             recovery,
-            pending_operations: vec![None; config.admission.limits.operation_slots],
             write_drivers: std::iter::repeat_with(|| None)
                 .take(config.admission.limits.operation_slots)
                 .collect(),
@@ -1285,14 +1271,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     store.topology_epoch(),
                 )
                 .map_err(slot_error)?;
-            let pending = PendingOperation {
-                request,
-                child,
-                identity,
-            };
-            let index = usize::try_from(token.index)
-                .map_err(|_| slot_error(dwv_store::SlotError::StaleGeneration { token }))?;
-            self.pending_operations[index] = Some(pending);
             Ok(PortableOperationSubmission {
                 operation: token,
                 child,
@@ -1315,36 +1293,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         payload: PortableReadPayload,
         delivery: StoreCompletionDelivery,
     ) -> Result<(Vec<u8>, OperationEvidence), ServiceError> {
-        let index = usize::try_from(submission.operation.index)
-            .map_err(|_| ServiceError::io(FailureClass::Admission, "stale read submission"))?;
-        let pending = self
-            .pending_operations
-            .get(index)
-            .and_then(|entry| *entry)
-            .filter(|pending| {
-                pending.child.slot == submission.operation
-                    && pending.child == submission.child
-                    && pending.identity == submission.identity
-                    && pending.request == submission.request
-            })
-            .ok_or_else(|| {
-                ServiceError::io(
-                    FailureClass::Admission,
-                    "stale or unknown read continuation",
-                )
-            })?;
-        let expected_length = usize::try_from(pending.request.range.length)
+        let request = self.read_continuation_request(&submission)?;
+        let expected_length = usize::try_from(request.range.length)
             .map_err(|_| ServiceError::io(FailureClass::Range, "read range does not fit memory"))?;
-        if Some(payload.buffer) != pending.request.buffer
+        if Some(payload.buffer) != request.buffer
             || payload.bytes.len() != expected_length
-            || delivery.identity != pending.identity
+            || delivery.identity != submission.identity
         {
             return Err(ServiceError::rejected_completion(
                 FailureClass::Admission,
                 delivery.completion,
                 "read result does not match its accepted physical work",
             )
-            .with_request(pending.request));
+            .with_request(request));
         }
         let bytes = payload.bytes;
         let reported = delivery.completion.clone();
@@ -1354,10 +1315,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 reported.clone(),
                 error.to_string(),
             )
-            .with_request(pending.request)
+            .with_request(request)
         })?;
         let completion = CompletionEvidence {
-            requested: pending.request.range,
+            requested: request.range,
             completed: reported.completed.clone(),
             disposition: reported.disposition.clone(),
             persistence: if reported.persistence.is_durable() {
@@ -1366,48 +1327,71 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 PersistenceClaim::VolatileOrUnknown
             },
         };
-        let result = if matches!(reported.disposition, CompletionDisposition::Success) {
+        if matches!(reported.disposition, CompletionDisposition::Success) {
             let generation = self
                 .recovery_generation()
-                .map_err(|error| error.with_request(pending.request))?;
+                .map_err(|error| error.with_request(request))?;
             let trace = empty_trace(self.topology.topology_epoch(), generation)
-                .map_err(|error| error.with_request(pending.request))?;
+                .map_err(|error| error.with_request(request))?;
             let release_authorization = self
                 .finish(
-                    pending.operation(),
+                    submission.operation,
                     false,
                     ReleaseRequirement::NotApplicable,
                 )
-                .map_err(|cleanup| self.cleanup_error(pending.request, cleanup))?;
+                .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
             Ok((
                 bytes,
                 OperationEvidence {
-                    request: pending.request,
+                    request,
                     completion,
                     trace,
                     release_authorization,
                 },
             ))
         } else {
-            let primary = ServiceError::incomplete_read(pending.request, bytes, completion);
+            let primary = ServiceError::incomplete_read(request, bytes, completion);
             Err(self.finish_error(
-                pending.operation(),
-                pending.request,
+                submission.operation,
+                request,
                 primary,
                 ReleaseRequirement::NotApplicable,
             ))
-        };
-        self.clear_pending_operation(submission.operation);
-        result
-    }
-
-    fn clear_pending_operation(&mut self, operation: OperationSlotToken) {
-        if let Ok(index) = usize::try_from(operation.index)
-            && let Some(entry) = self.pending_operations.get_mut(index)
-            && entry.is_some_and(|pending| pending.operation() == operation)
-        {
-            *entry = None;
         }
+    }
+    fn read_continuation_request(
+        &self,
+        submission: &PortableOperationSubmission,
+    ) -> Result<BlockRequest, ServiceError> {
+        let snapshot = self.admission.snapshot(submission.operation).map_err(|_| {
+            ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown read continuation",
+            )
+        })?;
+        if snapshot.request != submission.request || submission.child.slot != submission.operation {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown read continuation",
+            ));
+        }
+        let Some(child) = snapshot
+            .children
+            .iter()
+            .find(|child| child.operation_id == submission.child)
+        else {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown read continuation",
+            ));
+        };
+        if child.submission != Some(submission.identity) || child.terminal {
+            return Err(ServiceError::io(
+                FailureClass::Admission,
+                "stale or unknown read continuation",
+            ));
+        }
+        Ok(snapshot.request)
     }
 
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
