@@ -85,20 +85,34 @@ struct BridgeState {
     captures: HashMap<String, ModelCapture>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProjectionFault {
+    DropActiveClaim,
+    MarkEffectPossibleBeforeAdmission,
+    SwapCaptureMembership,
+    SuppressRelease,
+}
+
 struct BridgeDriver {
     service: Option<HealthyPortableService<FakeStore, MemoryRecoveryStore>>,
     tokens: HashMap<String, OperationSlotToken>,
     claims: HashMap<String, BTreeSet<CodedUnitId>>,
     release_observations: HashMap<String, OperationSlotToken>,
+    projection_fault: Option<ProjectionFault>,
 }
 
 impl BridgeDriver {
     fn new() -> Self {
+        Self::with_projection_fault(None)
+    }
+
+    fn with_projection_fault(projection_fault: Option<ProjectionFault>) -> Self {
         Self {
             service: None,
             tokens: HashMap::new(),
             claims: HashMap::new(),
             release_observations: HashMap::new(),
+            projection_fault,
         }
     }
 
@@ -152,7 +166,7 @@ impl BridgeDriver {
         let claim = units
             .iter()
             .copied()
-            .map(CodedUnitId)
+            .map(|unit| CodedUnitId(u64::from(unit)))
             .collect::<BTreeSet<_>>();
         let outcome = self
             .service_mut()?
@@ -163,6 +177,24 @@ impl BridgeDriver {
         self.tokens.insert(operation.to_owned(), token);
         self.claims.insert(operation.to_owned(), claim);
         Ok(())
+    }
+
+    fn sampled_step(&mut self, choice: i64) -> Result<()> {
+        match choice {
+            0 => self.admit("opA", &[0]),
+            1 => self.admit("opB", &[0, 1]),
+            2 => self.admit("opC", &[1]),
+            3 => self.start_capture(),
+            4 => self.accept_capture(),
+            5 => self.reject_capture(),
+            6 => self.permit_effect("opA"),
+            7 => self.permit_effect("opB"),
+            8 => self.permit_effect("opC"),
+            9 => self.release_operation("opA"),
+            10 => self.release_operation("opB"),
+            11 => self.release_operation("opC"),
+            _ => bail!("sampled Connect choice {choice} is outside the bounded action set"),
+        }
     }
 
     fn start_capture(&mut self) -> Result<()> {
@@ -598,10 +630,34 @@ impl BridgeDriver {
                 satisfaction,
             },
         );
-        Ok(BridgeState {
+        let mut state = BridgeState {
             operations,
             captures,
-        })
+        };
+        if let Some(fault) = self.projection_fault {
+            match fault {
+                ProjectionFault::DropActiveClaim => {
+                    state.operations.get_mut("opA").unwrap().claim.units.clear();
+                }
+                ProjectionFault::MarkEffectPossibleBeforeAdmission => {
+                    state.operations.get_mut("opA").unwrap().phase =
+                        ModelOperationPhase::EffectPossible;
+                }
+                ProjectionFault::SwapCaptureMembership => {
+                    let capture = state.captures.get_mut("capture0").unwrap();
+                    let op_a = capture.membership.get("opA").copied().unwrap();
+                    let op_c = capture.membership.get("opC").copied().unwrap();
+                    capture.membership.insert("opA".to_owned(), op_c);
+                    capture.membership.insert("opC".to_owned(), op_a);
+                }
+                ProjectionFault::SuppressRelease => {
+                    if state.operations.get("opA").unwrap().phase == ModelOperationPhase::Released {
+                        state.operations.get_mut("opA").unwrap().phase = ModelOperationPhase::Held;
+                    }
+                }
+            }
+        }
+        Ok(state)
     }
 }
 
@@ -624,6 +680,7 @@ impl Driver for BridgeDriver {
     fn step(&mut self, step: &Step) -> Result {
         quint_connect::switch!(step {
             connectInit => self.init(),
+            sampledStep(choice: i64) => self.sampled_step(choice)?,
             admitOpA => self.admit("opA", &[0])?,
             admitOpB => self.admit("opB", &[0, 1])?,
             admitOpC => self.admit("opC", &[1])?,
@@ -1074,6 +1131,70 @@ fn coded_range_connect_clean_requires_decision() -> impl Driver {
 fn coded_range_connect_negative_paths() -> impl Driver {
     BridgeDriver::new()
 }
+
+fn connect_fault_is_rejected(fault: ProjectionFault, step: &str, max_steps: usize) -> bool {
+    let config = quint_connect::runner::Config {
+        test_name: format!("coded_range_connect_fault_{fault:?}"),
+        gen_config: quint_connect::runner::RunConfig {
+            spec: "../../verification/quint/CodedRangeCleanConnect.qnt".to_owned(),
+            main: Some("CodedRangeCleanConnect".to_owned()),
+            init: Some("connectInit".to_owned()),
+            step: Some(step.to_owned()),
+            max_samples: Some(1),
+            max_steps: Some(max_steps),
+            seed: "20260825".to_owned(),
+        },
+    };
+    quint_connect::runner::run_test(BridgeDriver::with_projection_fault(Some(fault)), config)
+        .is_err()
+}
+
+#[test]
+fn coded_range_connect_rejects_false_projections() {
+    assert!(connect_fault_is_rejected(
+        ProjectionFault::MarkEffectPossibleBeforeAdmission,
+        "admissionStep",
+        1,
+    ));
+    assert!(connect_fault_is_rejected(
+        ProjectionFault::DropActiveClaim,
+        "admissionStep",
+        1,
+    ));
+    assert!(connect_fault_is_rejected(
+        ProjectionFault::SwapCaptureMembership,
+        "captureStep",
+        3,
+    ));
+    assert!(connect_fault_is_rejected(
+        ProjectionFault::SuppressRelease,
+        "admissionStep",
+        5,
+    ));
+}
+#[test]
+
+fn coded_range_connect_sampled_operation_capture_paths() {
+    for seed in [
+        "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14", "15", "16",
+    ] {
+        let config = quint_connect::runner::Config {
+            test_name: format!("coded_range_connect_sampled_{seed}"),
+            gen_config: quint_connect::runner::RunConfig {
+                spec: "../../verification/quint/CodedRangeCleanConnect.qnt".to_owned(),
+                main: Some("CodedRangeCleanConnect".to_owned()),
+                init: Some("connectInit".to_owned()),
+                step: Some("sampledStep".to_owned()),
+                max_samples: Some(1),
+                max_steps: Some(12),
+                seed: seed.to_owned(),
+            },
+        };
+        quint_connect::runner::run_test(BridgeDriver::new(), config)
+            .unwrap_or_else(|error| panic!("sampled Connect seed {seed} failed: {error}"));
+    }
+}
+
 /// Production-side correspondence for the task-4.2 boundary. Basis lifecycle
 /// facts remain outside this CodedRangeClean model; these observations come
 /// directly from the retained service driver and its coded authority.
@@ -1158,4 +1279,416 @@ fn coded_range_connect_protected_write_holds_claim_through_basis_and_write() {
             .operation_phase(submission.operation)
             .is_none()
     );
+}
+
+#[cfg(test)]
+mod generated_coded_operation_properties {
+    use super::*;
+    use proptest::prelude::*;
+    use proptest_state_machine::{ReferenceStateMachine, StateMachineTest};
+    use std::collections::BTreeMap;
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ClaimKind {
+        U0,
+        U1,
+        U01,
+    }
+
+    impl ClaimKind {
+        fn units(self) -> BTreeSet<CodedUnitId> {
+            match self {
+                Self::U0 => [CodedUnitId(0)].into_iter().collect(),
+                Self::U1 => [CodedUnitId(1)].into_iter().collect(),
+                Self::U01 => [CodedUnitId(0), CodedUnitId(1)].into_iter().collect(),
+            }
+        }
+
+        fn overlaps(self, other: Self) -> bool {
+            self.units().intersection(&other.units()).next().is_some()
+        }
+    }
+
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct ReferenceState {
+        active: BTreeMap<u8, ClaimKind>,
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Transition {
+        Admit {
+            operation: u8,
+            data_slot: u8,
+            claim: ClaimKind,
+        },
+        Contended {
+            operation: u8,
+            data_slot: u8,
+            claim: ClaimKind,
+        },
+        Release {
+            operation: u8,
+        },
+        StaleRelease {
+            operation: u8,
+        },
+    }
+
+    fn claim_strategy() -> impl Strategy<Value = ClaimKind> {
+        prop_oneof![
+            Just(ClaimKind::U0),
+            Just(ClaimKind::U1),
+            Just(ClaimKind::U01)
+        ]
+    }
+
+    struct CodedOperationMachine<const DROP_ACTIVE_CLAIM: bool = false>;
+
+    impl<const DROP_ACTIVE_CLAIM: bool> ReferenceStateMachine
+        for CodedOperationMachine<DROP_ACTIVE_CLAIM>
+    {
+        type State = ReferenceState;
+        type Transition = Transition;
+
+        fn init_state() -> BoxedStrategy<Self::State> {
+            Just(ReferenceState::default()).boxed()
+        }
+
+        fn transitions(_: &Self::State) -> BoxedStrategy<Self::Transition> {
+            prop_oneof![
+                (0_u8..3, 0_u8..3, claim_strategy()).prop_map(|(operation, data_slot, claim)| {
+                    Transition::Admit {
+                        operation,
+                        data_slot,
+                        claim,
+                    }
+                }),
+                (0_u8..3, 0_u8..3, claim_strategy()).prop_map(|(operation, data_slot, claim)| {
+                    Transition::Contended {
+                        operation,
+                        data_slot,
+                        claim,
+                    }
+                }),
+                (0_u8..3).prop_map(|operation| Transition::Release { operation }),
+                (0_u8..3).prop_map(|operation| Transition::StaleRelease { operation }),
+            ]
+            .boxed()
+        }
+
+        fn apply(mut state: Self::State, transition: &Self::Transition) -> Self::State {
+            match *transition {
+                Transition::Admit {
+                    operation, claim, ..
+                } => {
+                    state.active.insert(operation, claim);
+                }
+                Transition::Release { operation } => {
+                    state.active.remove(&operation);
+                }
+                Transition::Contended { .. } | Transition::StaleRelease { .. } => {}
+            }
+            state
+        }
+
+        fn preconditions(state: &Self::State, transition: &Self::Transition) -> bool {
+            match *transition {
+                Transition::Admit {
+                    operation, claim, ..
+                } => {
+                    !state.active.contains_key(&operation)
+                        && state.active.values().all(|other| !claim.overlaps(*other))
+                }
+                Transition::Contended {
+                    operation, claim, ..
+                } => {
+                    !state.active.contains_key(&operation)
+                        && state.active.values().any(|other| claim.overlaps(*other))
+                }
+                Transition::Release { operation } | Transition::StaleRelease { operation } => {
+                    state.active.contains_key(&operation)
+                }
+            }
+        }
+    }
+
+    struct ConcreteState {
+        service: HealthyPortableService<FakeStore, MemoryRecoveryStore>,
+        tokens: BTreeMap<u8, OperationSlotToken>,
+        next_request_id: u64,
+        drop_active_claim: bool,
+    }
+
+    impl ConcreteState {
+        fn new() -> Self {
+            Self::with_drop_active_claim(false)
+        }
+
+        fn with_drop_active_claim(drop_active_claim: bool) -> Self {
+            Self {
+                service: fake_service(FakeRead::Exact, ServiceConfig::default()),
+                tokens: BTreeMap::new(),
+                next_request_id: 0,
+                drop_active_claim,
+            }
+        }
+
+        fn reserve(&mut self, data_slot: u8) -> OperationSlotToken {
+            let request_id = RequestId(20_000 + self.next_request_id);
+            self.next_request_id += 1;
+            self.service
+                .reserve(request(
+                    request_id,
+                    TopologyEpoch(4),
+                    usize::from(data_slot),
+                    BlockOp::Write,
+                    ByteRange::new(0, BLOCK as u64).expect("bounded generated range"),
+                    DurabilityIntent::Ordinary,
+                ))
+                .expect("generated operation admission")
+        }
+
+        fn admit(&mut self, operation: u8, data_slot: u8, claim: ClaimKind) {
+            let token = self.reserve(data_slot);
+            assert_eq!(
+                self.service
+                    .coded_admit(token, CodedClaimInput::complete(claim.units()))
+                    .expect("generated coded admission"),
+                CodedAdmissionOutcome::Admitted
+            );
+            assert_eq!(
+                self.service.coded_authority().operation_phase(token),
+                Some(CodedOperationPhase::Held)
+            );
+            self.tokens.insert(operation, token);
+        }
+
+        fn contend(&mut self, _operation: u8, data_slot: u8, claim: ClaimKind) {
+            let token = self.reserve(data_slot);
+            assert_eq!(
+                self.service
+                    .coded_admit(token, CodedClaimInput::complete(claim.units()))
+                    .expect("generated contention admission"),
+                CodedAdmissionOutcome::Contended
+            );
+            assert_eq!(
+                self.service.operation_readiness(token),
+                Some(OperationReadiness::Waiting(
+                    PendingReason::AdmissionContended
+                ))
+            );
+            self.service
+                .admission
+                .reclaim(token, false)
+                .expect("generated contended operation cleanup");
+        }
+
+        fn release(&mut self, operation: u8) {
+            let token = self
+                .tokens
+                .remove(&operation)
+                .expect("generated active token");
+            let authorization = ReleaseAuthorization { operation: token };
+            assert_eq!(
+                self.service
+                    .coded_release_claim(token, &authorization)
+                    .expect("generated coded release")
+                    .operation,
+                token
+            );
+            assert!(self.service.coded_authority().active_claim(token).is_none());
+            self.service
+                .admission
+                .reclaim(token, false)
+                .expect("generated release cleanup");
+        }
+
+        fn reject_stale_release(&mut self, operation: u8) {
+            let token = *self.tokens.get(&operation).expect("generated active token");
+            let stale_generation = if token.generation == u32::MAX {
+                0
+            } else {
+                token.generation + 1
+            };
+            let stale = OperationSlotToken::new(token.index, stale_generation);
+            let error = self
+                .service
+                .coded_release_claim(token, &ReleaseAuthorization { operation: stale })
+                .expect_err("stale release unexpectedly succeeded");
+            assert!(error.to_string().contains("does not match operation"));
+            assert!(self.service.coded_authority().active_claim(token).is_some());
+        }
+
+        fn observed_active_claim(
+            &self,
+            token: OperationSlotToken,
+        ) -> Option<BTreeSet<CodedUnitId>> {
+            if self.drop_active_claim {
+                None
+            } else {
+                self.service
+                    .coded_authority()
+                    .active_claim(token)
+                    .map(|claim| claim.units().iter().copied().collect())
+            }
+        }
+
+        fn assert_invariants(&self, expected: &ReferenceState) {
+            assert_eq!(self.tokens.len(), expected.active.len());
+            for (operation, claim) in &expected.active {
+                let token = self.tokens.get(operation).expect("reference token missing");
+                assert_eq!(
+                    self.service.coded_authority().operation_phase(*token),
+                    Some(CodedOperationPhase::Held)
+                );
+                let actual_units = self
+                    .observed_active_claim(*token)
+                    .expect("reference claim missing");
+                assert_eq!(actual_units, claim.units());
+            }
+        }
+    }
+
+    impl<const DROP_ACTIVE_CLAIM: bool> StateMachineTest for CodedOperationMachine<DROP_ACTIVE_CLAIM> {
+        type SystemUnderTest = ConcreteState;
+        type Reference = Self;
+
+        fn init_test(_: &ReferenceState) -> Self::SystemUnderTest {
+            ConcreteState::with_drop_active_claim(DROP_ACTIVE_CLAIM)
+        }
+
+        fn apply(
+            mut state: Self::SystemUnderTest,
+            ref_state: &ReferenceState,
+            transition: Transition,
+        ) -> Self::SystemUnderTest {
+            match transition {
+                Transition::Admit {
+                    operation,
+                    data_slot,
+                    claim,
+                } => state.admit(operation, data_slot, claim),
+                Transition::Contended {
+                    operation,
+                    data_slot,
+                    claim,
+                } => state.contend(operation, data_slot, claim),
+                Transition::Release { operation } => state.release(operation),
+                Transition::StaleRelease { operation } => state.reject_stale_release(operation),
+            }
+            state.assert_invariants(ref_state);
+            state
+        }
+
+        fn check_invariants(state: &Self::SystemUnderTest, ref_state: &ReferenceState) {
+            state.assert_invariants(ref_state);
+        }
+    }
+
+    proptest_state_machine::prop_state_machine! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn generated_coded_operation_histories(sequential 1..24 => CodedOperationMachine);
+    }
+
+    #[test]
+    fn generated_operation_identity_is_independent_of_target_member() {
+        let mut concrete = ConcreteState::new();
+        concrete.admit(0, 0, ClaimKind::U0);
+        concrete.admit(1, 0, ClaimKind::U1);
+        concrete.contend(2, 1, ClaimKind::U0);
+        assert_eq!(concrete.tokens.len(), 2);
+        let first = *concrete.tokens.get(&0).expect("first generated token");
+        let second = *concrete.tokens.get(&1).expect("second generated token");
+        assert_ne!(first, second);
+        concrete.reject_stale_release(0);
+        concrete.release(1);
+        assert!(
+            concrete
+                .service
+                .coded_authority()
+                .active_claim(first)
+                .is_some()
+        );
+        concrete.release(0);
+        assert!(
+            concrete
+                .service
+                .coded_authority()
+                .active_claim(second)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn minimized_coded_operation_history_replays_deterministically() {
+        let transitions = vec![
+            Transition::Admit {
+                operation: 0,
+                data_slot: 0,
+                claim: ClaimKind::U0,
+            },
+            Transition::Contended {
+                operation: 1,
+                data_slot: 1,
+                claim: ClaimKind::U0,
+            },
+            Transition::StaleRelease { operation: 0 },
+            Transition::Release { operation: 0 },
+            Transition::Admit {
+                operation: 1,
+                data_slot: 0,
+                claim: ClaimKind::U1,
+            },
+            Transition::Release { operation: 1 },
+        ];
+        CodedOperationMachine::<false>::test_sequential(
+            proptest::test_runner::Config::default(),
+            ReferenceState::default(),
+            transitions,
+            None,
+        );
+    }
+
+    #[test]
+    fn generated_property_rejects_corrupted_observation_and_replays() {
+        let mut runner = proptest::test_runner::TestRunner::new(ProptestConfig {
+            cases: 8,
+            failure_persistence: None,
+            ..ProptestConfig::default()
+        });
+        let result = runner.run(
+            &CodedOperationMachine::<true>::sequential_strategy(1..24),
+            |(initial, transitions, seen_counter)| {
+                Ok(CodedOperationMachine::<true>::test_sequential(
+                    proptest::test_runner::Config::default(),
+                    initial,
+                    transitions,
+                    seen_counter,
+                ))
+            },
+        );
+        match result {
+            Err(proptest::test_runner::TestError::Fail(reason, (initial, transitions, _))) => {
+                assert!(reason.to_string().contains("reference claim missing"));
+                assert_eq!(transitions.len(), 1);
+                let replay = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    CodedOperationMachine::<true>::test_sequential(
+                        proptest::test_runner::Config::default(),
+                        initial,
+                        transitions.clone(),
+                        None,
+                    );
+                }));
+                let panic = replay.expect_err("corrupted observation unexpectedly passed replay");
+                let panic_message = panic
+                    .downcast_ref::<String>()
+                    .map(String::as_str)
+                    .or_else(|| panic.downcast_ref::<&str>().copied())
+                    .expect("corrupted observation panic had no text");
+                assert!(panic_message.contains("reference claim missing"));
+            }
+            other => panic!("corrupted observation did not produce a shrunk failure: {other:?}"),
+        }
+    }
 }

@@ -1713,6 +1713,7 @@ fn frontend_error(error: dwv_frontend_ublk::AdapterError) -> OperatorError {
         dwv_frontend_ublk::TerminalResult::ResourceExhausted => {
             OperatorError::Blocked(error.to_string())
         }
+        dwv_frontend_ublk::TerminalResult::Retry => OperatorError::Blocked(error.to_string()),
         dwv_frontend_ublk::TerminalResult::ReconciliationRequired => {
             OperatorError::Reconciliation(error.to_string())
         }

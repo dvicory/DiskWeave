@@ -866,6 +866,38 @@ pub trait RecoveryStateStore {
     ) -> Result<RecoveryManifest, RecoveryError>;
 }
 
+/// A durable recovery cut that can be reopened without retaining process state.
+///
+/// The cut contains only the bounded exported owner manifest. Volatile media
+/// behavior remains the responsibility of `dwv-sim`; this helper is the
+/// recovery-owner side of a crash/reopen test.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryReopenCut {
+    manifest: RecoveryManifest,
+}
+
+impl RecoveryReopenCut {
+    /// Capture the durable owner manifest at the requested generation.
+    pub fn capture<S: RecoveryStateStore + ?Sized>(
+        store: &S,
+        generation: RecoveryGeneration,
+    ) -> Result<Self, RecoveryError> {
+        Ok(Self {
+            manifest: store.export_manifest(generation)?,
+        })
+    }
+
+    /// Return the exact manifest captured by this cut.
+    pub fn manifest(&self) -> &RecoveryManifest {
+        &self.manifest
+    }
+
+    /// Reopen a memory owner from the captured durable manifest.
+    pub fn reopen(&self) -> Result<MemoryRecoveryStore, RecoveryError> {
+        MemoryRecoveryStore::from_manifest(self.manifest.clone())
+    }
+}
+
 #[derive(Clone)]
 pub struct MemoryRecoveryStore {
     snapshot: RecoverySnapshot,
@@ -2006,6 +2038,41 @@ mod tests {
         ));
         assert_eq!(recovery.snapshot().generation, RecoveryGeneration(0));
         assert!(recovery.snapshot().dirty_regions.is_empty());
+    }
+
+    #[test]
+    fn durable_reopen_cut_discards_uncommitted_owner_state() {
+        let mut recovery = store();
+        let mut durable = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        durable.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(5),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        let generation = recovery.commit_durable(durable).unwrap();
+        let cut = RecoveryReopenCut::capture(&recovery, generation).unwrap();
+
+        let mut pending = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+        pending.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(6),
+            mutation_generation: RecoveryGeneration(2),
+        });
+        assert!(matches!(
+            recovery.commit_observed(pending, RecoveryCommitObservation::Lost),
+            Err(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Lost
+            ))
+        ));
+
+        let reopened = cut.reopen().unwrap();
+        assert_eq!(reopened.snapshot(), &cut.manifest().snapshot);
+        assert_eq!(reopened.snapshot().generation, generation);
+        assert!(
+            reopened
+                .snapshot()
+                .dirty_regions
+                .iter()
+                .all(|region| region.region != RegionId(6))
+        );
     }
 
     #[test]

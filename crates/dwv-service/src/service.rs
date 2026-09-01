@@ -1150,7 +1150,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 })
             }
             Err(error) => {
-                self.state = ServiceState::Recovering;
+                let bounded_admission_refusal = matches!(
+                    &error,
+                    ServiceError::Io {
+                        class: FailureClass::Admission,
+                        ..
+                    } | ServiceError::Invalid {
+                        class: FailureClass::Admission,
+                        ..
+                    }
+                );
+                if !bounded_admission_refusal {
+                    self.state = ServiceState::Recovering;
+                }
                 Err(self.finish_error(token, request, error, transaction_requirement(None)))
             }
         }
@@ -1645,8 +1657,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "stale or unknown write continuation",
             ));
         };
+        let transaction_unstarted = driver.machine.range_guard().is_none()
+            && driver
+                .machine
+                .pending_action()
+                .is_some_and(|action| action.kind() == ActionKind::AcquireRange)
+            && self.release_scope(operation) == ReleaseScope::Outside;
         let unstarted = driver.operation == operation
             && !driver.coded_admitted
+            && transaction_unstarted
             && driver.write_recovery_record.is_none()
             && driver
                 .work
@@ -1697,7 +1716,16 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         PortableWriteWait::CodedRangeContention,
                     ));
                 }
-                CodedAdmissionOutcome::Admitted => driver.coded_admitted = true,
+                CodedAdmissionOutcome::Admitted => {
+                    driver.coded_admitted = true;
+                    driver
+                        .machine
+                        .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
+                        .map_err(|error| {
+                            ServiceError::io(FailureClass::Recovery, error.to_string())
+                        })?;
+                    self.set_release_scope(driver.operation, ReleaseScope::InScope);
+                }
             }
         }
         self.ensure_write_recovery_record(driver)?;
@@ -2013,13 +2041,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             let mut offset = range.offset;
             let end = range.end();
             while offset < end {
-                let unit = u32::try_from(offset / block).map_err(|_| {
-                    ServiceError::io(
-                        FailureClass::Range,
-                        "coded codeword index exceeds bounded coded-unit identity",
-                    )
-                })?;
-                units.push(CodedUnitId(unit));
+                units.push(CodedUnitId(offset / block));
                 offset += block;
             }
         }
@@ -2112,12 +2134,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         .with_stores(stores);
         tx_plan.limits = TransactionLimits::default();
         let transaction_plan = tx_plan.clone();
-        let mut machine = TransactionMachine::new(tx_plan)
+        let machine = TransactionMachine::new(tx_plan)
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        machine
-            .apply(ActionResult::RangeAcquired(RangeGuardToken(1)))
-            .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-        self.set_release_scope(token, ReleaseScope::InScope);
+        // The transaction's abstract range acquisition is fulfilled only after
+        // complete coded admission succeeds. A contended operation therefore
+        // remains pre-transaction and can be safely discarded by a blocking
+        // caller without inventing a release observation.
         // The recovery record is committed only after the complete coded claim
         // is admitted. A contended operation must not advance recovery state
         // before it can ever issue dependent basis I/O.

@@ -8,6 +8,9 @@ use dwv_core::{
 use dwv_recovery::MemoryRecoveryStore;
 use dwv_recovery::WriteRecoveryRecordCommit;
 use dwv_recovery::{Blake3Provider, DigestProvider};
+use dwv_recovery::{
+    CodedCaptureDecision, CodedCaptureId, CodedCaptureMembership, CodedCaptureScopeInput,
+};
 use dwv_store::{
     CapabilityEvidenceId, ChildOperationId, CompletedRangeSet, FenceId, IdentityObservation,
     ResourceLimits, StoreCapabilities, StoreCompletion, StoreCompletionDelivery, StoreError,
@@ -663,6 +666,19 @@ fn deferred_read_child_admission_failure_releases_reserved_operation() {
 }
 
 #[test]
+fn coded_claim_supports_unit_above_u32_boundary_without_large_fixture() {
+    let service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let unit = u64::from(u32::MAX) + 1;
+    let offset = unit * u64::from(BLOCK);
+    let plan = crate::range::RangePlan {
+        ranges: vec![ByteRange::new(offset, u64::from(BLOCK)).unwrap()],
+    };
+
+    let claim = service.coded_claim_for_plan(&plan).unwrap();
+    assert_eq!(claim.units().iter().next(), Some(&CodedUnitId(unit)));
+}
+
+#[test]
 fn write_driver_start_has_no_physical_io_until_executor_acceptance() {
     let epoch = TopologyEpoch(4);
     let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
@@ -734,6 +750,15 @@ fn protected_write_claim_covers_basis_and_releases_with_authorization() {
             .operation_phase(submission.operation),
         Some(dwv_transaction_ref::CodedOperationPhase::Held)
     );
+    let driver = service.write_drivers[usize::try_from(submission.operation.index).unwrap()]
+        .as_ref()
+        .expect("admitted write remains retained");
+    assert!(driver.machine.range_guard().is_some());
+    assert_eq!(
+        service.release_scope(submission.operation),
+        ReleaseScope::InScope
+    );
+    assert!(driver.write_recovery_record.is_some());
     assert_eq!(service.members[0].store.physical_reads, 0);
     service.accept_write_work(&basis_data).unwrap();
     let basis_data_result = service.execute_write_work(&basis_data).unwrap();
@@ -816,6 +841,21 @@ fn protected_write_contention_parks_and_disjoint_claims_progress() {
         panic!("holder should emit its first basis read");
     };
     service.accept_write_work(&holder_basis).unwrap();
+    service
+        .coded_start_capture(
+            CodedCaptureId(0),
+            CodedCaptureScopeInput::complete([CodedUnitId(0), CodedUnitId(1)]),
+        )
+        .unwrap();
+    assert_eq!(
+        service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&holder.operation),
+        Some(&CodedCaptureMembership::Included)
+    );
 
     let contender = service
         .submit_write(
@@ -834,6 +874,22 @@ fn protected_write_contention_parks_and_disjoint_claims_progress() {
     assert_eq!(
         service.drive_write(&contender).unwrap(),
         PortableWriteDrive::Wait(PortableWriteWait::CodedRangeContention)
+    );
+    assert_eq!(
+        service.release_scope(contender.operation),
+        ReleaseScope::Outside
+    );
+    let contender_driver = service.write_drivers
+        [usize::try_from(contender.operation.index).unwrap()]
+    .as_ref()
+    .expect("contended write remains retained");
+    assert!(contender_driver.machine.range_guard().is_none());
+    assert_eq!(
+        contender_driver
+            .machine
+            .pending_action()
+            .map(|action| action.kind()),
+        Some(ActionKind::AcquireRange)
     );
     assert!(
         service
@@ -878,6 +934,41 @@ fn protected_write_contention_parks_and_disjoint_claims_progress() {
     );
     finish_retained_write(&mut service, &holder);
 
+    let PortableWriteDrive::Work(later_basis) = service.drive_write(&contender).unwrap() else {
+        panic!("later operation should emit its basis work after holder release");
+    };
+    assert_eq!(
+        service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .unwrap()
+            .membership
+            .get(&contender.operation),
+        Some(&CodedCaptureMembership::Later)
+    );
+    service.accept_write_work(&later_basis).unwrap();
+    let later_basis_result = service.execute_write_work(&later_basis).unwrap();
+    assert!(
+        service
+            .deliver_write_result(later_basis_result)
+            .unwrap()
+            .is_none()
+    );
+    loop {
+        match service.drive_write(&contender).unwrap() {
+            PortableWriteDrive::Work(work) => {
+                service.accept_write_work(&work).unwrap();
+                let result = service.execute_write_work(&work).unwrap();
+                assert!(service.deliver_write_result(result).unwrap().is_none());
+            }
+            PortableWriteDrive::Wait(PortableWriteWait::CaptureBlocked) => break,
+            other => panic!("later operation crossed capture boundary as {other:?}"),
+        }
+    }
+    service
+        .coded_captures_mut()
+        .observe_decision(CodedCaptureId(0), CodedCaptureDecision::Rejected)
+        .unwrap();
     let PortableWriteDrive::Work(resumed) = service.drive_write(&contender).unwrap() else {
         panic!("contended operation should resume without a new submission");
     };
@@ -886,7 +977,7 @@ fn protected_write_contention_parks_and_disjoint_claims_progress() {
         service
             .coded_authority()
             .operation_phase(contender.operation),
-        Some(dwv_transaction_ref::CodedOperationPhase::Held)
+        Some(dwv_transaction_ref::CodedOperationPhase::EffectPossible)
     );
 }
 
@@ -1089,6 +1180,49 @@ fn blocking_contention_rejects_only_the_unstarted_request() {
             .coded_authority()
             .operation_phase(holder.operation)
             .is_some()
+    );
+}
+
+#[test]
+fn blocking_cancel_refuses_after_transaction_range_acquired() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(433),
+        epoch,
+        0,
+        BlockOp::Write,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let submission = service
+        .submit_write(request, &[0x49; BLOCK as usize])
+        .unwrap();
+    service.grant_basis_read_permission(&submission).unwrap();
+    let PortableWriteDrive::Work(_) = service.drive_write(&submission).unwrap() else {
+        panic!("admitted write should emit basis work");
+    };
+
+    let error = service
+        .cancel_unstarted_write(submission.operation)
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        ServiceError::Io {
+            class: FailureClass::ReconciliationRequired,
+            ..
+        }
+    ));
+    assert_eq!(
+        service.release_scope(submission.operation),
+        ReleaseScope::InScope
+    );
+    assert_eq!(
+        service
+            .coded_authority()
+            .operation_phase(submission.operation),
+        Some(dwv_transaction_ref::CodedOperationPhase::Held)
     );
 }
 
@@ -3286,7 +3420,7 @@ fn release_scope_is_bound_to_acquisition_not_write_kind_or_child_count() {
 }
 
 #[test]
-fn failed_child_admission_retains_primary_error_until_owner_release() {
+fn failed_child_admission_is_a_pre_transaction_bounded_refusal() {
     let config = ServiceConfig {
         admission: AdmissionConfig {
             limits: dwv_store::ResourceLimits::new(1, 2, 1, 1, 1, 1),
@@ -3312,25 +3446,9 @@ fn failed_child_admission_retains_primary_error_until_owner_release() {
             ..
         })
     ));
-    assert_eq!(service.admission_usage().operation_slots, 1);
+    assert_eq!(service.admission_usage().operation_slots, 0);
     assert_eq!(service.admission_usage().backend_submissions, 0);
-    assert_eq!(service.state(), ServiceState::Recovering);
-    let token = OperationSlotToken::new(0, 1);
-    assert_eq!(service.release_scope(token), ReleaseScope::InScope);
-    assert!(
-        service
-            .admission
-            .snapshot(token)
-            .unwrap()
-            .children
-            .is_empty()
-    );
-    let authorization = service
-        .reconcile_release_authorization(authoritative_release(token))
-        .unwrap()
-        .expect("an acquired release scope does not require physical children");
-    assert_eq!(authorization.operation, token);
-    assert_eq!(service.release_authorization(token), Some(&authorization));
+    assert_eq!(service.state(), ServiceState::Serving);
     drop(service);
     fs::remove_dir_all(root).unwrap();
 }

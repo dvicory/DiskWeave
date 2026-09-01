@@ -525,6 +525,7 @@ fn ublk_error(error: dwv_frontend_ublk::AdapterError) -> DemoError {
     let (code, class) = match error.terminal() {
         dwv_frontend_ublk::TerminalResult::Invalid => (2, "usage"),
         dwv_frontend_ublk::TerminalResult::Unsupported => (3, "unsupported"),
+        dwv_frontend_ublk::TerminalResult::Retry => (3, "blocked"),
         dwv_frontend_ublk::TerminalResult::ResourceExhausted => (4, "resource-exhausted"),
         dwv_frontend_ublk::TerminalResult::ReconciliationRequired => (5, "reconciliation-required"),
         dwv_frontend_ublk::TerminalResult::Io => (5, "operation-failed"),

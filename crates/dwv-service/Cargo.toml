@@ -19,5 +19,7 @@ dwv-store-file = { path = "../dwv-store-file" }
 itf = "0.4"
 quint-connect = "0.1.2"
 serde = { version = "1", features = ["derive"] }
+proptest = "1.11"
+proptest-state-machine = "0.8"
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ["cfg(kani)"] }
