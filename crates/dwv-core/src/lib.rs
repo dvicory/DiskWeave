@@ -23,7 +23,7 @@ pub struct SubmissionSequence(pub u64);
 /// Opaque identifier for one protected parity/codeword unit within an externally
 /// validated captured mapping.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CodedUnitId(pub u32);
+pub struct CodedUnitId(pub u64);
 
 #[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,

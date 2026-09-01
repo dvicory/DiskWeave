@@ -243,7 +243,7 @@ mod tests {
     }
 
     fn claim(units: impl IntoIterator<Item = u32>) -> CodedClaimInput {
-        CodedClaimInput::complete(units.into_iter().map(CodedUnitId))
+        CodedClaimInput::complete(units.into_iter().map(|unit| CodedUnitId(u64::from(unit))))
     }
 
     #[test]
@@ -281,6 +281,24 @@ mod tests {
             Err(CodedAuthorityError::UnvalidatedClaim)
         );
         assert_eq!(authority.operation_phase(token(0, 1)), None);
+    }
+
+    #[test]
+    fn coded_claim_supports_unit_above_u32_boundary() {
+        let unit = CodedUnitId(u64::from(u32::MAX) + 1);
+        let mut authority = CodedRangeAuthority::new();
+        let operation = token(0, 1);
+
+        assert_eq!(
+            authority
+                .admit(operation, CodedClaimInput::complete([unit]))
+                .unwrap(),
+            CodedAdmissionOutcome::Admitted
+        );
+        assert_eq!(
+            authority.active_claim(operation).unwrap().units(),
+            &std::collections::BTreeSet::from([unit])
+        );
     }
     #[test]
     fn empty_claim_is_rejected() {

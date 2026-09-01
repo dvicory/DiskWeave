@@ -296,7 +296,7 @@ impl CodedCaptureCoordinator {
         }
     }
 
-    /// Return whether all active captures permit the operation's effect.
+    /// Return whether every applicable active capture permits the operation's effect.
     pub fn effect_allowed(&self, operation: OperationSlotToken) -> bool {
         // Rejected and uncertain cuts remain blocked; a refused capture stops tracking.
         self.captures.values().all(|capture| {
@@ -481,7 +481,10 @@ mod tests {
     }
 
     fn units(units: impl IntoIterator<Item = u32>) -> BTreeSet<CodedUnitId> {
-        units.into_iter().map(CodedUnitId).collect()
+        units
+            .into_iter()
+            .map(|unit| CodedUnitId(u64::from(unit)))
+            .collect()
     }
 
     #[test]
@@ -559,6 +562,97 @@ mod tests {
                 .is_empty()
         );
         assert!(captures.effect_allowed(token(0)));
+    }
+    #[test]
+    fn every_applicable_capture_must_satisfy_its_later_cut_before_effect() {
+        let mut captures = CodedCaptureCoordinator::new();
+        for capture in [CodedCaptureId(0), CodedCaptureId(1)] {
+            captures
+                .start_capture(
+                    capture,
+                    CodedCaptureScopeInput::complete([CodedUnitId(0)]),
+                    [],
+                )
+                .unwrap();
+            captures
+                .observe_decision(capture, CodedCaptureDecision::Accepted)
+                .unwrap();
+            captures.request_clean(capture).unwrap();
+            captures
+                .observe_clean_commit(capture, CodedCleanCommitObservation::Durable)
+                .unwrap();
+        }
+
+        let later = token(1);
+        captures.observe_admitted_claim(later, &units([0]));
+        assert!(!captures.effect_allowed(later));
+
+        captures
+            .observe_later_cut(
+                CodedCaptureId(0),
+                later,
+                CodedLaterCutObservation::DurableAfterClean,
+            )
+            .unwrap();
+        assert!(
+            !captures.effect_allowed(later),
+            "satisfying one of two overlapping applicable capture cuts must not permit the effect"
+        );
+
+        captures
+            .observe_later_cut(
+                CodedCaptureId(1),
+                later,
+                CodedLaterCutObservation::DurableAfterClean,
+            )
+            .unwrap();
+        assert!(captures.effect_allowed(later));
+    }
+
+    #[test]
+    fn disjoint_active_capture_does_not_gate_later_effect() {
+        let mut captures = CodedCaptureCoordinator::new();
+        for (capture, unit) in [(CodedCaptureId(0), 0), (CodedCaptureId(1), 1)] {
+            captures
+                .start_capture(
+                    capture,
+                    CodedCaptureScopeInput::complete([CodedUnitId(unit)]),
+                    [],
+                )
+                .unwrap();
+            captures
+                .observe_decision(capture, CodedCaptureDecision::Accepted)
+                .unwrap();
+            captures.request_clean(capture).unwrap();
+            captures
+                .observe_clean_commit(capture, CodedCleanCommitObservation::Durable)
+                .unwrap();
+        }
+
+        let later = token(1);
+        captures.observe_admitted_claim(later, &units([0]));
+        assert!(!captures.effect_allowed(later));
+        assert_eq!(
+            captures
+                .capture_snapshot(CodedCaptureId(1))
+                .unwrap()
+                .membership
+                .get(&later),
+            None,
+            "disjoint active capture must not classify or gate the operation"
+        );
+
+        captures
+            .observe_later_cut(
+                CodedCaptureId(0),
+                later,
+                CodedLaterCutObservation::DurableAfterClean,
+            )
+            .unwrap();
+        assert!(
+            captures.effect_allowed(later),
+            "only applicable capture obligations should gate the effect"
+        );
     }
 
     #[test]
