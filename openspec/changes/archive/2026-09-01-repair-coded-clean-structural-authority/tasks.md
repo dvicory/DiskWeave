@@ -28,5 +28,5 @@
   authority matrix, permanent regressions, verification output, current
   OpenSpec state, and current Bead state. Treat every returned `NO-GO` as
   required input to the next round.
-- [ ] 4.4 Apply the returned external packet mechanically. Mark this task complete only after a fresh external `GO` has no open P1/P2 finding; otherwise repair every concrete finding and repeat task 4.3.
-- [ ] 4.5 Only after task 4.4 is complete, synchronize and archive this corrective change, rerun post-archive documentation/strict validation, and close `dwv-3vz`, `dwv-nto.9.3`, `dwv-nto.9.4`, and `dwv-nto.9`.
+- [x] 4.4 Apply the returned external packet mechanically. Mark this task complete only after a fresh external `GO` has no open P1/P2 finding; otherwise repair every concrete finding and repeat task 4.3.
+- [x] 4.5 Only after task 4.4 is complete, synchronize and archive this corrective change, rerun post-archive documentation/strict validation, and close `dwv-3vz`, `dwv-nto.9.3`, `dwv-nto.9.4`, and `dwv-nto.9`.
