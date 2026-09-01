@@ -6,7 +6,7 @@
 <!-- dwv:requires req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments -->
 <!-- dwv:requires req.anchorless-topology-identity.writable-assembly-fails-closed-on-unresolved-identity -->
 <!-- dwv:requires req.file-backed-stores.single-writer-ownership-and-endpoint-aliasing-are-explicit -->
-<!-- External target prerequisite: `req.file-backed-stores.post-acquisition-writer-claim-release-is-exact-and-owner-observed` from `define-file-backed-post-acquisition-release`; restore a normal `dwv:requires` edge only after that transition and before implementation, validation, or canonical sync. -->
+<!-- dwv:requires req.file-backed-stores.post-acquisition-writer-claim-release-is-exact-and-owner-observed -->
 <!-- dwv:requires req.store-operation-contracts.capability-evidence-determines-the-allowed-safety-profile -->
 <!-- dwv:requires req.store-operation-contracts.resource-admission-and-identity-remain-bounded-and-explicit -->
 <!-- dwv:requires req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
@@ -19,8 +19,8 @@
 <!-- dwv:requires req.recovery-state-semantics.new-protection-epoch-admission-binds-current-authority-and-stabilization -->
 <!-- dwv:requires req.checksum-plane.current-baseline-completion-is-persisted-and-exact -->
 <!-- dwv:requires req.dirty-integrity-invalidation.failures-and-restart-are-conservative -->
-<!-- External target prerequisite: req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts from define-coded-range-clean-coordination; restore the normal owner edge after integration and before implementation, validation, or canonical sync. -->
-<!-- External target prerequisite: req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set from define-coded-range-clean-coordination; restore the normal owner edge after integration and before implementation, validation, or canonical sync. -->
+<!-- dwv:requires req.explicit-transaction-machine.coded-range-authority-covers-shared-parity-conflicts -->
+<!-- dwv:requires req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set -->
 <!-- dwv:requires req.operator-recovery.production-assessment-is-observational-and-multidimensional -->
 
 The healthy portable service SHALL define one baseline writable-startup admission for a complete stable present assignment set reopening after a custody gap. It SHALL re-observe and validate current array identity, topology, assignment bindings, geometry, store capabilities, recovery health, checksum obligations, and selected service profile; reacquire every required store-writer claim or equivalent exclusion and writable-recovery authority as one all-or-nothing current premise before the reviewed external `define-portable-writable-session-lifecycle` target establishes durable session begin; acquire no separate pre-begin session authority; and obtain typed `AdmissionStabilizationEvidence` from the store-operation owner for every required store while both each exact current claim/resource/alias binding and writable-recovery authority are continuously held and freshly revalidated through every pre-commit gate, the epoch commit, and observation of its result. After that observed commit, healthy service independently holds and freshly revalidates those authorities through admission return; operator start separately owns continued revalidation through frontend handoff and successful publication.
