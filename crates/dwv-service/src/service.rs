@@ -1287,13 +1287,17 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     /// Deliver a previously accepted read and resume normal service completion.
+    ///
+    /// Returns `None` after the slot owner terminalizes a completion whose
+    /// frontend delivery interest was abandoned.
     pub fn complete_read(
         &mut self,
         submission: PortableOperationSubmission,
         payload: PortableReadPayload,
         delivery: StoreCompletionDelivery,
-    ) -> Result<(Vec<u8>, OperationEvidence), ServiceError> {
-        let request = self.read_continuation_request(&submission)?;
+    ) -> Result<Option<(Vec<u8>, OperationEvidence)>, ServiceError> {
+        let (request, abandoned) =
+            self.read_continuation_request(&submission, &delivery.completion)?;
         let expected_length = usize::try_from(request.range.length)
             .map_err(|_| ServiceError::io(FailureClass::Range, "read range does not fit memory"))?;
         if Some(payload.buffer) != request.buffer
@@ -1340,36 +1344,48 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     ReleaseRequirement::NotApplicable,
                 )
                 .map_err(|cleanup| self.cleanup_error(request, cleanup))?;
-            Ok((
-                bytes,
-                OperationEvidence {
-                    request,
-                    completion,
-                    trace,
-                    release_authorization,
-                },
-            ))
+            let evidence = OperationEvidence {
+                request,
+                completion,
+                trace,
+                release_authorization,
+            };
+            if abandoned {
+                Ok(None)
+            } else {
+                Ok(Some((bytes, evidence)))
+            }
         } else {
             let primary = ServiceError::incomplete_read(request, bytes, completion);
-            Err(self.finish_error(
+            let result = self.finish_error(
                 submission.operation,
                 request,
                 primary,
                 ReleaseRequirement::NotApplicable,
-            ))
+            );
+            if abandoned {
+                match result {
+                    ServiceError::IncompleteRead { .. } => Ok(None),
+                    error => Err(error),
+                }
+            } else {
+                Err(result)
+            }
         }
     }
     fn read_continuation_request(
         &self,
         submission: &PortableOperationSubmission,
-    ) -> Result<BlockRequest, ServiceError> {
+        completion: &StoreCompletion,
+    ) -> Result<(BlockRequest, bool), ServiceError> {
         let snapshot = self.admission.snapshot(submission.operation).map_err(|_| {
             ServiceError::io(
                 FailureClass::Admission,
                 "stale or unknown read continuation",
             )
         })?;
-        if snapshot.request != submission.request || submission.child.slot != submission.operation {
+        let request = snapshot.request;
+        if request != submission.request || submission.child.slot != submission.operation {
             return Err(ServiceError::io(
                 FailureClass::Admission,
                 "stale or unknown read continuation",
@@ -1385,13 +1401,21 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "stale or unknown read continuation",
             ));
         };
-        if child.submission != Some(submission.identity) || child.terminal {
+        if child.submission != Some(submission.identity) {
             return Err(ServiceError::io(
                 FailureClass::Admission,
                 "stale or unknown read continuation",
             ));
         }
-        Ok(snapshot.request)
+        if child.terminal && child.completion.as_ref() != Some(completion) {
+            return Err(ServiceError::rejected_completion(
+                FailureClass::Admission,
+                completion.clone(),
+                "read completion does not match its retained terminal result",
+            )
+            .with_request(request));
+        }
+        Ok((request, snapshot.abandoned))
     }
 
     /// dwv:req req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence
@@ -1429,17 +1453,24 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 request.range,
                 &mut bytes,
             );
-            return self.complete_read(
-                submission,
-                PortableReadPayload::new(
-                    request.buffer.expect("validated read request has a buffer"),
-                    bytes,
-                ),
-                StoreCompletionDelivery {
-                    identity: submission.identity,
-                    completion,
-                },
-            );
+            return self
+                .complete_read(
+                    submission,
+                    PortableReadPayload::new(
+                        request.buffer.expect("validated read request has a buffer"),
+                        bytes,
+                    ),
+                    StoreCompletionDelivery {
+                        identity: submission.identity,
+                        completion,
+                    },
+                )
+                .and_then(|completion| {
+                    completion.ok_or_else(|| {
+                        ServiceError::io(FailureClass::Admission, "read completion was suppressed")
+                            .with_request(request)
+                    })
+                });
         }
         let token = self.reserve(request)?;
         let result = read_member(

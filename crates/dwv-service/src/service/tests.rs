@@ -757,6 +757,27 @@ fn accepted_read_continuation_survives_submit_return_and_later_delivery() {
         CompletionDisposition::Success,
         PersistenceEvidence::VolatileOrUnknown,
     );
+    let mut wrong_request = submission;
+    wrong_request.request.request_id = RequestId(999);
+    assert!(
+        service
+            .complete_read(
+                wrong_request,
+                PortableReadPayload::new(
+                    request.buffer.expect("read request has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                StoreCompletionDelivery::new(
+                    StoreId(1),
+                    StoreIncarnationId(1),
+                    epoch,
+                    completion.clone(),
+                ),
+            )
+            .is_err()
+    );
+    assert_eq!(service.admission_usage().backend_submissions, 1);
+
     let wrong_delivery =
         StoreCompletionDelivery::new(StoreId(2), StoreIncarnationId(1), epoch, completion.clone());
     assert!(
@@ -801,11 +822,341 @@ fn accepted_read_continuation_survives_submit_return_and_later_delivery() {
             ),
             delivery,
         )
-        .unwrap();
+        .unwrap()
+        .expect("non-abandoned completion is returned");
     assert_eq!(bytes.len(), BLOCK as usize);
     assert_eq!(evidence.completion.completed.as_slice(), &[range]);
     assert_eq!(service.admission_usage().operation_slots, 0);
     assert_eq!(service.admission_usage().backend_submissions, 0);
+}
+#[test]
+fn deferred_read_rejects_foreign_delivery_without_mutating_other_slot() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let first_request = request(
+        RequestId(42),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let second_request = request(
+        RequestId(43),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let first = service.submit_read(first_request).unwrap();
+    let second = service.submit_read(second_request).unwrap();
+    let second_completion = FakeStore::completion(
+        second.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+
+    assert!(
+        service
+            .complete_read(
+                first,
+                PortableReadPayload::new(
+                    first_request.buffer.expect("first read has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                StoreCompletionDelivery::new(
+                    StoreId(1),
+                    StoreIncarnationId(1),
+                    epoch,
+                    second_completion,
+                ),
+            )
+            .is_err()
+    );
+    assert_eq!(service.admission_usage().operation_slots, 2);
+    assert_eq!(service.admission_usage().backend_submissions, 2);
+    assert!(
+        !service
+            .admission
+            .snapshot(first.operation)
+            .unwrap()
+            .children[0]
+            .terminal
+    );
+    assert!(
+        !service
+            .admission
+            .snapshot(second.operation)
+            .unwrap()
+            .children[0]
+            .terminal
+    );
+
+    let first_completion = FakeStore::completion(
+        first.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    service
+        .complete_read(
+            first,
+            PortableReadPayload::new(
+                first_request.buffer.expect("first read has buffer"),
+                vec![0; BLOCK as usize],
+            ),
+            StoreCompletionDelivery::new(
+                StoreId(1),
+                StoreIncarnationId(1),
+                epoch,
+                first_completion,
+            ),
+        )
+        .unwrap()
+        .expect("first completion interest remains required");
+    let second_completion = FakeStore::completion(
+        second.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    service
+        .complete_read(
+            second,
+            PortableReadPayload::new(
+                second_request.buffer.expect("second read has buffer"),
+                vec![0; BLOCK as usize],
+            ),
+            StoreCompletionDelivery::new(
+                StoreId(1),
+                StoreIncarnationId(1),
+                epoch,
+                second_completion,
+            ),
+        )
+        .unwrap()
+        .expect("second completion interest remains required");
+    assert_eq!(service.admission_usage().operation_slots, 0);
+}
+
+#[test]
+fn abandoned_read_completion_is_terminalized_by_slot_owner() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(44),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let submission = service.submit_read(request).unwrap();
+    service.abandon(submission.operation).unwrap();
+    assert!(
+        service
+            .admission
+            .snapshot(submission.operation)
+            .unwrap()
+            .abandoned
+    );
+
+    let completion = FakeStore::completion(
+        submission.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    assert!(
+        service
+            .complete_read(
+                submission,
+                PortableReadPayload::new(
+                    request.buffer.expect("abandoned read has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                StoreCompletionDelivery::new(StoreId(1), StoreIncarnationId(1), epoch, completion,),
+            )
+            .unwrap()
+            .is_none(),
+        "abandoned completion interest is suppressed after owner terminalization",
+    );
+    assert_eq!(service.admission_usage().operation_slots, 0);
+    assert_eq!(service.admission_usage().backend_submissions, 0);
+}
+#[test]
+fn read_completion_retries_after_terminalization_failure() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let request = request(
+        RequestId(47),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let submission = service.submit_read(request).unwrap();
+    let completion = FakeStore::completion(
+        submission.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    service.inject_terminalization_failure(TerminalizationFault::Reclaim);
+    assert!(
+        service
+            .complete_read(
+                submission,
+                PortableReadPayload::new(
+                    request.buffer.expect("retry read has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                StoreCompletionDelivery::new(
+                    StoreId(1),
+                    StoreIncarnationId(1),
+                    epoch,
+                    completion.clone(),
+                ),
+            )
+            .is_err()
+    );
+    assert_eq!(service.admission_usage().operation_slots, 1);
+    assert_eq!(service.admission_usage().backend_submissions, 1);
+
+    let (_, evidence) = service
+        .complete_read(
+            submission,
+            PortableReadPayload::new(
+                request.buffer.expect("retry read has buffer"),
+                vec![0; BLOCK as usize],
+            ),
+            StoreCompletionDelivery::new(StoreId(1), StoreIncarnationId(1), epoch, completion),
+        )
+        .unwrap()
+        .expect("exact duplicate retries terminalization");
+    assert_eq!(evidence.request, request);
+    assert_eq!(service.admission_usage().operation_slots, 0);
+    assert_eq!(service.admission_usage().backend_submissions, 0);
+}
+
+#[test]
+fn stale_read_continuation_cannot_address_reused_slot() {
+    let epoch = TopologyEpoch(4);
+    let range = ByteRange::new(0, u64::from(BLOCK)).unwrap();
+    let first_request = request(
+        RequestId(45),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let second_request = request(
+        RequestId(46),
+        epoch,
+        0,
+        BlockOp::Read,
+        range,
+        DurabilityIntent::Ordinary,
+    );
+    let mut service = fake_service(FakeRead::Exact, ServiceConfig::default());
+    let first = service.submit_read(first_request).unwrap();
+    let first_completion = FakeStore::completion(
+        first.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    service
+        .complete_read(
+            first,
+            PortableReadPayload::new(
+                first_request.buffer.expect("first read has buffer"),
+                vec![0; BLOCK as usize],
+            ),
+            StoreCompletionDelivery::new(
+                StoreId(1),
+                StoreIncarnationId(1),
+                epoch,
+                first_completion,
+            ),
+        )
+        .unwrap()
+        .expect("first completion interest remains required");
+
+    let second = service.submit_read(second_request).unwrap();
+    assert_eq!(first.operation.index, second.operation.index);
+    assert_ne!(first.operation.generation, second.operation.generation);
+    let stale_completion = FakeStore::completion(
+        first.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    assert!(
+        service
+            .complete_read(
+                first,
+                PortableReadPayload::new(
+                    first_request.buffer.expect("first read has buffer"),
+                    vec![0; BLOCK as usize],
+                ),
+                StoreCompletionDelivery::new(
+                    StoreId(1),
+                    StoreIncarnationId(1),
+                    epoch,
+                    stale_completion,
+                ),
+            )
+            .is_err()
+    );
+    assert_eq!(service.admission_usage().operation_slots, 1);
+    assert!(
+        !service
+            .admission
+            .snapshot(second.operation)
+            .unwrap()
+            .children[0]
+            .terminal
+    );
+
+    let second_completion = FakeStore::completion(
+        second.child,
+        range,
+        Some(range),
+        CompletionDisposition::Success,
+        PersistenceEvidence::VolatileOrUnknown,
+    );
+    service
+        .complete_read(
+            second,
+            PortableReadPayload::new(
+                second_request.buffer.expect("second read has buffer"),
+                vec![0; BLOCK as usize],
+            ),
+            StoreCompletionDelivery::new(
+                StoreId(1),
+                StoreIncarnationId(1),
+                epoch,
+                second_completion,
+            ),
+        )
+        .unwrap()
+        .expect("second completion interest remains required");
+    assert_eq!(service.admission_usage().operation_slots, 0);
 }
 
 #[test]
