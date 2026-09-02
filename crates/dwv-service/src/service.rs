@@ -11,6 +11,7 @@ use crate::{
     read::read_member,
     write::update_parity,
 };
+use basis_observation::BasisObservationLedger;
 use dwv_codec::Geometry as CodecGeometry;
 #[cfg(test)]
 use dwv_core::CodedUnitId;
@@ -520,7 +521,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     state: ServiceState,
     release_authorizations: Vec<Option<ReleaseAuthorization>>,
     release_scopes: ReleaseScopeLedger,
-    basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
+    basis_observations: BasisObservationLedger,
     lifecycle_authority: LifecycleAuthorityOwner,
     coded_captures: CodedLifecycleAuthority<ReleaseAuthorization, IncludedLifecycleAuthorization>,
     coded_geometry: CodedGeometryOwner,
@@ -528,6 +529,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
 }
+mod basis_observation;
 mod read_ops;
 mod readiness;
 mod release_scope;
@@ -639,7 +641,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             state,
             release_authorizations: vec![None; config.admission.limits.operation_slots],
             release_scopes: ReleaseScopeLedger::new(config.admission.limits.operation_slots),
-            basis_observations: vec![None; config.admission.limits.operation_slots],
+            basis_observations: BasisObservationLedger::new(
+                config.admission.limits.operation_slots,
+            ),
             lifecycle_authority,
             coded_captures: coded_lifecycle,
             coded_geometry,
@@ -3644,14 +3648,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     fn basis_conformance_observation(&self, operation: OperationSlotToken) -> BasisConformance {
-        let Ok(index) = usize::try_from(operation.index) else {
-            return BasisConformance::Unresolved;
-        };
-        self.basis_observations
-            .get(index)
-            .and_then(|observation| *observation)
-            .filter(|(token, _)| *token == operation)
-            .map_or(BasisConformance::Unresolved, |(_, observation)| observation)
+        self.basis_observations.observe(operation)
     }
 
     fn set_basis_conformance(
@@ -3659,26 +3656,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         operation: OperationSlotToken,
         observation: BasisConformance,
     ) {
-        if !observation.is_conformant() {
-            return;
-        }
-        let Ok(index) = usize::try_from(operation.index) else {
-            return;
-        };
-        if let Some(slot) = self.basis_observations.get_mut(index) {
-            *slot = Some((operation, observation));
-        }
+        self.basis_observations.record(operation, observation);
     }
 
     fn clear_basis_observation(&mut self, operation: OperationSlotToken) {
-        let Ok(index) = usize::try_from(operation.index) else {
-            return;
-        };
-        if let Some(slot) = self.basis_observations.get_mut(index)
-            && slot.is_some_and(|(token, _)| token == operation)
-        {
-            *slot = None;
-        }
+        self.basis_observations.clear(operation);
     }
 
     fn finish_error(
