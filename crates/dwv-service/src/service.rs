@@ -47,6 +47,7 @@ use dwv_transaction_ref::{
     SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
+use readiness::OperationReadinessLedger;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -511,7 +512,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     members: Vec<MemberBinding<S>>,
     recovery: R,
     write_drivers: Vec<Option<WriteDriver>>,
-    operation_readiness: Vec<Option<(OperationSlotToken, OperationReadiness)>>,
+    operation_readiness: OperationReadinessLedger,
     checksums: ChecksumAuthority,
     admission: OperationAdmission,
     config: ServiceConfig,
@@ -527,6 +528,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     terminalization_fault: Option<TerminalizationFault>,
 }
 mod read_ops;
+mod readiness;
 impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
     /// dwv:req req.checksum-plane.current-baseline-completion-is-persisted-and-exact
@@ -627,7 +629,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 .take(config.admission.limits.operation_slots)
                 .collect(),
             checksums,
-            operation_readiness: vec![None; config.admission.limits.operation_slots],
+            operation_readiness: OperationReadinessLedger::new(
+                config.admission.limits.operation_slots,
+            ),
             admission: OperationAdmission::new(config.admission),
             config,
             state,
@@ -702,26 +706,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &self.coded_captures
     }
 
-    fn set_readiness(&mut self, operation: OperationSlotToken, readiness: OperationReadiness) {
-        if let Ok(index) = usize::try_from(operation.index)
-            && let Some(entry) = self.operation_readiness.get_mut(index)
-        {
-            *entry = Some((operation, readiness));
-        }
-    }
-
     #[cfg(test)]
     pub(crate) fn operation_readiness(
         &self,
         operation: OperationSlotToken,
     ) -> Option<OperationReadiness> {
-        usize::try_from(operation.index)
-            .ok()
-            .and_then(|index| self.operation_readiness.get(index).copied())
-            .and_then(|entry| {
-                let (token, readiness) = entry?;
-                (token == operation).then_some(readiness)
-            })
+        self.operation_readiness.get(operation)
     }
 
     fn invalidate_coded_transition_authority(&mut self) {
@@ -815,7 +805,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .prepare_admission(operation, snapshot.request, claim, current.generation)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         if matches!(prepared.outcome(), CodedAdmissionOutcome::Contended) {
-            self.set_readiness(
+            self.operation_readiness.set(
                 operation,
                 OperationReadiness::Waiting(PendingReason::AdmissionContended),
             );
@@ -835,7 +825,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .confirm_admission(prepared, receipt.as_ref());
         let outcome = self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;
         self.set_release_scope(operation, ReleaseScope::InScope);
-        self.set_readiness(operation, OperationReadiness::Runnable);
+        self.operation_readiness
+            .set(operation, OperationReadiness::Runnable);
         Ok(outcome)
     }
 
@@ -1053,13 +1044,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .permit_effect(operation)
             .map_err(|error| ServiceError::io(FailureClass::Admission, error.to_string()))?;
         let Some(permit) = permit else {
-            self.set_readiness(
+            self.operation_readiness.set(
                 operation,
                 OperationReadiness::Waiting(PendingReason::CaptureBlocked),
             );
             return Ok(CodedEffectOutcome::BlockedByCapture);
         };
-        self.set_readiness(operation, OperationReadiness::Runnable);
+        self.operation_readiness
+            .set(operation, OperationReadiness::Runnable);
         Ok(CodedEffectOutcome::Permitted(permit))
     }
 
@@ -3377,12 +3369,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         if result.is_ok() {
             self.clear_release_scope(token);
             self.clear_basis_observation(token);
-            if let Ok(index) = usize::try_from(token.index)
-                && let Some(entry) = self.operation_readiness.get_mut(index)
-                && entry.is_some_and(|(operation, _)| operation == token)
-            {
-                *entry = None;
-            }
+            self.operation_readiness.clear(token);
             if let Ok(index) = usize::try_from(token.index)
                 && let Some(driver) = self.write_drivers.get_mut(index)
                 && driver
