@@ -48,6 +48,7 @@ use dwv_transaction_ref::{
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
 use readiness::OperationReadinessLedger;
+use release_scope::ReleaseScopeLedger;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
@@ -518,7 +519,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     config: ServiceConfig,
     state: ServiceState,
     release_authorizations: Vec<Option<ReleaseAuthorization>>,
-    release_scopes: Vec<Option<(OperationSlotToken, ReleaseScope)>>,
+    release_scopes: ReleaseScopeLedger,
     basis_observations: Vec<Option<(OperationSlotToken, BasisConformance)>>,
     lifecycle_authority: LifecycleAuthorityOwner,
     coded_captures: CodedLifecycleAuthority<ReleaseAuthorization, IncludedLifecycleAuthorization>,
@@ -529,6 +530,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
 }
 mod read_ops;
 mod readiness;
+mod release_scope;
 impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
     /// dwv:req req.checksum-plane.current-baseline-completion-is-persisted-and-exact
@@ -636,7 +638,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             config,
             state,
             release_authorizations: vec![None; config.admission.limits.operation_slots],
-            release_scopes: vec![None; config.admission.limits.operation_slots],
+            release_scopes: ReleaseScopeLedger::new(config.admission.limits.operation_slots),
             basis_observations: vec![None; config.admission.limits.operation_slots],
             lifecycle_authority,
             coded_captures: coded_lifecycle,
@@ -3630,34 +3632,15 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     }
 
     fn release_scope(&self, operation: OperationSlotToken) -> ReleaseScope {
-        let Ok(index) = usize::try_from(operation.index) else {
-            return ReleaseScope::Unknown;
-        };
-        self.release_scopes
-            .get(index)
-            .and_then(|scope| *scope)
-            .filter(|(token, _)| *token == operation)
-            .map_or(ReleaseScope::Unknown, |(_, scope)| scope)
+        self.release_scopes.observe(operation)
     }
 
     fn set_release_scope(&mut self, operation: OperationSlotToken, scope: ReleaseScope) {
-        let Ok(index) = usize::try_from(operation.index) else {
-            return;
-        };
-        if let Some(slot) = self.release_scopes.get_mut(index) {
-            *slot = Some((operation, scope));
-        }
+        self.release_scopes.set(operation, scope);
     }
 
     fn clear_release_scope(&mut self, operation: OperationSlotToken) {
-        let Ok(index) = usize::try_from(operation.index) else {
-            return;
-        };
-        if let Some(slot) = self.release_scopes.get_mut(index)
-            && slot.is_some_and(|(token, _)| token == operation)
-        {
-            *slot = None;
-        }
+        self.release_scopes.clear(operation);
     }
 
     fn basis_conformance_observation(&self, operation: OperationSlotToken) -> BasisConformance {
