@@ -38,6 +38,14 @@ impl OperationAdmission {
     pub fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, SlotError> {
         self.table.reserve(request)
     }
+
+    pub fn reserve_if(
+        &mut self,
+        request: BlockRequest,
+        allow: impl FnMut(OperationSlotToken) -> bool,
+    ) -> Result<OperationSlotToken, SlotError> {
+        self.table.reserve_if(request, allow)
+    }
     pub fn child(
         &mut self,
         token: OperationSlotToken,

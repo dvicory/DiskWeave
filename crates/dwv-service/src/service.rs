@@ -49,6 +49,7 @@ use dwv_transaction_ref::{
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
 use readiness::OperationReadinessLedger;
+use release_authorization::ReleaseAuthorizationLedger;
 use release_scope::ReleaseScopeLedger;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -57,6 +58,33 @@ use std::{
 type IncludedLifecycleEvidence = (IncludedLifecycleAuthorization, FenceCertificate);
 type CaptureCleanEvaluation = (RecoveryCleanDecision, Vec<IncludedLifecycleEvidence>);
 
+fn coded_capture_has_outstanding_release_consumer(
+    coded_captures: &CodedLifecycleAuthority<ReleaseAuthorization, IncludedLifecycleAuthorization>,
+    operation: OperationSlotToken,
+) -> bool {
+    coded_captures.snapshots().into_iter().any(|snapshot| {
+        snapshot.membership.contains_key(&operation)
+            || snapshot.pending_later_cuts.contains_key(&operation)
+            || snapshot.resolved_later_cuts.contains_key(&operation)
+            || snapshot.release_authorized_operations.contains(&operation)
+            || snapshot.release_frontiers.contains_key(&operation)
+            || snapshot.release_certificates.contains_key(&operation)
+    })
+}
+
+fn has_outstanding_release_consumer(
+    admission: &OperationAdmission,
+    coded_captures: &CodedLifecycleAuthority<ReleaseAuthorization, IncludedLifecycleAuthorization>,
+    write_drivers: &[Option<WriteDriver>],
+    operation: OperationSlotToken,
+) -> bool {
+    admission.snapshot(operation).is_ok()
+        || coded_capture_has_outstanding_release_consumer(coded_captures, operation)
+        || write_drivers
+            .iter()
+            .flatten()
+            .any(|driver| driver.operation == operation && driver.evidence.is_some())
+}
 /// Runnable/waiting bookkeeping stays in the service driver. It records why
 /// an operation is waiting without assigning wakeup, retry, or fairness policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -233,6 +261,11 @@ pub struct ServiceConfig {
     pub maximum_transfer: Option<u64>,
     /// Maximum durable coded captures retained at once.
     pub max_coded_captures: usize,
+    /// Maximum exact-generation release authorizations retained per operation slot.
+    ///
+    /// The default follows the recovery export membership bound. Exhaustion is
+    /// explicit backpressure; it never overwrites an older generation.
+    pub max_retained_release_authorizations_per_slot: usize,
     pub fence_domain: FenceDomain,
 }
 
@@ -242,6 +275,8 @@ impl Default for ServiceConfig {
             admission: AdmissionConfig::default(),
             maximum_transfer: None,
             max_coded_captures: 32,
+            max_retained_release_authorizations_per_slot:
+                dwv_recovery::RecoveryExportLimits::default().max_coded_capture_memberships,
             fence_domain: FenceDomain(1),
         }
     }
@@ -519,7 +554,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     admission: OperationAdmission,
     config: ServiceConfig,
     state: ServiceState,
-    release_authorizations: Vec<Option<ReleaseAuthorization>>,
+    release_authorizations: ReleaseAuthorizationLedger,
     release_scopes: ReleaseScopeLedger,
     basis_observations: BasisObservationLedger,
     lifecycle_authority: LifecycleAuthorityOwner,
@@ -532,6 +567,7 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
 mod basis_observation;
 mod read_ops;
 mod readiness;
+mod release_authorization;
 mod release_scope;
 impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
     /// dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe
@@ -547,6 +583,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             return Err(ServiceError::invalid(
                 FailureClass::Capability,
                 "maximum transfer cannot be zero",
+            ));
+        }
+        if config.max_retained_release_authorizations_per_slot == 0 {
+            return Err(ServiceError::invalid(
+                FailureClass::Admission,
+                "release authorization retention capacity cannot be zero",
             ));
         }
         let health = recovery.verify_integrity();
@@ -639,7 +681,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             admission: OperationAdmission::new(config.admission),
             config,
             state,
-            release_authorizations: vec![None; config.admission.limits.operation_slots],
+            release_authorizations: ReleaseAuthorizationLedger::new(
+                config.admission.limits.operation_slots,
+                config.max_retained_release_authorizations_per_slot,
+            ),
             release_scopes: ReleaseScopeLedger::new(config.admission.limits.operation_slots),
             basis_observations: BasisObservationLedger::new(
                 config.admission.limits.operation_slots,
@@ -1151,10 +1196,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         &self,
         operation: OperationSlotToken,
     ) -> Option<&ReleaseAuthorization> {
-        self.release_authorizations
-            .iter()
-            .filter_map(Option::as_ref)
-            .find(|authorization| authorization.operation() == operation)
+        self.release_authorizations.observe(operation)
     }
 
     /// Reconcile one exact retained generation from owner-approved observations.
@@ -1253,7 +1295,19 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             self.topology.geometry(),
             self.maximum_transfer(),
         )?;
-        let token = self.reserve(request)?;
+        let token = {
+            let release_authorizations = &self.release_authorizations;
+            let coded_captures = &self.coded_captures;
+            self.admission
+                .reserve_if(request, |candidate| {
+                    !release_authorizations.is_full_and_consumed(candidate, |existing| {
+                        coded_capture_has_outstanding_release_consumer(coded_captures, existing)
+                    })
+                })
+                .map_err(slot_error)?
+        };
+        self.set_release_scope(token, ReleaseScope::Outside);
+        self.clear_basis_observation(token);
         let index = usize::try_from(token.index)
             .map_err(|_| slot_error(dwv_store::SlotError::StaleGeneration { token }))?;
         match self.prepare_write(member_index, coding_position, request, bytes, &plan, token) {
@@ -1356,6 +1410,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             Ok(PortableWriteDrive::Complete(evidence)) => {
                 match self.release_write_driver(index, driver, evidence) {
                     Ok(evidence) => Ok(PortableWriteDrive::Complete(evidence)),
+                    Err(ServiceError::Blocked(FailureClass::ReconciliationRequired)) => Ok(
+                        PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation),
+                    ),
                     Err(error) => {
                         self.state = ServiceState::Recovering;
                         Err(error.with_request(request))
@@ -1365,6 +1422,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             Ok(result) => {
                 self.write_drivers[index] = Some(driver);
                 Ok(result)
+            }
+            Err(ServiceError::Blocked(FailureClass::ReconciliationRequired)) => {
+                self.write_drivers[index] = Some(driver);
+                Ok(PortableWriteDrive::Wait(
+                    PortableWriteWait::OwnerReconciliation,
+                ))
             }
             Err(error) => {
                 self.state = ServiceState::Recovering;
@@ -1503,6 +1566,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             }
             return match self.release_write_driver(index, driver, evidence) {
                 Ok(evidence) => Ok(Some(evidence)),
+                Err(ServiceError::Blocked(FailureClass::ReconciliationRequired)) => Ok(None),
                 Err(error) => {
                     self.state = ServiceState::Recovering;
                     Err(error.with_request(request))
@@ -1686,6 +1750,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         };
         match self.release_write_driver(index, driver, evidence) {
             Ok(evidence) => Ok(Some(evidence)),
+            Err(ServiceError::Blocked(FailureClass::ReconciliationRequired)) => Ok(None),
             Err(error) => {
                 self.state = ServiceState::Recovering;
                 Err(error.with_request(request))
@@ -2029,6 +2094,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 evidence.release_authorization = release_authorization;
                 self.write_drivers[index] = None;
                 Ok(evidence)
+            }
+            Err(ServiceError::Blocked(FailureClass::ReconciliationRequired)) => {
+                Err(ServiceError::Blocked(FailureClass::ReconciliationRequired))
             }
             Err(cleanup) => {
                 let mut driver = self.write_drivers[index]
@@ -2706,8 +2774,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         {
             return None;
         }
-        let index = usize::try_from(operation.index).ok()?;
-        let release = self.release_authorizations.get(index)?.as_ref()?;
+        let release = self.release_authorizations.observe(operation)?;
         let authorization = self
             .lifecycle_authority
             .authorize_included_released(release.lifecycle())
@@ -3310,7 +3377,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             // LifecycleRelease owns this monotonic exact-generation fact.
             // Retain it before invoking downstream coded-claim removal so a
             // coded cleanup failure cannot retroactively erase authorization.
-            self.remember_release_authorization(authorization.clone());
+            self.remember_release_authorization(authorization.clone())?;
             self.release_coded_claim_if_authorized(authorization, certificate)?;
         }
         Ok(authorization)
@@ -3367,6 +3434,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         // The slot owner must observe every child terminal before reclaiming.
         self.mark_reclaimable(token, ReconciliationOutcome::Durable)?;
         let snapshot = self.admission.snapshot(token).map_err(slot_error)?;
+        self.ensure_release_authorization_available(token)?;
         Ok(self.authorization_candidate(token, &snapshot, observation))
     }
 
@@ -3537,15 +3605,66 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         self.release_after_reclaim(token).map(|()| authorization)
     }
 
-    fn remember_release_authorization(&mut self, authorization: ReleaseAuthorization) {
-        let Ok(index) = usize::try_from(authorization.operation().index) else {
-            return;
+    fn remember_release_authorization(
+        &mut self,
+        authorization: ReleaseAuthorization,
+    ) -> Result<(), ServiceError> {
+        let operation = authorization.operation();
+        let discharged = {
+            let admission = &self.admission;
+            let coded_captures = &self.coded_captures;
+            let write_drivers = &self.write_drivers;
+            self.release_authorizations
+                .operations_at_index(operation)
+                .find(|existing| {
+                    !has_outstanding_release_consumer(
+                        admission,
+                        coded_captures,
+                        write_drivers,
+                        *existing,
+                    )
+                })
         };
-        if let Some(retained) = self.release_authorizations.get_mut(index) {
-            *retained = Some(authorization);
-        } else {
-            debug_assert!(false, "authorization index exceeds bounded slot table");
+        if let Some(discharged) = discharged {
+            self.release_authorizations.retire(discharged);
         }
+        let admission = &self.admission;
+        let coded_captures = &self.coded_captures;
+        let write_drivers = &self.write_drivers;
+        self.release_authorizations
+            .retain_with_cleanup(authorization, |operation| {
+                !has_outstanding_release_consumer(
+                    admission,
+                    coded_captures,
+                    write_drivers,
+                    operation,
+                )
+            })
+            .map_err(|_| {
+                ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "release authorization retention is exhausted",
+                )
+            })
+    }
+    fn release_authorization_blocked(&self, operation: OperationSlotToken) -> bool {
+        let admission = &self.admission;
+        let coded_captures = &self.coded_captures;
+        let write_drivers = &self.write_drivers;
+        self.release_authorizations
+            .is_full_and_consumed(operation, |existing| {
+                has_outstanding_release_consumer(admission, coded_captures, write_drivers, existing)
+            })
+    }
+
+    fn ensure_release_authorization_available(
+        &self,
+        operation: OperationSlotToken,
+    ) -> Result<(), ServiceError> {
+        if self.release_authorization_blocked(operation) {
+            return Err(ServiceError::Blocked(FailureClass::ReconciliationRequired));
+        }
+        Ok(())
     }
 
     fn authorization_candidate(

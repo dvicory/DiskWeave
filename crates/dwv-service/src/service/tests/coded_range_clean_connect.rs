@@ -3167,17 +3167,23 @@ mod generated_coded_operation_properties {
             Self::with_drop_active_claim(false)
         }
 
-        fn with_drop_active_claim(drop_active_claim: bool) -> Self {
-            let mut service = open_generated_service(MemoryRecoveryStore::new(TopologyEpoch(4)));
-            service
-                .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
-                .unwrap();
+        fn without_capture() -> Self {
             Self {
-                service,
+                service: open_generated_service(MemoryRecoveryStore::new(TopologyEpoch(4))),
                 tokens: BTreeMap::new(),
                 next_request_id: 0,
-                drop_active_claim,
+                drop_active_claim: false,
             }
+        }
+
+        fn with_drop_active_claim(drop_active_claim: bool) -> Self {
+            let mut state = Self::without_capture();
+            state
+                .service
+                .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+                .unwrap();
+            state.drop_active_claim = drop_active_claim;
+            state
         }
 
         fn reserve(&mut self, data_slot: u8, claim: ClaimKind) -> OperationSlotToken {
@@ -3414,6 +3420,255 @@ mod generated_coded_operation_properties {
                 .active_claim(second)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn exhausted_open_capture_reports_reconciliation_block() {
+        let mut concrete = ConcreteState::new();
+        let slot_count = concrete.service.config.admission.limits.operation_slots;
+        concrete.service.release_authorizations = ReleaseAuthorizationLedger::new(slot_count, 1);
+
+        concrete.admit(0, 0, ClaimKind::U0);
+        concrete.release(0);
+        concrete.admit(1, 1, ClaimKind::U1);
+        let operation = *concrete
+            .tokens
+            .get(&1)
+            .expect("second generation remains admitted");
+
+        let error = concrete
+            .service
+            .establish_release_authorization_for_test(
+                &authoritative_release(operation),
+                &release_certificate(concrete.service.topology.topology_epoch()),
+            )
+            .expect_err("full open-capture retention unexpectedly parked or authorized");
+        assert!(matches!(
+            error,
+            ServiceError::Blocked(FailureClass::ReconciliationRequired)
+        ));
+        assert!(
+            concrete
+                .service
+                .coded_authority()
+                .active_claim(operation)
+                .is_some(),
+            "refused release must retain the exact current claim"
+        );
+    }
+
+    #[test]
+    fn exhausted_open_capture_uses_unsaturated_slot_before_refusing() {
+        let mut concrete = ConcreteState::new();
+        let slot_count = concrete.service.config.admission.limits.operation_slots;
+        concrete.service.release_authorizations = ReleaseAuthorizationLedger::new(slot_count, 1);
+
+        concrete.admit(0, 0, ClaimKind::U0);
+        let first = *concrete
+            .tokens
+            .get(&0)
+            .expect("first generation remains admitted");
+        concrete.release(0);
+        let submission = concrete
+            .service
+            .submit_write(
+                request(
+                    RequestId(50_000),
+                    TopologyEpoch(4),
+                    1,
+                    BlockOp::Write,
+                    ByteRange::new(u64::from(BLOCK), u64::from(BLOCK))
+                        .expect("bounded write range"),
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x44; BLOCK as usize],
+            )
+            .expect("an unsaturated operation slot remains available");
+        assert_eq!(submission.operation.index, 1);
+        assert!(concrete.service.release_authorization(first).is_some());
+        assert_eq!(concrete.service.state(), ServiceState::Serving);
+        assert_eq!(concrete.service.admission_usage().operation_slots, 1);
+    }
+
+    #[test]
+    fn accepted_write_waits_healthy_until_durable_capture_discharge() {
+        let mut concrete = ConcreteState::without_capture();
+        let slot_count = concrete.service.config.admission.limits.operation_slots;
+        concrete.service.release_authorizations = ReleaseAuthorizationLedger::new(slot_count, 2);
+
+        concrete.admit(0, 0, ClaimKind::U0);
+        concrete
+            .service
+            .coded_start_capture(CodedCaptureId(0), [RegionId(0)], [IntegrityExtentId(0)])
+            .expect("capture starts around the admitted first generation");
+        let first = *concrete
+            .tokens
+            .get(&0)
+            .expect("first generation remains admitted");
+        concrete.release(0);
+        let first_capture = concrete
+            .service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .expect("open capture retains the first generation");
+        assert!(first_capture.membership.contains_key(&first));
+        assert_eq!(first_capture.phase, CodedCapturePhase::Open);
+
+        let submission = concrete
+            .service
+            .submit_write(
+                request(
+                    RequestId(50_001),
+                    TopologyEpoch(4),
+                    1,
+                    BlockOp::Write,
+                    ByteRange::new(u64::from(BLOCK), u64::from(BLOCK))
+                        .expect("bounded write range"),
+                    DurabilityIntent::Ordinary,
+                ),
+                &[0x45; BLOCK as usize],
+            )
+            .expect("second generation uses the still-available retention entry");
+        assert_eq!(submission.operation.index, first.index);
+        concrete
+            .service
+            .release_authorizations
+            .set_capacity_per_slot_for_test(1);
+        concrete
+            .service
+            .grant_basis_read_permission(&submission)
+            .expect("second generation basis permission");
+
+        let mut ready = None;
+        loop {
+            if let Some(result) = ready.take() {
+                assert!(
+                    concrete
+                        .service
+                        .deliver_write_result(result)
+                        .expect("physical result delivery")
+                        .is_none(),
+                    "capacity-blocked completion unexpectedly finalized"
+                );
+            }
+            match concrete
+                .service
+                .drive_write(&submission)
+                .expect("capacity wait remains non-failing")
+            {
+                PortableWriteDrive::Work(work) => {
+                    let accepted = concrete
+                        .service
+                        .accept_write_work(&work)
+                        .expect("accepted physical work");
+                    ready = Some(
+                        concrete
+                            .service
+                            .execute_write_work(accepted)
+                            .expect("physical work execution"),
+                    );
+                }
+                PortableWriteDrive::Wait(PortableWriteWait::OwnerReconciliation) => break,
+                PortableWriteDrive::Wait(PortableWriteWait::CleanCaptureMembers) => {}
+                PortableWriteDrive::Wait(wait) => {
+                    panic!("unexpected wait before retention discharge: {wait:?}")
+                }
+                PortableWriteDrive::Complete(_) => {
+                    panic!("capacity-blocked write completed before discharge")
+                }
+            }
+        }
+        assert_eq!(concrete.service.state(), ServiceState::Serving);
+        let current_driver = concrete
+            .service
+            .write_drivers
+            .get(usize::try_from(submission.operation.index).unwrap())
+            .and_then(Option::as_ref)
+            .expect("blocked completion retains its driver");
+        assert!(!current_driver.failed);
+        let writes_before_retry = [
+            concrete.service.members[0].store.physical_writes,
+            concrete.service.members[2].store.physical_writes,
+        ];
+
+        let current = concrete.service.recovery.load_assembly_snapshot().unwrap();
+        let capture = concrete
+            .service
+            .coded_captures()
+            .capture_snapshot(CodedCaptureId(0))
+            .expect("capture remains available for refusal");
+        if capture.phase == CodedCapturePhase::Open {
+            let refusal = reopened_refusal_permit(&current, &capture);
+            let prepared = concrete
+                .service
+                .coded_captures
+                .prepare_clean_refusal(CodedCaptureId(0), &refusal)
+                .expect("capture refusal preparation");
+            let mut transaction = RecoveryTxn::new(
+                current.generation,
+                concrete.service.topology.topology_epoch(),
+            );
+            transaction.push(RecoveryMutation::ApplyCodedTransition {
+                transition: prepared.transition(),
+            });
+            let receipt = concrete
+                .service
+                .recovery
+                .commit_durable_receipt(transaction)
+                .expect("capture refusal is durable");
+            concrete
+                .service
+                .coded_captures
+                .confirm_clean_refusal(prepared, &receipt)
+                .expect("install durable capture refusal");
+            concrete.service.checksums.recovery_generation = receipt.generation();
+        }
+        assert!(matches!(
+            capture.phase,
+            CodedCapturePhase::Open | CodedCapturePhase::CleanKnown | CodedCapturePhase::Refused
+        ));
+        concrete
+            .service
+            .compact_resolved_capture_membership()
+            .expect("durable capture state discharges the first generation");
+        assert!(
+            !concrete
+                .service
+                .coded_captures()
+                .capture_snapshot(CodedCaptureId(0))
+                .expect("refused capture remains until later release")
+                .membership
+                .contains_key(&first)
+        );
+
+        let evidence = loop {
+            match concrete
+                .service
+                .drive_write(&submission)
+                .expect("exact retained driver retry")
+            {
+                PortableWriteDrive::Complete(evidence) => break evidence,
+                PortableWriteDrive::Wait(PortableWriteWait::CleanCaptureMembers) => {}
+                PortableWriteDrive::Work(_) => {
+                    panic!("retry emitted duplicate physical work")
+                }
+                PortableWriteDrive::Wait(wait) => {
+                    panic!("unexpected wait after retention discharge: {wait:?}")
+                }
+            }
+        };
+        assert_eq!(
+            evidence.release_authorization.map(|auth| auth.operation()),
+            Some(submission.operation)
+        );
+        assert_eq!(
+            [
+                concrete.service.members[0].store.physical_writes,
+                concrete.service.members[2].store.physical_writes,
+            ],
+            writes_before_retry
+        );
+        assert_eq!(concrete.service.state(), ServiceState::Serving);
     }
 
     #[test]

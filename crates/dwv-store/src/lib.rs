@@ -1457,13 +1457,35 @@ impl OperationSlotTable {
     }
 
     pub fn reserve(&mut self, request: BlockRequest) -> Result<OperationSlotToken, SlotError> {
-        let index = self.slots.iter().position(Option::is_none).ok_or_else(|| {
-            SlotError::Admission(AdmissionError::Exhausted {
-                resource: ResourceKind::OperationSlots,
-                limit: self.limits().operation_slots,
-                in_use: self.usage().operation_slots,
+        self.reserve_if(request, |_| true)
+    }
+
+    /// Reserve the first available slot accepted by `allow`.
+    ///
+    /// The predicate sees only an unoccupied slot's next exact token. It
+    /// cannot change slot state or resource accounting.
+    pub fn reserve_if(
+        &mut self,
+        request: BlockRequest,
+        mut allow: impl FnMut(OperationSlotToken) -> bool,
+    ) -> Result<OperationSlotToken, SlotError> {
+        let index = self
+            .slots
+            .iter()
+            .enumerate()
+            .find_map(|(index, slot)| {
+                let slot_is_available = slot.is_none();
+                let generation = self.next_generations[index];
+                let token = OperationSlotToken::new(index as u32, generation);
+                (slot_is_available && allow(token)).then_some(index)
             })
-        })?;
+            .ok_or_else(|| {
+                SlotError::Admission(AdmissionError::Exhausted {
+                    resource: ResourceKind::OperationSlots,
+                    limit: self.limits().operation_slots,
+                    in_use: self.usage().operation_slots,
+                })
+            })?;
         let generation = self.next_generations[index];
         let next = generation
             .checked_add(1)
