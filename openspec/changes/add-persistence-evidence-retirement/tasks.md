@@ -1,3 +1,12 @@
+## 0. Pre-implementation delegated-model gate
+
+- [x] 0.1 Build the bounded `PersistenceEvidenceRetirement` Quint relation with explicit owner-fact and immutable-certificate boundaries
+- [x] 0.2 Run 19 focused and 5 wide retention scenarios
+- [x] 0.3 Run bounded `quint verify` for `step` depth 4, `planStep` depth 6, and `unknownStep` depth 4; record no counterexample within those bounds
+- [x] 0.4 Generate and run five deliberate retention negative mutants
+- [x] 0.5 Obtain adversarial model review; final verdict `GO` at confidence `0.96`
+- [x] 0.6 Obtain adversarial review of the OpenSpec delegation boundary; final verdict `GO` at confidence `0.97`
+
 ## 1. Exact Occurrence and Root Model
 
 - [ ] 1.1 Add the persisted semantic fence-occurrence identity and canonical certificate validation; verify monotonic non-reused identities, equal-occurrence multiplicity, canonical internal ordering, and rejection of new duplicate bindings
@@ -36,3 +45,13 @@
 - [ ] 6.1 Run focused recovery, checksum, dirty-integrity, service, adapter, migration, and restart checks for the changed requirements and record exact evidence
 - [ ] 6.2 Run affected-owner knowledge/readiness checks and verify the finalized relationship graph, then run `cargo xtask docs check` after all implementation markers are finalized
 - [ ] 6.3 Run `cargo xtask docs build` and the applicable formatting/lint checks after implementation and evidence are complete
+
+## 7. Canonical Documentation Projection
+
+- [ ] 7.1 After implementation verification, synchronize the verified change and add plain source-local markers for the three canonical target owners:
+  - `// dwv:req req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness`
+  - `// dwv:req req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage`
+  - `// dwv:req req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor`
+  Review whether `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence`, `req.store-operation-contracts.store-write-watermarks-are-real-monotonic-evidence`, and `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic` remain genuine source relationships; those prerequisite IDs are already tracked as `dwv:requires` dependencies and are not automatically copied as `dwv:req` markers.
+- [ ] 7.2 After synchronization, update maintained architecture, Guide prose, and semantic comments to describe canonical behavior without active-change history
+- [ ] 7.3 Review affected documentation ownership/provenance and run final `cargo xtask docs check` and `cargo xtask docs build` before archive

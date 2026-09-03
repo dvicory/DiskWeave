@@ -50,7 +50,7 @@ The liveness contract is therefore bounded by current owner roots and admitted u
 
 ### 3. Rebind before removing the last satisfying occurrence
 
-Supersession is evaluated per root, not globally. A newer occurrence can replace an older one only when it has the same topology epoch, fence domain, required store set, store incarnations, capability evidence, and exact target identity, and its generation/watermark evidence covers that particular root. Partial byte-range overlap, a scalar watermark, or generic certificate equality is insufficient. All root rebinds and occurrence removal happen in one successor proposal.
+Supersession is evaluated per root, not globally. Each rebind may target its own successor occurrence; a predecessor with multiple roots may therefore rebind those roots atomically to different retained successor occurrences. A newer occurrence can replace an older one only when it has the same topology epoch, fence domain, required store set, store incarnations, capability evidence, and exact target identity, and its generation/watermark evidence covers that particular root. Partial byte-range overlap, a scalar watermark, or generic certificate equality is insufficient. All root rebinds and occurrence removal happen in one successor proposal.
 
 ### 4. Reuse the existing atomic recovery boundary with exhaustive outcomes
 
@@ -65,6 +65,42 @@ The retirement transition never publishes a local successor before durable commi
 ### 5. Version legacy meaning explicitly
 
 The current semantic schema is version 6. The new occurrence/root meaning requires a new schema version and an explicit migration step after version 6. Older manifests are migration-required before writable use. Migration assigns identities without coalescing duplicates, preserves exact certificate values, and retains ambiguous copied references as conservative legacy-unreconciled roots until an owner-qualified rebind. Interrupted migration uses the same prior/proposed reconciliation outcomes as retirement.
+
+### Delegated bounded relation and evidence boundary
+
+One shared executable model serves three disjoint owning requirement surfaces.
+Its source-local markers are added when those target requirements become
+canonical:
+
+- `req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness`
+  owns the bounded registry-liveness projection conditioned on supplied
+  owner-qualified roots: predecessor retention, exact reachability, complete
+  root discharge/rebind, and preservation of unrelated roots.
+- `req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage`
+  owns monotonic non-reused occurrence identity, immutable certificate versus
+  mutable owner-fact separation, exact root/fence binding, componentwise
+  store/claim compatibility, and per-root rebind/discharge validation with an
+  independent successor occurrence per rebind.
+- `req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor`
+  owns generation/topology-checked preparation, durable successor installation,
+  known rejection, stale rejection, exact-intent unknown observation, and
+  prior/proposed/neither reconciliation.
+
+`models/quint/PersistenceEvidenceRetirement.qnt` is the sole exact authority
+only within those named bounded surfaces. It receives owner-qualified
+certificate facts, owner facts, admissions, rebind/discharge proofs, and
+reopen observations as inputs. Their production and qualification remain
+owned by the named requirements and their dependencies.
+
+Owner liveness policy, serialized canonical ordering and malformed-input
+duplicate detection, semantic schema migration, export and capacity bounds,
+physical durability, adapter mechanics, and implementation conformance are
+not delegated to the model. The focused, wide, and mutation analysis modules
+are evidence-only configurations: the small analysis fixes four shapes, four
+occurrences, four root IDs, and epochs 0 through 8; its plan, unknown, and
+generic transition relations have separate bounded checks; the wide analysis
+supplies five direct scenarios, not exhaustive coverage; and mutation
+scenarios are complementary negative evidence, not implementation proof.
 
 ### 6. Keep the first implementation proportional to the owner boundary
 

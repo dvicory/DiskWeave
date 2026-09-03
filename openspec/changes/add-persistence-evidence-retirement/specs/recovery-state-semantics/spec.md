@@ -21,6 +21,17 @@ The recovery store SHALL retain each exact fence occurrence while any owner-qual
 
 Each root SHALL carry its exact occurrence identity, owner binding, relevant topology and generation, and the durable predecessor or successor fact that creates, discharges, or rebinds it. Serialized phase values, DTO equality, process reachability, age, latest-N selection, and scalar watermarks SHALL NOT create or discharge a root. A settled ordinary write SHALL NOT remain a permanent root merely because it once produced a fence. Releasing one root SHALL NOT retire evidence needed by another root. A fence may be retired only when every root that can reach its occurrence has been discharged or atomically rebound.
 
+For this requirement's bounded registry-liveness portion, the state, actions,
+and invariants in
+`models/quint/PersistenceEvidenceRetirement.qnt` SHALL be the sole exact
+semantic authority for associating supplied owner-qualified roots with
+immutable fence certificates, retaining a predecessor while a supplied root
+reaches it, preserving unrelated roots during a retirement proposal, and
+removing an occurrence only after every root reaching it is discharged or
+atomically rebound. Owner qualification, root creation, and root discharge
+facts remain owned by the requirements named above; the model receives them
+as inputs.
+
 #### Scenario: A never-rewritten clean region remains protected
 
 - **WHEN** a region is currently `CLEAN` and its exact clean root still names fence occurrence F
@@ -61,7 +72,17 @@ Every persisted composite fence SHALL have a unique monotonic semantic fence-occ
 
 Within a newly written certificate, store-fence references SHALL use one canonical semantic order and SHALL contain no duplicate store-fence identity; captured region and integrity pairs SHALL use canonical order and SHALL contain no duplicate target identity. Malformed duplicates SHALL be rejected rather than silently deduplicated. Legacy ordering and duplicates SHALL be handled only by the explicit migration requirement below.
 
-Supersession SHALL be evaluated separately for every root. A rebind SHALL preserve the same captured topology epoch, fence domain, required store set, store incarnation, capability evidence, and exact target identity, and SHALL prove the newer occurrence's generation and synchronized-through watermark cover the particular region or integrity claim. Region and integrity identities are exact semantic targets; partial byte-range overlap or a scalar watermark SHALL not establish coverage or supersession. The last occurrence satisfying a root SHALL not be removed unless that root is atomically rebound or discharged.
+Supersession SHALL be evaluated separately for every root, not globally. Each rebind MAY target its own successor occurrence, so one predecessor with multiple roots MAY atomically rebind those roots to different retained successor occurrences. A rebind SHALL preserve the same captured topology epoch, fence domain, required store set, store incarnation, capability evidence, and exact target identity, and SHALL prove the newer occurrence's generation and synchronized-through watermark cover the particular region or integrity claim. Region and integrity identities are exact semantic targets; partial byte-range overlap or a scalar watermark SHALL not establish coverage or supersession. The last occurrence satisfying a root SHALL not be removed unless that root is atomically rebound or discharged.
+
+For this requirement's bounded occurrence-and-certificate portion, the state,
+actions, and invariants in
+`models/quint/PersistenceEvidenceRetirement.qnt` SHALL be the sole exact
+semantic authority for monotonic non-reused occurrence identity, immutable
+certificate versus mutable owner-fact separation, exact root/fence binding,
+componentwise per-store and per-claim compatibility, and predecessor-root
+rebind or discharge validation where each rebind names its own successor
+occurrence. Serialized ordering, malformed-input duplicate handling, and
+legacy migration remain prose-owned.
 
 #### Scenario: Equal certificate occurrences remain distinct
 
@@ -82,6 +103,11 @@ Supersession SHALL be evaluated separately for every root. A rebind SHALL preser
 
 - **WHEN** a current owner supplies an exact predecessor-bound rebind for every root reaching F and the successor occurrence satisfies each root's exact coverage
 - **THEN** the successor contains the new bindings and F is no longer reachable by any retained root
+ 
+#### Scenario: Independent successor occurrences are committed atomically
+
+- **WHEN** one predecessor occurrence has multiple roots and each root has a complete exact rebind to a different retained successor occurrence
+- **THEN** one generation- and topology-checked successor commits all root rebinds together, removes the predecessor only after every root is covered, and preserves exact bindings for each independent successor
 
 ### Requirement: Fence retirement preserves an exact durable predecessor
 <!-- dwv:req req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor -->
@@ -95,6 +121,30 @@ Supersession SHALL be evaluated separately for every root. A rebind SHALL preser
 Every exact fence retirement SHALL be represented by one generation- and topology-checked recovery transaction with the exact durable predecessor, occurrence identities to retire, all root rebinds or discharges, and the complete proposed successor snapshot. The successor SHALL remove only occurrences proven unreachable and SHALL preserve every exact store-incarnation, capability, fence-domain, watermark, topology, target, generation, and claim binding required by remaining roots. A known rejected or known-not-committed retirement SHALL leave the predecessor authoritative. A durable successor SHALL make the successor authoritative. A lost, corrupt, or unclassifiable acknowledgement that may have committed SHALL establish neither candidate as authoritative until exact reopen reconciliation.
 
 This retirement boundary SHALL reject a successor that exceeds the configured semantic representation or export bounds without removing predecessor evidence. Pre-mutation capacity reservation for a protected write remains the separately tracked serving prerequisite `dwv-x6y.2.2`; this requirement SHALL NOT be interpreted as implementing that reservation protocol or as authorizing protected mutation after a later capacity failure.
+ 
+For this requirement's bounded transaction-and-reconciliation portion, the
+state, actions, and invariants in
+`models/quint/PersistenceEvidenceRetirement.qnt` SHALL be the sole exact
+semantic authority for generation/topology-checked preparation, durable
+successor installation, known rejection, stale rejection, exact-intent
+unknown observation, and prior/proposed/neither reconciliation. The model's
+retirement transition consumes the occurrence/root plan delegated by
+`req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage`
+and preserves the exact predecessor until the corresponding outcome is
+authoritative.
+
+The model receives owner-qualified certificate facts, owner facts, admissions,
+rebind/discharge proofs, and reopen observations as inputs. Their production,
+qualification, owner liveness, serialized canonical ordering and
+malformed-input duplicate detection, semantic schema migration, export and
+capacity bounds, physical durability, adapter mechanics, and implementation
+conformance remain governed by the named requirements; they are not delegated
+to the model.
+`verification/quint/PersistenceEvidenceRetirementAnalysis.qnt`,
+`PersistenceEvidenceRetirementWideAnalysis.qnt`, and
+`PersistenceEvidenceRetirementMutants.qnt` are evidence-only finite
+configurations. They do not define product semantics or establish exhaustive
+coverage of the wide analysis, all parameterized inputs, or Rust behavior.
 
 #### Scenario: An authorized retirement commits
 

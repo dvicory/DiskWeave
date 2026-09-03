@@ -13,6 +13,15 @@
 - Keep pre-mutation capacity reservation as the separately tracked `dwv-x6y.2.2` prerequisite for serving implementation; this change defines retirement/successor rejection, not that reservation protocol.
 - Keep aggregate coverage summaries, external archives, and session-close supersession outside this first exact-retirement change; add them only through deliberately dependent changes.
 
+The three named recovery-state requirements delegate disjoint portions of one
+bounded registry/retirement relation to
+`models/quint/PersistenceEvidenceRetirement.qnt`: owner-qualified
+registry-liveness preservation, exact occurrence/certificate and per-root
+rebind validation, and generation/topology-checked retirement/reconciliation.
+The focused, wide, and mutation analysis modules are evidence-only finite
+configurations; they do not replace the owner-qualified OpenSpec semantics or
+establish Rust implementation conformance.
+
 ## Capabilities
 
 ### New Capabilities
@@ -29,3 +38,4 @@ None.
 - `dwv-recovery-sqlite`: explicit semantic-schema migration and durable candidate/predecessor retirement persistence without exposing SQLite layout.
 - `dwv-service`: compose current CLEAN, integrity, coded-capture, lifecycle, and uncertainty owner facts; preserve current writable-session global-fence bindings conservatively; session-close supersession remains `dwv-x6y.2.3`.
 - All snapshot constructors, adapter dispatch, inspection projections, fixtures, and verification relationships must migrate together; ordinary data/parity payload files remain unchanged.
+- `verification/quint`: bounded exact relation, focused scenarios, wide scenario evidence, and deliberate negative mutants; these artifacts are verification evidence, not product authority.
