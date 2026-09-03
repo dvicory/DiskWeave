@@ -1,8 +1,9 @@
-schema = "dwv.verification.manifest.v1"
+schema = "dwv.verification.manifest.v2"
 
 [[evidence]]
 id = "evidence.architecture-normalization-v08"
 path = "docs/verification/architecture-normalization-v08.md"
+class = "evidence-artifact"
 claim = "The v0.8 normalization audit records current semantic dispositions and historical isolation decisions."
 tier = "documentation-migration"
 fault_model = ["duplicate semantic registry", "historical-source leakage"]
@@ -23,6 +24,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.architecture-v07-conformance"
 path = "docs/verification/architecture-v07-conformance.md"
+class = "evidence-artifact"
 claim = "The architecture conformance record bounds portable claims and names deferred platform evidence."
 tier = "portable-analysis"
 fault_model = ["unbounded architecture claim", "historical handoff authority"]
@@ -40,6 +42,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.macos-demo-v0"
 path = "docs/verification/macos-demo-v0.md"
+class = "evidence-artifact"
 claim = "The offline demo evidence exercises owned file-backed behavior without claiming a live bridge or hardware durability."
 tier = "portable-file-backed"
 fault_model = ["ordinary-file operation failure", "missing platform bridge"]
@@ -57,6 +60,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.parity-envelope-profile-comparison"
 path = "docs/verification/os-007-parity-envelope-profiles.md"
+class = "evidence-artifact"
 claim = "The parity-envelope evidence compares bounded experimental profiles and preserves conservative disagreement handling."
 tier = "experimental-profile"
 fault_model = ["envelope disagreement", "capacity or geometry mismatch"]
@@ -75,6 +79,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.write-recovery-lifecycle-model"
 path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
 claim = "The historical write-recovery lifecycle canary records bounded executable Quint evidence for the reference transaction/recovery transition relation, including explicit uncertainty, ownership, persistence evidence, recovery CLEAN, crash/loss, abandonment, reconciliation, and mutation boundaries."
 tier = "portable-bounded-model"
 fault_model = ["unknown write-recovery-record commit", "indeterminate data/parity effect", "process loss", "abandonment", "missing durable write-recovery record", "missing persistence-evidence coverage", "seeded guard mutation"]
@@ -90,6 +95,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.write-lifecycle-ownership-repair"
 path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
 claim = "The write-lifecycle ownership repair records bounded executable evidence for explicit range release and reuse, pre-write-recovery-record abort, completed ownership, conservative partial data/parity reconciliation, delegated-source review boundaries, and two seeded Quint Connect traces that each cover release followed by a new startWrite and second mapped lifecycle."
 tier = "portable-bounded-model"
 fault_model = [
@@ -121,6 +127,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.transaction-engine-comparison"
 path = "docs/verification/os-009-transaction-engine-evidence-comparison.md"
+class = "evidence-artifact"
 claim = "The transaction comparison records normalized semantic actions and conservative terminal evidence."
 tier = "portable-reference-comparison"
 fault_model = ["interrupted write", "uncertain completion"]
@@ -137,6 +144,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.healthy-portable-io"
 path = "docs/verification/os-013-healthy-portable-io.md"
+class = "evidence-artifact"
 claim = "The healthy portable I/O record covers bounded ordinary-file behavior and keeps frontend and hardware claims gated."
 tier = "portable-file-backed"
 fault_model = ["range I/O failure", "durability-fence uncertainty"]
@@ -156,6 +164,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.parity-verification-repair"
 path = "docs/verification/os-014-exhaustive-verification-repair.md"
+class = "evidence-artifact"
 claim = "The exhaustive verification record separates parity mismatch classification from independently authorized repair."
 tier = "portable-file-backed"
 fault_model = ["parity mismatch", "independent repair ambiguity"]
@@ -174,6 +183,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.metadata-loss-recovery"
 path = "docs/verification/os-015-metadata-loss-recovery.md"
+class = "evidence-artifact"
 claim = "The current metadata-loss implementation enumerates the conservative matrix, rejects every certificate-receipt-gated case while no receipt capability exists, and creates audited fresh state only from authorized current evidence."
 tier = "portable-recovery-plus-evaluation-sqlite"
 fault_model = ["metadata loss", "ambiguous recovery baseline"]
@@ -193,6 +203,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.degraded-read-offline-rebuild"
 path = "docs/verification/os-016-degraded-reads-offline-rebuild.md"
+class = "evidence-artifact"
 claim = "The degraded-read and offline-rebuild record proves separate-target byte equality within the portable file-backed evidence boundary."
 tier = "portable-macos-file-backed"
 fault_model = ["known single erasure", "interrupted replacement write"]
@@ -212,6 +223,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.checksum-scrub-repair"
 path = "docs/verification/os-017-checksum-scrub-verified-repair.md"
+class = "evidence-artifact"
 claim = "The checksum scrub and repair record preserves conservative classification, unique-solution authorization, and verified separate targets."
 tier = "portable-file-backed"
 fault_model = ["checksum mismatch", "non-unique repair solution"]
@@ -229,6 +241,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.macos-bridge-feasibility"
 path = "docs/verification/os-020-macos-bridge-feasibility.md"
+class = "evidence-artifact"
 claim = "The macOS bridge spike records regular-file feasibility and explicitly leaves privileged bridge and hardware behavior unresolved."
 tier = "macos-host-feasibility"
 fault_model = ["missing toolchain", "unprivileged attachment"]
@@ -248,6 +261,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.normalized-trace-replay"
 path = "docs/verification/os-024-normalized-trace-replay.md"
+class = "evidence-artifact"
 claim = "The normalized trace replay record demonstrates deterministic event and terminal-state reproduction from a bounded fixture."
 tier = "portable-normalized-trace"
 fault_model = ["fault cut point", "trace replay divergence"]
@@ -266,6 +280,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.derived-documentation-foundation"
 path = "docs/verification/derived-documentation-foundation.md"
+class = "evidence-artifact"
 claim = "The documentation foundation record demonstrates offline derivation from canonical sources and bounded projection state."
 tier = "documentation-projection"
 fault_model = ["stale generated state", "historical source leakage"]
@@ -284,6 +299,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.portable-demo-baseline"
 path = "docs/verification/portable-demo-baseline.md"
+class = "evidence-artifact"
 claim = "The portable demo baseline records the bounded workflow and the evidence tier it does not exceed."
 tier = "portable-file-backed"
 fault_model = ["bounded fixture failure", "unsupported platform inference"]
@@ -301,6 +317,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.portable-verification-evidence"
 path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
 claim = "The portable verification evidence records deterministic checks without promoting them to platform or hardware certification."
 tier = "portable-bounded"
 fault_model = ["hostile range input", "finite model coverage"]
@@ -370,6 +387,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.open-traceable-knowledge"
 path = "docs/verification/open-traceable-knowledge.md"
+class = "evidence-artifact"
 claim = "The open-traceable-knowledge completion evidence records one observed DiskWeave Guide exercise, one fresh-agent implementation exercise, distinct bounded knowledge retrieval contracts, provider-neutral change impact, and deterministic offline reconstruction."
 tier = "documentation-acceptance"
 fault_model = ["reader incomprehension", "agent source hunting", "overlapping context retrieval", "whole-component overexpansion", "silent packet truncation", "missing revision baseline", "stale generated state"]
@@ -392,6 +410,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.integrated-canonical-boundary-acceptance"
 path = "docs/verification/m8.md"
+class = "evidence-artifact"
 claim = "The integrated canonical-boundary acceptance record covers canonical ownership, non-forgeable metadata authorization, canonical request admission, planning isolation, bounded proofs, and a fresh Linux ublk/ext4 acceptance run."
  tier = "integrated-milestone-acceptance"
 fault_model = ["duplicate semantic ownership", "caller-forgeable recovery authority", "request identity weakening", "historical planning leakage", "frontend and recovery evidence drift"]
@@ -415,6 +434,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.linux-ublk-ext4-acceptance"
 path = "docs/verification/linux-ublk-ext4-acceptance.md"
+class = "evidence-artifact"
 claim = "The linux-ublk-ext4-acceptance change records bounded functional ext4 I/O through DiskWeave's normalized portable service on one exact ARM64 Linux ublk environment plus layered deterministic evidence for the correction-critical recovery, persistence-evidence, ownership, and frontend-lifetime boundaries."
 tier = "linux-arm64-file-backed-ublk"
 fault_model = ["unsupported kernel intent", "ownership conflict or process death", "stale publication state", "backing identity drift", "bounded resource exhaustion", "stale or duplicate completion", "trace divergence or abandonment", "incomplete shutdown", "missing recovery authority", "partial or cross-store persistence evidence", "mutation crash point"]
@@ -454,6 +474,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.integrated-operator-publication-acceptance"
 path = "docs/verification/m9.md"
+class = "evidence-artifact"
 claim = "The integrated operator-publication acceptance record covers bounded production observation, recovery preview and fail-closed apply, persisted checksum-baseline admission, exact outcome composition, and narrow Linux publication."
  tier = "integrated-milestone-acceptance"
 fault_model = ["stale operator policy", "missing or unreadable recovery state", "unresolved or uncertain recovery commit", "unavailable lost-custody authority", "incomplete checksum baseline", "ambiguous damage", "admission without publication"]
@@ -480,6 +501,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.independent-parity-verification"
 path = "docs/verification/independent-parity-verification.md"
+class = "evidence-artifact"
 claim = "The standalone independent parity verifier has focused file-backed evidence for bounded equations, explicit incomplete and mismatched dispositions, non-mutation, renderer equivalence, deterministic status, hostile bounds, and production-state isolation."
 tier = "file-backed-model"
 fault_model = ["equation mismatch", "short or unavailable payload", "zero-extension confusion", "duplicate or aliased payload identity", "invalid geometry", "resource exhaustion", "renderer or status drift", "fixture mutation", "private-state dependency"]
@@ -495,6 +517,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.lifecycle-release-composition-model"
 path = "verification/quint/LifecycleReleaseAnalysis.qnt"
+class = "executable-model"
 claim = "The bounded LifecycleRelease model composes an external finite applicability domain and seven owner-approved observations into an exact-generation, monotonic ReleaseAllowed fact; bounded cleanup requests, failures, and successes retain authorization and generation ownership, while deterministic and negative scenarios exercise conservative withholding, reconciliation, cleanup, unrelated work, and generation isolation."
 tier = "portable-bounded-model"
 fault_model = [
@@ -546,6 +569,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.lifecycle-release-connect-projection"
 path = "crates/dwv-service/src/service/tests/lifecycle_connect.rs"
+class = "test"
 claim = "A bounded in-crate Connect driver compares LifecycleRelease with a documented mix of directly provider-corresponded exact-generation observations and explicitly external typed owner inputs, including real media-effect projection, transaction-release mapping, child completion, authorization, cleanup success/failure, and negative stale or unresolved paths, without retaining production lifecycle state."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -592,6 +616,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.coded-range-clean-model"
 path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
 claim = "The CodedRangeClean delegated-model record supplies executed bounded evidence for coded conflict, one external capture-wide CLEAN-owner decision, bounded membership, separate CLEAN-commit and later-cut uncertainty reconciliation, conservative refusal, exact external removal authorization, deterministic replay, non-vacuous witnesses, and seeded negative mutants."
 tier = "portable-bounded-model"
 fault_model = [
@@ -664,6 +689,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.coded-contention-backpressure"
 path = "crates/dwv-frontend-ublk/src/lib.rs"
+class = "test"
 claim = "A pre-admission coded overlap reaching the blocking portable facade is released without physical I/O or service recovery, classified as explicit retryable contention, and mapped by the frontend boundary to a retry result rather than an I/O failure."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -694,6 +720,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.coded-unit-identity-range"
 path = "crates/dwv-service/src/service/tests.rs"
+class = "test"
 claim = "Production coded-unit mapping represents a protected codeword above the former u32 unit-index boundary as a u64 identity without allocating storage proportional to the protected offset."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -717,6 +744,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.coded-range-clean-connect"
 path = "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs"
+class = "test"
 claim = "The bounded in-crate Connect bridge projects every delegated CodedRangeClean distinction through production service/coordinator seams while consuming the real geometry owner, service-owned opaque lifecycle capabilities, producer-bound coded admissions, complete lifecycle release evaluation, owner-approved CLEAN certificates, admission-bound write-recovery later cuts, compaction, phase-specific cleanup, and inherited-capture owners; repeated seeded legal operation/capture traces compare normalized production observations without a second model, and focused tests reject false projections, foreign lifecycle and admission authority graphs, caller-selected or substituted later cuts, non-authoritative persisted proof flags, stale preparations, phase-confused reopen cleanup, incomplete coded semantic transitions, and lost acknowledgements."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -835,6 +863,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.coded-operation-stateful-properties"
 path = "crates/dwv-service/src/service/tests/coded_range_clean_connect.rs"
+class = "test"
 claim = "A small proptest-state-machine layer generates legal coded-operation histories with independent operation identities and target-member inputs, including no-active-operation crash/restart transitions that drive production inherited-capture invalidation and fresh capture start; it checks production observations for complete admission, overlap contention, disjoint progress, exact release cleanup, stale-generation rejection, and conservative restart state. A test-only corrupted observation is rejected by the ordinary oracle, shrinks to a minimal history, and replays with the same failure while the oracle remains separate from CodedRangeClean."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -872,6 +901,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.recovery-reopen-cut"
 path = "crates/dwv-recovery/src/lib.rs"
+class = "test"
 claim = "RecoveryReopenCut captures a bounded durable owner manifest and reopens it without process state; existing dwv-sim crash/power-loss schedules separately prove that durable and volatile media effects remain distinct."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -898,6 +928,7 @@ non_claims = [
 [[evidence]]
 id = "evidence.persistence-evidence-retirement"
 path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
 claim = "The exact persistence-evidence retention checks preserve owner-qualified claims, reject non-exact successor bindings, isolate uncertain recovery acknowledgement, and reconcile retirement without changing separate payload bytes."
 tier = "portable-reference-comparison"
 fault_model = [
@@ -926,19 +957,32 @@ non_claims = [
   "These are bounded in-memory and SQLite adapter checks, not arbitrary-width retention proof or physical device durability.",
   "They do not implement pre-mutation serving reservation or session-close supersession.",
 ]
-
+ 
 [[evidence]]
 id = "evidence.correctness-sensitive-coverage-gate"
 path = "xtask/src/knowledge/tests/coverage_tests.rs"
 class = "test"
-claim = "Focused Rust fixtures exercise independent implementation and evidence targets, meaningful owner scope, complete evidence facts, deterministic endpoint digests, target dispositions, trigger invalidation, conservative aggregate precedence, and bounded ownership output."
+claim = "Focused coverage-gate tests exercise owner presence, missing targets, explicit dispositions, stale or deleted endpoint state, target-specific currentization, symlink resolution, and invalid projection rejection."
 tier = "portable-test"
-fault_model = ["owner omission", "helper-only marker", "incomplete evidence", "stale endpoint set", "contradictory disposition", "deferred trigger transition", "non-current relationship"]
-scope = ["knowledge coverage derivation", "reviewed endpoint-set freshness", "target disposition validation", "ownership, export, readiness, and docs-check projections"]
+fault_model = [
+  "owner omission",
+  "missing coverage target",
+  "invalid or stale disposition",
+  "deleted endpoint set",
+  "target currentization leakage",
+  "symlink escape or retargeting",
+  "invalid projection publication",
+]
+scope = [
+  "coverage gate owner and evidence target validation",
+  "reviewed endpoint and disposition state",
+  "bounded endpoint path resolution",
+  "export and readiness fail-closed behavior",
+]
 requirements = [
   "req.documentation-knowledge-architecture.correctness-sensitive-requirements-have-meaningful-coverage-or-explicit-disposition",
 ]
 non_claims = [
-  "The fixtures do not prove product behavior, platform behavior, or physical durability.",
-  "A passing structural gate does not replace individual semantic review of current owners, evidence, or dispositions.",
+  "The tests do not replace individual semantic review of current owners or evidence.",
+  "They do not execute product verification or establish product behavior, physical durability, or platform certification.",
 ]
