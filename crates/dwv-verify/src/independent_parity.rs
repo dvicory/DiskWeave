@@ -380,7 +380,7 @@ fn parse_path(path: &str) -> Result<PathBuf, DescriptorError> {
     if path.contains('\0') {
         return Err(DescriptorError("payload identity contains a NUL byte"));
     }
-    if path.is_empty() || path.as_bytes().len() > MAX_PATH_BYTES {
+    if path.is_empty() || path.len() > MAX_PATH_BYTES {
         return Err(DescriptorError(
             "payload identity is empty or over its bound",
         ));
