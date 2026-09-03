@@ -447,6 +447,7 @@ fn inspect_case(label: &str, setup: fn(&Path) -> CaseExpectation) {
 
 /// dwv:req req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing
 #[test]
+#[allow(clippy::type_complexity)]
 fn every_disposition_is_a_successful_read_only_observation() {
     let cases: &[(&str, fn(&Path) -> CaseExpectation)] = &[
         ("supported", supported_case),

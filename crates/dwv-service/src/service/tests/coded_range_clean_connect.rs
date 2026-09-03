@@ -1831,7 +1831,7 @@ fn corrupt_coded_admission_ack_revokes_process_local_authority() {
 #[test]
 fn coded_lifecycle_lost_ack_reconciles_release_compaction_and_cleanup_on_reopen() {
     let (mut release, release_recovery, release_operation) = started_lost_ack_coded_service(955);
-    release_recovery.lose_next_commit();
+    release_recovery.lose_commit_after(1);
     let release_receipt = release_certificate(release.topology.topology_epoch());
     assert!(
         release

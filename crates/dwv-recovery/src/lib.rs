@@ -74,7 +74,7 @@ fn substitute_scope(coordinator: &CodedCaptureCoordinator) {
 "#]
 pub use dwv_lifecycle_authority::IncludedLifecycleAuthorization;
 use dwv_store::{StoreFenceRef, StoreId};
-use std::fmt;
+use std::{collections::BTreeSet, fmt};
 
 mod baseline;
 mod coded_authority;
@@ -244,11 +244,31 @@ pub struct JobId(pub u64);
 pub struct RecoveryCursor(pub u64);
 
 #[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+pub struct FenceOccurrenceId(pub u64);
+
+impl FenceOccurrenceId {
+    pub const FIRST: Self = Self(1);
+    pub const UNASSIGNED: Self = Self(0);
+}
+
+#[derive(
     Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
 )]
 pub struct RecoverySchemaVersion(pub u16);
 
-pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(6);
+pub const CURRENT_RECOVERY_SCHEMA: RecoverySchemaVersion = RecoverySchemaVersion(7);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RecoveryRecordKind {
@@ -264,6 +284,8 @@ pub enum RecoveryRecordKind {
     MetadataLossAudit,
     OfflineRebuild,
     CodedCleanCapture,
+    ClaimRoot,
+    LegacyUnreconciled,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -288,6 +310,8 @@ pub fn current_recovery_schema() -> RecoverySchemaDescriptor {
             RecoveryRecordKind::OfflineRebuild,
             RecoveryRecordKind::ChecksumBaseline,
             RecoveryRecordKind::CodedCleanCapture,
+            RecoveryRecordKind::ClaimRoot,
+            RecoveryRecordKind::LegacyUnreconciled,
         ],
     }
 }
@@ -300,6 +324,7 @@ pub enum RecoveryMigrationStep {
     AddChecksumBaselineV4,
     AddCodedCleanCaptureV5,
     AddCodedCaptureReleaseEvidenceV6,
+    AddFenceOccurrenceIdentityV7,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -314,67 +339,29 @@ impl RecoveryMigrationPlan {
         from: RecoverySchemaVersion,
         to: RecoverySchemaVersion,
     ) -> Result<Self, RecoveryError> {
-        let steps = match (from, to) {
-            (from, to) if from == to && from.0 <= CURRENT_RECOVERY_SCHEMA.0 => Vec::new(),
-            (RecoverySchemaVersion(0), RecoverySchemaVersion(1)) => {
-                vec![RecoveryMigrationStep::InitializeSemanticSchemaV1]
-            }
-            (RecoverySchemaVersion(0), RecoverySchemaVersion(2)) => vec![
-                RecoveryMigrationStep::InitializeSemanticSchemaV1,
-                RecoveryMigrationStep::AddMetadataLossAuditV2,
-            ],
-            (RecoverySchemaVersion(0), RecoverySchemaVersion(3)) => vec![
-                RecoveryMigrationStep::InitializeSemanticSchemaV1,
-                RecoveryMigrationStep::AddMetadataLossAuditV2,
-                RecoveryMigrationStep::AddOfflineRebuildV3,
-            ],
-            (RecoverySchemaVersion(0), CURRENT_RECOVERY_SCHEMA) => vec![
-                RecoveryMigrationStep::InitializeSemanticSchemaV1,
-                RecoveryMigrationStep::AddMetadataLossAuditV2,
-                RecoveryMigrationStep::AddOfflineRebuildV3,
-                RecoveryMigrationStep::AddChecksumBaselineV4,
-                RecoveryMigrationStep::AddCodedCleanCaptureV5,
-                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
-            ],
-            (RecoverySchemaVersion(1), RecoverySchemaVersion(2)) => {
-                vec![RecoveryMigrationStep::AddMetadataLossAuditV2]
-            }
-            (RecoverySchemaVersion(1), RecoverySchemaVersion(3)) => vec![
-                RecoveryMigrationStep::AddMetadataLossAuditV2,
-                RecoveryMigrationStep::AddOfflineRebuildV3,
-            ],
-            (RecoverySchemaVersion(1), CURRENT_RECOVERY_SCHEMA) => vec![
-                RecoveryMigrationStep::AddMetadataLossAuditV2,
-                RecoveryMigrationStep::AddOfflineRebuildV3,
-                RecoveryMigrationStep::AddChecksumBaselineV4,
-                RecoveryMigrationStep::AddCodedCleanCaptureV5,
-                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
-            ],
-            (RecoverySchemaVersion(2), RecoverySchemaVersion(3)) => {
-                vec![RecoveryMigrationStep::AddOfflineRebuildV3]
-            }
-            (RecoverySchemaVersion(2), CURRENT_RECOVERY_SCHEMA) => vec![
-                RecoveryMigrationStep::AddOfflineRebuildV3,
-                RecoveryMigrationStep::AddChecksumBaselineV4,
-                RecoveryMigrationStep::AddCodedCleanCaptureV5,
-                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
-            ],
-            (RecoverySchemaVersion(3), CURRENT_RECOVERY_SCHEMA) => vec![
-                RecoveryMigrationStep::AddChecksumBaselineV4,
-                RecoveryMigrationStep::AddCodedCleanCaptureV5,
-                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
-            ],
-            (RecoverySchemaVersion(4), CURRENT_RECOVERY_SCHEMA) => vec![
-                RecoveryMigrationStep::AddCodedCleanCaptureV5,
-                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
-            ],
-            (RecoverySchemaVersion(5), CURRENT_RECOVERY_SCHEMA) => {
-                vec![RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6]
-            }
-            _ => {
-                return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
-            }
-        };
+        if from == to && from.0 <= CURRENT_RECOVERY_SCHEMA.0 {
+            return Ok(Self {
+                from,
+                to,
+                steps: Vec::new(),
+            });
+        }
+        if from.0 >= to.0 || to.0 > CURRENT_RECOVERY_SCHEMA.0 {
+            return Err(RecoveryError::UnsupportedSchemaMigration { from, to });
+        }
+        let mut steps = Vec::new();
+        for version in (from.0 + 1)..=to.0 {
+            steps.push(match version {
+                1 => RecoveryMigrationStep::InitializeSemanticSchemaV1,
+                2 => RecoveryMigrationStep::AddMetadataLossAuditV2,
+                3 => RecoveryMigrationStep::AddOfflineRebuildV3,
+                4 => RecoveryMigrationStep::AddChecksumBaselineV4,
+                5 => RecoveryMigrationStep::AddCodedCleanCaptureV5,
+                6 => RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                7 => RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
+                _ => return Err(RecoveryError::UnsupportedSchemaMigration { from, to }),
+            });
+        }
         Ok(Self { from, to, steps })
     }
 }
@@ -446,6 +433,7 @@ pub struct DurableRecoveryCommit {
     topology_epoch: TopologyEpoch,
     committed_generation: RecoveryGeneration,
     mutations: Vec<RecoveryMutation>,
+    persisted_fences: Vec<FenceCertificate>,
 }
 
 impl DurableRecoveryCommit {
@@ -459,6 +447,10 @@ impl DurableRecoveryCommit {
 
     pub const fn topology_epoch(&self) -> TopologyEpoch {
         self.topology_epoch
+    }
+    /// Returns fence certificates assigned and published by this commit.
+    pub fn persisted_fences(&self) -> &[FenceCertificate] {
+        &self.persisted_fences
     }
 
     pub(crate) fn committed_coded_capture(&self, snapshot: &CodedCaptureSnapshot) -> bool {
@@ -541,6 +533,8 @@ pub struct DirtyRegionRecord {
     pub region: RegionId,
     pub state: RegionState,
     pub last_clean_fence: Option<FenceCertificate>,
+    /// Exact generation owned by the clean fence, when present.
+    pub clean_generation: Option<RecoveryGeneration>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -561,6 +555,8 @@ pub enum IntegrityState {
         binding: ChecksumEvidenceBinding,
         content_generation: RecoveryGeneration,
         durable_fence: StoreFenceRef,
+        /// Exact composite fence occurrence used by this integrity claim.
+        fence_occurrence: FenceOccurrenceId,
         digest: Vec<u8>,
         verified_at: RecoveryGeneration,
     },
@@ -573,7 +569,13 @@ pub struct IntegrityRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+/// dwv:req req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage
 pub struct FenceCertificate {
+    /// Zero is used only while a producer is preparing a new certificate.
+    ///
+    /// The recovery store assigns the next lineage identity before publishing
+    /// the certificate. A serialized current manifest must never contain zero.
+    pub occurrence: FenceOccurrenceId,
     pub topology_epoch: TopologyEpoch,
     pub fence_domain: FenceDomain,
     pub stores: Vec<StoreFenceRef>,
@@ -589,12 +591,77 @@ impl FenceCertificate {
         captured_region_generations: Vec<(RegionId, RecoveryGeneration)>,
     ) -> Self {
         Self {
+            occurrence: FenceOccurrenceId::UNASSIGNED,
             topology_epoch,
             fence_domain,
             stores,
             captured_region_generations,
             captured_integrity_generations: Vec::new(),
         }
+    }
+
+    pub const fn with_occurrence(mut self, occurrence: FenceOccurrenceId) -> Self {
+        self.occurrence = occurrence;
+        self
+    }
+
+    pub const fn occurrence_id(&self) -> FenceOccurrenceId {
+        self.occurrence
+    }
+    /// Compares only immutable certificate facts; occurrence identity is excluded.
+    pub fn same_certificate_facts(&self, other: &Self) -> bool {
+        self.topology_epoch == other.topology_epoch
+            && self.fence_domain == other.fence_domain
+            && self.stores == other.stores
+            && self.captured_region_generations == other.captured_region_generations
+            && self.captured_integrity_generations == other.captured_integrity_generations
+    }
+    /// Returns whether this occurrence covers all exact facts required by another certificate.
+    pub fn covers_certificate(&self, required: &Self) -> bool {
+        self.topology_epoch == required.topology_epoch
+            && self.fence_domain == required.fence_domain
+            && self.stores.len() == required.stores.len()
+            && required.stores.iter().all(|required_fence| {
+                self.stores.iter().any(|observed| {
+                    observed.store_id == required_fence.store_id
+                        && observed.topology_epoch == required_fence.topology_epoch
+                        && observed.store_incarnation == required_fence.store_incarnation
+                        && observed.capability_evidence_id == required_fence.capability_evidence_id
+                        && observed.through >= required_fence.through
+                })
+            })
+            && required.captured_region_generations.iter().all(
+                |(required_region, required_generation)| {
+                    self.captured_region_generations.iter().any(
+                        |(observed_region, observed_generation)| {
+                            observed_region == required_region
+                                && observed_generation >= required_generation
+                        },
+                    )
+                },
+            )
+            && required.captured_integrity_generations.iter().all(
+                |(required_extent, required_generation)| {
+                    self.captured_integrity_generations.iter().any(
+                        |(observed_extent, observed_generation)| {
+                            observed_extent == required_extent
+                                && observed_generation >= required_generation
+                        },
+                    )
+                },
+            )
+    }
+    fn covers_store_bindings(&self, required: &Self) -> bool {
+        self.stores.len() == required.stores.len()
+            && required.stores.iter().all(|required_fence| {
+                self.stores.iter().any(|observed| {
+                    observed.store_id == required_fence.store_id
+                        && observed.topology_epoch == required_fence.topology_epoch
+                        && observed.store_incarnation == required_fence.store_incarnation
+                        && observed.capability_evidence_id == required_fence.capability_evidence_id
+                        && observed.through >= required_fence.through
+                })
+            })
     }
 
     pub fn with_integrity_extent(
@@ -631,13 +698,250 @@ impl FenceCertificate {
             })
     }
 }
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct LegacyUnreconciledRoot {
+    pub schema: RecoverySchemaVersion,
+    pub occurrence: FenceOccurrenceId,
+    pub candidates: Vec<FenceOccurrenceId>,
+    pub certificate: FenceCertificate,
+}
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd,
+    serde::Deserialize,
+    serde::Serialize,
+)]
+pub struct RecoveryRootId(pub u64);
 
+impl RecoveryRootId {
+    pub const FIRST: Self = Self(1);
+    pub const UNASSIGNED: Self = Self(0);
+}
+
+#[derive(
+    Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+pub struct RecoveryCommitIntentId(pub u64);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryRootKind {
+    CleanRegion,
+    ValidIntegrity,
+    WritableSession,
+    CodedCapture,
+    LegacyUnreconciled,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub enum RecoveryRootFact {
+    CleanRegion {
+        region: RegionId,
+        clean_generation: RecoveryGeneration,
+    },
+    ValidIntegrity {
+        extent: IntegrityExtentId,
+        profile: ChecksumProfileId,
+        set_generation: ChecksumSetGeneration,
+        content_generation: RecoveryGeneration,
+        digest: Vec<u8>,
+    },
+    WritableSession {
+        session_id: SessionId,
+        close_generation: RecoveryGeneration,
+    },
+    CodedCapture {
+        capture: CodedCaptureId,
+        operation: dwv_store::OperationSlotToken,
+        phase: CodedCapturePhase,
+    },
+    CodedCleanClosure {
+        capture: CodedCaptureId,
+        phase: CodedCapturePhase,
+    },
+    LegacyUnreconciled {
+        schema: RecoverySchemaVersion,
+        candidates: Vec<FenceOccurrenceId>,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+pub struct RecoveryClaimRoot {
+    pub id: RecoveryRootId,
+    pub occurrence: FenceOccurrenceId,
+    pub certificate: FenceCertificate,
+    pub topology_epoch: TopologyEpoch,
+    pub generation: RecoveryGeneration,
+    pub fact: RecoveryRootFact,
+}
+
+impl RecoveryClaimRoot {
+    pub const fn kind(&self) -> RecoveryRootKind {
+        match self.fact {
+            RecoveryRootFact::CleanRegion { .. } => RecoveryRootKind::CleanRegion,
+            RecoveryRootFact::ValidIntegrity { .. } => RecoveryRootKind::ValidIntegrity,
+            RecoveryRootFact::WritableSession { .. } => RecoveryRootKind::WritableSession,
+            RecoveryRootFact::CodedCapture { .. } | RecoveryRootFact::CodedCleanClosure { .. } => {
+                RecoveryRootKind::CodedCapture
+            }
+            RecoveryRootFact::LegacyUnreconciled { .. } => RecoveryRootKind::LegacyUnreconciled,
+        }
+    }
+}
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRootRebind {
+    pub root: RecoveryRootId,
+    pub predecessor: FenceOccurrenceId,
+    pub successor: FenceOccurrenceId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRootDischarge {
+    pub root: RecoveryRootId,
+    pub occurrence: FenceOccurrenceId,
+}
+
+// Root-proof issuers remain private until their owner-specific serving
+// cutovers are wired; test builds exercise the full validation surface.
+#[cfg_attr(not(test), allow(dead_code))]
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum RecoveryOwnerRetirementProof {
+    CleanRegionRebind {
+        root: RecoveryRootId,
+        region: RegionId,
+        successor: FenceOccurrenceId,
+    },
+    CleanRegionDischarge {
+        root: RecoveryRootId,
+        region: RegionId,
+    },
+    IntegrityRebind {
+        root: RecoveryRootId,
+        extent: IntegrityExtentId,
+        successor: FenceOccurrenceId,
+    },
+    IntegrityDischarge {
+        root: RecoveryRootId,
+        extent: IntegrityExtentId,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RecoveryRetirementPlan {
+    pub predecessor: RecoverySnapshot,
+    pub successor: RecoverySnapshot,
+    retired_occurrences: Vec<FenceOccurrenceId>,
+    rebinds: Vec<RecoveryRootRebind>,
+    discharges: Vec<RecoveryRootDischarge>,
+    owner_proofs: Vec<RecoveryOwnerRetirementProof>,
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+impl RecoveryRetirementPlan {
+    pub fn new(predecessor: RecoverySnapshot, successor: RecoverySnapshot) -> Self {
+        Self {
+            predecessor,
+            successor,
+            retired_occurrences: Vec::new(),
+            rebinds: Vec::new(),
+            discharges: Vec::new(),
+            owner_proofs: Vec::new(),
+        }
+    }
+
+    pub fn retire(&mut self, occurrence: FenceOccurrenceId) -> &mut Self {
+        self.retired_occurrences.push(occurrence);
+        self
+    }
+
+    pub(crate) fn rebind(
+        &mut self,
+        root: RecoveryRootId,
+        predecessor: FenceOccurrenceId,
+        successor: FenceOccurrenceId,
+    ) -> &mut Self {
+        self.rebinds.push(RecoveryRootRebind {
+            root,
+            predecessor,
+            successor,
+        });
+        self
+    }
+
+    pub(crate) fn discharge(
+        &mut self,
+        root: RecoveryRootId,
+        occurrence: FenceOccurrenceId,
+    ) -> &mut Self {
+        self.discharges
+            .push(RecoveryRootDischarge { root, occurrence });
+        self
+    }
+
+    pub(crate) fn authorize_clean_region_rebind(
+        &mut self,
+        root: RecoveryRootId,
+        region: RegionId,
+        successor: FenceOccurrenceId,
+    ) -> &mut Self {
+        self.owner_proofs
+            .push(RecoveryOwnerRetirementProof::CleanRegionRebind {
+                root,
+                region,
+                successor,
+            });
+        self
+    }
+
+    pub(crate) fn authorize_clean_region_discharge(
+        &mut self,
+        root: RecoveryRootId,
+        region: RegionId,
+    ) -> &mut Self {
+        self.owner_proofs
+            .push(RecoveryOwnerRetirementProof::CleanRegionDischarge { root, region });
+        self
+    }
+
+    pub(crate) fn authorize_integrity_rebind(
+        &mut self,
+        root: RecoveryRootId,
+        extent: IntegrityExtentId,
+        successor: FenceOccurrenceId,
+    ) -> &mut Self {
+        self.owner_proofs
+            .push(RecoveryOwnerRetirementProof::IntegrityRebind {
+                root,
+                extent,
+                successor,
+            });
+        self
+    }
+
+    pub(crate) fn authorize_integrity_discharge(
+        &mut self,
+        root: RecoveryRootId,
+        extent: IntegrityExtentId,
+    ) -> &mut Self {
+        self.owner_proofs
+            .push(RecoveryOwnerRetirementProof::IntegrityDischarge { root, extent });
+        self
+    }
+}
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct WritableSession {
     pub session_id: SessionId,
     pub topology_epoch: TopologyEpoch,
     pub dirty_envelope_generation: u64,
     pub closed: bool,
+    /// Exact generation owned by the close fence, when present.
+    pub close_generation: Option<RecoveryGeneration>,
     pub global_fence: Option<FenceCertificate>,
 }
 
@@ -792,6 +1096,14 @@ pub struct RecoverySnapshot {
     pub integrity_records: Vec<IntegrityRecord>,
     pub checksum_baseline: Option<ChecksumBaseline>,
     pub fences: Vec<FenceCertificate>,
+    /// Owner-qualified roots are the only current liveness references.
+    pub roots: Vec<RecoveryClaimRoot>,
+    /// Retained after root discharge so root identities are not reused.
+    pub next_root_id: RecoveryRootId,
+    /// Legacy references remain conservative until an owner-qualified rebind.
+    pub legacy_unreconciled: Vec<LegacyUnreconciledRoot>,
+    /// The next identity is retained after retirement so identities are never reused.
+    pub next_fence_occurrence_id: FenceOccurrenceId,
     pub maintenance_checkpoints: Vec<MaintenanceCheckpoint>,
     pub metadata_loss_audit: Option<MetadataLossAudit>,
     pub rebuilds: Vec<RebuildState>,
@@ -799,6 +1111,14 @@ pub struct RecoverySnapshot {
     pub coded_captures: Vec<CodedCaptureSnapshot>,
     #[serde(default)]
     pub next_coded_capture_id: u64,
+}
+impl RecoverySnapshot {
+    /// Looks up a persisted certificate by its exact composite occurrence identity.
+    pub fn fence(&self, occurrence: FenceOccurrenceId) -> Option<&FenceCertificate> {
+        self.fences
+            .iter()
+            .find(|fence| fence.occurrence == occurrence)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
@@ -812,6 +1132,8 @@ pub struct RecoveryExportLimits {
     pub max_dirty_regions: usize,
     pub max_integrity_records: usize,
     pub max_fences: usize,
+    pub max_roots: usize,
+    pub max_legacy_unreconciled: usize,
     pub max_maintenance_checkpoints: usize,
     pub max_topology_assignments: usize,
     pub max_stores_per_fence: usize,
@@ -830,6 +1152,8 @@ impl Default for RecoveryExportLimits {
             max_dirty_regions: 16 * 1024,
             max_integrity_records: 16 * 1024,
             max_fences: 16 * 1024,
+            max_roots: 16 * 1024,
+            max_legacy_unreconciled: 16 * 1024,
             max_maintenance_checkpoints: 1024,
             max_topology_assignments: 1024,
             max_stores_per_fence: 1024,
@@ -847,6 +1171,7 @@ impl Default for RecoveryExportLimits {
 pub enum RecoveryError {
     Unhealthy(RecoveryStoreHealth),
     GenerationExhausted,
+    FenceOccurrenceExhausted,
     GenerationMismatch {
         expected: RecoveryGeneration,
         actual: RecoveryGeneration,
@@ -879,6 +1204,14 @@ pub enum TransitionError {
     RegionAlreadyUnknown,
     FenceEmpty,
     FenceTopologyMismatch,
+    FenceOccurrenceMissing,
+    FenceOccurrenceAmbiguous,
+    FenceOccurrenceReused,
+    FenceOccurrenceBindingMismatch,
+    FenceNonCanonical,
+    FenceDuplicateStore,
+    FenceDuplicateRegion,
+    FenceDuplicateIntegrity,
     FenceCoverageMissing,
     IntegrityFenceMissing,
     IntegrityGenerationStale,
@@ -901,6 +1234,9 @@ impl fmt::Display for RecoveryError {
         match self {
             Self::Unhealthy(health) => write!(formatter, "recovery state is {health:?}"),
             Self::GenerationExhausted => write!(formatter, "recovery generation exhausted"),
+            Self::FenceOccurrenceExhausted => {
+                write!(formatter, "recovery fence occurrence identity exhausted")
+            }
             Self::GenerationMismatch { expected, actual } => {
                 write!(
                     formatter,
@@ -973,6 +1309,7 @@ pub enum RecoveryMutation {
     MarkRegionClean {
         region: RegionId,
         through_generation: RecoveryGeneration,
+        fence_occurrence: FenceOccurrenceId,
     },
     InstallIntegrityDigest {
         record: IntegrityRecord,
@@ -999,8 +1336,10 @@ pub enum RecoveryMutation {
     ApplyCodedTransition {
         transition: CodedCaptureTransition,
     },
+    RetireFences {
+        plan: RecoveryRetirementPlan,
+    },
 }
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecoveryTxn {
     pub expected_generation: RecoveryGeneration,
@@ -1122,13 +1461,21 @@ pub trait RecoveryStateStore {
         let expected_generation = txn.expected_generation;
         let topology_epoch = txn.expected_topology_epoch;
         let mutations = txn.mutations.clone();
-        self.commit_durable(txn)
-            .map(|committed_generation| DurableRecoveryCommit {
-                expected_generation,
-                topology_epoch,
-                committed_generation,
-                mutations,
-            })
+        let prior_next_occurrence = self.load_assembly_snapshot()?.next_fence_occurrence_id;
+        let committed_generation = self.commit_durable(txn)?;
+        let persisted_fences = self
+            .load_assembly_snapshot()?
+            .fences
+            .into_iter()
+            .filter(|fence| fence.occurrence >= prior_next_occurrence)
+            .collect();
+        Ok(DurableRecoveryCommit {
+            expected_generation,
+            topology_epoch,
+            committed_generation,
+            mutations,
+            persisted_fences,
+        })
     }
     fn export_manifest(
         &self,
@@ -1187,6 +1534,10 @@ impl MemoryRecoveryStore {
                 integrity_records: Vec::new(),
                 checksum_baseline: None,
                 fences: Vec::new(),
+                roots: Vec::new(),
+                next_root_id: RecoveryRootId::FIRST,
+                legacy_unreconciled: Vec::new(),
+                next_fence_occurrence_id: FenceOccurrenceId::FIRST,
                 maintenance_checkpoints: Vec::new(),
                 metadata_loss_audit: None,
                 rebuilds: Vec::new(),
@@ -1261,6 +1612,7 @@ impl MemoryRecoveryStore {
                     topology_epoch,
                     dirty_envelope_generation,
                     closed: false,
+                    close_generation: None,
                     global_fence: None,
                 });
             }
@@ -1275,6 +1627,7 @@ impl MemoryRecoveryStore {
                         dirty_since: mutation_generation,
                     },
                 );
+                discharge_clean_root(snapshot, region);
             }
             RecoveryMutation::MarkIntegrityStale {
                 extent,
@@ -1300,25 +1653,19 @@ impl MemoryRecoveryStore {
                         state: IntegrityState::Stale { stale_generation },
                     }),
                 }
+                discharge_integrity_root(snapshot, extent);
             }
             RecoveryMutation::RecordDataParityFence { fence } => {
-                validate_fence(&fence, expected_topology_epoch)?;
-                if fence.stores.is_empty() {
-                    return Err(RecoveryError::InvalidTransition(
-                        TransitionError::FenceEmpty,
-                    ));
-                }
-                snapshot.fences.push(fence);
+                append_fence(snapshot, fence, expected_topology_epoch)?;
             }
             RecoveryMutation::CloseWritableSession {
                 session_id,
                 global_fence,
             } => {
-                validate_fence(&global_fence, expected_topology_epoch)?;
                 let session =
                     snapshot
                         .writable_session
-                        .as_mut()
+                        .as_ref()
                         .ok_or(RecoveryError::InvalidTransition(
                             TransitionError::SessionMissing,
                         ))?;
@@ -1327,13 +1674,32 @@ impl MemoryRecoveryStore {
                         TransitionError::SessionIdMismatch,
                     ));
                 }
-                snapshot.fences.push(global_fence.clone());
-                session.closed = true;
-                session.global_fence = Some(global_fence);
+                let global_fence = append_fence(snapshot, global_fence, expected_topology_epoch)?;
+                let close_generation = snapshot
+                    .generation
+                    .checked_next()
+                    .ok_or(RecoveryError::GenerationExhausted)?;
+                {
+                    let session = snapshot.writable_session.as_mut().ok_or(
+                        RecoveryError::InvalidTransition(TransitionError::SessionMissing),
+                    )?;
+                    session.closed = true;
+                    session.close_generation = Some(close_generation);
+                    session.global_fence = Some(global_fence.clone());
+                }
+                append_root(
+                    snapshot,
+                    global_fence,
+                    RecoveryRootFact::WritableSession {
+                        session_id,
+                        close_generation,
+                    },
+                )?;
             }
             RecoveryMutation::MarkRegionClean {
                 region,
                 through_generation,
+                fence_occurrence,
             } => {
                 let record = snapshot
                     .dirty_regions
@@ -1353,7 +1719,8 @@ impl MemoryRecoveryStore {
                 let fence = snapshot
                     .fences
                     .iter()
-                    .find(|fence| {
+                    .find(|fence| fence.occurrence == fence_occurrence)
+                    .filter(|fence| {
                         fence.topology_epoch == expected_topology_epoch
                             && fence.covers_region(region, dirty_since)
                     })
@@ -1366,31 +1733,50 @@ impl MemoryRecoveryStore {
                         TransitionError::RecoveryCleanGenerationBehind,
                     ));
                 }
+                let fence_for_root = fence.clone();
                 record.state = RegionState::Clean;
+                record.clean_generation = Some(through_generation);
                 record.last_clean_fence = Some(fence);
+                discharge_clean_root(snapshot, region);
+                append_root(
+                    snapshot,
+                    fence_for_root,
+                    RecoveryRootFact::CleanRegion {
+                        region,
+                        clean_generation: through_generation,
+                    },
+                )?;
             }
             RecoveryMutation::InstallIntegrityDigest { record } => {
-                let (binding, content_generation, durable_fence, digest, verified_at) =
-                    match record.state {
-                        IntegrityState::Valid {
-                            binding,
-                            content_generation,
-                            durable_fence,
-                            digest,
-                            verified_at,
-                        } => (
-                            binding,
-                            content_generation,
-                            durable_fence,
-                            digest,
-                            verified_at,
-                        ),
-                        _ => {
-                            return Err(RecoveryError::InvalidTransition(
-                                TransitionError::IntegrityFenceMissing,
-                            ));
-                        }
-                    };
+                let (
+                    binding,
+                    content_generation,
+                    durable_fence,
+                    requested_occurrence,
+                    digest,
+                    verified_at,
+                ) = match record.state {
+                    IntegrityState::Valid {
+                        binding,
+                        content_generation,
+                        durable_fence,
+                        fence_occurrence,
+                        digest,
+                        verified_at,
+                    } => (
+                        binding,
+                        content_generation,
+                        durable_fence,
+                        fence_occurrence,
+                        digest,
+                        verified_at,
+                    ),
+                    _ => {
+                        return Err(RecoveryError::InvalidTransition(
+                            TransitionError::IntegrityFenceMissing,
+                        ));
+                    }
+                };
                 if binding.extent.id != record.extent
                     || binding.topology_epoch != expected_topology_epoch
                 {
@@ -1398,25 +1784,26 @@ impl MemoryRecoveryStore {
                         TransitionError::IntegrityBindingMismatch,
                     ));
                 }
-                validate_store_fence(&durable_fence, expected_topology_epoch)?;
-                let has_fence = snapshot
-                    .fences
-                    .iter()
-                    .any(|certificate| certificate.contains_store_fence(durable_fence));
-                if !has_fence {
+                if requested_occurrence == FenceOccurrenceId::UNASSIGNED {
                     return Err(RecoveryError::InvalidTransition(
-                        TransitionError::IntegrityFenceMissing,
+                        TransitionError::FenceOccurrenceMissing,
                     ));
                 }
-                let has_coverage = snapshot.fences.iter().any(|certificate| {
-                    certificate.contains_store_fence(durable_fence)
-                        && certificate.covers_integrity_extent(record.extent, content_generation)
-                });
-                if !has_coverage {
+                let integrity_certificate = snapshot.fence(requested_occurrence).ok_or(
+                    RecoveryError::InvalidTransition(TransitionError::FenceOccurrenceMissing),
+                )?;
+                if !integrity_certificate.contains_store_fence(durable_fence) {
+                    return Err(RecoveryError::InvalidTransition(
+                        TransitionError::IntegrityBindingMismatch,
+                    ));
+                }
+                if !integrity_certificate.covers_integrity_extent(record.extent, content_generation)
+                {
                     return Err(RecoveryError::InvalidTransition(
                         TransitionError::IntegrityCoverageMissing,
                     ));
                 }
+                let integrity_certificate = integrity_certificate.clone();
                 let next_generation = snapshot
                     .generation
                     .0
@@ -1443,12 +1830,14 @@ impl MemoryRecoveryStore {
                     .integrity_records
                     .iter_mut()
                     .find(|existing| existing.extent == record.extent);
+                let root_digest = digest.clone();
                 let value = IntegrityRecord {
                     extent: record.extent,
                     state: IntegrityState::Valid {
                         binding,
                         content_generation,
                         durable_fence,
+                        fence_occurrence: integrity_certificate.occurrence,
                         digest,
                         verified_at,
                     },
@@ -1457,6 +1846,18 @@ impl MemoryRecoveryStore {
                     Some(target) => *target = value,
                     None => snapshot.integrity_records.push(value),
                 }
+                discharge_integrity_root(snapshot, record.extent);
+                append_root(
+                    snapshot,
+                    integrity_certificate,
+                    RecoveryRootFact::ValidIntegrity {
+                        extent: record.extent,
+                        profile: binding.profile,
+                        set_generation: binding.set_generation,
+                        content_generation,
+                        digest: root_digest,
+                    },
+                )?;
             }
             RecoveryMutation::PrepareTopology { topology } => {
                 if topology.topology_epoch() <= snapshot.topology_epoch {
@@ -1518,6 +1919,7 @@ impl MemoryRecoveryStore {
                     .map_err(RecoveryError::Rebuild)?;
                 snapshot.rebuilds.push(rebuild);
             }
+
             RecoveryMutation::AdvanceOfflineRebuild { receipt } => {
                 let rebuild = snapshot
                     .rebuilds
@@ -1540,6 +1942,10 @@ impl MemoryRecoveryStore {
             }
             RecoveryMutation::ApplyCodedTransition { transition } => {
                 transition.apply(snapshot, expected_topology_epoch)?;
+                sync_coded_capture_roots(snapshot)?;
+            }
+            RecoveryMutation::RetireFences { plan } => {
+                apply_retirement(snapshot, plan, expected_topology_epoch)?;
             }
         }
         Ok(())
@@ -1593,6 +1999,8 @@ impl RecoveryStateStore for MemoryRecoveryStore {
             .generation
             .checked_next()
             .ok_or(RecoveryError::GenerationExhausted)?;
+        validate_root_registry(&candidate)?;
+        validate_export_limits(&candidate, RecoveryExportLimits::default())?;
         self.snapshot = candidate;
         Ok(self.snapshot.generation)
     }
@@ -1607,6 +2015,17 @@ impl RecoveryStateStore for MemoryRecoveryStore {
 
 impl MemoryRecoveryStore {
     pub fn from_manifest(manifest: RecoveryManifest) -> Result<Self, RecoveryError> {
+        if manifest.schema != CURRENT_RECOVERY_SCHEMA {
+            return Err(RecoveryError::UnsupportedSchemaMigration {
+                from: manifest.schema,
+                to: CURRENT_RECOVERY_SCHEMA,
+            });
+        }
+        if manifest.snapshot.legacy_unreconciled.is_empty() {
+            validate_snapshot_fences(&manifest.snapshot)?;
+        } else {
+            validate_migrated_snapshot_fences(&manifest.snapshot)?;
+        }
         CodedCaptureCoordinator::from_snapshots(manifest.snapshot.coded_captures.clone()).map_err(
             |_| RecoveryError::InvalidTransition(TransitionError::CodedCaptureIdentityMismatch),
         )?;
@@ -1621,12 +2040,6 @@ impl MemoryRecoveryStore {
             return Err(RecoveryError::InvalidTransition(
                 TransitionError::CodedCaptureIdentityMismatch,
             ));
-        }
-        if manifest.schema != CURRENT_RECOVERY_SCHEMA {
-            return Err(RecoveryError::UnsupportedSchemaMigration {
-                from: manifest.schema,
-                to: CURRENT_RECOVERY_SCHEMA,
-            });
         }
         if manifest.snapshot.topology_epoch
             != manifest.snapshot.active_topology.as_ref().map_or(
@@ -1652,11 +2065,118 @@ impl MemoryRecoveryStore {
                 )
                 .map_err(RecoveryError::Rebuild)?;
         }
+        validate_derived_root_bindings(&manifest.snapshot)?;
+        if manifest.snapshot.legacy_unreconciled.is_empty() {
+            validate_snapshot_fences(&manifest.snapshot)?;
+        } else {
+            validate_migrated_snapshot_fences(&manifest.snapshot)?;
+        }
         validate_export_limits(&manifest.snapshot, RecoveryExportLimits::default())?;
+        let health = if manifest.snapshot.legacy_unreconciled.is_empty() {
+            RecoveryStoreHealth::Healthy
+        } else {
+            RecoveryStoreHealth::Stale
+        };
         Ok(Self {
             snapshot: manifest.snapshot,
-            health: RecoveryStoreHealth::Healthy,
+            health,
         })
+    }
+
+    /// dwv:req req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly
+    /// Assigns current occurrence identities to a legacy semantic manifest.
+    ///
+    /// The schema gate is explicit: ordinary restoration rejects the legacy
+    /// manifest, while this operation is the only path that may reinterpret
+    /// its zero-valued compatibility fields.
+    pub fn migrate_legacy_manifest(
+        mut manifest: RecoveryManifest,
+    ) -> Result<RecoveryManifest, RecoveryError> {
+        let legacy_schema = manifest.schema;
+        if legacy_schema == CURRENT_RECOVERY_SCHEMA {
+            return Ok(manifest);
+        }
+        RecoveryMigrationPlan::plan(legacy_schema, CURRENT_RECOVERY_SCHEMA)?;
+        for fence in &manifest.snapshot.fences {
+            validate_legacy_fence(fence, fence.topology_epoch)?;
+        }
+        let mut next = FenceOccurrenceId::FIRST;
+        for fence in &mut manifest.snapshot.fences {
+            fence.occurrence = next;
+            next = next
+                .0
+                .checked_add(1)
+                .map(FenceOccurrenceId)
+                .ok_or(RecoveryError::FenceOccurrenceExhausted)?;
+        }
+        let mut candidates = manifest.snapshot.fences.clone();
+        let mut legacy_roots = candidates
+            .iter()
+            .map(|certificate| LegacyUnreconciledRoot {
+                schema: legacy_schema,
+                occurrence: certificate.occurrence,
+                candidates: vec![certificate.occurrence],
+                certificate: certificate.clone(),
+            })
+            .collect::<Vec<_>>();
+        if let Some(session) = manifest.snapshot.writable_session.as_mut()
+            && let Some(fence) = session.global_fence.as_mut()
+        {
+            migrate_legacy_fence_reference(
+                fence,
+                &mut candidates,
+                &mut next,
+                legacy_schema,
+                &mut legacy_roots,
+            )?;
+        }
+        for region in &mut manifest.snapshot.dirty_regions {
+            if let Some(fence) = region.last_clean_fence.as_mut() {
+                migrate_legacy_fence_reference(
+                    fence,
+                    &mut candidates,
+                    &mut next,
+                    legacy_schema,
+                    &mut legacy_roots,
+                )?;
+            }
+        }
+        for capture in &mut manifest.snapshot.coded_captures {
+            if let Some(fence) = capture.clean_closure_fence.as_mut() {
+                migrate_legacy_fence_reference(
+                    fence,
+                    &mut candidates,
+                    &mut next,
+                    legacy_schema,
+                    &mut legacy_roots,
+                )?;
+            }
+            for fence in capture.release_certificates.values_mut() {
+                migrate_legacy_fence_reference(
+                    fence,
+                    &mut candidates,
+                    &mut next,
+                    legacy_schema,
+                    &mut legacy_roots,
+                )?;
+            }
+        }
+        for record in &mut manifest.snapshot.integrity_records {
+            migrate_legacy_integrity_reference(
+                record,
+                &candidates,
+                legacy_schema,
+                &mut legacy_roots,
+            )?;
+        }
+        manifest.snapshot.fences = candidates;
+        manifest.snapshot.next_fence_occurrence_id = next;
+        manifest.snapshot.next_root_id = RecoveryRootId::FIRST;
+        manifest.snapshot.legacy_unreconciled = legacy_roots;
+        manifest.schema = CURRENT_RECOVERY_SCHEMA;
+        validate_migrated_snapshot_fences(&manifest.snapshot)?;
+        validate_export_limits(&manifest.snapshot, RecoveryExportLimits::default())?;
+        Ok(manifest)
     }
 
     pub fn export_manifest_with_limits(
@@ -1673,11 +2193,115 @@ impl MemoryRecoveryStore {
                 actual: self.snapshot.generation,
             });
         }
+        validate_snapshot_fences(&self.snapshot)?;
         validate_export_limits(&self.snapshot, limits)?;
         Ok(RecoveryManifest {
             schema: CURRENT_RECOVERY_SCHEMA,
             snapshot: self.snapshot.clone(),
         })
+    }
+}
+
+fn migrate_legacy_fence_reference(
+    reference: &mut FenceCertificate,
+    candidates: &mut Vec<FenceCertificate>,
+    next: &mut FenceOccurrenceId,
+    schema: RecoverySchemaVersion,
+    roots: &mut Vec<LegacyUnreconciledRoot>,
+) -> Result<(), RecoveryError> {
+    let matches = candidates
+        .iter()
+        .filter(|candidate| reference.same_certificate_facts(candidate))
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => {
+            validate_legacy_fence(reference, reference.topology_epoch)?;
+            let occurrence = *next;
+            *next = next
+                .0
+                .checked_add(1)
+                .map(FenceOccurrenceId)
+                .ok_or(RecoveryError::FenceOccurrenceExhausted)?;
+            let promoted = reference.clone().with_occurrence(occurrence);
+            candidates.push(promoted.clone());
+            roots.push(LegacyUnreconciledRoot {
+                schema,
+                occurrence,
+                candidates: vec![occurrence],
+                certificate: promoted.clone(),
+            });
+            *reference = promoted;
+            Ok(())
+        }
+        [candidate] => {
+            *reference = candidate.clone();
+            Ok(())
+        }
+        matches => {
+            let candidate_ids = matches
+                .iter()
+                .map(FenceCertificate::occurrence_id)
+                .collect::<Vec<_>>();
+            for candidate in matches {
+                roots.push(LegacyUnreconciledRoot {
+                    schema,
+                    occurrence: candidate.occurrence_id(),
+                    candidates: candidate_ids.clone(),
+                    certificate: reference.clone(),
+                });
+            }
+            Ok(())
+        }
+    }
+}
+fn migrate_legacy_integrity_reference(
+    record: &mut IntegrityRecord,
+    candidates: &[FenceCertificate],
+    schema: RecoverySchemaVersion,
+    roots: &mut Vec<LegacyUnreconciledRoot>,
+) -> Result<(), RecoveryError> {
+    let IntegrityState::Valid {
+        durable_fence,
+        fence_occurrence,
+        content_generation,
+        ..
+    } = &mut record.state
+    else {
+        return Ok(());
+    };
+    let matches = candidates
+        .iter()
+        .filter(|candidate| {
+            candidate.contains_store_fence(*durable_fence)
+                && candidate.covers_integrity_extent(record.extent, *content_generation)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [] => Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        )),
+        [candidate] => {
+            *fence_occurrence = candidate.occurrence;
+            Ok(())
+        }
+        matches => {
+            *fence_occurrence = FenceOccurrenceId::UNASSIGNED;
+            let candidate_ids = matches
+                .iter()
+                .map(FenceCertificate::occurrence_id)
+                .collect::<Vec<_>>();
+            for candidate in matches {
+                roots.push(LegacyUnreconciledRoot {
+                    schema,
+                    occurrence: candidate.occurrence,
+                    candidates: candidate_ids.clone(),
+                    certificate: candidate.clone(),
+                });
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1688,13 +2312,181 @@ fn upsert_region(snapshot: &mut RecoverySnapshot, region: RegionId, state: Regio
         .find(|record| record.region == region)
     {
         record.state = state;
+        if !matches!(record.state, RegionState::Clean) {
+            record.clean_generation = None;
+        }
     } else {
         snapshot.dirty_regions.push(DirtyRegionRecord {
             region,
             state,
             last_clean_fence: None,
+            clean_generation: None,
         });
     }
+}
+fn validate_snapshot_fences(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    validate_snapshot_fences_with_mode(snapshot, true)
+}
+
+fn validate_migrated_snapshot_fences(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    validate_snapshot_fences_with_mode(snapshot, false)
+}
+
+fn validate_snapshot_fences_with_mode(
+    snapshot: &RecoverySnapshot,
+    canonical: bool,
+) -> Result<(), RecoveryError> {
+    if snapshot.next_fence_occurrence_id == FenceOccurrenceId::UNASSIGNED {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ));
+    }
+    let mut previous_occurrence = FenceOccurrenceId::UNASSIGNED;
+    for fence in &snapshot.fences {
+        if canonical {
+            validate_persisted_fence(fence, fence.topology_epoch)?;
+        } else {
+            validate_legacy_fence(fence, fence.topology_epoch)?;
+            if fence.occurrence == FenceOccurrenceId::UNASSIGNED {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceMissing,
+                ));
+            }
+        }
+        if fence.occurrence <= previous_occurrence {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceReused,
+            ));
+        }
+        previous_occurrence = fence.occurrence;
+    }
+    if snapshot.next_fence_occurrence_id <= previous_occurrence {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceReused,
+        ));
+    }
+    for root in &snapshot.legacy_unreconciled {
+        if root.schema >= CURRENT_RECOVERY_SCHEMA
+            || root.occurrence == FenceOccurrenceId::UNASSIGNED
+            || root.candidates.is_empty()
+            || !root.candidates.contains(&root.occurrence)
+            || root.candidates.windows(2).any(|pair| pair[0] >= pair[1])
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceAmbiguous,
+            ));
+        }
+        validate_legacy_fence(&root.certificate, root.certificate.topology_epoch)?;
+        for candidate in &root.candidates {
+            let fence = snapshot
+                .fences
+                .iter()
+                .find(|fence| fence.occurrence == *candidate)
+                .ok_or(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceMissing,
+                ))?;
+            if !fence.same_certificate_facts(&root.certificate) {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceAmbiguous,
+                ));
+            }
+        }
+    }
+    if let Some(session) = snapshot.writable_session.as_ref()
+        && let Some(fence) = session.global_fence.as_ref()
+    {
+        validate_snapshot_fence_reference(snapshot, fence)?;
+    }
+    for region in &snapshot.dirty_regions {
+        if matches!(region.state, RegionState::Clean)
+            && let Some(fence) = region.last_clean_fence.as_ref()
+        {
+            validate_snapshot_fence_reference(snapshot, fence)?;
+        }
+    }
+    for capture in &snapshot.coded_captures {
+        if let Some(fence) = capture.clean_closure_fence.as_ref() {
+            validate_snapshot_fence_reference(snapshot, fence)?;
+        }
+        for fence in capture.release_certificates.values() {
+            validate_snapshot_fence_reference(snapshot, fence)?;
+        }
+    }
+    validate_integrity_fence_references(snapshot)?;
+    validate_root_registry(snapshot)?;
+    Ok(())
+}
+
+fn validate_snapshot_fence_reference(
+    snapshot: &RecoverySnapshot,
+    fence: &FenceCertificate,
+) -> Result<(), RecoveryError> {
+    if fence.occurrence == FenceOccurrenceId::UNASSIGNED {
+        if snapshot
+            .legacy_unreconciled
+            .iter()
+            .any(|root| root.certificate.same_certificate_facts(fence))
+        {
+            return Ok(());
+        }
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ));
+    }
+    let stored = snapshot
+        .fences
+        .iter()
+        .find(|candidate| candidate.occurrence == fence.occurrence)
+        .ok_or(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ))?;
+    if !stored.same_certificate_facts(fence) {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    Ok(())
+}
+
+fn validate_integrity_fence_references(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    for record in &snapshot.integrity_records {
+        let IntegrityState::Valid {
+            durable_fence,
+            fence_occurrence,
+            content_generation,
+            ..
+        } = &record.state
+        else {
+            continue;
+        };
+        if *fence_occurrence == FenceOccurrenceId::UNASSIGNED {
+            if snapshot.legacy_unreconciled.iter().any(|root| {
+                root.certificate.contains_store_fence(*durable_fence)
+                    && root
+                        .certificate
+                        .covers_integrity_extent(record.extent, *content_generation)
+            }) {
+                continue;
+            }
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceMissing,
+            ));
+        }
+        let certificate =
+            snapshot
+                .fence(*fence_occurrence)
+                .ok_or(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceMissing,
+                ))?;
+        if !certificate.contains_store_fence(*durable_fence)
+            || !certificate.covers_integrity_extent(record.extent, *content_generation)
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn validate_export_limits(
@@ -1709,6 +2501,16 @@ fn validate_export_limits(
     if snapshot.integrity_records.len() > limits.max_integrity_records {
         return Err(RecoveryError::ExportLimitExceeded(
             RecoveryRecordKind::IntegrityEvidence,
+        ));
+    }
+    if snapshot.roots.len() > limits.max_roots {
+        return Err(RecoveryError::ExportLimitExceeded(
+            RecoveryRecordKind::ClaimRoot,
+        ));
+    }
+    if snapshot.legacy_unreconciled.len() > limits.max_legacy_unreconciled {
+        return Err(RecoveryError::ExportLimitExceeded(
+            RecoveryRecordKind::LegacyUnreconciled,
         ));
     }
     if snapshot
@@ -1816,9 +2618,1133 @@ fn validate_fence(
             TransitionError::FenceEmpty,
         ));
     }
+
+    let mut previous_store_order = None;
+    let mut previous_store_id = None;
+    for fence in &certificate.stores {
+        validate_store_fence(fence, expected_topology_epoch)?;
+        if previous_store_id == Some(fence.store_id) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceDuplicateStore,
+            ));
+        }
+        let order = (
+            fence.store_id,
+            fence.fence_id,
+            fence.topology_epoch,
+            fence.store_incarnation,
+            fence.capability_evidence_id,
+            fence.through,
+        );
+        if previous_store_order.is_some_and(|previous| previous >= order) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceNonCanonical,
+            ));
+        }
+        previous_store_id = Some(fence.store_id);
+        previous_store_order = Some(order);
+    }
+
+    let mut previous_region = None;
+    let mut previous_region_order = None;
+    for (region, generation) in &certificate.captured_region_generations {
+        if previous_region == Some(*region) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceDuplicateRegion,
+            ));
+        }
+        let order = (*region, *generation);
+        if previous_region_order.is_some_and(|previous| previous >= order) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceNonCanonical,
+            ));
+        }
+        previous_region = Some(*region);
+        previous_region_order = Some(order);
+    }
+
+    let mut previous_extent = None;
+    let mut previous_extent_order = None;
+    for (extent, generation) in &certificate.captured_integrity_generations {
+        if previous_extent == Some(*extent) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceDuplicateIntegrity,
+            ));
+        }
+        let order = (*extent, *generation);
+        if previous_extent_order.is_some_and(|previous| previous >= order) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceNonCanonical,
+            ));
+        }
+        previous_extent = Some(*extent);
+        previous_extent_order = Some(order);
+    }
+    Ok(())
+}
+fn validate_legacy_fence(
+    certificate: &FenceCertificate,
+    expected_topology_epoch: TopologyEpoch,
+) -> Result<(), RecoveryError> {
+    if certificate.topology_epoch != expected_topology_epoch {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceTopologyMismatch,
+        ));
+    }
+    if certificate.stores.is_empty() {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceEmpty,
+        ));
+    }
     for fence in &certificate.stores {
         validate_store_fence(fence, expected_topology_epoch)?;
     }
+    Ok(())
+}
+
+fn validate_persisted_fence(
+    certificate: &FenceCertificate,
+    expected_topology_epoch: TopologyEpoch,
+) -> Result<(), RecoveryError> {
+    validate_fence(certificate, expected_topology_epoch)?;
+    if certificate.occurrence == FenceOccurrenceId::UNASSIGNED {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ));
+    }
+    Ok(())
+}
+
+fn append_fence(
+    snapshot: &mut RecoverySnapshot,
+    mut fence: FenceCertificate,
+    expected_topology_epoch: TopologyEpoch,
+) -> Result<FenceCertificate, RecoveryError> {
+    validate_fence(&fence, expected_topology_epoch)?;
+    let next = snapshot.next_fence_occurrence_id;
+    if next == FenceOccurrenceId::UNASSIGNED {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ));
+    }
+    let occurrence = match fence.occurrence {
+        FenceOccurrenceId::UNASSIGNED => next,
+        occurrence if occurrence == next => occurrence,
+        _ => {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceReused,
+            ));
+        }
+    };
+    let next_occurrence = occurrence
+        .0
+        .checked_add(1)
+        .map(FenceOccurrenceId)
+        .ok_or(RecoveryError::FenceOccurrenceExhausted)?;
+    fence.occurrence = occurrence;
+    snapshot.fences.push(fence.clone());
+    snapshot.next_fence_occurrence_id = next_occurrence;
+    Ok(fence)
+}
+fn append_root(
+    snapshot: &mut RecoverySnapshot,
+    certificate: FenceCertificate,
+    fact: RecoveryRootFact,
+) -> Result<(), RecoveryError> {
+    let generation = snapshot
+        .generation
+        .checked_next()
+        .ok_or(RecoveryError::GenerationExhausted)?;
+    append_root_at_generation(snapshot, certificate, fact, generation)
+}
+
+fn append_root_at_generation(
+    snapshot: &mut RecoverySnapshot,
+    certificate: FenceCertificate,
+    fact: RecoveryRootFact,
+    generation: RecoveryGeneration,
+) -> Result<(), RecoveryError> {
+    if certificate.occurrence == FenceOccurrenceId::UNASSIGNED {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceMissing,
+        ));
+    }
+    if !snapshot.fences.iter().any(|fence| {
+        fence.occurrence == certificate.occurrence && fence.same_certificate_facts(&certificate)
+    }) {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    let id = snapshot.next_root_id;
+    if id == RecoveryRootId::UNASSIGNED {
+        return Err(RecoveryError::GenerationExhausted);
+    }
+    snapshot.next_root_id =
+        id.0.checked_add(1)
+            .map(RecoveryRootId)
+            .ok_or(RecoveryError::GenerationExhausted)?;
+    snapshot.roots.push(RecoveryClaimRoot {
+        id,
+        occurrence: certificate.occurrence,
+        topology_epoch: certificate.topology_epoch,
+        generation,
+        certificate,
+        fact,
+    });
+    Ok(())
+}
+
+fn discharge_clean_root(snapshot: &mut RecoverySnapshot, region: RegionId) {
+    snapshot.roots.retain(|root| {
+        !matches!(
+            root.fact,
+            RecoveryRootFact::CleanRegion {
+                region: root_region,
+                ..
+            } if root_region == region
+        )
+    });
+}
+
+fn discharge_integrity_root(snapshot: &mut RecoverySnapshot, extent: IntegrityExtentId) {
+    snapshot.roots.retain(|root| {
+        !matches!(
+            root.fact,
+            RecoveryRootFact::ValidIntegrity {
+                extent: root_extent,
+                ..
+            } if root_extent == extent
+        )
+    });
+}
+
+fn sync_coded_capture_roots(snapshot: &mut RecoverySnapshot) -> Result<(), RecoveryError> {
+    let mut bindings = Vec::new();
+    for capture in &snapshot.coded_captures {
+        if let Some(certificate) = capture
+            .clean_closure_fence
+            .as_ref()
+            .filter(|certificate| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)
+        {
+            bindings.push((
+                certificate.clone(),
+                RecoveryRootFact::CodedCleanClosure {
+                    capture: capture.capture,
+                    phase: capture.phase,
+                },
+            ));
+        }
+        for (operation, certificate) in capture
+            .release_certificates
+            .iter()
+            .filter(|(_, certificate)| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)
+        {
+            bindings.push((
+                certificate.clone(),
+                RecoveryRootFact::CodedCapture {
+                    capture: capture.capture,
+                    operation: *operation,
+                    phase: capture.phase,
+                },
+            ));
+        }
+    }
+    snapshot.roots.retain(|root| {
+        root.kind() != RecoveryRootKind::CodedCapture
+            || bindings.iter().any(|(certificate, fact)| {
+                root.occurrence == certificate.occurrence
+                    && root.fact == *fact
+                    && root.certificate.same_certificate_facts(certificate)
+            })
+    });
+    for (certificate, fact) in bindings {
+        if !root_exists(snapshot, &certificate, &fact) {
+            append_root(snapshot, certificate, fact)?;
+        }
+    }
+    Ok(())
+}
+fn root_exists(
+    snapshot: &RecoverySnapshot,
+    certificate: &FenceCertificate,
+    fact: &RecoveryRootFact,
+) -> bool {
+    snapshot.roots.iter().any(|root| {
+        root.occurrence == certificate.occurrence
+            && root.fact == *fact
+            && root.certificate.same_certificate_facts(certificate)
+    })
+}
+/// dwv:req req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness
+fn validate_derived_root_bindings(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    if !snapshot.legacy_unreconciled.is_empty() {
+        return Ok(());
+    }
+
+    let clean_bindings = snapshot
+        .dirty_regions
+        .iter()
+        .filter_map(|record| {
+            if !matches!(record.state, RegionState::Clean) {
+                return None;
+            }
+            let clean_generation = record.clean_generation?;
+            let certificate = record
+                .last_clean_fence
+                .as_ref()
+                .filter(|certificate| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)?;
+            Some((
+                certificate.clone(),
+                RecoveryRootFact::CleanRegion {
+                    region: record.region,
+                    clean_generation,
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (certificate, fact) in clean_bindings {
+        if !root_exists(snapshot, &certificate, &fact) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+
+    let integrity_bindings = snapshot
+        .integrity_records
+        .iter()
+        .filter_map(|record| {
+            let IntegrityState::Valid {
+                binding,
+                content_generation,
+                fence_occurrence,
+                digest,
+                ..
+            } = &record.state
+            else {
+                return None;
+            };
+            let certificate = snapshot.fence(*fence_occurrence)?.clone();
+            Some((
+                certificate,
+                RecoveryRootFact::ValidIntegrity {
+                    extent: record.extent,
+                    profile: binding.profile,
+                    set_generation: binding.set_generation,
+                    content_generation: *content_generation,
+                    digest: digest.clone(),
+                },
+            ))
+        })
+        .collect::<Vec<_>>();
+    for (certificate, fact) in integrity_bindings {
+        if !root_exists(snapshot, &certificate, &fact) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+
+    if let Some(session) = snapshot.writable_session.as_ref()
+        && session.closed
+        && let Some(close_generation) = session.close_generation
+        && let Some(certificate) = session.global_fence.as_ref()
+        && certificate.occurrence != FenceOccurrenceId::UNASSIGNED
+    {
+        let fact = RecoveryRootFact::WritableSession {
+            session_id: session.session_id,
+            close_generation,
+        };
+        if !root_exists(snapshot, certificate, &fact) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+
+    let mut capture_bindings = Vec::new();
+    for capture in &snapshot.coded_captures {
+        if let Some(certificate) = capture
+            .clean_closure_fence
+            .as_ref()
+            .filter(|certificate| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)
+        {
+            capture_bindings.push((
+                certificate.clone(),
+                RecoveryRootFact::CodedCleanClosure {
+                    capture: capture.capture,
+                    phase: capture.phase,
+                },
+            ));
+        }
+        for (operation, certificate) in capture
+            .release_certificates
+            .iter()
+            .filter(|(_, certificate)| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)
+        {
+            capture_bindings.push((
+                certificate.clone(),
+                RecoveryRootFact::CodedCapture {
+                    capture: capture.capture,
+                    operation: *operation,
+                    phase: capture.phase,
+                },
+            ));
+        }
+    }
+    for (certificate, fact) in capture_bindings {
+        if !root_exists(snapshot, &certificate, &fact) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_root_owner_binding(
+    snapshot: &RecoverySnapshot,
+    root: &RecoveryClaimRoot,
+) -> Result<(), RecoveryError> {
+    let invalid = || {
+        Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ))
+    };
+    match &root.fact {
+        RecoveryRootFact::CleanRegion {
+            region,
+            clean_generation,
+        } => {
+            let valid = snapshot.dirty_regions.iter().any(|record| {
+                record.region == *region
+                    && matches!(record.state, RegionState::Clean)
+                    && record
+                        .clean_generation
+                        .is_none_or(|generation| generation == *clean_generation)
+                    && record.last_clean_fence.as_ref().is_some_and(|fence| {
+                        fence.occurrence == root.occurrence
+                            && fence.same_certificate_facts(&root.certificate)
+                    })
+                    && root.certificate.covers_region(*region, *clean_generation)
+            });
+            if !valid {
+                return invalid();
+            }
+        }
+        RecoveryRootFact::ValidIntegrity {
+            extent,
+            profile,
+            set_generation,
+            content_generation,
+            digest,
+        } => {
+            let valid = snapshot.integrity_records.iter().any(|record| {
+                if record.extent != *extent {
+                    return false;
+                }
+                let IntegrityState::Valid {
+                    binding,
+                    content_generation: record_generation,
+                    durable_fence,
+                    fence_occurrence,
+                    digest: record_digest,
+                    ..
+                } = &record.state
+                else {
+                    return false;
+                };
+                binding.extent.id == *extent
+                    && binding.topology_epoch == root.topology_epoch
+                    && binding.profile == *profile
+                    && binding.set_generation == *set_generation
+                    && *record_generation == *content_generation
+                    && *record_digest == *digest
+                    && *fence_occurrence == root.occurrence
+                    && root.certificate.contains_store_fence(*durable_fence)
+                    && root
+                        .certificate
+                        .covers_integrity_extent(*extent, *content_generation)
+            });
+            if !valid {
+                return invalid();
+            }
+        }
+        RecoveryRootFact::WritableSession {
+            session_id,
+            close_generation,
+        } => {
+            if *close_generation > snapshot.generation {
+                return invalid();
+            }
+            if let Some(session) = snapshot
+                .writable_session
+                .as_ref()
+                .filter(|session| session.session_id == *session_id)
+            {
+                let valid = session.closed
+                    && session.topology_epoch == root.topology_epoch
+                    && session
+                        .close_generation
+                        .is_none_or(|generation| generation == *close_generation)
+                    && session.global_fence.as_ref().is_some_and(|fence| {
+                        fence.occurrence == root.occurrence
+                            && fence.same_certificate_facts(&root.certificate)
+                    });
+                if !valid {
+                    return invalid();
+                }
+            }
+        }
+        RecoveryRootFact::CodedCapture {
+            capture,
+            operation,
+            phase,
+        } => {
+            let valid = snapshot.coded_captures.iter().any(|candidate| {
+                candidate.capture == *capture
+                    && candidate.topology.topology_epoch() == root.topology_epoch
+                    && candidate.phase == *phase
+                    && candidate
+                        .release_certificates
+                        .get(operation)
+                        .is_some_and(|certificate| {
+                            certificate.occurrence == root.occurrence
+                                && certificate.same_certificate_facts(&root.certificate)
+                        })
+            });
+            if !valid {
+                return invalid();
+            }
+        }
+        RecoveryRootFact::CodedCleanClosure { capture, phase } => {
+            let valid = snapshot.coded_captures.iter().any(|candidate| {
+                candidate.capture == *capture
+                    && candidate.topology.topology_epoch() == root.topology_epoch
+                    && candidate.phase == *phase
+                    && candidate.dirty_regions.iter().all(|region| {
+                        root.certificate
+                            .covers_region(*region, candidate.recovery_generation)
+                    })
+                    && candidate.checksum_extents.iter().all(|extent| {
+                        root.certificate
+                            .covers_integrity_extent(*extent, candidate.recovery_generation)
+                    })
+                    && candidate
+                        .clean_closure_fence
+                        .as_ref()
+                        .is_some_and(|certificate| {
+                            certificate.occurrence == root.occurrence
+                                && certificate.same_certificate_facts(&root.certificate)
+                        })
+            });
+            if !valid {
+                return invalid();
+            }
+        }
+        RecoveryRootFact::LegacyUnreconciled { .. } => return invalid(),
+    }
+    Ok(())
+}
+
+fn successor_covers_root(successor: &FenceCertificate, predecessor: &RecoveryClaimRoot) -> bool {
+    if successor.topology_epoch != predecessor.certificate.topology_epoch
+        || successor.fence_domain != predecessor.certificate.fence_domain
+        || !successor.covers_store_bindings(&predecessor.certificate)
+    {
+        return false;
+    }
+    match predecessor.fact {
+        RecoveryRootFact::CleanRegion {
+            region,
+            clean_generation,
+        } => successor.covers_region(region, clean_generation),
+        RecoveryRootFact::ValidIntegrity {
+            extent,
+            content_generation,
+            ..
+        } => successor.covers_integrity_extent(extent, content_generation),
+        RecoveryRootFact::WritableSession { .. }
+        | RecoveryRootFact::CodedCapture { .. }
+        | RecoveryRootFact::CodedCleanClosure { .. }
+        | RecoveryRootFact::LegacyUnreconciled { .. } => {
+            successor.covers_certificate(&predecessor.certificate)
+        }
+    }
+}
+
+fn validate_root_registry(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    if snapshot.next_root_id == RecoveryRootId::UNASSIGNED {
+        return Err(RecoveryError::GenerationExhausted);
+    }
+    let mut previous_id = RecoveryRootId::UNASSIGNED;
+    for root in &snapshot.roots {
+        if root.id <= previous_id
+            || root.generation > snapshot.generation
+            || root.occurrence == FenceOccurrenceId::UNASSIGNED
+            || root.topology_epoch != root.certificate.topology_epoch
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+        let certificate = snapshot
+            .fences
+            .iter()
+            .find(|fence| fence.occurrence == root.occurrence)
+            .ok_or(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceMissing,
+            ))?;
+        if !certificate.same_certificate_facts(&root.certificate) {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+        validate_root_owner_binding(snapshot, root)?;
+        previous_id = root.id;
+    }
+    if snapshot.next_root_id <= previous_id {
+        return Err(RecoveryError::GenerationExhausted);
+    }
+    Ok(())
+}
+
+fn owner_proof_root(proof: &RecoveryOwnerRetirementProof) -> RecoveryRootId {
+    match proof {
+        RecoveryOwnerRetirementProof::CleanRegionRebind { root, .. }
+        | RecoveryOwnerRetirementProof::CleanRegionDischarge { root, .. }
+        | RecoveryOwnerRetirementProof::IntegrityRebind { root, .. }
+        | RecoveryOwnerRetirementProof::IntegrityDischarge { root, .. } => *root,
+    }
+}
+
+fn validate_retirement_owner_state(
+    plan: &RecoveryRetirementPlan,
+    retired: &BTreeSet<FenceOccurrenceId>,
+) -> Result<(), RecoveryError> {
+    let invalid = || {
+        Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ))
+    };
+    let mut clean_regions = Vec::new();
+    let mut integrity_extents = Vec::new();
+    for root in &plan.predecessor.roots {
+        if !retired.contains(&root.occurrence) {
+            continue;
+        }
+        let transition_count = plan
+            .rebinds
+            .iter()
+            .filter(|rebind| rebind.root == root.id)
+            .count()
+            + plan
+                .discharges
+                .iter()
+                .filter(|discharge| discharge.root == root.id)
+                .count();
+        let proofs = plan
+            .owner_proofs
+            .iter()
+            .filter(|proof| owner_proof_root(proof) == root.id)
+            .collect::<Vec<_>>();
+        if transition_count != proofs.len() {
+            return invalid();
+        }
+        if transition_count == 0 {
+            continue;
+        }
+        if transition_count != 1 {
+            return invalid();
+        }
+        let Some(proof) = proofs.first() else {
+            return invalid();
+        };
+        match (proof, &root.fact) {
+            (
+                RecoveryOwnerRetirementProof::CleanRegionRebind {
+                    root: proof_root,
+                    region,
+                    ..
+                }
+                | RecoveryOwnerRetirementProof::CleanRegionDischarge {
+                    root: proof_root,
+                    region,
+                },
+                RecoveryRootFact::CleanRegion {
+                    region: root_region,
+                    ..
+                },
+            ) if *proof_root == root.id && region == root_region => {
+                clean_regions.push(*root_region);
+            }
+            (
+                RecoveryOwnerRetirementProof::IntegrityRebind {
+                    root: proof_root,
+                    extent,
+                    ..
+                }
+                | RecoveryOwnerRetirementProof::IntegrityDischarge {
+                    root: proof_root,
+                    extent,
+                },
+                RecoveryRootFact::ValidIntegrity {
+                    extent: root_extent,
+                    ..
+                },
+            ) if *proof_root == root.id && extent == root_extent => {
+                integrity_extents.push(*root_extent);
+            }
+            _ => return invalid(),
+        }
+    }
+    if plan.owner_proofs.iter().any(|proof| {
+        !plan
+            .predecessor
+            .roots
+            .iter()
+            .any(|root| root.id == owner_proof_root(proof) && retired.contains(&root.occurrence))
+    }) {
+        return invalid();
+    }
+
+    let mut predecessor_state = plan.predecessor.clone();
+    let mut successor_state = plan.successor.clone();
+    predecessor_state.fences.clear();
+    successor_state.fences.clear();
+    predecessor_state.roots.clear();
+    successor_state.roots.clear();
+    predecessor_state
+        .dirty_regions
+        .retain(|record| !clean_regions.contains(&record.region));
+    successor_state
+        .dirty_regions
+        .retain(|record| !clean_regions.contains(&record.region));
+    predecessor_state
+        .integrity_records
+        .retain(|record| !integrity_extents.contains(&record.extent));
+    successor_state
+        .integrity_records
+        .retain(|record| !integrity_extents.contains(&record.extent));
+    successor_state.next_fence_occurrence_id = predecessor_state.next_fence_occurrence_id;
+    if predecessor_state != successor_state {
+        return invalid();
+    }
+    for region in &clean_regions {
+        if plan
+            .predecessor
+            .dirty_regions
+            .iter()
+            .filter(|record| record.region == *region)
+            .count()
+            != 1
+            || plan
+                .successor
+                .dirty_regions
+                .iter()
+                .filter(|record| record.region == *region)
+                .count()
+                != 1
+        {
+            return invalid();
+        }
+    }
+    for extent in &integrity_extents {
+        if plan
+            .predecessor
+            .integrity_records
+            .iter()
+            .filter(|record| record.extent == *extent)
+            .count()
+            != 1
+            || plan
+                .successor
+                .integrity_records
+                .iter()
+                .filter(|record| record.extent == *extent)
+                .count()
+                > 1
+        {
+            return invalid();
+        }
+    }
+
+    for root in &plan.predecessor.roots {
+        if !retired.contains(&root.occurrence) {
+            continue;
+        }
+        let rebind = plan.rebinds.iter().find(|rebind| rebind.root == root.id);
+        let discharge = plan
+            .discharges
+            .iter()
+            .find(|discharge| discharge.root == root.id);
+        let proof = plan
+            .owner_proofs
+            .iter()
+            .find(|proof| owner_proof_root(proof) == root.id);
+        if let Some(rebind) = rebind {
+            let proof_matches = match (&root.fact, proof) {
+                (
+                    RecoveryRootFact::CleanRegion { region, .. },
+                    Some(RecoveryOwnerRetirementProof::CleanRegionRebind {
+                        root: proof_root,
+                        region: proof_region,
+                        successor,
+                    }),
+                ) => {
+                    *proof_root == root.id
+                        && *proof_region == *region
+                        && *successor == rebind.successor
+                }
+                (
+                    RecoveryRootFact::ValidIntegrity { extent, .. },
+                    Some(RecoveryOwnerRetirementProof::IntegrityRebind {
+                        root: proof_root,
+                        extent: proof_extent,
+                        successor,
+                    }),
+                ) => {
+                    *proof_root == root.id
+                        && *proof_extent == *extent
+                        && *successor == rebind.successor
+                }
+                _ => false,
+            };
+            if !proof_matches {
+                return invalid();
+            }
+            let Some(successor_fence) = plan.successor.fence(rebind.successor) else {
+                return invalid();
+            };
+            match &root.fact {
+                RecoveryRootFact::CleanRegion {
+                    region,
+                    clean_generation,
+                } => {
+                    let Some(record) = plan
+                        .successor
+                        .dirty_regions
+                        .iter()
+                        .find(|record| record.region == *region)
+                    else {
+                        return invalid();
+                    };
+                    let Some(clean_fence) = record.last_clean_fence.as_ref() else {
+                        return invalid();
+                    };
+                    if !matches!(record.state, RegionState::Clean)
+                        || record.clean_generation != Some(*clean_generation)
+                        || clean_fence.occurrence != rebind.successor
+                        || !clean_fence.same_certificate_facts(successor_fence)
+                    {
+                        return invalid();
+                    }
+                }
+                RecoveryRootFact::ValidIntegrity {
+                    extent,
+                    profile,
+                    set_generation,
+                    content_generation,
+                    digest,
+                } => {
+                    let Some(record) = plan
+                        .successor
+                        .integrity_records
+                        .iter()
+                        .find(|record| record.extent == *extent)
+                    else {
+                        return invalid();
+                    };
+                    let IntegrityState::Valid {
+                        binding,
+                        content_generation: record_generation,
+                        durable_fence,
+                        fence_occurrence,
+                        digest: record_digest,
+                        ..
+                    } = &record.state
+                    else {
+                        return invalid();
+                    };
+                    if binding.extent.id != *extent
+                        || binding.profile != *profile
+                        || binding.set_generation != *set_generation
+                        || binding.topology_epoch != root.topology_epoch
+                        || *record_generation != *content_generation
+                        || digest.as_slice() != record_digest.as_slice()
+                        || *fence_occurrence != rebind.successor
+                        || !successor_fence.contains_store_fence(*durable_fence)
+                        || !successor_fence.covers_integrity_extent(*extent, *content_generation)
+                    {
+                        return invalid();
+                    }
+                }
+                RecoveryRootFact::WritableSession { .. }
+                | RecoveryRootFact::CodedCapture { .. }
+                | RecoveryRootFact::CodedCleanClosure { .. }
+                | RecoveryRootFact::LegacyUnreconciled { .. } => return invalid(),
+            }
+        } else if let Some(discharge) = discharge {
+            let proof_matches = match (&root.fact, proof) {
+                (
+                    RecoveryRootFact::CleanRegion { region, .. },
+                    Some(RecoveryOwnerRetirementProof::CleanRegionDischarge {
+                        root: proof_root,
+                        region: proof_region,
+                    }),
+                ) => *proof_root == root.id && *proof_region == *region,
+                (
+                    RecoveryRootFact::ValidIntegrity { extent, .. },
+                    Some(RecoveryOwnerRetirementProof::IntegrityDischarge {
+                        root: proof_root,
+                        extent: proof_extent,
+                    }),
+                ) => *proof_root == root.id && *proof_extent == *extent,
+                _ => false,
+            };
+            if !proof_matches || discharge.occurrence != root.occurrence {
+                return invalid();
+            }
+            match &root.fact {
+                RecoveryRootFact::CleanRegion { region, .. } => {
+                    let Some(record) = plan
+                        .successor
+                        .dirty_regions
+                        .iter()
+                        .find(|record| record.region == *region)
+                    else {
+                        return invalid();
+                    };
+                    if !matches!(
+                        record.state,
+                        RegionState::Dirty { .. } | RegionState::Indeterminate
+                    ) {
+                        return invalid();
+                    }
+                }
+                RecoveryRootFact::ValidIntegrity { extent, .. } => {
+                    if let Some(record) = plan
+                        .successor
+                        .integrity_records
+                        .iter()
+                        .find(|record| record.extent == *extent)
+                        && !matches!(
+                            record.state,
+                            IntegrityState::Absent | IntegrityState::Stale { .. }
+                        )
+                    {
+                        return invalid();
+                    }
+                }
+                RecoveryRootFact::WritableSession { .. }
+                | RecoveryRootFact::CodedCapture { .. }
+                | RecoveryRootFact::CodedCleanClosure { .. }
+                | RecoveryRootFact::LegacyUnreconciled { .. } => return invalid(),
+            }
+        }
+    }
+    Ok(())
+}
+/// dwv:req req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor
+fn apply_retirement(
+    snapshot: &mut RecoverySnapshot,
+    plan: RecoveryRetirementPlan,
+    expected_topology_epoch: TopologyEpoch,
+) -> Result<(), RecoveryError> {
+    if plan.predecessor != *snapshot {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if plan.predecessor.topology_epoch != expected_topology_epoch
+        || plan.successor.topology_epoch != expected_topology_epoch
+    {
+        return Err(RecoveryError::TopologyMismatch {
+            expected: expected_topology_epoch,
+            actual: plan.successor.topology_epoch,
+        });
+    }
+    if plan.successor.generation != plan.predecessor.generation
+        || plan.successor.next_fence_occurrence_id < plan.predecessor.next_fence_occurrence_id
+        || plan.successor.next_root_id != plan.predecessor.next_root_id
+    {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    validate_export_limits(&plan.successor, RecoveryExportLimits::default())?;
+    if plan
+        .retired_occurrences
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1])
+    {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceReused,
+        ));
+    }
+    let predecessor_ids = plan
+        .predecessor
+        .fences
+        .iter()
+        .map(FenceCertificate::occurrence_id)
+        .collect::<BTreeSet<_>>();
+    let successor_ids = plan
+        .successor
+        .fences
+        .iter()
+        .map(FenceCertificate::occurrence_id)
+        .collect::<BTreeSet<_>>();
+    let retired = plan
+        .retired_occurrences
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    if successor_ids
+        .difference(&predecessor_ids)
+        .any(|occurrence| {
+            !plan
+                .rebinds
+                .iter()
+                .any(|rebind| rebind.successor == *occurrence)
+        })
+        || plan.successor.roots.iter().any(|root| {
+            !plan
+                .predecessor
+                .roots
+                .iter()
+                .any(|candidate| candidate.id == root.id)
+        })
+        || plan.predecessor.fences.iter().any(|fence| {
+            plan.successor
+                .fence(fence.occurrence)
+                .is_some_and(|successor| !successor.same_certificate_facts(fence))
+        })
+    {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if plan.retired_occurrences.iter().any(|occurrence| {
+        !predecessor_ids.contains(occurrence) || successor_ids.contains(occurrence)
+    }) {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if predecessor_ids
+        .difference(&successor_ids)
+        .any(|occurrence| !retired.contains(occurrence))
+    {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if plan.predecessor.legacy_unreconciled.iter().any(|root| {
+        root.candidates
+            .iter()
+            .any(|candidate| retired.contains(candidate))
+    }) {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if plan.successor.legacy_unreconciled != plan.predecessor.legacy_unreconciled {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    validate_retirement_owner_state(&plan, &retired)?;
+    for root in &plan.predecessor.roots {
+        if retired.contains(&root.occurrence) && root.kind() == RecoveryRootKind::WritableSession {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+        let successor_root = plan
+            .successor
+            .roots
+            .iter()
+            .find(|candidate| candidate.id == root.id);
+        if !retired.contains(&root.occurrence) {
+            let Some(successor_root) = successor_root else {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceBindingMismatch,
+                ));
+            };
+            if successor_root != root {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceBindingMismatch,
+                ));
+            }
+            continue;
+        }
+        let rebind = plan
+            .rebinds
+            .iter()
+            .filter(|rebind| rebind.root == root.id)
+            .collect::<Vec<_>>();
+        let discharge = plan
+            .discharges
+            .iter()
+            .filter(|discharge| discharge.root == root.id)
+            .collect::<Vec<_>>();
+        if rebind.len() + discharge.len() != 1 {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+        if let Some(rebind) = rebind.first() {
+            let Some(successor_root) = successor_root else {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceBindingMismatch,
+                ));
+            };
+            if rebind.predecessor != root.occurrence
+                || rebind.successor <= root.occurrence
+                || successor_root.id != root.id
+                || successor_root.topology_epoch != root.topology_epoch
+                || successor_root.generation > plan.successor.generation
+                || successor_root.occurrence != rebind.successor
+                || successor_root.fact != root.fact
+                || !successor_covers_root(&successor_root.certificate, root)
+            {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceBindingMismatch,
+                ));
+            }
+        } else if let Some(discharge) = discharge.first()
+            && (discharge.occurrence != root.occurrence || successor_root.is_some())
+        {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        }
+    }
+    if plan.rebinds.iter().any(|rebind| {
+        !plan
+            .predecessor
+            .roots
+            .iter()
+            .any(|root| root.id == rebind.root && retired.contains(&root.occurrence))
+    }) || plan.discharges.iter().any(|discharge| {
+        !plan
+            .predecessor
+            .roots
+            .iter()
+            .any(|root| root.id == discharge.root && retired.contains(&root.occurrence))
+    }) {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FenceOccurrenceBindingMismatch,
+        ));
+    }
+    if plan.successor.legacy_unreconciled.is_empty() {
+        validate_snapshot_fences(&plan.successor)?;
+    } else {
+        validate_migrated_snapshot_fences(&plan.successor)?;
+    }
+    validate_export_limits(&plan.successor, RecoveryExportLimits::default())?;
+    *snapshot = plan.successor;
     Ok(())
 }
 
@@ -2015,6 +3941,1289 @@ mod tests {
         )
         .with_integrity_extent(IntegrityExtentId(9), generation)
     }
+    fn store_fence(store_id: u64, fence_id: u64, through: u64) -> StoreFenceRef {
+        StoreFenceRef {
+            fence_id: dwv_store::FenceId(fence_id),
+            store_id: StoreId(store_id),
+            store_incarnation: dwv_store::StoreIncarnationId(0),
+            topology_epoch: TopologyEpoch(1),
+            through: dwv_store::StoreWriteWatermark(through),
+            capability_evidence_id: dwv_store::CapabilityEvidenceId(3),
+        }
+    }
+
+    #[test]
+    fn fence_occurrences_are_monotonic_distinct_and_not_reused() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(1), RecoveryGeneration(1));
+
+        for generation in [RecoveryGeneration(0), RecoveryGeneration(1)] {
+            let mut transaction = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+            transaction.push(RecoveryMutation::RecordDataParityFence {
+                fence: certificate.clone(),
+            });
+            recovery.commit_durable(transaction).unwrap();
+        }
+
+        assert_eq!(
+            recovery
+                .snapshot()
+                .fences
+                .iter()
+                .map(FenceCertificate::occurrence_id)
+                .collect::<Vec<_>>(),
+            vec![FenceOccurrenceId(1), FenceOccurrenceId(2)]
+        );
+        assert_eq!(
+            recovery.snapshot().next_fence_occurrence_id,
+            FenceOccurrenceId(3)
+        );
+
+        let prior = recovery.snapshot().clone();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: certificate.with_occurrence(FenceOccurrenceId(1)),
+        });
+        assert!(matches!(
+            recovery.commit_durable(transaction),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceReused
+            ))
+        ));
+        assert_eq!(recovery.snapshot(), &prior);
+    }
+
+    #[test]
+    fn new_fences_require_canonical_order_and_unique_bindings() {
+        let cases = [
+            FenceCertificate::new(
+                TopologyEpoch(1),
+                FenceDomain(1),
+                vec![store_fence(2, 1, 10), store_fence(1, 1, 10)],
+                Vec::new(),
+            ),
+            FenceCertificate::new(
+                TopologyEpoch(1),
+                FenceDomain(1),
+                vec![store_fence(1, 1, 10), store_fence(1, 1, 11)],
+                Vec::new(),
+            ),
+            FenceCertificate::new(
+                TopologyEpoch(1),
+                FenceDomain(1),
+                vec![store_fence(1, 1, 10), store_fence(1, 2, 10)],
+                Vec::new(),
+            ),
+            FenceCertificate::new(
+                TopologyEpoch(1),
+                FenceDomain(1),
+                vec![store_fence(1, 1, 10)],
+                vec![
+                    (RegionId(2), RecoveryGeneration(1)),
+                    (RegionId(1), RecoveryGeneration(1)),
+                ],
+            ),
+            FenceCertificate::new(
+                TopologyEpoch(1),
+                FenceDomain(1),
+                vec![store_fence(1, 1, 10)],
+                vec![
+                    (RegionId(1), RecoveryGeneration(1)),
+                    (RegionId(1), RecoveryGeneration(2)),
+                ],
+            )
+            .with_integrity_extent(IntegrityExtentId(2), RecoveryGeneration(1))
+            .with_integrity_extent(IntegrityExtentId(1), RecoveryGeneration(1)),
+        ];
+
+        for certificate in cases {
+            let mut recovery = store();
+            let mut transaction =
+                recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+            transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+            assert!(matches!(
+                recovery.commit_durable(transaction),
+                Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceNonCanonical
+                        | TransitionError::FenceDuplicateStore
+                        | TransitionError::FenceDuplicateRegion
+                        | TransitionError::FenceDuplicateIntegrity
+                ))
+            ));
+            assert!(recovery.snapshot().fences.is_empty());
+        }
+    }
+
+    #[test]
+    fn restored_fences_require_persisted_occurrence_identity() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut manifest = recovery.export_manifest(RecoveryGeneration(1)).unwrap();
+        manifest.snapshot.fences[0].occurrence = FenceOccurrenceId::UNASSIGNED;
+        assert!(matches!(
+            MemoryRecoveryStore::from_manifest(manifest),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceMissing
+            ))
+        ));
+    }
+    #[test]
+    fn legacy_migration_assigns_distinct_occurrences_without_coalescing() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(1), RecoveryGeneration(1));
+        for generation in [RecoveryGeneration(0), RecoveryGeneration(1)] {
+            let mut transaction = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+            transaction.push(RecoveryMutation::RecordDataParityFence {
+                fence: certificate.clone(),
+            });
+            recovery.commit_durable(transaction).unwrap();
+        }
+        let mut legacy = recovery.export_manifest(RecoveryGeneration(2)).unwrap();
+        legacy.schema = RecoverySchemaVersion(6);
+        for fence in &mut legacy.snapshot.fences {
+            fence.occurrence = FenceOccurrenceId::UNASSIGNED;
+        }
+        legacy.snapshot.next_fence_occurrence_id = FenceOccurrenceId::UNASSIGNED;
+
+        assert!(matches!(
+            MemoryRecoveryStore::from_manifest(legacy.clone()),
+            Err(RecoveryError::UnsupportedSchemaMigration { .. })
+        ));
+        let migrated = MemoryRecoveryStore::migrate_legacy_manifest(legacy).unwrap();
+        assert_eq!(migrated.schema, CURRENT_RECOVERY_SCHEMA);
+        assert_eq!(
+            migrated
+                .snapshot
+                .fences
+                .iter()
+                .map(FenceCertificate::occurrence_id)
+                .collect::<Vec<_>>(),
+            vec![FenceOccurrenceId(1), FenceOccurrenceId(2)]
+        );
+        assert_eq!(
+            migrated.snapshot.next_fence_occurrence_id,
+            FenceOccurrenceId(3)
+        );
+        MemoryRecoveryStore::from_manifest(migrated).unwrap();
+    }
+
+    #[test]
+    fn legacy_migration_preserves_noncanonical_and_ambiguous_embedded_evidence() {
+        let legacy_fence = FenceCertificate::new(
+            TopologyEpoch(1),
+            FenceDomain(1),
+            vec![store_fence(2, 1, 10), store_fence(1, 1, 10)],
+            vec![(RegionId(1), RecoveryGeneration::ZERO)],
+        );
+        let embedded_only = FenceCertificate::new(
+            TopologyEpoch(1),
+            FenceDomain(1),
+            vec![store_fence(9, 1, 10)],
+            vec![(RegionId(9), RecoveryGeneration::ZERO)],
+        );
+        let mut legacy = store().export_manifest(RecoveryGeneration::ZERO).unwrap();
+        legacy.schema = RecoverySchemaVersion(6);
+        legacy.snapshot.fences = vec![legacy_fence.clone(), legacy_fence.clone()];
+        legacy.snapshot.next_fence_occurrence_id = FenceOccurrenceId::UNASSIGNED;
+        legacy.snapshot.writable_session = Some(WritableSession {
+            session_id: SessionId(7),
+            topology_epoch: TopologyEpoch(1),
+            dirty_envelope_generation: 0,
+            closed: true,
+            close_generation: Some(RecoveryGeneration(1)),
+            global_fence: Some(legacy_fence),
+        });
+        legacy.snapshot.dirty_regions = vec![DirtyRegionRecord {
+            region: RegionId(9),
+            state: RegionState::Clean,
+            last_clean_fence: Some(embedded_only),
+            clean_generation: Some(RecoveryGeneration::ZERO),
+        }];
+
+        let migrated = MemoryRecoveryStore::migrate_legacy_manifest(legacy).unwrap();
+        assert_eq!(migrated.snapshot.fences.len(), 3);
+        assert_eq!(
+            migrated
+                .snapshot
+                .fences
+                .iter()
+                .map(FenceCertificate::occurrence_id)
+                .collect::<Vec<_>>(),
+            vec![
+                FenceOccurrenceId(1),
+                FenceOccurrenceId(2),
+                FenceOccurrenceId(3)
+            ]
+        );
+        assert_eq!(
+            migrated
+                .snapshot
+                .writable_session
+                .as_ref()
+                .and_then(|session| session.global_fence.as_ref())
+                .map(FenceCertificate::occurrence_id),
+            Some(FenceOccurrenceId::UNASSIGNED)
+        );
+        assert_eq!(
+            migrated
+                .snapshot
+                .dirty_regions
+                .first()
+                .and_then(|region| region.last_clean_fence.as_ref())
+                .map(FenceCertificate::occurrence_id),
+            Some(FenceOccurrenceId(3))
+        );
+        assert!(
+            migrated
+                .snapshot
+                .legacy_unreconciled
+                .iter()
+                .any(|root| root.candidates == vec![FenceOccurrenceId(1), FenceOccurrenceId(2)])
+        );
+        let reopened = MemoryRecoveryStore::from_manifest(migrated).unwrap();
+        assert_eq!(reopened.health(), RecoveryStoreHealth::Stale);
+    }
+
+    #[test]
+    fn clean_root_binds_the_latest_exact_occurrence() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(6), RecoveryGeneration(1));
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: certificate.clone(),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(6),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(6),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(2),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        assert_eq!(
+            recovery.snapshot().dirty_regions[0]
+                .last_clean_fence
+                .as_ref()
+                .map(FenceCertificate::occurrence_id),
+            Some(FenceOccurrenceId(2))
+        );
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|root| root.kind() == RecoveryRootKind::CleanRegion)
+                .map(|root| root.occurrence),
+            Some(FenceOccurrenceId(2))
+        );
+    }
+
+    #[test]
+    fn clean_transition_uses_exact_fence_occurrence() {
+        let mut recovery = store();
+        let mut dirty = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        dirty.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(dirty).unwrap();
+
+        let mut first = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        first.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(first).unwrap();
+        let mut second = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        second.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(2), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(second).unwrap();
+
+        let before = recovery.snapshot().clone();
+        let mut wrong = recovery.begin_protocol_txn(before.generation, TopologyEpoch(1));
+        wrong.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(2),
+        });
+        assert!(matches!(
+            recovery.commit_durable(wrong),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceCoverageMissing
+            ))
+        ));
+        assert_eq!(recovery.snapshot(), &before);
+
+        let mut right = recovery.begin_protocol_txn(before.generation, TopologyEpoch(1));
+        right.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(right).unwrap();
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|root| root.kind() == RecoveryRootKind::CleanRegion)
+                .map(|root| root.occurrence),
+            Some(FenceOccurrenceId(1))
+        );
+    }
+
+    #[test]
+    fn owner_transitions_create_and_discharge_qualified_roots() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            fence_occurrence: FenceOccurrenceId(1),
+            through_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .any(|root| root.kind() == RecoveryRootKind::CleanRegion)
+        );
+        let mut invalid_manifest = recovery.export_manifest(RecoveryGeneration(3)).unwrap();
+        invalid_manifest.snapshot.roots[0].fact = RecoveryRootFact::CleanRegion {
+            region: RegionId(99),
+            clean_generation: RecoveryGeneration(1),
+        };
+        assert!(matches!(
+            MemoryRecoveryStore::from_manifest(invalid_manifest),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        ));
+        let mut manifest = recovery.export_manifest(RecoveryGeneration(3)).unwrap();
+        manifest.snapshot.roots.clear();
+        assert!(matches!(
+            MemoryRecoveryStore::from_manifest(manifest),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        ));
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(3),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .all(|root| root.kind() != RecoveryRootKind::CleanRegion)
+        );
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(4), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::BeginWritableSession {
+            session_id: SessionId(7),
+            topology_epoch: TopologyEpoch(1),
+            dirty_envelope_generation: 4,
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(5), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::CloseWritableSession {
+            session_id: SessionId(7),
+            global_fence: fence(RegionId(2), RecoveryGeneration(5)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let session_root = recovery
+            .snapshot()
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::WritableSession)
+            .cloned()
+            .unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(6), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::BeginWritableSession {
+            session_id: SessionId(8),
+            topology_epoch: TopologyEpoch(1),
+            dirty_envelope_generation: 6,
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(recovery.snapshot().roots.contains(&session_root));
+    }
+
+    #[test]
+    fn integrity_install_uses_supplied_occurrence() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(5), RecoveryGeneration(1));
+        for generation in [RecoveryGeneration(0), RecoveryGeneration(1)] {
+            let mut transaction = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+            transaction.push(RecoveryMutation::RecordDataParityFence {
+                fence: certificate.clone(),
+            });
+            recovery.commit_durable(transaction).unwrap();
+        }
+        let extent = ChecksumExtent {
+            id: IntegrityExtentId(9),
+            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+        };
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::InstallIntegrityDigest {
+            record: IntegrityRecord {
+                extent: IntegrityExtentId(9),
+                state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent,
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
+                    content_generation: RecoveryGeneration(1),
+                    durable_fence: recovery.snapshot().fences[0].stores[0],
+                    fence_occurrence: FenceOccurrenceId(2),
+                    digest: vec![1; 32],
+                    verified_at: RecoveryGeneration(1),
+                },
+            },
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|root| root.kind() == RecoveryRootKind::ValidIntegrity)
+                .map(|root| root.occurrence),
+            Some(FenceOccurrenceId(2))
+        );
+    }
+
+    #[test]
+    fn generic_retirement_cannot_discharge_session_root() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::BeginWritableSession {
+            session_id: SessionId(11),
+            topology_epoch: TopologyEpoch(1),
+            dirty_envelope_generation: 0,
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::CloseWritableSession {
+            session_id: SessionId(11),
+            global_fence: fence(RegionId(11), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::WritableSession)
+            .cloned()
+            .unwrap();
+        let mut successor = predecessor.clone();
+        successor
+            .fences
+            .retain(|fence| fence.occurrence != root.occurrence);
+        successor.roots.retain(|candidate| candidate.id != root.id);
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(root.occurrence)
+            .discharge(root.id, root.occurrence);
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RetireFences { plan });
+        assert_eq!(
+            recovery.commit_durable(transaction),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        assert_eq!(*recovery.snapshot(), predecessor);
+    }
+
+    #[test]
+    fn valid_integrity_root_tracks_exact_fence_occurrence() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(4), RecoveryGeneration(1));
+        let store_fence = certificate.stores[0];
+        let extent = ChecksumExtent {
+            id: IntegrityExtentId(9),
+            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+        };
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+        transaction.push(RecoveryMutation::InstallIntegrityDigest {
+            record: IntegrityRecord {
+                extent: IntegrityExtentId(9),
+                state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent,
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
+                    content_generation: RecoveryGeneration(1),
+                    durable_fence: store_fence,
+                    fence_occurrence: FenceOccurrenceId(1),
+                    digest: vec![0; 32],
+                    verified_at: RecoveryGeneration(1),
+                },
+            },
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .any(|root| root.kind() == RecoveryRootKind::ValidIntegrity)
+        );
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkIntegrityStale {
+            extent: IntegrityExtentId(9),
+            stale_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .all(|root| root.kind() != RecoveryRootKind::ValidIntegrity)
+        );
+    }
+
+    #[test]
+    fn retirement_rebinds_roots_and_removes_only_the_exact_predecessor() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            fence_occurrence: FenceOccurrenceId(1),
+            through_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(2)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor.roots.first().cloned().unwrap();
+        let successor_fence = predecessor.fences.last().cloned().unwrap();
+        let mut successor = predecessor.clone();
+        successor
+            .fences
+            .retain(|fence| fence.occurrence != FenceOccurrenceId(1));
+        successor.roots[0].occurrence = successor_fence.occurrence;
+        successor.dirty_regions[0].last_clean_fence = Some(successor_fence.clone());
+        successor.roots[0].certificate = successor_fence.clone();
+        successor.roots[0].generation = successor.generation;
+
+        let mut unauthorized_successor = predecessor.clone();
+        unauthorized_successor
+            .fences
+            .retain(|fence| fence.occurrence != root.occurrence);
+        unauthorized_successor.dirty_regions[0].state = RegionState::Dirty {
+            dirty_since: RecoveryGeneration(2),
+        };
+        unauthorized_successor.roots.clear();
+        let mut unauthorized_plan =
+            RecoveryRetirementPlan::new(predecessor.clone(), unauthorized_successor);
+        unauthorized_plan
+            .retire(root.occurrence)
+            .discharge(root.id, root.occurrence);
+        let mut unauthorized_txn =
+            recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        unauthorized_txn.push(RecoveryMutation::RetireFences {
+            plan: unauthorized_plan,
+        });
+        assert_eq!(
+            recovery.commit_durable(unauthorized_txn),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        assert_eq!(recovery.snapshot(), &predecessor);
+
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(FenceOccurrenceId(1))
+            .rebind(root.id, root.occurrence, successor_fence.occurrence)
+            .authorize_clean_region_rebind(root.id, RegionId(1), successor_fence.occurrence);
+        let mut transaction = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(transaction).unwrap();
+
+        assert!(
+            recovery
+                .snapshot()
+                .fences
+                .iter()
+                .all(|fence| fence.occurrence != FenceOccurrenceId(1))
+        );
+        assert_eq!(
+            recovery.snapshot().roots[0].occurrence,
+            successor_fence.occurrence
+        );
+    }
+
+    #[test]
+    fn retirement_rebinds_multiple_roots_to_independent_successors() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let store_fence = recovery.snapshot().fences[0].stores[0];
+        let extent = ChecksumExtent {
+            id: IntegrityExtentId(9),
+            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+        };
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::InstallIntegrityDigest {
+            record: IntegrityRecord {
+                extent: extent.id,
+                state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent,
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
+                    content_generation: RecoveryGeneration(1),
+                    durable_fence: store_fence,
+                    fence_occurrence: FenceOccurrenceId(1),
+                    digest: vec![7; 32],
+                    verified_at: RecoveryGeneration(1),
+                },
+            },
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let clean_successor = FenceCertificate::new(
+            TopologyEpoch(1),
+            FenceDomain(1),
+            vec![store_fence],
+            vec![(RegionId(1), RecoveryGeneration(2))],
+        )
+        .with_occurrence(FenceOccurrenceId(2));
+        let integrity_successor = FenceCertificate::new(
+            TopologyEpoch(1),
+            FenceDomain(1),
+            vec![store_fence],
+            Vec::new(),
+        )
+        .with_integrity_extent(IntegrityExtentId(9), RecoveryGeneration(1))
+        .with_occurrence(FenceOccurrenceId(3));
+        let clean_root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::CleanRegion)
+            .cloned()
+            .unwrap();
+        let integrity_root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::ValidIntegrity)
+            .cloned()
+            .unwrap();
+        let mut successor = predecessor.clone();
+        successor.fences = vec![clean_successor.clone(), integrity_successor.clone()];
+        successor.next_fence_occurrence_id = FenceOccurrenceId(4);
+        successor.dirty_regions[0].last_clean_fence = Some(clean_successor.clone());
+        successor.integrity_records[0].state = IntegrityState::Valid {
+            binding: ChecksumEvidenceBinding {
+                extent,
+                profile: BLAKE3_256_PROFILE.id,
+                set_generation: ChecksumSetGeneration::INITIAL,
+                topology_epoch: TopologyEpoch(1),
+            },
+            content_generation: RecoveryGeneration(1),
+            durable_fence: store_fence,
+            fence_occurrence: FenceOccurrenceId(3),
+            digest: vec![7; 32],
+            verified_at: RecoveryGeneration(1),
+        };
+        successor.roots = vec![
+            RecoveryClaimRoot {
+                occurrence: clean_successor.occurrence,
+                certificate: clean_successor,
+                ..clean_root
+            },
+            RecoveryClaimRoot {
+                occurrence: integrity_successor.occurrence,
+                certificate: integrity_successor,
+                ..integrity_root
+            },
+        ];
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(FenceOccurrenceId(1))
+            .rebind(clean_root.id, clean_root.occurrence, FenceOccurrenceId(2))
+            .authorize_clean_region_rebind(clean_root.id, RegionId(1), FenceOccurrenceId(2))
+            .rebind(
+                integrity_root.id,
+                integrity_root.occurrence,
+                FenceOccurrenceId(3),
+            )
+            .authorize_integrity_rebind(
+                integrity_root.id,
+                IntegrityExtentId(9),
+                FenceOccurrenceId(3),
+            );
+        let mut retirement = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        retirement.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(retirement).unwrap();
+
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(1)).is_none());
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|root| root.id == clean_root.id)
+                .map(|root| root.occurrence),
+            Some(FenceOccurrenceId(2))
+        );
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|root| root.id == integrity_root.id)
+                .map(|root| root.occurrence),
+            Some(FenceOccurrenceId(3))
+        );
+    }
+    #[test]
+    fn retirement_rejects_non_exact_successors_and_preserves_predecessor() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(2), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::CleanRegion)
+            .cloned()
+            .unwrap();
+        let base = predecessor.fence(root.occurrence).unwrap().clone();
+        let successor_for = |candidate: FenceCertificate, stale_embedded_binding: bool| {
+            let mut successor = predecessor.clone();
+            successor
+                .fences
+                .retain(|fence| fence.occurrence != root.occurrence);
+            successor.fences.push(candidate.clone());
+            successor.next_fence_occurrence_id = FenceOccurrenceId(4);
+            successor
+                .dirty_regions
+                .iter_mut()
+                .find(|record| record.region == RegionId(1))
+                .unwrap()
+                .last_clean_fence = Some(if stale_embedded_binding {
+                base.clone()
+            } else {
+                candidate.clone()
+            });
+            let successor_root = successor
+                .roots
+                .iter_mut()
+                .find(|candidate| candidate.id == root.id)
+                .unwrap();
+            successor_root.occurrence = candidate.occurrence;
+            successor_root.certificate = candidate;
+            successor_root.generation = successor.generation;
+            successor
+        };
+
+        let mut changed_incarnation = base.clone().with_occurrence(FenceOccurrenceId(3));
+        changed_incarnation.stores[0].store_incarnation = dwv_store::StoreIncarnationId(1);
+        let mut changed_domain = base.clone().with_occurrence(FenceOccurrenceId(3));
+        changed_domain.fence_domain = FenceDomain(2);
+        let mut changed_capability = base.clone().with_occurrence(FenceOccurrenceId(3));
+        changed_capability.stores[0].capability_evidence_id = dwv_store::CapabilityEvidenceId(4);
+        let mut changed_topology = base.clone().with_occurrence(FenceOccurrenceId(3));
+        changed_topology.topology_epoch = TopologyEpoch(2);
+        let partial =
+            fence(RegionId(2), RecoveryGeneration(1)).with_occurrence(FenceOccurrenceId(3));
+        let stale_embedded_binding = base.clone().with_occurrence(FenceOccurrenceId(3));
+
+        for (candidate, stale_binding) in [
+            (changed_incarnation, false),
+            (changed_domain, false),
+            (changed_capability, false),
+            (changed_topology, false),
+            (partial, false),
+            (stale_embedded_binding, true),
+        ] {
+            let successor = successor_for(candidate, stale_binding);
+            let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+            plan.retire(root.occurrence)
+                .rebind(root.id, root.occurrence, FenceOccurrenceId(3))
+                .authorize_clean_region_rebind(root.id, RegionId(1), FenceOccurrenceId(3));
+            let mut retirement =
+                recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+            retirement.push(RecoveryMutation::RetireFences { plan });
+            let result = recovery.commit_durable(retirement);
+            assert!(result.is_err(), "{result:?}");
+            assert_eq!(recovery.snapshot(), &predecessor);
+        }
+    }
+
+    #[test]
+    fn equal_fence_occurrences_retire_independently_of_root_bound_copy() {
+        let mut recovery = store();
+        let certificate = fence(RegionId(1), RecoveryGeneration(1));
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: certificate.clone(),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+        recovery.commit_durable(transaction).unwrap();
+
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor.roots.first().cloned().unwrap();
+        let mut successor = predecessor.clone();
+        successor
+            .fences
+            .retain(|fence| fence.occurrence != FenceOccurrenceId(2));
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(FenceOccurrenceId(2));
+        let mut retirement = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        retirement.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(retirement).unwrap();
+
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(1)).is_some());
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(2)).is_none());
+        assert_eq!(
+            recovery
+                .snapshot()
+                .roots
+                .iter()
+                .find(|candidate| candidate.id == root.id)
+                .map(|candidate| candidate.occurrence),
+            Some(FenceOccurrenceId(1))
+        );
+    }
+
+    #[test]
+    fn stale_retirement_proposal_cannot_remove_after_other_successor() {
+        let mut recovery = store();
+        for region in [RegionId(1), RegionId(2)] {
+            let generation = recovery.snapshot().generation;
+            let mut transaction = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+            transaction.push(RecoveryMutation::RecordDataParityFence {
+                fence: fence(region, RecoveryGeneration(1)),
+            });
+            recovery.commit_durable(transaction).unwrap();
+        }
+
+        let predecessor = recovery.snapshot().clone();
+        let mut first_successor = predecessor.clone();
+        first_successor
+            .fences
+            .retain(|fence| fence.occurrence != FenceOccurrenceId(1));
+        let mut first_plan = RecoveryRetirementPlan::new(predecessor.clone(), first_successor);
+        first_plan.retire(FenceOccurrenceId(1));
+
+        let mut stale_successor = predecessor.clone();
+        stale_successor
+            .fences
+            .retain(|fence| fence.occurrence != FenceOccurrenceId(2));
+        let mut stale_plan = RecoveryRetirementPlan::new(predecessor.clone(), stale_successor);
+        stale_plan.retire(FenceOccurrenceId(2));
+
+        let mut first = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        first.push(RecoveryMutation::RetireFences { plan: first_plan });
+        let mut stale = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        stale.push(RecoveryMutation::RetireFences { plan: stale_plan });
+
+        recovery.commit_durable(first).unwrap();
+        assert_eq!(
+            recovery.commit_durable(stale),
+            Err(RecoveryError::GenerationMismatch {
+                expected: predecessor.generation,
+                actual: predecessor.generation.checked_next().unwrap(),
+            })
+        );
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(1)).is_none());
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(2)).is_some());
+    }
+
+    #[test]
+    fn owner_discharge_proofs_remove_clean_and_integrity_roots() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::CleanRegion)
+            .cloned()
+            .unwrap();
+        let mut successor = predecessor.clone();
+        successor.fences.clear();
+        successor.roots.clear();
+        let record = successor
+            .dirty_regions
+            .iter_mut()
+            .find(|record| record.region == RegionId(1))
+            .unwrap();
+        record.state = RegionState::Dirty {
+            dirty_since: RecoveryGeneration(3),
+        };
+        record.clean_generation = None;
+        record.last_clean_fence = None;
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(root.occurrence)
+            .discharge(root.id, root.occurrence)
+            .authorize_clean_region_discharge(root.id, RegionId(1));
+        let mut transaction = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(recovery.snapshot().fences.is_empty());
+        assert!(recovery.snapshot().roots.is_empty());
+
+        let mut recovery = store();
+        let certificate = fence(RegionId(2), RecoveryGeneration(1));
+        let store_fence = certificate.stores[0];
+        let extent = ChecksumExtent {
+            id: IntegrityExtentId(9),
+            target: ChecksumTarget::data(dwv_core::SlotId([1; 16])),
+            range: dwv_core::ByteRange::new(0, 1).unwrap(),
+        };
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+        transaction.push(RecoveryMutation::InstallIntegrityDigest {
+            record: IntegrityRecord {
+                extent: extent.id,
+                state: IntegrityState::Valid {
+                    binding: ChecksumEvidenceBinding {
+                        extent,
+                        profile: BLAKE3_256_PROFILE.id,
+                        set_generation: ChecksumSetGeneration::INITIAL,
+                        topology_epoch: TopologyEpoch(1),
+                    },
+                    content_generation: RecoveryGeneration(1),
+                    durable_fence: store_fence,
+                    fence_occurrence: FenceOccurrenceId(1),
+                    digest: vec![4; 32],
+                    verified_at: RecoveryGeneration(1),
+                },
+            },
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let root = predecessor
+            .roots
+            .iter()
+            .find(|root| root.kind() == RecoveryRootKind::ValidIntegrity)
+            .cloned()
+            .unwrap();
+        let mut successor = predecessor.clone();
+        successor.fences.clear();
+        successor.roots.clear();
+        successor.integrity_records[0].state = IntegrityState::Stale {
+            stale_generation: RecoveryGeneration(2),
+        };
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(root.occurrence)
+            .discharge(root.id, root.occurrence)
+            .authorize_integrity_discharge(root.id, IntegrityExtentId(9));
+        let mut transaction = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(transaction).unwrap();
+        assert!(recovery.snapshot().fences.is_empty());
+        assert!(recovery.snapshot().roots.is_empty());
+    }
+
+    #[test]
+    fn clean_churn_keeps_current_roots_and_fences_bounded() {
+        let mut recovery = store();
+        for _ in 0..64 {
+            let dirty_generation = recovery.snapshot().generation.checked_next().unwrap();
+            let mut dirty =
+                recovery.begin_protocol_txn(recovery.snapshot().generation, TopologyEpoch(1));
+            dirty.push(RecoveryMutation::MarkRegionDirty {
+                region: RegionId(1),
+                mutation_generation: dirty_generation,
+            });
+            recovery.commit_durable(dirty).unwrap();
+
+            let mut append =
+                recovery.begin_protocol_txn(recovery.snapshot().generation, TopologyEpoch(1));
+            append.push(RecoveryMutation::RecordDataParityFence {
+                fence: fence(RegionId(1), dirty_generation),
+            });
+            recovery.commit_durable(append).unwrap();
+            let occurrence = recovery.snapshot().fences.last().unwrap().occurrence;
+
+            let mut clean =
+                recovery.begin_protocol_txn(recovery.snapshot().generation, TopologyEpoch(1));
+            clean.push(RecoveryMutation::MarkRegionClean {
+                region: RegionId(1),
+                through_generation: dirty_generation,
+                fence_occurrence: occurrence,
+            });
+            recovery.commit_durable(clean).unwrap();
+
+            if recovery.snapshot().fences.len() > 1 {
+                let predecessor = recovery.snapshot().clone();
+                let retired = predecessor.fences[0].occurrence;
+                let mut successor = predecessor.clone();
+                successor.fences.remove(0);
+                let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+                plan.retire(retired);
+                let mut retirement =
+                    recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+                retirement.push(RecoveryMutation::RetireFences { plan });
+                recovery.commit_durable(retirement).unwrap();
+            }
+            assert_eq!(recovery.snapshot().fences.len(), 1);
+            assert_eq!(
+                recovery
+                    .snapshot()
+                    .roots
+                    .iter()
+                    .filter(|root| root.kind() == RecoveryRootKind::CleanRegion)
+                    .count(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn unrooted_fence_retirement_stays_bounded_across_churn() {
+        let mut recovery = store();
+        for index in 0..64 {
+            let generation = recovery.snapshot().generation;
+            let mut append = recovery.begin_protocol_txn(generation, TopologyEpoch(1));
+            append.push(RecoveryMutation::RecordDataParityFence {
+                fence: fence(RegionId(index), RecoveryGeneration(index)),
+            });
+            recovery.commit_durable(append).unwrap();
+
+            if recovery.snapshot().fences.len() > 1 {
+                let predecessor = recovery.snapshot().clone();
+                let retired = predecessor.fences[0].occurrence;
+                let mut successor = predecessor.clone();
+                successor.fences.remove(0);
+                let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+                plan.retire(retired);
+                let mut retirement =
+                    recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+                retirement.push(RecoveryMutation::RetireFences { plan });
+                recovery.commit_durable(retirement).unwrap();
+            }
+            assert_eq!(recovery.snapshot().fences.len(), 1);
+        }
+        assert_eq!(
+            recovery.snapshot().next_fence_occurrence_id,
+            FenceOccurrenceId(65)
+        );
+    }
+
+    #[test]
+    fn retirement_preserves_unrelated_root_bound_evidence() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(1),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(2), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(1),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(3), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(2), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+
+        let predecessor = recovery.snapshot().clone();
+        let mut successor = predecessor.clone();
+        successor
+            .fences
+            .retain(|fence| fence.occurrence != FenceOccurrenceId(2));
+        let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        plan.retire(FenceOccurrenceId(2));
+        let mut retirement = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        retirement.push(RecoveryMutation::RetireFences { plan });
+        recovery.commit_durable(retirement).unwrap();
+
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(1)).is_some());
+        assert!(recovery.snapshot().fence(FenceOccurrenceId(2)).is_none());
+        assert_eq!(
+            recovery.snapshot().roots[0].occurrence,
+            FenceOccurrenceId(1)
+        );
+    }
+
+    #[test]
+    fn retirement_bound_rejection_preserves_predecessor() {
+        let mut recovery = store();
+        let mut transaction = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(1), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(transaction).unwrap();
+        let predecessor = recovery.snapshot().clone();
+        let base = predecessor.fences[0].clone();
+        let mut successor = predecessor.clone();
+        for occurrence in 2..=16_385 {
+            successor
+                .fences
+                .push(base.clone().with_occurrence(FenceOccurrenceId(occurrence)));
+        }
+        successor.next_fence_occurrence_id = FenceOccurrenceId(16_386);
+        let plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+        let mut retirement = recovery.begin_protocol_txn(predecessor.generation, TopologyEpoch(1));
+        retirement.push(RecoveryMutation::RetireFences { plan });
+        assert_eq!(
+            recovery.commit_durable(retirement),
+            Err(RecoveryError::ExportLimitExceeded(
+                RecoveryRecordKind::StoreFence
+            ))
+        );
+        assert_eq!(recovery.snapshot(), &predecessor);
+    }
 
     #[test]
     fn generation_checked_commit_is_atomic() {
@@ -2060,6 +5269,7 @@ mod tests {
         clean.push(RecoveryMutation::MarkRegionClean {
             region: RegionId(7),
             through_generation: RecoveryGeneration(2),
+            fence_occurrence: FenceOccurrenceId(1),
         });
         assert!(matches!(
             recovery.commit_durable(clean),
@@ -2095,7 +5305,8 @@ mod tests {
             recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
         recovery_clean.push(RecoveryMutation::MarkRegionClean {
             region: RegionId(7),
-            through_generation: RecoveryGeneration(2),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
         });
         recovery_clean.push(RecoveryMutation::InstallIntegrityDigest {
             record: IntegrityRecord {
@@ -2113,6 +5324,7 @@ mod tests {
                     },
                     content_generation: RecoveryGeneration(1),
                     durable_fence: store_fence,
+                    fence_occurrence: FenceOccurrenceId(1),
                     digest: vec![1, 2, 3],
                     verified_at: RecoveryGeneration(2),
                 },
@@ -2244,6 +5456,7 @@ mod tests {
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
                 RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
             ]
         );
         assert_eq!(
@@ -2256,6 +5469,7 @@ mod tests {
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
                 RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
             ]
         );
         assert_eq!(
@@ -2267,6 +5481,7 @@ mod tests {
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
                 RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
             ]
         );
         assert_eq!(
@@ -2277,6 +5492,7 @@ mod tests {
                 RecoveryMigrationStep::AddChecksumBaselineV4,
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
                 RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
             ]
         );
         assert_eq!(
@@ -2286,13 +5502,17 @@ mod tests {
             vec![
                 RecoveryMigrationStep::AddCodedCleanCaptureV5,
                 RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
             ]
         );
         assert_eq!(
             RecoveryMigrationPlan::plan(RecoverySchemaVersion(5), CURRENT_RECOVERY_SCHEMA)
                 .unwrap()
                 .steps,
-            vec![RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6]
+            vec![
+                RecoveryMigrationStep::AddCodedCaptureReleaseEvidenceV6,
+                RecoveryMigrationStep::AddFenceOccurrenceIdentityV7,
+            ]
         );
         assert!(
             current_recovery_schema()
@@ -2310,11 +5530,11 @@ mod tests {
                 .contains(&RecoveryRecordKind::CodedCleanCapture)
         );
         assert!(matches!(
-            RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), CURRENT_RECOVERY_SCHEMA),
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(8), CURRENT_RECOVERY_SCHEMA),
             Err(RecoveryError::UnsupportedSchemaMigration { .. })
         ));
         assert!(matches!(
-            RecoveryMigrationPlan::plan(RecoverySchemaVersion(7), RecoverySchemaVersion(7)),
+            RecoveryMigrationPlan::plan(RecoverySchemaVersion(8), RecoverySchemaVersion(8)),
             Err(RecoveryError::UnsupportedSchemaMigration { .. })
         ));
 
@@ -2478,6 +5698,7 @@ mod tests {
                     },
                     content_generation: RecoveryGeneration(2),
                     durable_fence: store_fence,
+                    fence_occurrence: FenceOccurrenceId(1),
                     digest: vec![1],
                     verified_at: RecoveryGeneration(2),
                 },

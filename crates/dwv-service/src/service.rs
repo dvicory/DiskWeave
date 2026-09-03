@@ -27,7 +27,7 @@ use dwv_recovery::{
     CodedCaptureId, CodedCaptureMembership, CodedCaptureOwnerFacts, CodedCapturePhase,
     CodedCaptureReconciliationReceipt, CodedCaptureRetentionOwner, CodedGeometryOwner,
     CodedLifecycleAuthority, CodedReopenResolution, ContentGeneration, DIRTY_REGION_BYTES,
-    DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityState,
+    DurableRecoveryCommit, FenceCertificate, FenceOccurrenceId, IntegrityExtentId, IntegrityState,
     RecoveryCleanDecision, RecoveryCleanRefusalPermit, RecoveryCleanRequest,
     RecoveryCommitObservation, RecoveryError, RecoveryGeneration, RecoveryMutation,
     RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId,
@@ -1118,7 +1118,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 "release authorization does not match the coded operation",
             ));
         }
-        let certificate = supplied_certificate.cloned().or_else(|| {
+        let mut certificate = supplied_certificate.cloned().or_else(|| {
             usize::try_from(operation.index)
                 .ok()
                 .and_then(|index| self.write_drivers.get(index))
@@ -1130,10 +1130,41 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             .admission
             .release_permit(operation)
             .map_err(slot_error)?;
-        let current = self
+        let mut current = self
             .recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        if let Some(candidate) = certificate.as_ref() {
+            if candidate.occurrence == FenceOccurrenceId::UNASSIGNED {
+                let mut fence_transaction =
+                    RecoveryTxn::new(current.generation, self.topology.topology_epoch());
+                fence_transaction.push(RecoveryMutation::RecordDataParityFence {
+                    fence: candidate.clone(),
+                });
+                let receipt = self.recovery.commit_durable_receipt(fence_transaction);
+                let receipt = self.finish_coded_persistence(receipt)?;
+                certificate =
+                    Some(receipt.persisted_fences().last().cloned().ok_or_else(|| {
+                        ServiceError::io(
+                            FailureClass::Recovery,
+                            "durable release fence commit did not publish a fence occurrence",
+                        )
+                    })?);
+                current = self
+                    .recovery
+                    .load_assembly_snapshot()
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+                self.checksums.recovery_generation = current.generation;
+            } else if !current
+                .fence(candidate.occurrence_id())
+                .is_some_and(|stored| stored.same_certificate_facts(candidate))
+            {
+                return Err(ServiceError::io(
+                    FailureClass::ReconciliationRequired,
+                    "release certificate does not match the persisted fence occurrence",
+                ));
+            }
+        }
         let prepared = self
             .coded_captures
             .prepare_release(
@@ -2958,6 +2989,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             }
         }
         let aggregate_certificate = FenceCertificate {
+            occurrence: FenceOccurrenceId::UNASSIGNED,
             topology_epoch: self.topology.topology_epoch(),
             fence_domain: driver.request.ordering.fence_domain,
             stores: store_fences.values().copied().collect(),
@@ -3062,15 +3094,27 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     };
                     store_fences.push(fence);
                 }
-                let certificate = driver.checksum_extents.iter().copied().fold(
+                store_fences.sort_unstable_by_key(|fence| {
+                    (
+                        fence.store_id,
+                        fence.fence_id,
+                        fence.topology_epoch,
+                        fence.store_incarnation,
+                        fence.capability_evidence_id,
+                        fence.through,
+                    )
+                });
+                let mut regions = driver.regions.clone();
+                regions.sort_unstable();
+                let mut extents = driver.checksum_extents.clone();
+                extents.sort_unstable();
+                let certificate = extents.into_iter().fold(
                     FenceCertificate::new(
                         self.topology.topology_epoch(),
                         driver.request.ordering.fence_domain,
                         store_fences,
-                        driver
-                            .regions
-                            .iter()
-                            .copied()
+                        regions
+                            .into_iter()
                             .map(|region| (region, write_recovery_record.committed_generation))
                             .collect(),
                     ),
@@ -3173,6 +3217,18 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     transition: prepared.transition(),
                 });
                 let receipt = self.commit_coded_transition(recovery_clean)?;
+                let persisted_fence =
+                    receipt.persisted_fences().last().cloned().ok_or_else(|| {
+                        ServiceError::io(
+                            FailureClass::Recovery,
+                            "durable CLEAN commit did not publish a fence occurrence",
+                        )
+                    })?;
+                driver.certificate = Some(persisted_fence.clone());
+                driver
+                    .machine
+                    .bind_persisted_fence(persisted_fence)
+                    .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
                 let committed = receipt.generation();
                 let confirmation = self.coded_captures.confirm_clean_commit(prepared, &receipt);
                 self.finish_coded_confirmation(confirmation, FailureClass::Recovery)?;

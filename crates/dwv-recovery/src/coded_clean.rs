@@ -2,9 +2,10 @@ use crate::coded_authority::{CodedAdmissionAuthorityId, CodedCaptureEstablishmen
 use crate::{
     ChecksumProfile, ChecksumProfileId, ChecksumSetGeneration, CodedAdmission,
     CodedAuthorityFrontier, CodedClaimRelease, CodedGeometryOwner, DirtyRegionRecord,
-    DurableRecoveryCommit, FenceCertificate, IntegrityExtentId, IntegrityRecord, IntegrityState,
-    InvalidationTarget, RecoveryCleanPermit, RecoveryCleanRefusalPermit, RecoveryError,
-    RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RegionId, RegionState, TransitionError,
+    DurableRecoveryCommit, FenceCertificate, FenceOccurrenceId, IntegrityExtentId, IntegrityRecord,
+    IntegrityState, InvalidationTarget, RecoveryCleanPermit, RecoveryCleanRefusalPermit,
+    RecoveryError, RecoveryGeneration, RecoveryMutation, RecoverySnapshot, RegionId, RegionState,
+    TransitionError,
 };
 use dwv_core::{CodedUnitId, TopologyEpoch, TopologySnapshot};
 use dwv_lifecycle_authority::{
@@ -401,6 +402,8 @@ pub struct CodedCaptureSnapshot {
     pub release_frontiers: BTreeMap<OperationSlotToken, CodedAuthorityFrontier>,
     #[serde(default, with = "operation_map_serde")]
     pub release_certificates: BTreeMap<OperationSlotToken, FenceCertificate>,
+    #[serde(default)]
+    pub clean_closure_fence: Option<FenceCertificate>,
     pub decision: Option<CodedCaptureDecision>,
 }
 impl CodedCaptureSnapshot {
@@ -445,6 +448,11 @@ impl CodedCaptureSnapshot {
             }
             CodedCapturePhase::Refused => self.decision != Some(CodedCaptureDecision::Accepted),
         };
+        let closure_valid = self
+            .clean_closure_fence
+            .as_ref()
+            .is_none_or(|fence| fence.occurrence != FenceOccurrenceId::UNASSIGNED)
+            && (self.phase != CodedCapturePhase::CleanKnown || self.clean_closure_fence.is_some());
         let pending = self
             .membership
             .iter()
@@ -470,14 +478,13 @@ impl CodedCaptureSnapshot {
                 && cut.frontier > self.capture_frontier
         };
         !self.scope.is_empty()
+            && decision_valid
+            && closure_valid
             && self.lower_frontier.recovery_generation == self.recovery_generation
-            && self.capture_frontier.recovery_generation == self.recovery_generation
-            && self.lower_frontier <= self.capture_frontier
             && self.retained_frontier >= self.lower_frontier
             && self
                 .retirement_frontier
                 .is_none_or(|frontier| frontier > self.capture_frontier)
-            && decision_valid
             && pending == self.pending_later_cuts.keys().copied().collect()
             && resolved == self.resolved_later_cuts.keys().copied().collect()
             && self.pending_later_cuts.values().all(cut_valid)
@@ -526,6 +533,7 @@ pub struct CodedMembershipCompactionAuthorization {
 pub(crate) struct CodedCleanClosureEvidence {
     regions: Vec<DirtyRegionRecord>,
     fences: Vec<FenceCertificate>,
+    closure_fence: FenceCertificate,
 }
 
 impl CodedCleanClosureEvidence {
@@ -543,15 +551,32 @@ impl CodedCleanClosureEvidence {
                 .regions
                 .iter()
                 .all(|record| recovery.dirty_regions.contains(record))
-            && self
-                .fences
-                .iter()
-                .all(|fence| recovery.fences.contains(fence))
+            && self.closure_fence.occurrence != FenceOccurrenceId::UNASSIGNED
+            && recovery
+                .fence(self.closure_fence.occurrence_id())
+                .is_some_and(|stored| stored.same_certificate_facts(&self.closure_fence))
+            && capture.dirty_regions.iter().all(|region| {
+                self.closure_fence
+                    .covers_region(*region, capture.recovery_generation)
+            })
+            && capture.checksum_extents.iter().all(|extent| {
+                self.closure_fence
+                    .covers_integrity_extent(*extent, capture.recovery_generation)
+            })
+            && self.fences.iter().all(|fence| {
+                recovery
+                    .fence(fence.occurrence_id())
+                    .is_some_and(|stored| stored.same_certificate_facts(fence))
+            })
             && self.regions.iter().all(|record| {
                 matches!(record.state, RegionState::Clean)
                     && record.last_clean_fence.as_ref().is_some_and(|fence| {
-                        self.fences.contains(fence)
-                            && fence.topology_epoch == recovery.topology_epoch
+                        self.fences.iter().any(|included| {
+                            included.occurrence_id() == fence.occurrence_id()
+                                && included.same_certificate_facts(fence)
+                        }) && recovery
+                            .fence(fence.occurrence_id())
+                            .is_some_and(|stored| stored.same_certificate_facts(fence))
                             && fence.covers_region(record.region, capture.recovery_generation)
                     })
             })
@@ -726,7 +751,12 @@ impl CodedCaptureLifecycleOwner {
             .iter()
             .map(|record| record.last_clean_fence.clone())
             .collect::<Option<Vec<_>>>()?;
-        let evidence = CodedCleanClosureEvidence { regions, fences };
+        let closure_fence = capture.clean_closure_fence.clone()?;
+        let evidence = CodedCleanClosureEvidence {
+            regions,
+            fences,
+            closure_fence,
+        };
         evidence.validates(recovery, capture).then_some(evidence)
     }
 
@@ -1446,6 +1476,7 @@ struct CaptureRecord {
     release_authorized_operations: BTreeSet<OperationSlotToken>,
     release_frontiers: BTreeMap<OperationSlotToken, CodedAuthorityFrontier>,
     release_certificates: BTreeMap<OperationSlotToken, FenceCertificate>,
+    clean_closure_fence: Option<FenceCertificate>,
     retained_frontier: CodedCaptureFrontier,
     retained_history_revalidated: bool,
     retirement_frontier: Option<CodedCaptureFrontier>,
@@ -1476,6 +1507,7 @@ impl CaptureRecord {
             release_authorized_operations: self.release_authorized_operations.clone(),
             release_frontiers: self.release_frontiers.clone(),
             release_certificates: self.release_certificates.clone(),
+            clean_closure_fence: self.clean_closure_fence.clone(),
             retirement_frontier: self.retirement_frontier,
             decision: self.decision,
         }
@@ -1746,7 +1778,6 @@ impl CodedCaptureCoordinator {
         record.scope_complete_data = snapshot.scope_complete;
         record.scope_validated_data = snapshot.scope_validated;
         record.lower_frontier_covered_data = snapshot.lower_frontier_covered;
-        record.owner_revalidated = false;
         record.membership = snapshot.membership;
         record.pending_later_cuts = snapshot.pending_later_cuts;
         record.resolved_later_cuts = snapshot.resolved_later_cuts;
@@ -1755,6 +1786,7 @@ impl CodedCaptureCoordinator {
         record.retained_history_revalidated = false;
         record.release_frontiers = snapshot.release_frontiers;
         record.release_certificates = snapshot.release_certificates;
+        record.clean_closure_fence = snapshot.clean_closure_fence;
         record.retirement_frontier = snapshot.retirement_frontier;
         record.decision = snapshot.decision;
         Ok(())
@@ -2034,6 +2066,7 @@ impl CodedCaptureCoordinator {
                 release_authorized_operations: BTreeSet::new(),
                 release_frontiers: BTreeMap::new(),
                 release_certificates: BTreeMap::new(),
+                clean_closure_fence: None,
                 retained_frontier,
                 retained_history_revalidated: true,
                 retirement_frontier: None,
@@ -2488,8 +2521,14 @@ impl CodedCaptureCoordinator {
         {
             return Err(CodedCaptureError::DurableReceiptMismatch(prepared.capture));
         }
-        self.captures
-            .insert(prepared.capture, prepared.proposed_record);
+        let closure_fence = receipt
+            .persisted_fences()
+            .last()
+            .cloned()
+            .ok_or(CodedCaptureError::DurableReceiptMismatch(prepared.capture))?;
+        let mut proposed_record = prepared.proposed_record;
+        proposed_record.clean_closure_fence = Some(closure_fence);
+        self.captures.insert(prepared.capture, proposed_record);
         Ok(())
     }
 
@@ -2855,6 +2894,12 @@ impl CodedCaptureCoordinator {
             clean_closure: CodedCleanClosureEvidence {
                 regions: Vec::new(),
                 fences: Vec::new(),
+                closure_fence: FenceCertificate::new(
+                    TopologyEpoch(0),
+                    dwv_store::FenceDomain(0),
+                    Vec::new(),
+                    Vec::new(),
+                ),
             },
         })
     }
@@ -3841,6 +3886,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: stale_compaction.transition(),
             }],
+            persisted_fences: Vec::new(),
         };
         assert!(
             captures
@@ -3863,6 +3909,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: compaction.transition(),
             }],
+            persisted_fences: Vec::new(),
         };
         captures
             .confirm_membership_compaction(compaction, &compaction_receipt)
@@ -3892,6 +3939,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: cleanup.transition(),
             }],
+            persisted_fences: Vec::new(),
         };
         captures
             .confirm_refused_cleanup(cleanup, &cleanup_receipt)
@@ -4022,6 +4070,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: substituted_snapshot,
             }],
+            persisted_fences: Vec::new(),
         };
         assert_eq!(
             owner.confirm_later_cut(prepared, &substituted_receipt),
@@ -4050,6 +4099,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: wrong_transition,
             }],
+            persisted_fences: Vec::new(),
         };
         assert_eq!(
             owner.confirm_later_cut(prepared, &wrong_transition_receipt),
@@ -4130,6 +4180,7 @@ mod tests {
             mutations: vec![crate::RecoveryMutation::ApplyCodedTransition {
                 transition: substituted,
             }],
+            persisted_fences: Vec::new(),
         };
         assert_eq!(
             owner.confirm_clean_commit(prepared, &substituted_receipt),
@@ -4219,13 +4270,15 @@ mod tests {
             .observe_clean_commit(capture, CodedCleanCommitObservation::Durable)
             .unwrap();
 
-        let fence = fence_certificate();
+        let fence = fence_certificate().with_occurrence(FenceOccurrenceId::FIRST);
+        captures.record_mut(capture).unwrap().clean_closure_fence = Some(fence.clone());
         let mut store = MemoryRecoveryStore::new(TopologyEpoch(1));
         store.snapshot.coded_captures = captures.snapshots();
         store.snapshot.dirty_regions = vec![DirtyRegionRecord {
             region: RegionId(0),
             state: RegionState::Clean,
             last_clean_fence: Some(fence.clone()),
+            clean_generation: Some(RecoveryGeneration::ZERO),
         }];
         store.snapshot.fences = vec![fence];
         let authorization = match captures
@@ -4441,6 +4494,7 @@ mod tests {
                 dirty_since: RecoveryGeneration::ZERO,
             },
             last_clean_fence: None,
+            clean_generation: None,
         }];
         store.snapshot.integrity_records = vec![IntegrityRecord {
             extent: IntegrityExtentId(0),
@@ -4493,6 +4547,7 @@ mod tests {
             region: RegionId(0),
             state: RegionState::Clean,
             last_clean_fence: None,
+            clean_generation: None,
         }];
         replay_store.snapshot.integrity_records = vec![IntegrityRecord {
             extent: IntegrityExtentId(0),

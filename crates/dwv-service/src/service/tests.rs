@@ -3097,8 +3097,10 @@ fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
             integrity_records: Vec::new(),
             checksum_baseline: Some(baseline),
             fences: Vec::new(),
-            coded_captures: Vec::new(),
-            next_coded_capture_id: 0,
+            roots: Vec::new(),
+            next_root_id: dwv_recovery::RecoveryRootId::FIRST,
+            legacy_unreconciled: Vec::new(),
+            next_fence_occurrence_id: dwv_recovery::FenceOccurrenceId::FIRST,
             maintenance_checkpoints: Vec::new(),
             metadata_loss_audit: Some(dwv_recovery::MetadataLossAudit {
                 matrix_version: dwv_recovery::METADATA_LOSS_MATRIX_VERSION,
@@ -3112,6 +3114,8 @@ fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
                 topology_epoch: epoch,
             }),
             rebuilds: Vec::new(),
+            coded_captures: Vec::new(),
+            next_coded_capture_id: 0,
         },
     };
     assert!(matches!(
@@ -3191,16 +3195,50 @@ fn mandatory_recovery_baseline_blocks_service_until_exactly_complete() {
                     },
                     content_generation: RecoveryGeneration::ZERO,
                     durable_fence: fence,
+                    fence_occurrence: dwv_recovery::FenceOccurrenceId::FIRST,
                     digest: vec![0; 32],
                     verified_at: RecoveryGeneration(1),
                 },
             });
     }
-    let mut certificate = FenceCertificate::new(epoch, FenceDomain(1), store_fences, Vec::new());
-    for extent in extents {
+    let mut certificate = FenceCertificate::new(epoch, FenceDomain(1), store_fences, Vec::new())
+        .with_occurrence(dwv_recovery::FenceOccurrenceId::FIRST);
+    for extent in &extents {
         certificate = certificate.with_integrity_extent(extent.id, RecoveryGeneration::ZERO);
     }
     manifest.snapshot.fences.push(certificate);
+    manifest.snapshot.next_fence_occurrence_id = dwv_recovery::FenceOccurrenceId(2);
+    for (index, extent) in extents.iter().enumerate() {
+        manifest
+            .snapshot
+            .roots
+            .push(dwv_recovery::RecoveryClaimRoot {
+                id: dwv_recovery::RecoveryRootId((index as u64) + 1),
+                occurrence: dwv_recovery::FenceOccurrenceId::FIRST,
+                certificate: manifest.snapshot.fences[0].clone(),
+                topology_epoch: epoch,
+                generation: RecoveryGeneration(1),
+                fact: dwv_recovery::RecoveryRootFact::ValidIntegrity {
+                    extent: extent.id,
+                    profile: manifest
+                        .snapshot
+                        .checksum_baseline
+                        .as_ref()
+                        .unwrap()
+                        .profile
+                        .id,
+                    set_generation: manifest
+                        .snapshot
+                        .checksum_baseline
+                        .as_ref()
+                        .unwrap()
+                        .set_generation,
+                    content_generation: RecoveryGeneration::ZERO,
+                    digest: vec![0; 32],
+                },
+            });
+    }
+    manifest.snapshot.next_root_id = dwv_recovery::RecoveryRootId((extents.len() as u64) + 1);
     assert_eq!(
         assess_checksum_baseline(&manifest.snapshot),
         ChecksumBaselineStatus::Complete { total: 3 }
@@ -5093,3 +5131,5 @@ fn publication_identity_binds_the_admitted_member_observations() {
 mod coded_range_clean_connect;
 #[path = "tests/lifecycle_connect.rs"]
 mod lifecycle_connect;
+#[path = "tests/persistence_evidence_retirement_connect.rs"]
+mod persistence_evidence_retirement_connect;

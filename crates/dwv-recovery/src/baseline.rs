@@ -114,6 +114,7 @@ pub fn assess_checksum_baseline(snapshot: &RecoverySnapshot) -> ChecksumBaseline
             binding,
             content_generation,
             durable_fence,
+            fence_occurrence,
             digest,
             verified_at,
         } = &record.state
@@ -135,10 +136,12 @@ pub fn assess_checksum_baseline(snapshot: &RecoverySnapshot) -> ChecksumBaseline
             || durable_fence.topology_epoch != baseline.topology_epoch
             || digest.len() != usize::from(baseline.profile.digest_size)
             || target_store(topology, extent.target) != Some(durable_fence.store_id)
-            || !snapshot.fences.iter().any(|certificate| {
-                certificate.contains_store_fence(*durable_fence)
-                    && certificate.covers_integrity_extent(extent.id, *content_generation)
-            })
+            || !snapshot
+                .fence(*fence_occurrence)
+                .is_some_and(|certificate| {
+                    certificate.contains_store_fence(*durable_fence)
+                        && certificate.covers_integrity_extent(extent.id, *content_generation)
+                })
         {
             return ChecksumBaselineStatus::Invalid(
                 ChecksumBaselineInvalidReason::InvalidCurrentEvidence,

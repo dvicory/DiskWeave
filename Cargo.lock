@@ -714,6 +714,7 @@ dependencies = [
  "dwv-core",
  "dwv-recovery",
  "dwv-store",
+ "serde",
  "serde_json",
 ]
 

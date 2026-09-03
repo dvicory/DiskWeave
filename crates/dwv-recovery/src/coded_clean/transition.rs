@@ -300,7 +300,7 @@ impl CodedCaptureTransition {
                 }
             }
             CodedCaptureTransitionKind::Clean {
-                update,
+                mut update,
                 fence,
                 dirty_regions,
                 checksum_extents,
@@ -325,11 +325,28 @@ impl CodedCaptureTransition {
                         TransitionError::CodedSemanticTransitionIncomplete,
                     ));
                 }
+                let source_fence = fence.clone();
                 crate::MemoryRecoveryStore::apply_mutation(
                     snapshot,
                     RecoveryMutation::RecordDataParityFence { fence },
                     expected_topology_epoch,
                 )?;
+                let persisted_fence =
+                    snapshot
+                        .fences
+                        .last()
+                        .cloned()
+                        .ok_or(RecoveryError::InvalidTransition(
+                            TransitionError::FenceOccurrenceMissing,
+                        ))?;
+                update.proposed.clean_closure_fence = Some(persisted_fence.clone());
+                for recorded in update.proposed.release_certificates.values_mut() {
+                    if recorded.occurrence_id() == FenceOccurrenceId::UNASSIGNED
+                        && recorded.same_certificate_facts(&source_fence)
+                    {
+                        *recorded = persisted_fence.clone();
+                    }
+                }
                 for region in dirty_regions {
                     crate::MemoryRecoveryStore::apply_mutation(
                         snapshot,
@@ -344,6 +361,7 @@ impl CodedCaptureTransition {
                         RecoveryMutation::MarkRegionClean {
                             region,
                             through_generation: snapshot.generation,
+                            fence_occurrence: persisted_fence.occurrence_id(),
                         },
                         expected_topology_epoch,
                     )?;

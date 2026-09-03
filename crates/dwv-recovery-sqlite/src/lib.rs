@@ -8,10 +8,11 @@
 //! power-loss behavior.
 
 use dwv_recovery::{
-    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, RecoveryCommitObservation, RecoveryDisposition,
-    RecoveryError, RecoveryFormatLayer, RecoveryGeneration, RecoveryInspection, RecoveryManifest,
-    RecoveryMigrationPlan, RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore,
-    RecoveryStoreHealth, RecoveryTxn, TopologySnapshot,
+    CURRENT_RECOVERY_SCHEMA, MemoryRecoveryStore, RecoveryCommitIntentId,
+    RecoveryCommitObservation, RecoveryDisposition, RecoveryError, RecoveryFormatLayer,
+    RecoveryGeneration, RecoveryInspection, RecoveryManifest, RecoveryMigrationPlan,
+    RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn,
+    TopologySnapshot,
 };
 use std::fmt;
 use std::fs::{File, OpenOptions};
@@ -216,6 +217,7 @@ pub enum SqlitePrototypeError {
     MissingCompleteManifest,
     ExistingTarget,
     UnsupportedStorageSchema(u64),
+    UnsupportedSemanticSchema(u64),
     GenerationConflict { expected: RecoveryGeneration },
     ManifestTooLarge { actual: usize, maximum: usize },
     ManifestIntegrity,
@@ -240,6 +242,9 @@ impl fmt::Display for SqlitePrototypeError {
             }
             Self::UnsupportedStorageSchema(version) => {
                 write!(formatter, "unsupported SQLite recovery schema {version}")
+            }
+            Self::UnsupportedSemanticSchema(version) => {
+                write!(formatter, "unsupported semantic recovery schema {version}")
             }
             Self::GenerationConflict { expected } => {
                 write!(formatter, "recovery generation conflict at {expected:?}")
@@ -352,6 +357,13 @@ impl SqlitePrototype {
                 self.storage_schema_version()?,
             ));
         }
+        match self.semantic_schema_version_with(false) {
+            Ok(schema) if schema != u64::from(CURRENT_RECOVERY_SCHEMA.0) => {
+                return Err(SqlitePrototypeError::UnsupportedSemanticSchema(schema));
+            }
+            Ok(_) | Err(SqlitePrototypeError::MissingState) => {}
+            Err(error) => return Err(error),
+        }
         let payload = semantic_payload(manifest);
         let manifest_json = serialize_manifest(manifest)?;
         let manifest_digest = blake3::hash(manifest_json.as_bytes()).to_hex();
@@ -374,16 +386,34 @@ impl SqlitePrototype {
         expected: RecoveryGeneration,
         manifest: &RecoveryManifest,
     ) -> Result<(), SqlitePrototypeError> {
+        self.write_manifest_if_generation_with_schema(expected, manifest, false)
+    }
+    fn write_manifest_if_generation_with_schema(
+        &self,
+        expected: RecoveryGeneration,
+        manifest: &RecoveryManifest,
+        allow_legacy_schema: bool,
+    ) -> Result<(), SqlitePrototypeError> {
         if self.storage_schema_version()? != CURRENT_RECOVERY_SQLITE_SCHEMA {
             return Err(SqlitePrototypeError::UnsupportedStorageSchema(
                 self.storage_schema_version()?,
             ));
         }
+        match self.semantic_schema_version_with(false) {
+            Ok(schema)
+                if schema != u64::from(CURRENT_RECOVERY_SCHEMA.0)
+                    && !(allow_legacy_schema && schema < u64::from(CURRENT_RECOVERY_SCHEMA.0)) =>
+            {
+                return Err(SqlitePrototypeError::UnsupportedSemanticSchema(schema));
+            }
+            Ok(_) | Err(SqlitePrototypeError::MissingState) => {}
+            Err(error) => return Err(error),
+        }
         let next_generation = expected
             .0
             .checked_add(1)
             .ok_or(SqlitePrototypeError::ManifestIntegrity)?;
-        if manifest.schema != dwv_recovery::CURRENT_RECOVERY_SCHEMA
+        if manifest.schema != CURRENT_RECOVERY_SCHEMA
             || manifest.snapshot.generation.0 != next_generation
         {
             return Err(SqlitePrototypeError::ManifestIntegrity);
@@ -411,10 +441,10 @@ impl SqlitePrototype {
         self.load_manifest_with(false)
     }
 
-    fn load_manifest_with(
+    fn load_raw_manifest_with(
         &self,
         read_only: bool,
-    ) -> Result<RecoveryManifest, SqlitePrototypeError> {
+    ) -> Result<(u64, u64, u64, Vec<u8>), SqlitePrototypeError> {
         if !self.integrity_check_with(read_only)? {
             return Err(SqlitePrototypeError::ManifestIntegrity);
         }
@@ -476,6 +506,18 @@ impl SqlitePrototype {
         if actual_digest.as_str() != expected_digest {
             return Err(SqlitePrototypeError::ManifestIntegrity);
         }
+        Ok((schema, generation, topology_epoch, manifest_bytes))
+    }
+
+    fn load_manifest_with(
+        &self,
+        read_only: bool,
+    ) -> Result<RecoveryManifest, SqlitePrototypeError> {
+        let (schema, generation, topology_epoch, manifest_bytes) =
+            self.load_raw_manifest_with(read_only)?;
+        if schema != u64::from(CURRENT_RECOVERY_SCHEMA.0) {
+            return Err(SqlitePrototypeError::UnsupportedSemanticSchema(schema));
+        }
         let manifest: RecoveryManifest = serde_json::from_slice(&manifest_bytes)
             .map_err(|error| SqlitePrototypeError::InvalidOutput(error.to_string()))?;
         if u64::from(manifest.schema.0) != schema
@@ -487,14 +529,35 @@ impl SqlitePrototype {
         validate_manifest_topologies(&manifest)?;
         let validated = MemoryRecoveryStore::from_manifest(manifest)
             .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?;
-        validated
-            .export_manifest(
-                validated
-                    .load_assembly_snapshot()
-                    .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?
-                    .generation,
-            )
-            .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))
+        Ok(RecoveryManifest {
+            schema: CURRENT_RECOVERY_SCHEMA,
+            snapshot: validated.snapshot().clone(),
+        })
+    }
+    fn load_legacy_manifest_with(
+        &self,
+        read_only: bool,
+    ) -> Result<(RecoverySchemaVersion, RecoveryManifest), SqlitePrototypeError> {
+        let (schema, generation, topology_epoch, manifest_bytes) =
+            self.load_raw_manifest_with(read_only)?;
+        if schema >= u64::from(CURRENT_RECOVERY_SCHEMA.0) {
+            return Err(SqlitePrototypeError::UnsupportedSemanticSchema(schema));
+        }
+        let (legacy_schema, migrated) = migrate_legacy_manifest_json(&manifest_bytes)?;
+        if u64::from(legacy_schema.0) != schema
+            || migrated.snapshot.generation.0 != generation
+            || migrated.snapshot.topology_epoch.0 != topology_epoch
+        {
+            return Err(SqlitePrototypeError::ManifestIntegrity);
+        }
+        validate_manifest_topologies(&migrated)?;
+        let validated = MemoryRecoveryStore::from_manifest(migrated)
+            .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?;
+        let manifest = RecoveryManifest {
+            schema: CURRENT_RECOVERY_SCHEMA,
+            snapshot: validated.snapshot().clone(),
+        };
+        Ok((legacy_schema, manifest))
     }
 
     /// Returns the adapter's physical SQLite schema version. This is distinct
@@ -524,7 +587,12 @@ impl SqlitePrototype {
             }
             result => result?,
         };
-        parse_u64(output.lines().next(), "schema_version")
+        output
+            .lines()
+            .next()
+            .filter(|line| !line.is_empty())
+            .ok_or(SqlitePrototypeError::MissingState)
+            .and_then(|line| parse_u64(Some(line), "schema_version"))
     }
 
     pub fn export_header(&self) -> Result<SemanticHeader, SqlitePrototypeError> {
@@ -683,6 +751,7 @@ pub struct SqliteRecoveryStore {
 #[cfg(test)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum SqliteCommitFailurePoint {
+    BeforeCommitIntentRename,
     AfterCommitIntent,
     AfterManifestWrite,
 }
@@ -729,6 +798,7 @@ impl SqliteRecoveryStore {
             }),
             Err(error) => {
                 let _ = std::fs::remove_file(&database_path);
+                let _ = File::unlock(&lock);
                 Err(error)
             }
         }
@@ -761,7 +831,74 @@ impl SqliteRecoveryStore {
                 #[cfg(test)]
                 failure_point: None,
             }),
-            Err(error) => Err(error),
+            Err(error) => {
+                let _ = File::unlock(&lock);
+                Err(error)
+            }
+        }
+    }
+
+    /// Atomically migrates one older semantic manifest to the current
+    /// recovery schema. The legacy predecessor remains in the commit intent
+    /// as its explicitly migrated semantic image until the successor is
+    /// durably published.
+    pub fn migrate_legacy(
+        database_path: impl Into<PathBuf>,
+    ) -> Result<Self, SqliteRecoveryStoreError> {
+        let database_path = database_path.into();
+        let (_lock_path, lock) = acquire_lock(&database_path)?;
+        let result = (|| {
+            if !database_path.is_file() {
+                return Err(SqliteRecoveryStoreError::MissingTarget);
+            }
+            let prototype = SqlitePrototype::new(&database_path);
+            reconcile_commit_intent_before_mutation(&prototype)?;
+            prototype
+                .initialize()
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            let (_legacy_schema, prior) = prototype
+                .load_legacy_manifest_with(true)
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            let next_generation = prior.snapshot.generation.checked_next().ok_or_else(|| {
+                SqliteRecoveryStoreError::Semantic(
+                    "legacy migration cannot advance recovery generation".to_owned(),
+                )
+            })?;
+            let mut proposed = prior.clone();
+            proposed.snapshot.generation = next_generation;
+            let intent = CommitIntent {
+                intent: RecoveryCommitIntentId(next_generation.0),
+                prior,
+                proposed: proposed.clone(),
+            };
+            write_commit_intent(&database_path, &intent, false)?;
+            prototype
+                .write_manifest_if_generation_with_schema(
+                    intent.prior.snapshot.generation,
+                    &proposed,
+                    true,
+                )
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            remove_commit_intent(&database_path)?;
+            let persisted = prototype
+                .load_manifest()
+                .map_err(SqliteRecoveryStoreError::Prototype)?;
+            let memory = MemoryRecoveryStore::from_manifest(persisted)
+                .map_err(|error| SqliteRecoveryStoreError::Semantic(error.to_string()))?;
+            Ok((prototype, memory))
+        })();
+        match result {
+            Ok((prototype, memory)) => Ok(Self {
+                prototype,
+                memory,
+                _lock: lock,
+                #[cfg(test)]
+                failure_point: None,
+            }),
+            Err(error) => {
+                let _ = File::unlock(&lock);
+                Err(error)
+            }
         }
     }
 
@@ -771,6 +908,11 @@ impl SqliteRecoveryStore {
     /// dwv:req req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout
     pub fn inspect(database_path: impl Into<PathBuf>) -> RecoveryInspection {
         let database_path = database_path.into();
+        if commit_intent_path(&database_path).exists()
+            || commit_intent_temp_path(&database_path).exists()
+        {
+            return RecoveryInspection::ReconciliationRequired;
+        }
         if !database_path.exists() {
             return RecoveryInspection::Absent;
         }
@@ -795,9 +937,7 @@ impl SqliteRecoveryStore {
                 semantic_version: None,
             };
         }
-        if commit_intent_path(&database_path).exists() {
-            return RecoveryInspection::ReconciliationRequired;
-        }
+
         let prototype = SqlitePrototype::new(database_path);
         let storage_schema = match prototype.storage_schema_version_with(true) {
             Ok(version) => version,
@@ -863,6 +1003,9 @@ impl SqliteRecoveryStore {
             };
         }
         match prototype.load_manifest_with(true) {
+            Ok(manifest) if !manifest.snapshot.legacy_unreconciled.is_empty() => {
+                RecoveryInspection::ReconciliationRequired
+            }
             Ok(manifest) => RecoveryInspection::Supported(Box::new(manifest)),
             Err(SqlitePrototypeError::SqliteUnavailable) => RecoveryInspection::Unsupported {
                 layer: RecoveryFormatLayer::Storage,
@@ -899,58 +1042,37 @@ impl SqliteRecoveryStore {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// Adapter-owned unresolved state; both exact candidate manifests remain
+/// available until reopen classifies the acknowledgement.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 struct CommitIntent {
-    prior_generation: RecoveryGeneration,
-    prior_digest: String,
-    proposed_generation: RecoveryGeneration,
-    proposed_digest: String,
+    intent: RecoveryCommitIntentId,
+    prior: RecoveryManifest,
+    proposed: RecoveryManifest,
 }
 
 impl CommitIntent {
-    fn encode(&self) -> String {
-        format!(
-            "{}\n{}\n{}\n{}\n",
-            self.prior_generation.0,
-            self.prior_digest,
-            self.proposed_generation.0,
-            self.proposed_digest
-        )
+    fn encode(&self) -> Result<Vec<u8>, SqliteRecoveryStoreError> {
+        serde_json::to_vec(self).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))
     }
 
     fn decode(bytes: &[u8]) -> Result<Self, SqliteRecoveryStoreError> {
-        let value = std::str::from_utf8(bytes)
-            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
-        let mut lines = value.lines();
-        let prior_generation = lines
-            .next()
-            .and_then(|value| value.parse().ok())
-            .map(RecoveryGeneration)
-            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
-        let prior_digest = lines
-            .next()
-            .filter(|value| value.len() == 64)
-            .map(str::to_owned)
-            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
-        let proposed_generation = lines
-            .next()
-            .and_then(|value| value.parse().ok())
-            .map(RecoveryGeneration)
-            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
-        let proposed_digest = lines
-            .next()
-            .filter(|value| value.len() == 64)
-            .map(str::to_owned)
-            .ok_or(SqliteRecoveryStoreError::ReconciliationRequired)?;
-        if lines.next().is_some() {
+        if bytes.len() > MAX_RECOVERY_ARTIFACT_BYTES as usize {
             return Err(SqliteRecoveryStoreError::ReconciliationRequired);
         }
-        Ok(Self {
-            prior_generation,
-            prior_digest,
-            proposed_generation,
-            proposed_digest,
-        })
+        let intent: Self = serde_json::from_slice(bytes)
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+        if intent.prior.snapshot.generation.checked_next()
+            != Some(intent.proposed.snapshot.generation)
+            || intent.intent != RecoveryCommitIntentId(intent.proposed.snapshot.generation.0)
+        {
+            return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+        }
+        MemoryRecoveryStore::from_manifest(intent.prior.clone())
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+        MemoryRecoveryStore::from_manifest(intent.proposed.clone())
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+        Ok(intent)
     }
 }
 
@@ -958,6 +1080,92 @@ fn commit_intent_path(database_path: &Path) -> PathBuf {
     let mut path = database_path.as_os_str().to_owned();
     path.push(".commit-intent");
     PathBuf::from(path)
+}
+fn commit_intent_temp_path(database_path: &Path) -> PathBuf {
+    let mut path = commit_intent_path(database_path).into_os_string();
+    path.push(".tmp");
+    PathBuf::from(path)
+}
+
+fn migrate_legacy_manifest_json(
+    bytes: &[u8],
+) -> Result<(RecoverySchemaVersion, RecoveryManifest), SqlitePrototypeError> {
+    let mut value: serde_json::Value = serde_json::from_slice(bytes)
+        .map_err(|error| SqlitePrototypeError::InvalidOutput(error.to_string()))?;
+    let schema_number = value
+        .get("schema")
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| SqlitePrototypeError::InvalidOutput("missing schema".to_owned()))?;
+    let legacy_schema = RecoverySchemaVersion(
+        u16::try_from(schema_number)
+            .map_err(|_| SqlitePrototypeError::InvalidOutput("schema exceeds u16".to_owned()))?,
+    );
+    if legacy_schema >= CURRENT_RECOVERY_SCHEMA {
+        return Err(SqlitePrototypeError::UnsupportedSemanticSchema(
+            schema_number,
+        ));
+    }
+    let snapshot = value
+        .get_mut("snapshot")
+        .and_then(serde_json::Value::as_object_mut)
+        .ok_or_else(|| SqlitePrototypeError::InvalidOutput("missing snapshot".to_owned()))?;
+    snapshot
+        .entry("roots")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    snapshot
+        .entry("next_root_id")
+        .or_insert_with(|| serde_json::Value::from(0_u64));
+    snapshot
+        .entry("legacy_unreconciled")
+        .or_insert_with(|| serde_json::Value::Array(Vec::new()));
+    snapshot
+        .entry("next_fence_occurrence_id")
+        .or_insert_with(|| serde_json::Value::from(0_u64));
+    inject_legacy_fields(&mut value);
+    let manifest: RecoveryManifest = serde_json::from_value(value)
+        .map_err(|error| SqlitePrototypeError::InvalidOutput(error.to_string()))?;
+    let migrated = MemoryRecoveryStore::migrate_legacy_manifest(manifest)
+        .map_err(|error| SqlitePrototypeError::Semantic(error.to_string()))?;
+    Ok((legacy_schema, migrated))
+}
+
+fn inject_legacy_fields(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if object.contains_key("fence_domain") {
+                object
+                    .entry("occurrence")
+                    .or_insert_with(|| serde_json::Value::from(0_u64));
+            }
+            if object.contains_key("last_clean_fence") && object.contains_key("state") {
+                object
+                    .entry("clean_generation")
+                    .or_insert(serde_json::Value::Null);
+            }
+            if object.contains_key("global_fence") && object.contains_key("closed") {
+                object
+                    .entry("close_generation")
+                    .or_insert(serde_json::Value::Null);
+            }
+            if object.contains_key("durable_fence") && object.contains_key("verified_at") {
+                object
+                    .entry("fence_occurrence")
+                    .or_insert_with(|| serde_json::Value::from(0_u64));
+            }
+            for child in object.values_mut() {
+                inject_legacy_fields(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for value in values {
+                inject_legacy_fields(value);
+            }
+        }
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::String(_) => {}
+    }
 }
 
 fn manifest_digest(manifest: &RecoveryManifest) -> Result<String, SqliteRecoveryStoreError> {
@@ -974,22 +1182,35 @@ fn sync_parent(path: &Path) -> Result<(), SqliteRecoveryStoreError> {
 fn write_commit_intent(
     database_path: &Path,
     intent: &CommitIntent,
+    fail_before_rename: bool,
 ) -> Result<(), SqliteRecoveryStoreError> {
     let path = commit_intent_path(database_path);
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    let temporary = PathBuf::from(temporary);
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)
-        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
-    file.write_all(intent.encode().as_bytes())
-        .and_then(|()| file.sync_all())
-        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
-    std::fs::rename(&temporary, &path)
-        .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
-    sync_parent(&path)
+    let temporary = commit_intent_temp_path(database_path);
+    let mut created = false;
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+        created = true;
+        let encoded = intent.encode()?;
+        file.write_all(&encoded)
+            .and_then(|()| file.sync_all())
+            .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+        if fail_before_rename {
+            return Err(SqliteRecoveryStoreError::Io(
+                "injected commit-intent rename failure".to_owned(),
+            ));
+        }
+        std::fs::rename(&temporary, &path)
+            .map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+        sync_parent(&path)
+    })();
+    if result.is_err() && created {
+        let _ = std::fs::remove_file(&temporary);
+    }
+    result
 }
 
 fn remove_commit_intent(database_path: &Path) -> Result<(), SqliteRecoveryStoreError> {
@@ -997,25 +1218,52 @@ fn remove_commit_intent(database_path: &Path) -> Result<(), SqliteRecoveryStoreE
     std::fs::remove_file(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
     sync_parent(&path)
 }
+fn remove_commit_intent_temp(database_path: &Path) -> Result<(), SqliteRecoveryStoreError> {
+    let path = commit_intent_temp_path(database_path);
+    std::fs::remove_file(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?;
+    sync_parent(&path)
+}
+
+fn load_reconciliation_manifest(
+    prototype: &SqlitePrototype,
+    read_only: bool,
+) -> Result<RecoveryManifest, SqliteRecoveryStoreError> {
+    let schema = prototype
+        .semantic_schema_version_with(read_only)
+        .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
+    if schema == u64::from(CURRENT_RECOVERY_SCHEMA.0) {
+        return prototype
+            .load_manifest_with(read_only)
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired);
+    }
+    if schema < u64::from(CURRENT_RECOVERY_SCHEMA.0) {
+        return prototype
+            .load_legacy_manifest_with(read_only)
+            .map(|(_, manifest)| manifest)
+            .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired);
+    }
+    Err(SqliteRecoveryStoreError::ReconciliationRequired)
+}
 
 fn validate_commit_intent(
     prototype: &SqlitePrototype,
     read_only: bool,
 ) -> Result<(), SqliteRecoveryStoreError> {
     let path = commit_intent_path(prototype.database_path());
+    if commit_intent_temp_path(prototype.database_path()).exists() {
+        return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+    }
     if !path.exists() {
         return Ok(());
     }
     let intent = CommitIntent::decode(
         &std::fs::read(&path).map_err(|error| SqliteRecoveryStoreError::Io(error.to_string()))?,
     )?;
-    let manifest = prototype
-        .load_manifest_with(read_only)
-        .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
-    let observed = (manifest.snapshot.generation, manifest_digest(&manifest)?);
-    if observed != (intent.prior_generation, intent.prior_digest)
-        && observed != (intent.proposed_generation, intent.proposed_digest)
-    {
+    let manifest = load_reconciliation_manifest(prototype, read_only)?;
+    let observed = manifest_digest(&manifest)?;
+    let prior = manifest_digest(&intent.prior)?;
+    let proposed = manifest_digest(&intent.proposed)?;
+    if observed != prior && observed != proposed {
         return Err(SqliteRecoveryStoreError::ReconciliationRequired);
     }
     Ok(())
@@ -1026,6 +1274,13 @@ fn validate_commit_intent(
 fn reconcile_commit_intent_before_mutation(
     prototype: &SqlitePrototype,
 ) -> Result<(), SqliteRecoveryStoreError> {
+    let temporary = commit_intent_temp_path(prototype.database_path());
+    if temporary.exists() {
+        if commit_intent_path(prototype.database_path()).exists() {
+            return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+        }
+        remove_commit_intent_temp(prototype.database_path())?;
+    }
     if !commit_intent_path(prototype.database_path()).exists() {
         return Ok(());
     }
@@ -1036,7 +1291,7 @@ fn reconcile_commit_intent_before_mutation(
         .semantic_schema_version_with(true)
         .map_err(|_| SqliteRecoveryStoreError::ReconciliationRequired)?;
     if storage_schema != CURRENT_RECOVERY_SQLITE_SCHEMA
-        || semantic_schema != u64::from(CURRENT_RECOVERY_SCHEMA.0)
+        || semantic_schema > u64::from(CURRENT_RECOVERY_SCHEMA.0)
     {
         return Err(SqliteRecoveryStoreError::ReconciliationRequired);
     }
@@ -1044,6 +1299,9 @@ fn reconcile_commit_intent_before_mutation(
 }
 
 fn reconcile_commit_intent(prototype: &SqlitePrototype) -> Result<(), SqliteRecoveryStoreError> {
+    if commit_intent_temp_path(prototype.database_path()).exists() {
+        return Err(SqliteRecoveryStoreError::ReconciliationRequired);
+    }
     if !commit_intent_path(prototype.database_path()).exists() {
         return Ok(());
     }
@@ -1061,7 +1319,9 @@ impl RecoveryStateStore for SqliteRecoveryStore {
     }
 
     fn verify_integrity(&self) -> RecoveryStoreHealth {
-        if commit_intent_path(self.prototype.database_path()).exists() {
+        if commit_intent_path(self.prototype.database_path()).exists()
+            || commit_intent_temp_path(self.prototype.database_path()).exists()
+        {
             return RecoveryStoreHealth::Corrupt;
         }
         let Ok(valid) = self.prototype.integrity_check() else {
@@ -1069,6 +1329,9 @@ impl RecoveryStateStore for SqliteRecoveryStore {
         };
         if !valid {
             return RecoveryStoreHealth::Corrupt;
+        }
+        if self.memory.health() != RecoveryStoreHealth::Healthy {
+            return self.memory.health();
         }
         match self.prototype.load_manifest() {
             Ok(manifest)
@@ -1093,6 +1356,11 @@ impl RecoveryStateStore for SqliteRecoveryStore {
 
     fn commit_durable(&mut self, txn: RecoveryTxn) -> Result<RecoveryGeneration, RecoveryError> {
         let health = self.verify_integrity();
+        #[cfg(test)]
+        let fail_before_commit_intent_rename =
+            self.failure_point == Some(SqliteCommitFailurePoint::BeforeCommitIntentRename);
+        #[cfg(not(test))]
+        let fail_before_commit_intent_rename = false;
         if health != RecoveryStoreHealth::Healthy {
             return Err(RecoveryError::Unhealthy(health));
         }
@@ -1102,16 +1370,20 @@ impl RecoveryStateStore for SqliteRecoveryStore {
         let generation = candidate.commit_durable(txn)?;
         let proposed = candidate.export_manifest(generation)?;
         let intent = CommitIntent {
-            prior_generation: expected,
-            prior_digest: manifest_digest(&prior).map_err(|_| {
-                RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected)
-            })?,
-            proposed_generation: generation,
-            proposed_digest: manifest_digest(&proposed).map_err(|_| {
-                RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected)
-            })?,
+            intent: RecoveryCommitIntentId(generation.0),
+            prior,
+            proposed: proposed.clone(),
         };
-        write_commit_intent(self.prototype.database_path(), &intent)
+        let write_result = write_commit_intent(
+            self.prototype.database_path(),
+            &intent,
+            fail_before_commit_intent_rename,
+        );
+        #[cfg(test)]
+        if fail_before_commit_intent_rename {
+            self.failure_point = None;
+        }
+        write_result
             .map_err(|_| RecoveryError::CommitNotDurable(RecoveryCommitObservation::Rejected))?;
         #[cfg(test)]
         if self.failure_point == Some(SqliteCommitFailurePoint::AfterCommitIntent) {
@@ -1184,13 +1456,17 @@ fn semantic_payload(manifest: &RecoveryManifest) -> String {
         lineage.push_str("none");
     }
     format!(
-        "schema={};generation={};topology={};dirty={};integrity={};fences={};sessions={};maintenance={};metadata_loss_matrix={};metadata_loss_lineage={};metadata_loss_case={};metadata_loss_action={};metadata_loss_verification={};metadata_loss_baseline={};metadata_loss_source_health={};metadata_loss_topology={}",
+        "schema={};generation={};topology={};dirty={};integrity={};fences={};roots={};legacy_unreconciled={};next_fence_occurrence={};next_root={};sessions={};maintenance={};metadata_loss_matrix={};metadata_loss_lineage={};metadata_loss_case={};metadata_loss_action={};metadata_loss_verification={};metadata_loss_baseline={};metadata_loss_source_health={};metadata_loss_topology={}",
         manifest.schema.0,
         manifest.snapshot.generation.0,
         manifest.snapshot.topology_epoch.0,
         manifest.snapshot.dirty_regions.len(),
         manifest.snapshot.integrity_records.len(),
         manifest.snapshot.fences.len(),
+        manifest.snapshot.roots.len(),
+        manifest.snapshot.legacy_unreconciled.len(),
+        manifest.snapshot.next_fence_occurrence_id.0,
+        manifest.snapshot.next_root_id.0,
         if manifest.snapshot.writable_session.is_some() {
             1
         } else {
@@ -1339,8 +1615,8 @@ mod tests {
         TopologySnapshot as CoreTopologySnapshot,
     };
     use dwv_recovery::{
-        MemoryRecoveryStore, RebuildId, RebuildState, RebuildTargetIdentity, RecoveryMutation,
-        RecoveryStateStore,
+        FenceCertificate, MemoryRecoveryStore, RebuildId, RebuildState, RebuildTargetIdentity,
+        RecoveryMutation, RecoveryRetirementPlan, RecoveryStateStore,
     };
     use dwv_store::{CapabilityEvidenceId, FenceId, StoreFenceRef, StoreId, StoreWriteWatermark};
 
@@ -1350,6 +1626,34 @@ mod tests {
             "diskweave-recovery-{id}-{}.sqlite3",
             std::process::id()
         ))
+    }
+    fn strip_v7_fields(value: &mut serde_json::Value) {
+        match value {
+            serde_json::Value::Object(object) => {
+                object.remove("occurrence");
+                object.remove("clean_generation");
+                object.remove("close_generation");
+                object.remove("fence_occurrence");
+                if object.contains_key("fences") && object.contains_key("dirty_regions") {
+                    object.remove("roots");
+                    object.remove("next_root_id");
+                    object.remove("legacy_unreconciled");
+                    object.remove("next_fence_occurrence_id");
+                }
+                for child in object.values_mut() {
+                    strip_v7_fields(child);
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    strip_v7_fields(value);
+                }
+            }
+            serde_json::Value::Null
+            | serde_json::Value::Bool(_)
+            | serde_json::Value::Number(_)
+            | serde_json::Value::String(_) => {}
+        }
     }
 
     fn topology(lineage: ArrayId) -> TopologySnapshot {
@@ -1595,6 +1899,117 @@ mod tests {
     }
 
     #[test]
+    fn uncertain_retirement_reopens_exact_prior_or_successor_and_retries() {
+        for (failure_point, expected_generation) in [
+            (
+                SqliteCommitFailurePoint::AfterCommitIntent,
+                RecoveryGeneration(2),
+            ),
+            (
+                SqliteCommitFailurePoint::AfterManifestWrite,
+                RecoveryGeneration(3),
+            ),
+        ] {
+            let path = temp_database();
+            let payload_path = path.with_extension("payload");
+            let payload = b"protected payload bytes";
+            std::fs::write(&payload_path, payload).unwrap();
+
+            let mut initial = MemoryRecoveryStore::new(TopologyEpoch(0));
+            for (store_id, fence_id) in [(1, 1), (2, 2)] {
+                let mut append =
+                    initial.begin_protocol_txn(initial.snapshot().generation, TopologyEpoch(0));
+                append.push(RecoveryMutation::RecordDataParityFence {
+                    fence: FenceCertificate::new(
+                        TopologyEpoch(0),
+                        dwv_core::FenceDomain(1),
+                        vec![StoreFenceRef {
+                            fence_id: FenceId(fence_id),
+                            store_id: StoreId(store_id),
+                            store_incarnation: dwv_store::StoreIncarnationId(0),
+                            topology_epoch: TopologyEpoch(0),
+                            through: StoreWriteWatermark(1),
+                            capability_evidence_id: CapabilityEvidenceId(1),
+                        }],
+                        Vec::new(),
+                    ),
+                });
+                initial.commit_durable(append).unwrap();
+            }
+            let initial_generation = initial.snapshot().generation;
+            let manifest = initial.export_manifest(initial_generation).unwrap();
+            let mut store = SqliteRecoveryStore::create_new(&path, manifest).unwrap();
+            let predecessor = store.snapshot().unwrap();
+            let retired = predecessor.fences[0].occurrence;
+            let unrelated = predecessor.fences[1].occurrence;
+            let mut successor = predecessor.clone();
+            successor.fences.retain(|fence| fence.occurrence != retired);
+            let mut plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+            plan.retire(retired);
+            let mut retirement = store.begin_protocol_txn(initial_generation, TopologyEpoch(0));
+            retirement.push(RecoveryMutation::RetireFences { plan });
+            store.fail_at(failure_point);
+            assert_eq!(
+                store.commit_durable(retirement),
+                Err(RecoveryError::CommitNotDurable(
+                    RecoveryCommitObservation::Lost
+                ))
+            );
+            let mut unrelated_successor = predecessor.clone();
+            unrelated_successor
+                .fences
+                .retain(|fence| fence.occurrence != unrelated);
+            let mut unrelated_plan =
+                RecoveryRetirementPlan::new(predecessor.clone(), unrelated_successor);
+            unrelated_plan.retire(unrelated);
+            let mut unrelated_txn = store.begin_protocol_txn(initial_generation, TopologyEpoch(0));
+            unrelated_txn.push(RecoveryMutation::RetireFences {
+                plan: unrelated_plan,
+            });
+            assert_eq!(
+                store.commit_durable(unrelated_txn),
+                Err(RecoveryError::Unhealthy(RecoveryStoreHealth::Corrupt))
+            );
+            assert!(commit_intent_path(&path).exists());
+            drop(store);
+
+            assert_eq!(
+                SqliteRecoveryStore::inspect(&path),
+                RecoveryInspection::ReconciliationRequired
+            );
+            let intent =
+                CommitIntent::decode(&std::fs::read(commit_intent_path(&path)).unwrap()).unwrap();
+            assert_eq!(intent.prior.snapshot.fences.len(), 2);
+            assert_eq!(intent.proposed.snapshot.fences.len(), 1);
+            assert!(intent.proposed.snapshot.fence(retired).is_none());
+            assert!(intent.proposed.snapshot.fence(unrelated).is_some());
+
+            let mut reopened = SqliteRecoveryStore::open(&path).unwrap();
+            let reopened_snapshot = reopened.snapshot().unwrap();
+            assert_eq!(reopened_snapshot.generation, expected_generation);
+            assert!(reopened_snapshot.fence(unrelated).is_some());
+            if expected_generation == initial_generation {
+                assert!(reopened_snapshot.fence(retired).is_some());
+                let predecessor = reopened_snapshot;
+                let mut successor = predecessor.clone();
+                successor.fences.retain(|fence| fence.occurrence != retired);
+                let mut retry_plan = RecoveryRetirementPlan::new(predecessor.clone(), successor);
+                retry_plan.retire(retired);
+                let mut retry =
+                    reopened.begin_protocol_txn(predecessor.generation, TopologyEpoch(0));
+                retry.push(RecoveryMutation::RetireFences { plan: retry_plan });
+                reopened.commit_durable(retry).unwrap();
+            }
+            assert!(reopened.snapshot().unwrap().fence(retired).is_none());
+            assert_eq!(std::fs::read(&payload_path).unwrap(), payload);
+            drop(reopened);
+
+            let _ = std::fs::remove_file(payload_path);
+            let _ = std::fs::remove_file(path);
+        }
+    }
+
+    #[test]
     fn uncertain_commit_reopens_to_exactly_prior_or_proposed_state() {
         for (failure_point, expected_generation) in [
             (
@@ -1630,6 +2045,14 @@ mod tests {
                 RecoveryInspection::ReconciliationRequired
             );
             assert!(commit_intent_path(&path).exists());
+            let intent =
+                CommitIntent::decode(&std::fs::read(commit_intent_path(&path)).unwrap()).unwrap();
+            assert_eq!(intent.intent, RecoveryCommitIntentId(1));
+            assert_eq!(intent.prior.snapshot.generation, RecoveryGeneration::ZERO);
+            assert_eq!(
+                intent.proposed.snapshot.maintenance_checkpoints[0].cursor,
+                dwv_recovery::RecoveryCursor(4)
+            );
 
             let reopened = SqliteRecoveryStore::open(&path).unwrap();
             let snapshot = reopened.snapshot().unwrap();
@@ -1642,6 +2065,65 @@ mod tests {
             drop(reopened);
             let _ = std::fs::remove_file(path);
         }
+    }
+
+    #[test]
+    fn pre_rename_commit_intent_failure_cleans_temporary_artifact() {
+        let path = temp_database();
+        let manifest = MemoryRecoveryStore::new(TopologyEpoch(0))
+            .export_manifest(RecoveryGeneration::ZERO)
+            .unwrap();
+        let mut store = SqliteRecoveryStore::create_new(&path, manifest).unwrap();
+        let mut checkpoint = store.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+        checkpoint.push(RecoveryMutation::RecordMaintenanceCheckpoint {
+            job: dwv_recovery::JobId(9),
+            cursor: dwv_recovery::RecoveryCursor(4),
+        });
+        store.fail_at(SqliteCommitFailurePoint::BeforeCommitIntentRename);
+        assert_eq!(
+            store.commit_durable(checkpoint),
+            Err(RecoveryError::CommitNotDurable(
+                RecoveryCommitObservation::Rejected
+            ))
+        );
+        assert!(!commit_intent_path(&path).exists());
+        assert!(!commit_intent_temp_path(&path).exists());
+        assert_eq!(store.verify_integrity(), RecoveryStoreHealth::Healthy);
+
+        let mut retry = store.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+        retry.push(RecoveryMutation::RecordMaintenanceCheckpoint {
+            job: dwv_recovery::JobId(9),
+            cursor: dwv_recovery::RecoveryCursor(4),
+        });
+        assert_eq!(store.commit_durable(retry).unwrap(), RecoveryGeneration(1));
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn writable_reopen_removes_unpublished_commit_intent_temporary() {
+        let path = temp_database();
+        let manifest = MemoryRecoveryStore::new(TopologyEpoch(0))
+            .export_manifest(RecoveryGeneration::ZERO)
+            .unwrap();
+        let adapter = SqlitePrototype::new(&path);
+        adapter.initialize().unwrap();
+        adapter.write_manifest(&manifest).unwrap();
+        std::fs::write(commit_intent_temp_path(&path), b"unpublished").unwrap();
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::ReconciliationRequired
+        );
+
+        let reopened = SqliteRecoveryStore::open(&path).unwrap();
+        assert_eq!(reopened.verify_integrity(), RecoveryStoreHealth::Healthy);
+        assert!(!commit_intent_temp_path(&path).exists());
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::Supported(Box::new(manifest))
+        );
+        drop(reopened);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1691,6 +2173,73 @@ mod tests {
     }
 
     #[test]
+    fn legacy_migration_publishes_and_reopens_conservatively() {
+        let path = temp_database();
+        let mut source = MemoryRecoveryStore::new(TopologyEpoch(0));
+        let mut transaction = source.begin_protocol_txn(RecoveryGeneration::ZERO, TopologyEpoch(0));
+        transaction.push(RecoveryMutation::RecordDataParityFence {
+            fence: FenceCertificate::new(
+                TopologyEpoch(0),
+                dwv_core::FenceDomain(1),
+                vec![StoreFenceRef {
+                    fence_id: FenceId(1),
+                    store_id: StoreId(1),
+                    store_incarnation: dwv_store::StoreIncarnationId(0),
+                    topology_epoch: TopologyEpoch(0),
+                    through: StoreWriteWatermark(1),
+                    capability_evidence_id: CapabilityEvidenceId(1),
+                }],
+                Vec::new(),
+            ),
+        });
+        let source_generation = source.commit_durable(transaction).unwrap();
+        let manifest = source.export_manifest(source_generation).unwrap();
+
+        let adapter = SqlitePrototype::new(&path);
+        adapter.initialize().unwrap();
+        adapter.write_manifest(&manifest).unwrap();
+        let mut legacy_value = serde_json::to_value(&manifest).unwrap();
+        legacy_value["schema"] = serde_json::Value::from(6_u64);
+        strip_v7_fields(&mut legacy_value);
+        let legacy_json = serde_json::to_string(&legacy_value).unwrap();
+        let legacy_digest = blake3::hash(legacy_json.as_bytes()).to_hex().to_string();
+        adapter
+            .run(&format!(
+                "UPDATE recovery_state SET schema_version=6, manifest_json='{}', manifest_digest='{}' WHERE singleton=1;\n",
+                quote_sql(&legacy_json),
+                legacy_digest
+            ))
+            .unwrap();
+        assert!(matches!(
+            SqliteRecoveryStore::open(&path),
+            Err(SqliteRecoveryStoreError::Prototype(
+                SqlitePrototypeError::UnsupportedSemanticSchema(6)
+            ))
+        ));
+        drop(adapter);
+
+        let migrated = SqliteRecoveryStore::migrate_legacy(&path).unwrap();
+        assert_eq!(migrated.verify_integrity(), RecoveryStoreHealth::Stale);
+        drop(migrated);
+        let persisted = SqlitePrototype::new(&path).load_manifest().unwrap();
+        assert_eq!(persisted.schema, CURRENT_RECOVERY_SCHEMA);
+        assert_eq!(
+            persisted.snapshot.generation,
+            source_generation.checked_next().unwrap()
+        );
+        assert_eq!(persisted.snapshot.fences.len(), 1);
+        assert_eq!(persisted.snapshot.legacy_unreconciled.len(), 1);
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::ReconciliationRequired
+        );
+        let reopened = SqliteRecoveryStore::open(&path).unwrap();
+        assert_eq!(reopened.verify_integrity(), RecoveryStoreHealth::Stale);
+        drop(reopened);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn inspection_is_read_only_and_classifies_supported_missing_and_migration() {
         let path = temp_database();
         assert_eq!(
@@ -1710,7 +2259,7 @@ mod tests {
 
         assert_eq!(
             SqliteRecoveryStore::inspect(&path),
-            RecoveryInspection::Supported(Box::new(manifest))
+            RecoveryInspection::Supported(Box::new(manifest.clone()))
         );
         let after_metadata = std::fs::metadata(&path).unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
@@ -1722,6 +2271,38 @@ mod tests {
         assert_eq!(
             after_metadata.modified().unwrap(),
             before_metadata.modified().unwrap()
+        );
+
+        let mut legacy_json = serde_json::to_value(&manifest).unwrap();
+        legacy_json["snapshot"]
+            .as_object_mut()
+            .unwrap()
+            .remove("next_fence_occurrence_id");
+        let legacy_json = serde_json::to_string(&legacy_json).unwrap();
+        let legacy_digest = blake3::hash(legacy_json.as_bytes()).to_hex().to_string();
+        adapter
+            .run(&format!(
+                "UPDATE recovery_state SET schema_version=6, manifest_json='{}', manifest_digest='{}' WHERE singleton=1;\n",
+                quote_sql(&legacy_json),
+                legacy_digest
+            ))
+            .unwrap();
+        assert!(matches!(
+            adapter.load_manifest(),
+            Err(SqlitePrototypeError::UnsupportedSemanticSchema(6))
+        ));
+        assert!(matches!(
+            adapter.write_manifest(&manifest),
+            Err(SqlitePrototypeError::UnsupportedSemanticSchema(6))
+        ));
+        assert_eq!(
+            SqliteRecoveryStore::inspect(&path),
+            RecoveryInspection::MigrationRequired {
+                layer: RecoveryFormatLayer::Semantic,
+                from: 6,
+                to: u64::from(CURRENT_RECOVERY_SCHEMA.0),
+                storage_version: Some(CURRENT_RECOVERY_SQLITE_SCHEMA),
+            }
         );
 
         adapter

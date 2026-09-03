@@ -8,8 +8,8 @@ use crate::error::{ErrorClass, PlanError, TransactionError};
 use crate::trace::Trace;
 use dwv_core::{ByteRange, FenceDomain, TopologyEpoch};
 use dwv_recovery::{
-    FenceCertificate, IntegrityExtentId, InvalidationTarget, RecoveryGeneration, RegionId,
-    WriteRecoveryRecordEvidence,
+    FenceCertificate, FenceOccurrenceId, IntegrityExtentId, InvalidationTarget, RecoveryGeneration,
+    RegionId, WriteRecoveryRecordEvidence,
 };
 use dwv_store::StoreId;
 
@@ -625,6 +625,27 @@ impl TransactionMachine {
                     .collect(),
             )
         })
+    }
+    /// Binds the exact occurrence assigned by the durable recovery commit.
+    pub fn bind_persisted_fence(
+        &mut self,
+        certificate: FenceCertificate,
+    ) -> Result<(), TransactionError> {
+        let prior = self
+            .last_fence
+            .as_ref()
+            .ok_or(TransactionError::InvalidResult(
+                "no flush fence is available for occurrence binding",
+            ))?;
+        if certificate.occurrence_id() == FenceOccurrenceId::UNASSIGNED
+            || !certificate.covers_certificate(prior)
+        {
+            return Err(TransactionError::InvalidResult(
+                "persisted fence does not cover the flush certificate",
+            ));
+        }
+        self.last_fence = Some(certificate);
+        Ok(())
     }
 
     fn emit(&mut self, action: TransactionAction) -> Result<(), TransactionError> {

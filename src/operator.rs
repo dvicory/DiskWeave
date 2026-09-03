@@ -879,6 +879,21 @@ pub fn baseline(
         .with_integrity_extent(extent.id, baseline.content_generation);
         let mut transaction = recovery.begin_protocol_txn(generation, topology.topology_epoch());
         transaction.push(RecoveryMutation::RecordDataParityFence { fence: certificate });
+        generation = recovery
+            .commit_durable(transaction)
+            .map_err(map_recovery_commit_error)?;
+        let persisted_fence = recovery
+            .snapshot()
+            .map_err(|error| OperatorError::Failed(error.to_string()))?
+            .fences
+            .last()
+            .cloned()
+            .ok_or_else(|| {
+                OperatorError::Reconciliation(
+                    "baseline fence commit did not publish a fence occurrence".into(),
+                )
+            })?;
+        let mut transaction = recovery.begin_protocol_txn(generation, topology.topology_epoch());
         transaction.push(RecoveryMutation::InstallIntegrityDigest {
             record: IntegrityRecord {
                 extent: extent.id,
@@ -891,6 +906,7 @@ pub fn baseline(
                     },
                     content_generation: baseline.content_generation,
                     durable_fence: fence,
+                    fence_occurrence: persisted_fence.occurrence_id(),
                     digest: digest.as_bytes().to_vec(),
                     verified_at: generation,
                 },
