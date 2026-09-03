@@ -215,11 +215,13 @@ fn dispatch_knowledge(app: &App, args: &[String]) -> Result<Value, AppError> {
         "readiness" | "check" => knowledge::readiness(app),
         "resolve" => {
             let id = required_id(args, "resolve")?;
+            let target = option_value(args, "--target")
+                .ok_or_else(|| AppError::new("usage", "resolve requires --target"))?;
             let outcome = option_value(args, "--outcome")
                 .ok_or_else(|| AppError::new("usage", "resolve requires --outcome"))?;
             let reason = option_value(args, "--reason")
                 .ok_or_else(|| AppError::new("usage", "resolve requires --reason"))?;
-            knowledge::resolve(app, &id, &outcome, &reason)
+            knowledge::resolve(app, &id, &target, &outcome, &reason)
         }
         _ => Err(AppError::new(
             "usage",
@@ -501,23 +503,23 @@ fn help_value() -> Value {
         "architecture-history <document-id> (bounded historical architecture)",
         "affected <id>|--id <id>|--path <repo-relative-path> (downstream change impact)",
         "knowledge doctor --path <repo-relative-path>", "readiness|check",
-        "resolve <id> --outcome <reviewed|reference-only|deferred|superseded> --reason <text>"
+        "resolve <id> --target <implementation|evidence|both> --outcome <reviewed|reference-only|deferred|superseded> --reason <text>"
     ], "guarantees": ["offline deterministic scans", "bounded complete packets", "atomic reviewed state"]})
 }
 
 fn schema_value() -> Value {
     json!({"schema": CLI_SCHEMA, "commands": {
-        "knowledge_objects": "dwv.knowledge.objects.v3",
+        "knowledge_objects": "dwv.knowledge.objects.v4",
         "knowledge_inspect": "dwv.knowledge.inspect.v2",
         "knowledge_context": "dwv.knowledge.context.v4",
-        "knowledge_ownership": "dwv.knowledge.ownership.v3",
+        "knowledge_ownership": "dwv.knowledge.ownership.v4",
         "knowledge_affected": "dwv.knowledge.affected.v3",
         "knowledge_audit_context": "dwv.knowledge.audit-context.v2",
         "knowledge_architecture_candidate": "dwv.knowledge.architecture-candidate.v1",
         "knowledge_architecture_history": "dwv.knowledge.architecture-history.v1",
-        "knowledge_readiness": "dwv.knowledge.readiness.v3",
+        "knowledge_readiness": "dwv.knowledge.readiness.v4",
         "planning_nomenclature": "dwv.docs.planning-nomenclature.v1",
-        "reviewed_state": "dwv.knowledge.reviewed-links.v2",
+        "reviewed_state": "dwv.knowledge.reviewed-links.v3",
         "source_inventory": INVENTORY_SCHEMA
     }})
 }
@@ -841,7 +843,7 @@ mod tests {
         );
         assert_eq!(
             schema["commands"]["knowledge_ownership"],
-            "dwv.knowledge.ownership.v3"
+            "dwv.knowledge.ownership.v4"
         );
         assert_eq!(
             schema["commands"]["knowledge_audit_context"],

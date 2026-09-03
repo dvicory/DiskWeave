@@ -926,3 +926,19 @@ non_claims = [
   "These are bounded in-memory and SQLite adapter checks, not arbitrary-width retention proof or physical device durability.",
   "They do not implement pre-mutation serving reservation or session-close supersession.",
 ]
+
+[[evidence]]
+id = "evidence.correctness-sensitive-coverage-gate"
+path = "xtask/src/knowledge/tests/coverage_tests.rs"
+class = "test"
+claim = "Focused Rust fixtures exercise independent implementation and evidence targets, meaningful owner scope, complete evidence facts, deterministic endpoint digests, target dispositions, trigger invalidation, conservative aggregate precedence, and bounded ownership output."
+tier = "portable-test"
+fault_model = ["owner omission", "helper-only marker", "incomplete evidence", "stale endpoint set", "contradictory disposition", "deferred trigger transition", "non-current relationship"]
+scope = ["knowledge coverage derivation", "reviewed endpoint-set freshness", "target disposition validation", "ownership, export, readiness, and docs-check projections"]
+requirements = [
+  "req.documentation-knowledge-architecture.correctness-sensitive-requirements-have-meaningful-coverage-or-explicit-disposition",
+]
+non_claims = [
+  "The fixtures do not prove product behavior, platform behavior, or physical durability.",
+  "A passing structural gate does not replace individual semantic review of current owners, evidence, or dispositions.",
+]

@@ -1434,7 +1434,6 @@ impl RecoveryTxn {
     }
 }
 
-/// dwv:req req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write
 pub trait RecoveryStateStore {
     fn load_assembly_snapshot(&self) -> Result<RecoverySnapshot, RecoveryError>;
     fn verify_integrity(&self) -> RecoveryStoreHealth;
@@ -1972,6 +1971,7 @@ impl RecoveryStateStore for MemoryRecoveryStore {
         RecoveryTxn::new(expected, topology_epoch)
     }
 
+    /// dwv:req req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic
     fn commit_durable(&mut self, txn: RecoveryTxn) -> Result<RecoveryGeneration, RecoveryError> {
         if self.health != RecoveryStoreHealth::Healthy {
             return Err(RecoveryError::Unhealthy(self.health));

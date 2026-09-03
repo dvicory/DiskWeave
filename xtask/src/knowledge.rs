@@ -2,31 +2,42 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
+mod rust_scope;
+use rust_scope::rust_marker_scope;
 
 use super::{
-    App, AppError, atomic_write, digest_text, markdown_headings, normalize_markdown, read_toml,
-    safe_join, write_json,
+    App, AppError, atomic_write, digest_bytes, digest_text, markdown_headings, normalize_markdown,
+    read_toml, safe_join, write_json,
 };
 
-const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v3";
+const OBJECTS_SCHEMA: &str = "dwv.knowledge.objects.v4";
 const INSPECT_SCHEMA: &str = "dwv.knowledge.inspect.v2";
 const CONTEXT_SCHEMA: &str = "dwv.knowledge.context.v4";
-const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v3";
+const OWNERSHIP_SCHEMA: &str = "dwv.knowledge.ownership.v4";
 const AFFECTED_SCHEMA: &str = "dwv.knowledge.affected.v3";
 const AUDIT_CONTEXT_SCHEMA: &str = "dwv.knowledge.audit-context.v2";
 const ARCHITECTURE_CANDIDATE_SCHEMA: &str = "dwv.knowledge.architecture-candidate.v1";
 const ARCHITECTURE_HISTORY_SCHEMA: &str = "dwv.knowledge.architecture-history.v1";
 const OBJECTS_PATH: &str = "target/dwv-docs/knowledge/objects.json";
 const REVIEWED_PATH: &str = "docs/reviewed-requirements.toml";
-const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v3";
-const REVIEWED_SCHEMA: &str = "dwv.knowledge.reviewed-links.v2";
+const READINESS_SCHEMA: &str = "dwv.knowledge.readiness.v4";
+const REVIEWED_SCHEMA: &str = "dwv.knowledge.reviewed-links.v3";
+const VERIFICATION_SCHEMA: &str = "dwv.verification.manifest.v2";
+const COVERAGE_REQUIREMENT_ID: &str = "req.documentation-knowledge-architecture.correctness-sensitive-requirements-have-meaningful-coverage-or-explicit-disposition";
+const COVERAGE_TARGETS: [&str; 2] = ["implementation", "evidence"];
 const OUTCOMES: [&str; 4] = ["reviewed", "reference-only", "deferred", "superseded"];
 
 const ACTIVE_ROADMAP_MARKER: &str = "<!-- dwv:active-architecture-roadmap -->";
 const MAX_AUTHORITY_FILE_BYTES: usize = 1024 * 1024;
 const RETIRED_PATH: &str = "docs/milestones";
+const RUST_SOURCE_ROOTS: [(&str, &str); 4] = [
+    ("src", "rust"),
+    ("crates", "rust"),
+    ("xtask", "rust"),
+    ("tests", "verification"),
+];
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq)]
 pub(super) struct RequirementObject {
@@ -122,10 +133,60 @@ struct Reference {
     line: Option<usize>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+struct ReviewedTargetDigests {
+    #[serde(default)]
+    implementation: Option<String>,
+    #[serde(default)]
+    evidence: Option<String>,
+}
+
+impl ReviewedTargetDigests {
+    fn get(&self, target: &str) -> Option<&String> {
+        match target {
+            "implementation" => self.implementation.as_ref(),
+            "evidence" => self.evidence.as_ref(),
+            _ => None,
+        }
+    }
+
+    fn set(&mut self, target: &str, digest: String) {
+        match target {
+            "implementation" => self.implementation = Some(digest),
+            "evidence" => self.evidence = Some(digest),
+            _ => unreachable!("validated coverage target"),
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ReviewTrigger {
+    condition: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CoverageDisposition {
+    requirement_id: String,
+    target: String,
+    kind: String,
+    scope: Vec<String>,
+    non_claims: Vec<String>,
+    reason: String,
+    local_fingerprint: String,
+    effective_fingerprint: String,
+    endpoint_set_digest: String,
+    review_trigger: ReviewTrigger,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct ReviewedState {
     schema: String,
+    #[serde(default)]
+    coverage_dispositions: BTreeMap<String, BTreeMap<String, CoverageDisposition>>,
     #[serde(default)]
     local_fingerprints: BTreeMap<String, String>,
     #[serde(default)]
@@ -134,6 +195,109 @@ struct ReviewedState {
     outcomes: BTreeMap<String, String>,
     #[serde(default)]
     reasons: BTreeMap<String, String>,
+    #[serde(default)]
+    coverage_endpoint_digests: BTreeMap<String, ReviewedTargetDigests>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct CoverageEndpoint {
+    identity: String,
+    class: String,
+    path: String,
+    locator: String,
+    scope: Vec<String>,
+    claim_boundaries: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    artifact_digest: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resolved_path: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct CoverageTargetRecord {
+    target: String,
+    state: String,
+    current_endpoint_set_digest: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reviewed_endpoint_set_digest: Option<String>,
+    endpoints: Vec<CoverageEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    disposition: Option<CoverageDisposition>,
+    diagnostics: Vec<Value>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+struct RequirementCoverage {
+    semantic_id: String,
+    aggregate_state: String,
+    implementation: CoverageTargetRecord,
+    evidence: CoverageTargetRecord,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct VerificationManifest {
+    schema: String,
+    #[serde(default)]
+    evidence: Vec<EvidenceRecord>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    scenarios: Vec<ScenarioRecord>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct EvidenceRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    path: String,
+    #[serde(default)]
+    class: String,
+    #[serde(default)]
+    claim: String,
+    #[serde(default)]
+    tier: String,
+    #[serde(default)]
+    fault_model: Vec<String>,
+    #[serde(default)]
+    scope: Vec<String>,
+    #[serde(default)]
+    requirements: Vec<String>,
+    #[serde(default)]
+    non_claims: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ScenarioRecord {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    fixture: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    runner: String,
+    #[serde(default)]
+    fixture_size: Option<usize>,
+    #[serde(default)]
+    requirements: Vec<String>,
+    #[serde(default)]
+    evidence: Vec<String>,
+    #[serde(default)]
+    required_events: Vec<String>,
+    #[serde(default)]
+    claims: Vec<String>,
+    #[serde(default)]
+    non_claims: Vec<String>,
+}
+
+#[derive(Debug, Default)]
+struct EvidenceCoverage {
+    endpoints: BTreeMap<String, Vec<CoverageEndpoint>>,
+    diagnostics: BTreeMap<String, Vec<Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1214,7 +1378,39 @@ pub(super) fn export(app: &App) -> Result<Value, AppError> {
         .iter()
         .filter(|invariant| invariant.lifecycle == "active")
         .collect::<Vec<_>>();
-    let value = json!({
+    let references = scan_references(app)?;
+    let reviewed = if coverage_active(&model) {
+        Some(load_reviewed(app)?)
+    } else {
+        None
+    };
+    let coverage = reviewed
+        .as_ref()
+        .map(|reviewed| coverage_records(app, &model, reviewed, &references))
+        .transpose()?;
+    if let Some(reviewed) = &reviewed {
+        let current_ids = model
+            .objects
+            .iter()
+            .map(|object| object.semantic_id.clone())
+            .collect::<BTreeSet<_>>();
+        let diagnostics = invalid_projection_diagnostics(
+            &references,
+            &current_ids,
+            &model.objects,
+            reviewed,
+            coverage.as_deref(),
+            app.bounds.max_source_bytes,
+        );
+        if !diagnostics.is_empty() {
+            return Err(AppError::new(
+                "knowledge_projection_invalid",
+                "current knowledge projection is invalid",
+            )
+            .details(json!({"diagnostics": diagnostics})));
+        }
+    }
+    let mut value = json!({
         "schema": OBJECTS_SCHEMA,
         "objects": model.objects,
         "architecture": {
@@ -1225,12 +1421,19 @@ pub(super) fn export(app: &App) -> Result<Value, AppError> {
         "capabilities": capabilities,
         "reading_order": reading_order,
     });
+    if let Some(coverage) = &coverage {
+        value["coverage"] = json!({
+            "records": coverage,
+            "counts": coverage_counts(coverage),
+        });
+    }
     write_json(&app.root, OBJECTS_PATH, &value)?;
     Ok(json!({
         "schema": OBJECTS_SCHEMA,
         "objects": value["objects"].as_array().map_or(0, Vec::len),
         "relationships": model.relationships.len(),
         "capabilities": value["capabilities"].as_object().map_or(0, serde_json::Map::len),
+        "coverage": coverage.as_ref().map(|records| coverage_counts(records)),
         "path": OBJECTS_PATH,
     }))
 }
@@ -1305,7 +1508,14 @@ pub(super) fn ownership(app: &App, id: String) -> Result<Value, AppError> {
     let requirement = requirement_by_id(&model, &id)?;
     let reviewed = load_reviewed(app)?;
     let references = scan_references(app)?;
-    let value = ownership_result(app, requirement, &reviewed, &references);
+    let coverage = if coverage_active(&model) {
+        coverage_records(app, &model, &reviewed, &references)?
+            .into_iter()
+            .find(|record| record.semantic_id == id)
+    } else {
+        None
+    };
+    let value = ownership_result(app, requirement, &reviewed, &references, coverage.as_ref());
     enforce_selected_packet_bound(
         app,
         "ownership_bound_exceeded",
@@ -1550,6 +1760,666 @@ fn reviewed_fact(state: &ReviewedState, id: &str) -> Value {
     })
 }
 
+fn coverage_active(model: &KnowledgeModel) -> bool {
+    model
+        .objects
+        .iter()
+        .any(|requirement| requirement.semantic_id == COVERAGE_REQUIREMENT_ID)
+}
+
+fn coverage_endpoint_digest(endpoints: &[CoverageEndpoint]) -> String {
+    digest_text(&serde_json::to_string(endpoints).expect("coverage endpoints serialize"))
+}
+
+fn coverage_diagnostic(gate: &str, semantic_id: &str, target: &str, next_action: &str) -> Value {
+    json!({
+        "gate": gate,
+        "semantic_id": semantic_id,
+        "target": target,
+        "next_action": next_action,
+    })
+}
+
+fn implementation_coverage(
+    app: &App,
+    references: &[ScanRef],
+) -> Result<
+    (
+        BTreeMap<String, Vec<CoverageEndpoint>>,
+        BTreeMap<String, Vec<Value>>,
+    ),
+    AppError,
+> {
+    let mut endpoints = BTreeMap::<String, Vec<CoverageEndpoint>>::new();
+    let mut diagnostics = BTreeMap::<String, Vec<Value>>::new();
+    for reference in references
+        .iter()
+        .filter(|reference| reference.kind == "rust")
+    {
+        let item = rust_marker_scope(app, reference)?;
+        match item.scope {
+            "production" => {
+                let locator = format!("{}:{}", reference.path, reference.line);
+                endpoints
+                    .entry(reference.id.clone())
+                    .or_default()
+                    .push(CoverageEndpoint {
+                        identity: format!(
+                            "rust:{locator}:{}:{}",
+                            reference.id, item.identity
+                        ),
+                        class: "rust-production".to_owned(),
+                        path: reference.path.clone(),
+                        locator: locator.clone(),
+                        scope: vec![format!(
+                            "Rust production scope {} at {locator}",
+                            item.identity
+                        )],
+                        claim_boundaries: Vec::new(),
+                        artifact_digest: None,
+                        resolved_path: None,
+                    });
+            }
+            "test" => {}
+            _ => diagnostics
+                .entry(reference.id.clone())
+                .or_default()
+                .push(coverage_diagnostic(
+                    "unscoped-implementation-marker",
+                    &reference.id,
+                    "implementation",
+                    "move the marker to the Rust semantic scope that materially realizes the requirement or remove it",
+                )),
+        }
+    }
+    for values in endpoints.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+    Ok((endpoints, diagnostics))
+}
+
+fn evidence_record_line(text: &str, evidence_id: &str) -> usize {
+    let needle = format!("id = \"{evidence_id}\"");
+    text.lines()
+        .position(|line| line.trim() == needle)
+        .map_or(1, |line| line + 1)
+}
+
+fn evidence_endpoint_class(class: &str, tier: &str) -> String {
+    format!("{class}:{tier}")
+}
+
+fn evidence_class_valid(class: &str) -> bool {
+    matches!(
+        class,
+        "test" | "executable-model" | "executable-scenario" | "evidence-artifact"
+    )
+}
+
+enum DeclaredFile {
+    Valid {
+        path: PathBuf,
+        resolved_path: Option<String>,
+    },
+    Invalid(&'static str),
+}
+
+fn resolve_declared_file(app: &App, relative: &str) -> Result<DeclaredFile, AppError> {
+    let declared = match safe_join(&app.root, relative) {
+        Ok(path) => path,
+        Err(_) => return Ok(DeclaredFile::Invalid("repository path confinement")),
+    };
+    let canonical_root = fs::canonicalize(&app.root)
+        .map_err(|error| AppError::new("repository_root_unavailable", error.to_string()))?;
+    let resolved = match fs::canonicalize(&declared) {
+        Ok(path) => path,
+        Err(_) => return Ok(DeclaredFile::Invalid("reproducible replay or inspection")),
+    };
+    if !resolved.starts_with(&canonical_root) {
+        return Ok(DeclaredFile::Invalid("repository path confinement"));
+    }
+    if !resolved.is_file() {
+        return Ok(DeclaredFile::Invalid("reproducible replay or inspection"));
+    }
+    let normalized = canonical_root.join(relative);
+    let resolved_path = (resolved != normalized).then(|| rel(&canonical_root, &resolved));
+    Ok(DeclaredFile::Valid {
+        path: resolved,
+        resolved_path,
+    })
+}
+
+fn evidence_coverage(app: &App) -> Result<EvidenceCoverage, AppError> {
+    let relative = "verification/manifest.toml";
+    let path = safe_join(&app.root, relative)?;
+    if !path.is_file() {
+        return Ok(EvidenceCoverage::default());
+    }
+    let manifest_text = read_bounded(&path, relative, app)?;
+    let manifest: VerificationManifest = toml::from_str(&manifest_text)
+        .map_err(|error| AppError::new("parse_failed", format!("{relative}: {error}")))?;
+    if manifest.schema != VERIFICATION_SCHEMA {
+        return Err(AppError::new(
+            "verification_manifest_schema_mismatch",
+            manifest.schema,
+        ));
+    }
+    let mut result = EvidenceCoverage::default();
+    let mut ids = BTreeSet::new();
+    for record in manifest.evidence {
+        if record.requirements.is_empty() {
+            return Err(AppError::new(
+                "evidence_relationship_invalid",
+                format!("{} names no current requirement", record.id),
+            ));
+        }
+        let mut invalid_fields = Vec::new();
+        if record.id.trim().is_empty() {
+            invalid_fields.push("stable identity");
+        } else if !ids.insert(record.id.clone()) {
+            invalid_fields.push("unique stable identity");
+        }
+        if record.path.trim().is_empty() {
+            invalid_fields.push("executable input");
+        }
+        if !evidence_class_valid(&record.class) {
+            invalid_fields.push("evidence class or role");
+        }
+        if record.fault_model.is_empty()
+            || record
+                .fault_model
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            invalid_fields.push("exercised mechanism or invariant");
+        }
+        if record.claim.trim().is_empty() {
+            invalid_fields.push("observed outcome");
+        }
+        if record.tier.trim().is_empty() {
+            invalid_fields.push("evidence tier");
+        }
+        if record.scope.is_empty() || record.scope.iter().any(|value| value.trim().is_empty()) {
+            invalid_fields.push("bounded scope");
+        }
+        if record.non_claims.is_empty()
+            || record
+                .non_claims
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            invalid_fields.push("closest unsupported claim boundary and explicit non-claims");
+        }
+        if record.scope.len() > app.bounds.max_units
+            || record.non_claims.len() > app.bounds.max_units
+            || record.fault_model.len() > app.bounds.max_units
+        {
+            invalid_fields.push("bounded inputs and outputs");
+        }
+
+        let mut resolved_path = None;
+        let artifact = if record.path.trim().is_empty() {
+            None
+        } else {
+            match resolve_declared_file(app, &record.path)? {
+                DeclaredFile::Valid {
+                    path,
+                    resolved_path: canonical_path,
+                } => {
+                    resolved_path = canonical_path;
+                    Some(path)
+                }
+                DeclaredFile::Invalid(fact) => {
+                    invalid_fields.push(fact);
+                    None
+                }
+            }
+        };
+        let artifact_bytes = match artifact.as_ref() {
+            Some(artifact) => match fs::read(artifact) {
+                Ok(bytes) if bytes.len() <= MAX_AUTHORITY_FILE_BYTES => Some(bytes),
+                Ok(_) => {
+                    invalid_fields.push("bounded inputs and outputs");
+                    None
+                }
+                Err(_) => {
+                    invalid_fields.push("reproducible replay or inspection");
+                    None
+                }
+            },
+            None => None,
+        };
+        let line = evidence_record_line(&manifest_text, &record.id);
+        for semantic_id in &record.requirements {
+            if !invalid_fields.is_empty() {
+                result
+                    .diagnostics
+                    .entry(semantic_id.clone())
+                    .or_default()
+                    .push(json!({
+                        "gate": "incomplete-evidence",
+                        "semantic_id": semantic_id,
+                        "target": "evidence",
+                        "endpoint": record.id,
+                        "missing_facts": invalid_fields,
+                        "next_action": "complete or remove the invalid artifact-owned evidence relationship",
+                    }));
+                continue;
+            }
+            let digest = digest_bytes(
+                artifact_bytes
+                    .as_deref()
+                    .expect("valid evidence has readable bounded bytes"),
+            );
+            result
+                .endpoints
+                .entry(semantic_id.clone())
+                .or_default()
+                .push(CoverageEndpoint {
+                    identity: record.id.clone(),
+                    class: evidence_endpoint_class(&record.class, &record.tier),
+                    path: record.path.clone(),
+                    locator: format!("{relative}:{line}"),
+                    scope: record.scope.clone(),
+                    claim_boundaries: record.non_claims.clone(),
+                    artifact_digest: Some(digest),
+                    resolved_path: resolved_path.clone(),
+                });
+        }
+    }
+    for values in result.endpoints.values_mut() {
+        values.sort();
+        values.dedup();
+    }
+    Ok(result)
+}
+
+fn valid_disposition_strings(values: &[String], app: &App) -> bool {
+    !values.is_empty()
+        && values.len() <= app.bounds.max_units
+        && values
+            .iter()
+            .all(|value| !value.trim().is_empty() && value.len() <= app.bounds.max_source_bytes)
+}
+
+fn coverage_target_record(
+    app: &App,
+    requirement: &RequirementObject,
+    target: &str,
+    endpoints: Vec<CoverageEndpoint>,
+    mut diagnostics: Vec<Value>,
+    reviewed: &ReviewedState,
+) -> CoverageTargetRecord {
+    let current_digest = coverage_endpoint_digest(&endpoints);
+    let reviewed_digest = reviewed
+        .coverage_endpoint_digests
+        .get(&requirement.semantic_id)
+        .and_then(|digests| digests.get(target))
+        .cloned();
+    if reviewed
+        .local_fingerprints
+        .get(&requirement.semantic_id)
+        .is_some_and(|fingerprint| fingerprint != &requirement.local_semantic_fingerprint)
+    {
+        diagnostics.push(coverage_diagnostic(
+            "local-fingerprint-suspect",
+            &requirement.semantic_id,
+            target,
+            "review both targets against the current local requirement fingerprint",
+        ));
+    } else if reviewed
+        .effective_fingerprints
+        .get(&requirement.semantic_id)
+        .is_some_and(|fingerprint| fingerprint != &requirement.effective_semantic_fingerprint)
+    {
+        diagnostics.push(coverage_diagnostic(
+            "semantic-prerequisite-changed",
+            &requirement.semantic_id,
+            target,
+            "review both targets against the current effective requirement fingerprint",
+        ));
+    }
+    let endpoint_set_changed = reviewed_digest
+        .as_deref()
+        .is_some_and(|digest| digest != current_digest);
+    if endpoint_set_changed {
+        diagnostics.push(coverage_diagnostic(
+            if endpoints.is_empty() {
+                "deleted-endpoint-set"
+            } else {
+                "stale-endpoint-set-digest"
+            },
+            &requirement.semantic_id,
+            target,
+            "remove the deleted relationship or review the current typed endpoint set and persist its deterministic digest",
+        ));
+    }
+    let disposition = reviewed
+        .coverage_dispositions
+        .get(&requirement.semantic_id)
+        .and_then(|targets| targets.get(target))
+        .cloned();
+    if let Some(disposition) = &disposition {
+        let trigger = disposition.review_trigger.condition.as_str();
+        let trigger_valid = matches!(
+            (target, trigger),
+            ("implementation", "owner-present")
+                | ("implementation", "fingerprint-changed")
+                | ("evidence", "evidence-present")
+                | ("evidence", "fingerprint-changed")
+        );
+        if !matches!(disposition.kind.as_str(), "not-applicable" | "deferred")
+            || !valid_disposition_strings(&disposition.scope, app)
+            || !valid_disposition_strings(&disposition.non_claims, app)
+            || disposition.reason.trim().is_empty()
+            || !trigger_valid
+            || disposition.local_fingerprint != requirement.local_semantic_fingerprint
+            || disposition.effective_fingerprint != requirement.effective_semantic_fingerprint
+            || disposition.endpoint_set_digest != current_digest
+            || reviewed_digest.as_deref() != Some(current_digest.as_str())
+        {
+            diagnostics.push(coverage_diagnostic(
+                "invalid-disposition",
+                &requirement.semantic_id,
+                target,
+                "review or remove the malformed, stale, or mismatched target disposition",
+            ));
+        }
+        let fingerprint_changed = disposition.local_fingerprint
+            != requirement.local_semantic_fingerprint
+            || disposition.effective_fingerprint != requirement.effective_semantic_fingerprint;
+        let endpoint_trigger = !endpoints.is_empty()
+            && matches!(
+                (target, trigger),
+                ("implementation", "owner-present") | ("evidence", "evidence-present")
+            );
+        if endpoint_trigger || (trigger == "fingerprint-changed" && fingerprint_changed) {
+            diagnostics.push(coverage_diagnostic(
+                "deferred-trigger-fired",
+                &requirement.semantic_id,
+                target,
+                "individually review the changed target and remove or renew its disposition",
+            ));
+        } else if !endpoints.is_empty() {
+            diagnostics.push(coverage_diagnostic(
+                "disposition-conflicts-with-coverage",
+                &requirement.semantic_id,
+                target,
+                "remove the disposition or the contradictory endpoint relationship and review the target",
+            ));
+        }
+    }
+
+    let state = if !diagnostics.is_empty() {
+        "invalid"
+    } else if endpoints.is_empty() {
+        if disposition.is_some() {
+            "dispositioned"
+        } else {
+            "missing"
+        }
+    } else if endpoint_set_changed {
+        "invalid"
+    } else if reviewed_digest.as_deref() == Some(current_digest.as_str()) {
+        "covered"
+    } else {
+        "missing"
+    };
+    if state == "missing" {
+        diagnostics.push(coverage_diagnostic(
+            "missing-coverage-target",
+            &requirement.semantic_id,
+            target,
+            "review meaningful current endpoints or add one validated target-specific disposition",
+        ));
+    }
+    CoverageTargetRecord {
+        target: target.to_owned(),
+        state: state.to_owned(),
+        current_endpoint_set_digest: current_digest,
+        reviewed_endpoint_set_digest: reviewed_digest,
+        endpoints,
+        disposition,
+        diagnostics,
+    }
+}
+
+/// dwv:req req.documentation-knowledge-architecture.correctness-sensitive-requirements-have-meaningful-coverage-or-explicit-disposition
+fn coverage_records(
+    app: &App,
+    model: &KnowledgeModel,
+    reviewed: &ReviewedState,
+    references: &[ScanRef],
+) -> Result<Vec<RequirementCoverage>, AppError> {
+    let (implementation, implementation_diagnostics) = implementation_coverage(app, references)?;
+    let evidence = evidence_coverage(app)?;
+    let mut records = Vec::with_capacity(model.objects.len());
+    for requirement in &model.objects {
+        let implementation = coverage_target_record(
+            app,
+            requirement,
+            "implementation",
+            implementation
+                .get(&requirement.semantic_id)
+                .cloned()
+                .unwrap_or_default(),
+            implementation_diagnostics
+                .get(&requirement.semantic_id)
+                .cloned()
+                .unwrap_or_default(),
+            reviewed,
+        );
+        let evidence = coverage_target_record(
+            app,
+            requirement,
+            "evidence",
+            evidence
+                .endpoints
+                .get(&requirement.semantic_id)
+                .cloned()
+                .unwrap_or_default(),
+            evidence
+                .diagnostics
+                .get(&requirement.semantic_id)
+                .cloned()
+                .unwrap_or_default(),
+            reviewed,
+        );
+        let aggregate_state = if implementation.state == "invalid" || evidence.state == "invalid" {
+            "invalid"
+        } else if implementation.state == "missing" || evidence.state == "missing" {
+            "missing"
+        } else if implementation.state == "dispositioned" || evidence.state == "dispositioned" {
+            "dispositioned"
+        } else {
+            "covered"
+        };
+        records.push(RequirementCoverage {
+            semantic_id: requirement.semantic_id.clone(),
+            aggregate_state: aggregate_state.to_owned(),
+            implementation,
+            evidence,
+        });
+    }
+    Ok(records)
+}
+
+fn coverage_counts(records: &[RequirementCoverage]) -> Value {
+    let mut aggregates = BTreeMap::<String, usize>::new();
+    let mut targets = BTreeMap::<String, usize>::new();
+    for record in records {
+        *aggregates
+            .entry(record.aggregate_state.clone())
+            .or_default() += 1;
+        for target in [&record.implementation, &record.evidence] {
+            *targets.entry(target.state.clone()).or_default() += 1;
+        }
+    }
+    json!({"aggregates": aggregates, "targets": targets})
+}
+
+fn reviewed_state_orphans(
+    state: &ReviewedState,
+    current_ids: &BTreeSet<String>,
+    max_source_bytes: usize,
+) -> BTreeSet<String> {
+    let ids = state
+        .local_fingerprints
+        .keys()
+        .chain(state.effective_fingerprints.keys())
+        .chain(state.outcomes.keys())
+        .chain(state.reasons.keys())
+        .chain(state.coverage_endpoint_digests.keys())
+        .chain(state.coverage_dispositions.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    let mut orphaned = BTreeSet::new();
+    for id in ids {
+        let outcome = state.outcomes.get(&id).map(String::as_str);
+        let reason = state.reasons.get(&id).map(String::as_str);
+        let has_reviewed_state = state.local_fingerprints.contains_key(&id)
+            || state.effective_fingerprints.contains_key(&id)
+            || state.outcomes.contains_key(&id)
+            || state.reasons.contains_key(&id)
+            || state.coverage_endpoint_digests.contains_key(&id)
+            || state.coverage_dispositions.contains_key(&id);
+        let review_metadata_complete = outcome.is_some_and(|value| OUTCOMES.contains(&value))
+            && reason
+                .is_some_and(|value| !value.trim().is_empty() && value.len() <= max_source_bytes)
+            && state
+                .local_fingerprints
+                .get(&id)
+                .is_some_and(|value| !value.trim().is_empty() && value.len() <= max_source_bytes)
+            && state
+                .effective_fingerprints
+                .get(&id)
+                .is_some_and(|value| !value.trim().is_empty() && value.len() <= max_source_bytes);
+        let empty_digest_entry = state
+            .coverage_endpoint_digests
+            .get(&id)
+            .is_some_and(|digests| digests.implementation.is_none() && digests.evidence.is_none());
+        let empty_disposition_entry = state
+            .coverage_dispositions
+            .get(&id)
+            .is_some_and(|targets| targets.is_empty());
+        if !current_ids.contains(&id)
+            || (!review_metadata_complete && has_reviewed_state)
+            || empty_digest_entry
+            || empty_disposition_entry
+        {
+            orphaned.insert(id);
+        }
+    }
+    for (id, dispositions) in &state.coverage_dispositions {
+        for (target, disposition) in dispositions {
+            if !COVERAGE_TARGETS.contains(&target.as_str())
+                || disposition.requirement_id != *id
+                || disposition.target != *target
+            {
+                orphaned.insert(id.clone());
+            }
+        }
+    }
+    orphaned
+}
+
+fn reviewed_fingerprint_diagnostics(
+    objects: &[RequirementObject],
+    state: &ReviewedState,
+) -> Vec<Value> {
+    let mut diagnostics = Vec::new();
+    for requirement in objects {
+        let local = state.local_fingerprints.get(&requirement.semantic_id);
+        let effective = state.effective_fingerprints.get(&requirement.semantic_id);
+        if local.is_some_and(|fingerprint| fingerprint != &requirement.local_semantic_fingerprint) {
+            diagnostics.push(json!({
+                "gate": "local-fingerprint-suspect",
+                "semantic_id": requirement.semantic_id,
+                "next_action": format!(
+                    "cargo xtask docs knowledge resolve {} --target both --outcome reviewed --reason <text>",
+                    requirement.semantic_id
+                ),
+            }));
+        } else if local.is_some()
+            && effective.is_some_and(|fingerprint| {
+                fingerprint != &requirement.effective_semantic_fingerprint
+            })
+        {
+            diagnostics.push(json!({
+                "gate": "semantic-prerequisite-changed",
+                "semantic_id": requirement.semantic_id,
+                "next_action": format!(
+                    "cargo xtask docs knowledge resolve {} --target both --outcome reviewed --reason <text>",
+                    requirement.semantic_id
+                ),
+            }));
+        }
+    }
+    diagnostics
+}
+
+fn unknown_reference_values(references: &[ScanRef], current_ids: &BTreeSet<String>) -> Vec<Value> {
+    references
+        .iter()
+        .filter(|reference| !current_ids.contains(&reference.id))
+        .map(|reference| {
+            json!({
+                "semantic_id": reference.id,
+                "kind": reference.kind,
+                "path": reference.path,
+                "line": reference.line,
+            })
+        })
+        .collect()
+}
+
+fn invalid_projection_diagnostics(
+    references: &[ScanRef],
+    current_ids: &BTreeSet<String>,
+    objects: &[RequirementObject],
+    reviewed: &ReviewedState,
+    coverage: Option<&[RequirementCoverage]>,
+    max_source_bytes: usize,
+) -> Vec<Value> {
+    let mut diagnostics = if coverage.is_none() {
+        reviewed_fingerprint_diagnostics(objects, reviewed)
+    } else {
+        Vec::new()
+    };
+    diagnostics.extend(
+        reviewed_state_orphans(reviewed, current_ids, max_source_bytes)
+            .into_iter()
+            .map(|id| {
+                json!({
+                    "gate": "orphaned-state",
+                    "semantic_id": id,
+                    "next_action": "remove orphaned state or resolve as superseded",
+                })
+            }),
+    );
+    diagnostics.extend(unknown_reference_values(references, current_ids).into_iter().map(
+        |reference| {
+            json!({
+                "gate": "unknown-reference",
+                "semantic_id": reference["semantic_id"],
+                "path": reference["path"],
+                "line": reference["line"],
+                "next_action": "remove the unknown req.* reference or add its canonical requirement",
+            })
+        },
+    ));
+    if let Some(coverage) = coverage {
+        diagnostics.extend(coverage.iter().flat_map(|record| {
+            [&record.implementation, &record.evidence]
+                .into_iter()
+                .filter(|target| target.state == "invalid")
+                .flat_map(|target| target.diagnostics.iter().cloned())
+        }));
+    }
+    diagnostics
+}
+
 fn packet_references(
     references: &[ScanRef],
     selected: &BTreeSet<String>,
@@ -1638,10 +2508,11 @@ fn ownership_result(
     requirement: &RequirementObject,
     reviewed: &ReviewedState,
     all_references: &[ScanRef],
+    coverage: Option<&RequirementCoverage>,
 ) -> Value {
     let selected = BTreeSet::from([requirement.semantic_id.clone()]);
     let (references, omitted) = packet_references(all_references, &selected, app.bounds.max_units);
-    json!({
+    let mut result = json!({
         "schema": OWNERSHIP_SCHEMA,
         "requirement": requirement_identity(requirement),
         "relationships": direct_relationships(requirement),
@@ -1652,7 +2523,11 @@ fn ownership_result(
             "max_context_bytes": app.bounds.max_context_bytes,
         },
         "omitted": omitted,
-    })
+    });
+    if let Some(coverage) = coverage {
+        result["coverage"] = json!(coverage);
+    }
+    result
 }
 
 fn context_packet(app: &App, ids: Vec<String>, audit: bool) -> Result<Value, AppError> {
@@ -2080,7 +2955,7 @@ pub(super) fn affected(
     }
     let mut impacts = Vec::new();
     for (id, (reasons, review_required)) in selected {
-        let packet = ownership_result(app, current[id.as_str()], &reviewed, &references);
+        let packet = ownership_result(app, current[id.as_str()], &reviewed, &references, None);
         let pages = packet["references"]["documentation"]
             .as_array()
             .into_iter()
@@ -2404,10 +3279,18 @@ fn is_quint_source_path(path: &str) -> bool {
         && path.ends_with(".qnt")
 }
 
+fn rust_source_kind(path: &str) -> Option<&'static str> {
+    RUST_SOURCE_ROOTS.iter().find_map(|&(root, kind)| {
+        path.strip_prefix(root)
+            .filter(|suffix| suffix.starts_with('/'))
+            .filter(|_| path.ends_with(".rs"))
+            .map(|_| kind)
+    })
+}
+
 fn is_impact_candidate(path: &str) -> bool {
     !excluded(path)
-        && ((path.starts_with("crates/") && path.ends_with(".rs"))
-            || (path.starts_with("xtask/") && path.ends_with(".rs"))
+        && (rust_source_kind(path).is_some()
             || (path.starts_with("openspec/specs/") && path.ends_with("/spec.md"))
             || path == "verification/manifest.toml"
             || path == "docs/curriculum.toml"
@@ -2435,9 +3318,9 @@ fn revision_path_absent(stderr: &[u8]) -> bool {
 
 fn relationship_marker(relative: &str, line: &str) -> bool {
     if relative.ends_with(".rs") {
-        line.contains("/// dwv:req ")
+        line.contains(concat!("/// dwv:", "req "))
     } else if relative.ends_with(".qnt") {
-        line.contains("// dwv:req ")
+        line.contains(concat!("// dwv:", "req "))
     } else {
         true
     }
@@ -2445,9 +3328,14 @@ fn relationship_marker(relative: &str, line: &str) -> bool {
 
 fn relationship_ids(relative: &str, text: &str) -> BTreeSet<String> {
     if relative.ends_with(".rs") || relative.ends_with(".qnt") {
+        let marker = if relative.ends_with(".rs") {
+            concat!("/// dwv:", "req ")
+        } else {
+            concat!("// dwv:", "req ")
+        };
         text.lines()
             .filter(|line| relationship_marker(relative, line))
-            .flat_map(extract_ids)
+            .flat_map(|line| extract_structured_marker_ids(line, marker))
             .collect()
     } else {
         extract_ids(text)
@@ -3311,14 +4199,17 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         .collect::<BTreeMap<_, _>>();
     let refs = scan_references(app)?;
     let planning_diagnostics = retired_planning_diagnostics(app)?;
-    let current_ids = current.keys().copied().collect::<BTreeSet<_>>();
+    let current_ids = current
+        .keys()
+        .map(|id| (*id).to_owned())
+        .collect::<BTreeSet<_>>();
     let mut uncovered = current_ids
         .iter()
         .filter(|id| {
-            !state.local_fingerprints.contains_key(**id)
-                || !state.effective_fingerprints.contains_key(**id)
+            !state.local_fingerprints.contains_key(*id)
+                || !state.effective_fingerprints.contains_key(*id)
         })
-        .map(|id| (*id).to_owned())
+        .cloned()
         .collect::<Vec<_>>();
     uncovered.sort();
     uncovered.dedup();
@@ -3348,27 +4239,28 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         })
         .map(|(id, _)| (*id).to_owned())
         .collect::<Vec<_>>();
-    let mut orphaned = BTreeSet::new();
-    for id in state
-        .local_fingerprints
-        .keys()
-        .chain(state.effective_fingerprints.keys())
-        .chain(state.outcomes.keys())
-        .chain(state.reasons.keys())
-    {
-        let outcome = state.outcomes.get(id).map(String::as_str);
-        if !current_ids.contains(id.as_str())
-            || outcome.is_some_and(|value| !OUTCOMES.contains(&value))
-            || (outcome.is_some()
-                && state
-                    .reasons
-                    .get(id)
-                    .is_none_or(|reason| reason.trim().is_empty()))
-        {
-            orphaned.insert(id.clone());
-        }
-    }
-    let unknown = refs.iter().filter(|reference| !current_ids.contains(reference.id.as_str())).map(|reference| json!({"semantic_id": reference.id, "kind": reference.kind, "path": reference.path, "line": reference.line})).collect::<Vec<_>>();
+    let orphaned = reviewed_state_orphans(&state, &current_ids, app.bounds.max_source_bytes);
+    let unknown = unknown_reference_values(&refs, &current_ids);
+    let coverage = if current_ids.contains(COVERAGE_REQUIREMENT_ID) {
+        let model = knowledge_model(app)?;
+        Some(coverage_records(app, &model, &state, &refs)?)
+    } else {
+        None
+    };
+    let missing_coverage_targets = coverage.as_ref().map_or(0, |records| {
+        records
+            .iter()
+            .flat_map(|record| [&record.implementation, &record.evidence])
+            .filter(|target| target.state == "missing")
+            .count()
+    });
+    let invalid_coverage_targets = coverage.as_ref().map_or(0, |records| {
+        records
+            .iter()
+            .flat_map(|record| [&record.implementation, &record.evidence])
+            .filter(|target| target.state == "invalid")
+            .count()
+    });
     let counts = json!({
         "uncovered": uncovered.len(),
         "local-fingerprint-suspect": local_suspect.len(),
@@ -3376,18 +4268,20 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         "orphaned-state": orphaned.len(),
         "unknown-reference": unknown.len(),
         "retired-planning-identifier": planning_diagnostics.len(),
+        "missing-coverage-target": missing_coverage_targets,
+        "invalid-coverage-target": invalid_coverage_targets,
         "historical-reference": 0,
         "mapping-collision": 0,
     });
     let mut diagnostics = Vec::new();
     for id in uncovered {
-        diagnostics.push(json!({"gate": "uncovered", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
+        diagnostics.push(json!({"gate": "uncovered", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --target both --outcome reviewed --reason <text>")}));
     }
     for id in local_suspect {
-        diagnostics.push(json!({"gate": "local-fingerprint-suspect", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
+        diagnostics.push(json!({"gate": "local-fingerprint-suspect", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --target both --outcome reviewed --reason <text>")}));
     }
     for id in prerequisite_suspect {
-        diagnostics.push(json!({"gate": "semantic-prerequisite-changed", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --outcome reviewed --reason <text>")}));
+        diagnostics.push(json!({"gate": "semantic-prerequisite-changed", "semantic_id": id, "next_action": format!("cargo xtask docs knowledge resolve {id} --target both --outcome reviewed --reason <text>")}));
     }
     for id in orphaned {
         diagnostics.push(json!({"gate": "orphaned-state", "semantic_id": id, "next_action": "remove orphaned state or resolve as superseded"}));
@@ -3396,12 +4290,33 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
         diagnostics.push(json!({"gate": "unknown-reference", "semantic_id": reference["semantic_id"], "path": reference["path"], "next_action": "remove the unknown req.* reference or add its canonical requirement"}));
     }
     diagnostics.extend(planning_diagnostics);
+    if let Some(coverage) = &coverage {
+        diagnostics.extend(coverage.iter().flat_map(|record| {
+            record
+                .implementation
+                .diagnostics
+                .iter()
+                .chain(record.evidence.diagnostics.iter())
+                .cloned()
+        }));
+    }
     let next_actions = diagnostics
         .iter()
         .filter_map(|diagnostic| diagnostic["next_action"].as_str())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let result = json!({"schema": READINESS_SCHEMA, "ready": diagnostics.is_empty(), "requirements": current.len(), "gate_counts": counts, "diagnostics": diagnostics, "next_actions": next_actions});
+    let result = json!({
+        "schema": READINESS_SCHEMA,
+        "ready": diagnostics.is_empty(),
+        "requirements": current.len(),
+        "gate_counts": counts,
+        "coverage": coverage.as_ref().map(|records| json!({
+            "counts": coverage_counts(records),
+            "records": records,
+        })),
+        "diagnostics": diagnostics,
+        "next_actions": next_actions,
+    });
     if result["ready"] == false {
         return Err(AppError::new(
             "knowledge_not_ready",
@@ -3412,15 +4327,27 @@ pub(super) fn readiness(app: &App) -> Result<Value, AppError> {
     Ok(result)
 }
 
-pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Result<Value, AppError> {
+pub(super) fn resolve(
+    app: &App,
+    id: &str,
+    target: &str,
+    outcome: &str,
+    reason: &str,
+) -> Result<Value, AppError> {
+    let selected_targets = match target {
+        "implementation" => vec!["implementation"],
+        "evidence" => vec!["evidence"],
+        "both" => COVERAGE_TARGETS.to_vec(),
+        _ => return Err(AppError::new("invalid_coverage_target", target)),
+    };
     if !OUTCOMES.contains(&outcome) {
         return Err(AppError::new("invalid_outcome", outcome));
     }
     if reason.trim().is_empty() {
         return Err(AppError::new("reason_required", id));
     }
-    let records = objects(app)?;
-    let current = records.iter().find(|record| record.semantic_id == id);
+    let model = knowledge_model(app)?;
+    let current = model.objects.iter().find(|record| record.semantic_id == id);
     let path = safe_join(&app.root, REVIEWED_PATH)?;
     let old = fs::read(&path)
         .map_err(|e| AppError::new("read_failed", format!("{REVIEWED_PATH}: {e}")))?;
@@ -3434,16 +4361,70 @@ pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Resul
     let Some(record) = current else {
         return Err(AppError::new("unknown_requirement", id));
     };
-    state
-        .local_fingerprints
-        .insert(id.to_owned(), record.local_semantic_fingerprint.clone());
-    state
-        .effective_fingerprints
-        .insert(id.to_owned(), record.effective_semantic_fingerprint.clone());
+    let fingerprints_current = state.local_fingerprints.get(id)
+        == Some(&record.local_semantic_fingerprint)
+        && state.effective_fingerprints.get(id) == Some(&record.effective_semantic_fingerprint);
+    if target != "both" && !fingerprints_current {
+        return Err(AppError::new(
+            "target_review_requires_both",
+            format!("{id}: current requirement fingerprints require review of both targets"),
+        ));
+    }
+    if target == "both" {
+        state
+            .local_fingerprints
+            .insert(id.to_owned(), record.local_semantic_fingerprint.clone());
+        state
+            .effective_fingerprints
+            .insert(id.to_owned(), record.effective_semantic_fingerprint.clone());
+    }
     state.outcomes.insert(id.to_owned(), outcome.to_owned());
     state
         .reasons
         .insert(id.to_owned(), reason.trim().to_owned());
+    let references = scan_references(app)?;
+    let (implementation, implementation_diagnostics) = implementation_coverage(app, &references)?;
+    let evidence = evidence_coverage(app)?;
+    let mut reviewed_digests = state
+        .coverage_endpoint_digests
+        .get(id)
+        .cloned()
+        .unwrap_or_default();
+    for target in selected_targets.iter().copied() {
+        let (endpoints, diagnostics) = if target == "implementation" {
+            (
+                implementation.get(id).cloned().unwrap_or_default(),
+                implementation_diagnostics
+                    .get(id)
+                    .cloned()
+                    .unwrap_or_default(),
+            )
+        } else {
+            (
+                evidence.endpoints.get(id).cloned().unwrap_or_default(),
+                evidence.diagnostics.get(id).cloned().unwrap_or_default(),
+            )
+        };
+        if !diagnostics.is_empty() {
+            return Err(
+                AppError::new("coverage_target_invalid", format!("{id}: {target}"))
+                    .details(json!({"diagnostics": diagnostics})),
+            );
+        }
+        reviewed_digests.set(target, coverage_endpoint_digest(&endpoints));
+    }
+    state
+        .coverage_endpoint_digests
+        .insert(id.to_owned(), reviewed_digests);
+    if let Some(dispositions) = state.coverage_dispositions.get_mut(id) {
+        for target in &selected_targets {
+            dispositions.remove(*target);
+        }
+        if dispositions.is_empty() {
+            state.coverage_dispositions.remove(id);
+        }
+    }
+
     let mut rendered = toml::to_string(&state)
         .map_err(|e| AppError::new("serialization_failed", e.to_string()))?
         .into_bytes();
@@ -3452,9 +4433,15 @@ pub(super) fn resolve(app: &App, id: &str, outcome: &str, reason: &str) -> Resul
     if changed {
         atomic_write(&path, &rendered)?;
     }
-    Ok(
-        json!({"schema": READINESS_SCHEMA, "semantic_id": id, "outcome": outcome, "changed": changed, "path": REVIEWED_PATH}),
-    )
+    Ok(json!({
+        "schema": READINESS_SCHEMA,
+        "semantic_id": id,
+        "target": target,
+        "outcome": outcome,
+        "coverage_endpoint_digests": state.coverage_endpoint_digests.get(id),
+        "changed": changed,
+        "path": REVIEWED_PATH,
+    }))
 }
 
 fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
@@ -3465,43 +4452,81 @@ fn scan_references(app: &App) -> Result<Vec<ScanRef>, AppError> {
         .into_iter()
         .map(|document| document.source_path)
         .collect::<BTreeSet<_>>();
-    for (directory, rust, extension) in [
-        ("docs", false, "md"),
-        ("crates", true, "rs"),
-        ("xtask", true, "rs"),
-        ("models/quint", false, "qnt"),
-        ("verification/quint", false, "qnt"),
+    let declared_evidence_paths = declared_evidence_paths(app)?;
+    for (directory, extension) in [
+        ("docs", "md"),
+        ("models/quint", "qnt"),
+        ("verification/quint", "qnt"),
     ] {
         let path = app.root.join(directory);
         if path.exists() {
             scan_tree(
                 &app.root,
                 &path,
-                rust,
+                None,
                 extension,
                 app,
                 &architecture_paths,
+                &declared_evidence_paths,
+                &mut refs,
+            )?;
+        }
+    }
+    for (directory, kind) in RUST_SOURCE_ROOTS {
+        let path = app.root.join(directory);
+        if path.exists() || path.is_symlink() {
+            scan_tree(
+                &app.root,
+                &path,
+                Some(kind),
+                "rs",
+                app,
+                &architecture_paths,
+                &declared_evidence_paths,
                 &mut refs,
             )?;
         }
     }
     for relative in ["docs/curriculum.toml", "verification/manifest.toml"] {
         let path = app.root.join(relative);
-        if path.is_file() {
-            scan_file(&app.root, &path, false, app, &architecture_paths, &mut refs)?;
+        if path.is_file() || path.is_symlink() {
+            scan_file(&app.root, &path, None, app, &architecture_paths, &mut refs)?;
         }
     }
     refs.sort_by(|a, b| (&a.id, &a.kind, &a.path, a.line).cmp(&(&b.id, &b.kind, &b.path, b.line)));
     Ok(refs)
 }
 
+fn declared_evidence_paths(app: &App) -> Result<BTreeSet<String>, AppError> {
+    let relative = "verification/manifest.toml";
+    let path = app.root.join(relative);
+    if !path.is_file() {
+        return Ok(BTreeSet::new());
+    }
+    let manifest_text = match read_bounded(&path, relative, app) {
+        Ok(text) => text,
+        Err(_) => return Ok(BTreeSet::new()),
+    };
+    let manifest: VerificationManifest = match toml::from_str(&manifest_text) {
+        Ok(manifest) => manifest,
+        Err(_) => return Ok(BTreeSet::new()),
+    };
+    Ok(manifest
+        .evidence
+        .into_iter()
+        .map(|record| record.path)
+        .filter(|path| !path.trim().is_empty())
+        .collect())
+}
+
 fn scan_tree(
     root: &Path,
     path: &Path,
-    rust: bool,
+    source_kind: Option<&str>,
     extension: &str,
     app: &App,
     architecture_paths: &BTreeSet<String>,
+    declared_evidence_paths: &BTreeSet<String>,
     refs: &mut Vec<ScanRef>,
 ) -> Result<(), AppError> {
     let relative = rel(root, path);
@@ -3509,6 +4534,7 @@ fn scan_tree(
     if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
+    reject_reference_symlink(root, path)?;
     let mut entries = entries(path, "reference_scan_failed")?;
     entries.sort_by_key(|entry| entry.file_name());
     for entry in entries {
@@ -3516,23 +4542,44 @@ fn scan_tree(
             .file_type()
             .map_err(|e| AppError::new("reference_scan_failed", e.to_string()))?;
         if kind.is_symlink() {
-            return Err(AppError::new("reference_symlink", rel(root, &entry.path())));
+            let relative = rel(root, &entry.path());
+            if source_kind.is_some() || !declared_evidence_paths.contains(&relative) {
+                return Err(AppError::new("reference_symlink", relative));
+            }
+            continue;
         }
         if kind.is_dir() {
             scan_tree(
                 root,
                 &entry.path(),
-                rust,
+                source_kind,
                 extension,
                 app,
                 architecture_paths,
+                declared_evidence_paths,
                 refs,
             )?;
         } else if kind.is_file()
             && entry.path().extension().and_then(|x| x.to_str()) == Some(extension)
         {
-            scan_file(root, &entry.path(), rust, app, architecture_paths, refs)?;
+            scan_file(
+                root,
+                &entry.path(),
+                source_kind,
+                app,
+                architecture_paths,
+                refs,
+            )?;
         }
+    }
+    Ok(())
+}
+
+fn reject_reference_symlink(root: &Path, path: &Path) -> Result<(), AppError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AppError::new("reference_scan_failed", error.to_string()))?;
+    if metadata.file_type().is_symlink() {
+        return Err(AppError::new("reference_symlink", rel(root, path)));
     }
     Ok(())
 }
@@ -3540,7 +4587,7 @@ fn scan_tree(
 fn scan_file(
     root: &Path,
     path: &Path,
-    rust: bool,
+    source_kind: Option<&str>,
     app: &App,
     architecture_paths: &BTreeSet<String>,
     refs: &mut Vec<ScanRef>,
@@ -3550,13 +4597,14 @@ fn scan_file(
     if excluded(&relative) || architecture_paths.contains(&relative) {
         return Ok(());
     }
+    reject_reference_symlink(root, path)?;
     let text = read_bounded(path, &relative, app)?;
     for (line, content) in text.lines().enumerate() {
         if !relationship_marker(&relative, content) {
             continue;
         }
-        let kind = if rust {
-            "rust"
+        let kind = if let Some(kind) = source_kind {
+            kind
         } else if is_quint_source_path(&relative) {
             "delegated"
         } else if relative == "verification/manifest.toml" {
@@ -3566,7 +4614,7 @@ fn scan_file(
         } else {
             "markdown"
         };
-        for id in extract_ids(content) {
+        for id in relationship_ids(&relative, content) {
             refs.push(ScanRef {
                 id,
                 kind: kind.to_owned(),
@@ -3668,6 +4716,20 @@ fn validate_semantic_id(id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
+pub(super) fn extract_structured_marker_ids(text: &str, marker: &str) -> BTreeSet<String> {
+    let Some((_, suffix)) = text.split_once(marker) else {
+        return BTreeSet::new();
+    };
+    let value = suffix.trim();
+    let id = if value.is_empty() {
+        "invalid requirement marker: empty".to_owned()
+    } else if validate_semantic_id(value).is_ok() {
+        value.to_owned()
+    } else {
+        format!("invalid requirement marker: {value}")
+    };
+    BTreeSet::from([id])
+}
 fn extract_ids(text: &str) -> BTreeSet<String> {
     let mut ids = BTreeSet::new();
     let mut offset = 0;
@@ -3762,8 +4824,21 @@ mod tests {
                     )
                 })
                 .collect(),
-            outcomes: BTreeMap::new(),
-            reasons: BTreeMap::new(),
+            outcomes: objects
+                .iter()
+                .map(|object| (object.semantic_id.clone(), "reviewed".to_owned()))
+                .collect(),
+            reasons: objects
+                .iter()
+                .map(|object| {
+                    (
+                        object.semantic_id.clone(),
+                        "The fixture requirement review metadata is present.".to_owned(),
+                    )
+                })
+                .collect(),
+            coverage_endpoint_digests: BTreeMap::new(),
+            coverage_dispositions: BTreeMap::new(),
         }
     }
 
@@ -4672,6 +5747,82 @@ mod tests {
         }
     }
     #[test]
+    fn rust_source_roots_are_typed_bounded_and_unique() {
+        let (root, app) = fixture("rust-source-roots");
+        let marker = concat!("/// dwv:", "req req.cap.one\n");
+        for (relative, body) in [
+            ("src/operator.rs", "fn owner() {}\n"),
+            ("crates/example.rs", "fn owner() {}\n"),
+            ("xtask/example.rs", "fn owner() {}\n"),
+            ("tests/operator.rs", "#[test]\nfn owner() {}\n"),
+            ("src/generated/ignored.rs", "fn ignored() {}\n"),
+            ("src/archive/ignored.rs", "fn ignored() {}\n"),
+            ("tests/.hidden.rs", "fn ignored() {}\n"),
+        ] {
+            let path = root.join(relative);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, format!("{marker}{body}")).unwrap();
+        }
+
+        let references = scan_references(&app)
+            .unwrap()
+            .into_iter()
+            .filter(|reference| reference.id == "req.cap.one")
+            .map(|reference| (reference.kind, reference.path))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            references,
+            vec![
+                ("rust".to_owned(), "crates/example.rs".to_owned()),
+                ("rust".to_owned(), "src/operator.rs".to_owned()),
+                ("rust".to_owned(), "xtask/example.rs".to_owned()),
+                ("verification".to_owned(), "tests/operator.rs".to_owned()),
+            ]
+        );
+        for path in [
+            "src/operator.rs",
+            "crates/example.rs",
+            "xtask/example.rs",
+            "tests/operator.rs",
+        ] {
+            assert!(is_impact_candidate(path));
+        }
+        for path in [
+            "src/generated/ignored.rs",
+            "src/archive/ignored.rs",
+            "tests/.hidden.rs",
+        ] {
+            assert!(!is_impact_candidate(path));
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn rust_source_roots_reject_symlink_reentry_and_escape() {
+        use std::os::unix::fs::symlink;
+
+        let (root, app) = fixture("rust-source-symlink-reentry");
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("crates")).unwrap();
+        symlink(root.join("crates"), root.join("src/reentry")).unwrap();
+        let error = scan_references(&app).unwrap_err();
+        assert_eq!(error.code, "reference_symlink");
+        assert_eq!(error.message, "src/reentry");
+        fs::remove_dir_all(root).unwrap();
+
+        let (root, app) = fixture("rust-source-symlink-escape");
+        let outside = root.with_extension("outside");
+        fs::create_dir_all(&outside).unwrap();
+        symlink(&outside, root.join("src")).unwrap();
+        let error = scan_references(&app).unwrap_err();
+        assert_eq!(error.code, "reference_symlink");
+        assert_eq!(error.message, "src");
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(outside).unwrap();
+    }
+
+    #[test]
     fn references_exclude_history_and_hidden_sources() {
         assert!(excluded("docs/handoffs/old.md"));
         assert!(excluded(
@@ -4729,6 +5880,17 @@ mod tests {
     fn ids_are_bounded_to_valid_shape() {
         let ids = extract_ids("req.a.one req.a.two.");
         assert_eq!(ids.len(), 2);
+    }
+
+    #[test]
+    fn structured_relationship_markers_never_salvage_invalid_suffix() {
+        assert_eq!(
+            relationship_ids(
+                "crates/example.rs",
+                concat!("/// dwv:", "req req.a.oneTYPO")
+            ),
+            BTreeSet::from(["invalid requirement marker: req.a.oneTYPO".to_owned()])
+        );
     }
     #[test]
     fn rust_relationship_recovery_reads_only_markers() {
@@ -5121,9 +6283,9 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(&unaffected).unwrap(), unaffected_before);
 
-        assert!(resolve(&app, "req.cap.one", "reviewed", "semantic review").is_ok());
+        assert!(resolve(&app, "req.cap.one", "both", "reviewed", "semantic review").is_ok());
         let first = fs::read(root.join(REVIEWED_PATH)).unwrap();
-        let result = resolve(&app, "req.cap.one", "reviewed", "semantic review").unwrap();
+        let result = resolve(&app, "req.cap.one", "both", "reviewed", "semantic review").unwrap();
         assert_eq!(result["changed"], false);
         assert_eq!(fs::read(root.join(REVIEWED_PATH)).unwrap(), first);
         assert!(readiness(&app).is_ok());
@@ -5933,4 +7095,5 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
     }
+    mod coverage_tests;
 }

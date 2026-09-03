@@ -1354,6 +1354,7 @@ impl RecoveryStateStore for SqliteRecoveryStore {
         self.memory.begin_protocol_txn(expected, topology_epoch)
     }
 
+    /// dwv:req req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic
     fn commit_durable(&mut self, txn: RecoveryTxn) -> Result<RecoveryGeneration, RecoveryError> {
         let health = self.verify_integrity();
         #[cfg(test)]

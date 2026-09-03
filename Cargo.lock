@@ -2286,9 +2286,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "blake3",
+ "proc-macro2",
  "pulldown-cmark",
  "serde",
  "serde_json",
+ "syn 2.0.119",
  "toml",
 ]
 

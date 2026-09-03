@@ -54,6 +54,8 @@ impl<'a, S: RecoveryStateStore + ?Sized> WriteRecoveryRecordCommit<'a, S> {
         )
     }
 
+    /// dwv:req req.recovery-state-semantics.data-parity-write-requires-write-recovery-record
+    /// dwv:req req.dirty-integrity-invalidation.write-recovery-record-precedes-data-parity-write
     pub fn commit(self) -> Result<WriteRecoveryRecordEvidence, RecoveryError> {
         self.commit_with_receipt().map(|result| result.evidence)
     }

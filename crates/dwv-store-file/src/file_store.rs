@@ -413,6 +413,7 @@ impl fmt::Debug for AcceptedFileWriterSet {
     }
 }
 
+/// dwv:req req.file-backed-stores.post-acquisition-writer-claim-release-is-exact-and-owner-observed
 impl AcceptedFileWriterSet {
     pub fn accept(
         expected_store_ids: impl IntoIterator<Item = StoreId>,

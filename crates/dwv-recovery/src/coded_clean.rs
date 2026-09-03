@@ -1582,7 +1582,6 @@ impl CaptureRecord {
         .ok_or(CodedCaptureError::CaptureOperationUnresolved { capture, operation })
     }
 }
-/// dwv:req req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set
 static NEXT_CODED_CAPTURE_AUTHORITY_ID: AtomicU64 = AtomicU64::new(1);
 
 fn next_coded_capture_authority_id() -> u64 {
@@ -1607,6 +1606,7 @@ impl Default for CodedCaptureCoordinator {
     }
 }
 
+/// dwv:req req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set
 impl CodedCaptureCoordinator {
     fn fork_candidate(&self) -> Self {
         Self {

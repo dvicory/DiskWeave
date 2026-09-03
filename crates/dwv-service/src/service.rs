@@ -3723,6 +3723,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         Ok(())
     }
 
+    /// dwv:req req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts
     fn authorization_candidate(
         &self,
         token: OperationSlotToken,

@@ -20,8 +20,8 @@ RUST_SOURCE = STATE / "rust-source"
 HTML = STATE / "html"
 OBJECTS = ROOT / "target" / "dwv-docs" / "knowledge" / "objects.json"
 MANIFEST = ROOT / "verification" / "manifest.toml"
-SCHEMA = "dwv.knowledge.objects.v3"
-VERIFICATION_SCHEMA = "dwv.verification.manifest.v1"
+SCHEMA = "dwv.knowledge.objects.v4"
+VERIFICATION_SCHEMA = "dwv.verification.manifest.v2"
 MAX_FIXTURE_BYTES = 1_000_000
 RUST_MARKER_RE = re.compile(r"(?m)^(?P<prefix>\s*///\s*)dwv:req\s+(?P<id>req\.[a-z0-9.-]+)\s*$")
 
