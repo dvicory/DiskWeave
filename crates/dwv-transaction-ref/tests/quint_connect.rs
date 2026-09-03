@@ -30,6 +30,7 @@ enum DataParityWriteState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
 enum RecoveryState {
     RecoveryClean,
     RecoveryDirty,
@@ -48,6 +49,7 @@ enum WriteLifecycleState {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
 enum WriteRecoveryRecordCommitObservation {
     CommitUnknown,
     CommitRejected,
@@ -56,6 +58,7 @@ enum WriteRecoveryRecordCommitObservation {
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "tag", content = "value")]
+#[allow(clippy::enum_variant_names)]
 enum DataParityWriteObservation {
     NoDataParityWriteObservation,
     DataParityWriteEffectIndeterminate,

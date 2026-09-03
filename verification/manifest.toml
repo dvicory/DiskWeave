@@ -894,3 +894,35 @@ non_claims = [
   "The cut helper does not define task-4.3 persistence transitions or physical media semantics.",
   "It does not establish service startup, recovery authority, topology publication, or hardware durability.",
 ]
+
+[[evidence]]
+id = "evidence.persistence-evidence-retirement"
+path = "docs/verification/portable-verification-evidence.md"
+claim = "The exact persistence-evidence retention checks preserve owner-qualified claims, reject non-exact successor bindings, isolate uncertain recovery acknowledgement, and reconcile retirement without changing separate payload bytes."
+tier = "portable-reference-comparison"
+fault_model = [
+  "partial or stale successor coverage",
+  "changed store incarnation, capability, domain, or topology",
+  "equal certificate occurrence confusion",
+  "stale concurrent retirement proposal",
+  "uncertain recovery commit acknowledgement",
+  "unrelated evidence loss",
+]
+scope = [
+  "dwv-recovery exact successor, equal occurrence, and stale proposal regressions",
+  "dwv-recovery 64-step clean and unrooted churn bounds",
+  "dwv-recovery-sqlite retirement failures before and after manifest publication",
+  "exact prior/proposed sidecar reconciliation and retry",
+  "separate payload-byte preservation",
+]
+requirements = [
+  "req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness",
+  "req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage",
+  "req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor",
+  "req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly",
+  "req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations",
+]
+non_claims = [
+  "These are bounded in-memory and SQLite adapter checks, not arbitrary-width retention proof or physical device durability.",
+  "They do not implement pre-mutation serving reservation or session-close supersession.",
+]
