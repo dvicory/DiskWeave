@@ -179,7 +179,7 @@ coverage of the wide analysis, all parameterized inputs, or Rust behavior.
 <!-- dwv:requires req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness -->
 <!-- dwv:requires req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout -->
 
-Adding fence-occurrence identities and root bindings SHALL create a new semantic recovery schema version after the current version and an explicit migration step. A current adapter SHALL classify the older manifest as migration-required before writable use rather than interpreting missing fields through defaults. Migration SHALL assign stable identities to every legacy fence occurrence while preserving duplicates and exact certificate values, and SHALL create a bounded `legacy-unreconciled` root for every occurrence or ambiguous copied-value reference. A legacy root MAY be discharged only by a current owner-qualified exact rebind or by one migration-owner inventory fact bound to the complete validated legacy predecessor that proves no persisted current root or preserved prior/proposed commit-intent requires that occurrence. If neither proof exists, migration SHALL leave the root retained and report migration-required or reconciliation-required; no generic cleanup may resolve it. An ambiguous legacy reference MAY retain all exact candidate occurrences, but SHALL not guess one or delete any candidate. Interrupted migration SHALL use the same exact prior/proposed reconciliation rules as other recovery transactions.
+Adding fence-occurrence identities and root bindings SHALL create a new semantic recovery schema version after the current version and an explicit migration step. A current adapter SHALL classify the older manifest as migration-required before writable use rather than interpreting missing fields through defaults. Migration SHALL assign stable identities to every legacy fence occurrence while preserving duplicates and exact certificate values, and SHALL create a bounded `legacy-unreconciled` root for every occurrence or ambiguous copied-value reference. In this change, migrated manifests with retained legacy roots SHALL remain stale/read-only and no migration-owner inventory proof, current-owner rebind, reset, or rebuild path is provided; a future change MAY define one only with an explicit data-preservation contract.
 
 #### Scenario: A legacy manifest is opened
 
@@ -194,7 +194,7 @@ Adding fence-occurrence identities and root bindings SHALL create a new semantic
 #### Scenario: A legacy copied reference is ambiguous
 
 - **WHEN** a legacy clean, integrity, session, or capture binding matches more than one fence occurrence
-- **THEN** migration retains every exact candidate under a legacy-unreconciled root until a current owner performs an exact rebind or the migration owner proves the complete legacy predecessor contains no claim requiring that candidate
+- **THEN** migration retains every exact candidate under a legacy-unreconciled root, keeps the migrated manifest stale/read-only, and does not silently coalesce, delete, rebind, reset, or rebuild the candidate
 
 #### Scenario: Migration acknowledgement is unknown
 

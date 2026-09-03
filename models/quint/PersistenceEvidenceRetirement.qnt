@@ -13,6 +13,9 @@
  * checks therefore cover a declared finite instance, never product cardinality.
  */
 
+// dwv:req req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness
+// dwv:req req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage
+// dwv:req req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor
 module PersistenceEvidenceRetirement {
   type CapturePhase = CaptureOpen | CaptureCommitPending | CaptureCommitUnknown | CaptureCleanKnown | CaptureRetired
 

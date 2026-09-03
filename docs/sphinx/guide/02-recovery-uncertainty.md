@@ -31,6 +31,28 @@ A recovery `CLEAN` commit from an older generation cannot make a newer write
 clean. A replacement disk that happens to occupy the same path is not
 automatically the same member. Evidence for one extent says nothing about an
 adjacent extent.
+## Evidence stays live while claims reach it
+
+A fence occurrence is not permanent history. Recovery retains the exact
+occurrence while a current or unresolved owner-qualified claim can still reach
+it. A current clean region, valid integrity record, closed-session boundary, or
+coded capture therefore keeps its own exact occurrence alive. A lost or
+unclassifiable recovery acknowledgement keeps both exact prior and proposed
+states available until reopen reconciliation.
+
+Equal certificate values are still separate occurrences; vector position and a
+scalar watermark cannot choose between them. An owner may rebind one root to a
+new occurrence only when store identity, capability, fence domain, topology,
+generation, and exact target coverage all match. Retirement is one
+generation- and topology-checked recovery transition: a known rejection keeps
+the predecessor, while an uncertain acknowledgement authorizes neither
+deletion nor a stronger claim. Legacy or ambiguous references remain
+conservative under explicit migration rather than being guessed or coalesced.
+
+Retention is not an audit history. Once every root reaching an occurrence is
+discharged or atomically rebound, that exact occurrence may be removed without
+changing payload bytes or unrelated evidence.
+
 
 ## Availability is not repair authority
 
@@ -72,5 +94,5 @@ necessary but not sufficient evidence.
 ```{needlist}
 :filter: "type == 'req' and capability == 'recovery-state-semantics'"
 ```
-**Provenance:** `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`; `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence`; `req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout`; `req.normalized-trace-replay.replay-is-deterministic-across-portable-backends`; `req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority`; scenario `scenario.normalized-recovery`.
+**Provenance:** `req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic`; `req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence`; `req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness`; `req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage`; `req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor`; `req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly`; `req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout`; `req.normalized-trace-replay.replay-is-deterministic-across-portable-backends`; `req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority`; scenario `scenario.normalized-recovery`.
 

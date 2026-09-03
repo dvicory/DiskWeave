@@ -84,12 +84,29 @@ defers = ["automatic repair", "platform bridge selection"]
 requirements = [
   "req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic",
   "req.recovery-state-semantics.clean-and-valid-claims-require-persistence-evidence",
+  "req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness",
+  "req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage",
+  "req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor",
+  "req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly",
   "req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout",
   "req.normalized-trace-replay.replay-is-deterministic-across-portable-backends",
   "req.documentation-knowledge-architecture.guide-curriculum-is-pedagogical-intent-not-semantic-authority"
 ]
 scenarios = ["scenario.normalized-recovery"]
 teaching_devices = ["normalized trace", "known versus unknown evidence ledger"]
+
+[[entries.sections]]
+heading = "Evidence stays live while claims reach it"
+focus = "Explain how exact fence occurrences remain available to current or unresolved claims, and how owners retire or rebind them without creating permanent history."
+must_answer = ["What keeps one fence occurrence live?", "Why is an uncertain retirement not deletion?", "How are legacy or ambiguous references handled?"]
+requirements = [
+  "req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness",
+  "req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage",
+  "req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor",
+  "req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly"
+]
+scenarios = []
+non_claims = ["Retention is not an audit-history product.", "An unresolved acknowledgement never authorizes evidence deletion."]
 
 [[entries.sections]]
 heading = "Inventory what survived"

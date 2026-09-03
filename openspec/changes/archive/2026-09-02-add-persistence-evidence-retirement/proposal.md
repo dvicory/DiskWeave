@@ -13,6 +13,12 @@
 - Keep pre-mutation capacity reservation as the separately tracked `dwv-x6y.2.2` prerequisite for serving implementation; this change defines retirement/successor rejection, not that reservation protocol.
 - Keep aggregate coverage summaries, external archives, and session-close supersession outside this first exact-retirement change; add them only through deliberately dependent changes.
 
+Legacy migration is intentionally bounded to explicit identity assignment,
+duplicate-preserving inspection, and stale/read-only classification in this
+change. No deployed legacy data exists here, so migration-owner reconciliation,
+reset, or rebuild behavior is deferred to a future owner decision with an
+explicit data-preservation contract.
+
 The three named recovery-state requirements delegate disjoint portions of one
 bounded registry/retirement relation to
 `models/quint/PersistenceEvidenceRetirement.qnt`: owner-qualified
@@ -21,6 +27,11 @@ rebind validation, and generation/topology-checked retirement/reconciliation.
 The focused, wide, and mutation analysis modules are evidence-only finite
 configurations; they do not replace the owner-qualified OpenSpec semantics or
 establish Rust implementation conformance.
+
+The implementation phase includes a gated Quint Connect correspondence
+check. It must exercise the production recovery-owner path after an
+adversarial projection review; it does not delegate SQLite layout, physical
+durability, or owner-fact production to the model.
 
 ## Capabilities
 

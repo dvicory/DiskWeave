@@ -44,7 +44,7 @@ Recovery stores the exact retention registry and validates root transitions, but
 - A persisted session-lifecycle root is created conservatively whenever a supported successor contains a writable-session global fence, including `CloseWritableSession`, migration, and reopen/import. It binds occurrence, session identity, and close generation. Replacing a closed session with `BeginWritableSession` carries that prior root forward rather than discharging or rebinding it. No current canonical session-lifecycle discharge owner exists, so this change neither discharges nor rebinds the root; closed-set/session-close supersession remains downstream.
 - Dirty-integrity creates coded-capture roots for exact clean-closure and release-certificate bindings. Its existing phase-specific cleanup, membership compaction, and retirement authorities alone discharge them; open, commit-pending, and commit-unknown captures retain them.
 - Recovery/adapters create an unresolved-recovery-commit root only when the adapter durably preserves an exact prior/proposed manifest and commit-intent identity for a may-have-committed recovery transaction. Known non-commit, exact durable successor, or authoritative reopen reconciliation discharges it; process-local operation state is not a durable root.
-- The explicit schema migration creates only `legacy-unreconciled` roots for old occurrences and ambiguous copied references. A migration-owned inventory fact bound to the complete validated legacy predecessor may discharge an occurrence only when it proves no persisted current root or preserved prior/proposed commit-intent requires it. Otherwise a current owner must perform an exact rebind; callers cannot create arbitrary historical roots.
+- The explicit schema migration creates only `legacy-unreconciled` roots for old occurrences and ambiguous copied references. This change stops at conservative read-only migration: it does not provide a migration-owner inventory proof, current-owner rebind, reset, or rebuild path. A migrated manifest with retained legacy roots remains stale/inspection-only until a separately scoped owner decision; callers cannot create arbitrary historical roots.
 
 The liveness contract is therefore bounded by current owner roots and admitted unresolved work, not by the number of successful writes. A clean region that is never rewritten remains a legitimate live root; cleanup is not required to reduce the registry to zero.
 
@@ -106,6 +106,84 @@ scenarios are complementary negative evidence, not implementation proof.
 
 The implementation may use a bounded exact index or an exact occurrence vector, but it must not add a generic retention framework. It must update all current exact lookup paths and remove the implicit rule that the top-level fence vector is permanent history. The first implementation remains whole-snapshot clone/serialization compatible, so serving is not enabled until `dwv-x6y.2.2` defines and verifies pre-mutation reservation and the retained-root envelope is measured.
 
+### 7. Quint Connect correspondence gate
+
+The Connect check is an implementation correspondence witness, not a second
+semantic authority. The bridge may project finite inputs and production
+results, but it cannot manufacture owner facts, durable outcomes, or root
+liveness. The following table is the required map; rows marked non-claim are
+excluded from Connect evidence rather than simulated.
+
+| Quint declaration | Bridge direction | Exact production seam | Authority boundary |
+| --- | --- | --- | --- |
+| `Snapshot` | production → Quint | `RecoverySnapshot` and `RecoveryInspection` | Connect projects the full bounded durable snapshot; roots, certificates, store facts, owner facts, generation, topology, and allocated identity high-water marks are compared. Root topology/generation are additionally asserted by the bridge; canonical serialized ordering remains production validation. |
+| `RetentionState`, `Phase`, `Outcome` | action-only / explicit non-claim | Quint scheduling actions and process-local recovery state | The model actions remain canonical for their relation, but Connect does not project phase, outcome, pending intent, or unresolved sidecar fields. |
+| `Fence`, `CertificateBinding`, `StoreFact` | production → Quint | `FenceCertificate` and `StoreFenceRef`, including occurrence, topology, domain, store incarnation, capability, watermark, target, and coverage | Connect compares normalized exact fields; production snapshot validation remains responsible for canonical serialized ordering. |
+| `Root`, `ClaimBinding`, `OwnerFact`, `Admission` | production → Quint | The exact owner-class paths in the table below, ending in a `RecoverySnapshot` load/diff | Connect includes only owner variants with a named capability or owner transaction and a post-commit root observation. It never derives authority from `IntegrityRecord` or another constructible DTO, calls recovery-internal proof builders as an owner, or mints facts. Recovery and legacy owner inputs remain explicit non-claims. |
+| `init` | harness → Quint | bounded fixture construction from a known `RecoverySnapshot` | Model setup only; not production initialization or recovery authority. |
+| `submitFence` | Quint input → production transaction, then production → Quint | `RecoveryMutation::RecordDataParityFence` through `RecoveryStateStore::commit_durable` | Recovery allocates the occurrence; Connect projects the assigned result instead of choosing an authoritative occurrence. |
+| `createAnyFence` | explicit non-claim | none | Nondeterministic model convenience; excluded from correspondence. |
+| `admitRoot` | production → Quint | owner transition result containing `RecoveryClaimRoot` | There is no generic production root-admission action. Connect must not add one or synthesize an admission. |
+| `prepareUnboundRetirement` | recovery-validated staging → production transaction | The exact loaded predecessor, successor, and retired occurrence are retained in a process-local `RecoveryRetirementPlan`; production validates that plan when `RecoveryMutation::RetireFences` commits | This is not an owner-prepared capability. Connect never manufactures owner proofs or calls private recovery helpers as an owner. |
+| `preparePlannedRetirement` | explicit non-claim until owner seam exists | No ordinary external producer currently exposes all per-root owner proofs | The model analysis covers planned proofs; Connect cannot claim them without a real owner-issued capability. |
+| `commitPrepared` | production → Quint | `RecoveryStateStore::commit_durable` or `commit_durable_receipt` returning durable success | `Committed` is projected only after the production durable result. |
+| `rejectPrepared` | production → Quint | `SqliteCommitFailurePoint::BeforeCommitIntentRename` drives the real adapter commit path to `CommitNotDurable(Rejected)` | The bridge observes the adapter's known rejection; it never calls `commit_observed` with a caller-selected outcome. |
+| `rejectStale` | production → Quint | A real intervening `RecordMaintenanceCheckpoint` commit advances generation, then the prepared retirement returns `GenerationMismatch` or `TopologyMismatch` | The model schedule represents a production interleaving, not arbitrary snapshot mutation. |
+| `observeRetirementUnknown` | production → Quint, service scope only | SQLite `AfterCommitIntent`/`AfterManifestWrite` return lost acknowledgement; `LostAckRecovery` injects service reactions | `LostAckRecovery` is a test double for service reaction, not adapter durability evidence. Corrupt acknowledgement has no Connect seam and is excluded. |
+| `reconcilePrior` | production → Quint | `SqliteCommitFailurePoint::AfterCommitIntent`, then `SqliteRecoveryStore::open` and `RecoveryInspection` | The sidecar is reconciled to the exact prior manifest; no process-local choice. |
+| `reconcileSuccessor` | production → Quint | `SqliteCommitFailurePoint::AfterManifestWrite`, then `SqliteRecoveryStore::open` and `RecoveryInspection` | The sidecar is reconciled to the exact proposed manifest; no process-local choice. |
+| `reconcileNeither` | explicit non-claim | No maintained production fault seam produces an exact neither state | The model retains this conservative branch; Connect evidence does not claim it. |
+| `advanceGeneration` | production interleaving → Quint | real `RecordMaintenanceCheckpoint` commit between retirement preparation and submission | No direct generation setter is mapped. |
+| `advanceTopology` | production interleaving → Quint | real `PrepareTopology`/`CommitTopology` transition between preparation and submission | No direct topology setter is mapped. |
+| `step` | explicit non-claim | none | The model scheduler is not a production executor or fairness claim. |
+
+The root projection is intentionally owner-class-specific:
+
+| Model owner fact | Owner-issued capability or transaction | Durable post-commit observation |
+| --- | --- | --- |
+| `Clean` / `CleanRegion` | `evaluate_recovery_clean` returning `RecoveryCleanDecision::Clear(RecoveryCleanPermit)`, followed by the production `RecoveryMutation::MarkRegionClean` transaction | Diff `RecoverySnapshot.dirty_regions` and `RecoverySnapshot.roots` for the exact `RecoveryRootFact::CleanRegion`, occurrence, generation, and certificate. |
+| `Integrity` / `ValidIntegrity` | `ChecksumAuthority::commit` returning `CommitOutcome::Committed(ChecksumRecord)`, followed by the production `RecoveryMutation::InstallIntegrityDigest` transaction | Diff `RecoverySnapshot.integrity_records` and `RecoverySnapshot.roots` for the exact `IntegrityState::Valid` and `RecoveryRootFact::ValidIntegrity`; the DTO is evidence emitted by the checksum owner, not authority by itself. |
+| `Session` / `WritableSession` | `RecoveryMutation::CloseWritableSession` submitted through `RecoveryStateStore::commit_durable_receipt` with the owner-produced global `FenceCertificate` | Diff `RecoverySnapshot.writable_session` and `RecoverySnapshot.roots` for the exact closed session, close generation, root occurrence, and fence. |
+| `Capture` / `CodedCapture` | `CodedLifecycleAuthority::authorize_clean` returning `CodedCaptureCleanAuthorization`, then `prepare_clean_commit` returning `PreparedCodedOwnerTransition<PreparedCodedCleanCommit>`, then the production `ApplyCodedTransition` durable transaction and `confirm_clean_commit` | Diff `RecoverySnapshot.coded_captures` and `RecoverySnapshot.roots` for the exact capture phase, capture occurrence, coded root, and closure transition. |
+
+`Recovery` / `UnresolvedRecoveryCommit` and `Legacy` /
+`LegacyUnreconciled` have no ordinary owner-issued Connect producer in this
+change and are excluded from the profile. A fixture may load them for a
+non-authorizing negative check, but it must not present them as admitted owner
+facts.
+
+Connect uses a partial durable projection for actions whose private pending
+state has no exact public observation. It compares:
+
+- `prepareUnboundRetirement`: the exact predecessor, successor, and retired
+  occurrence are retained in the recovery-validated plan; only the durable
+  snapshot remains in the Connect projection, not `PendingState` or
+  `RetirementIntent`.
+- `commitPrepared` and `rejectPrepared`: production outcome plus the
+  pre/post `RecoverySnapshot` generation, topology, fences, roots, and
+  owner records; root topology/generation are checked by the bridge, while
+  private intent payload remains excluded.
+- `observeRetirementUnknown`, `reconcilePrior`, and `reconcileSuccessor`:
+  the production inspection disposition and final loaded snapshot; it does
+  not compare `UnresolvedState` or sidecar internals.
+
+This partial projection is a stated non-claim, not an allowance to infer
+private state from equal serialized values. Direct projection of
+`PendingState`, `RetirementIntent`, and `UnresolvedState` remains excluded.
+
+The Connect profile must use only the mapped focused bound: four shapes, four
+occurrences, four root IDs, epochs 0–4, four fences, and four roots. The
+canonical analysis uses its separate epochs 0–8 bound. Wide analysis and
+mutation profiles remain separate evidence. Accepted paths must use the same
+production recovery transaction and owner producers as ordinary code. A
+Connect run must exclude `LegacyAdmission`, `RecoveryAdmission`,
+`preparePlannedRetirement`, corrupt acknowledgement, and neither
+reconciliation unless a later implementation adds and reviews the missing
+production seams.
+An adversarial review of this table, every production seam, and every
+non-claim is a hard gate. Task 8.3 and its evidence remain blocked until the
+reviewer returns `GO` with no blocking finding.
+
 ## Risks / Trade-offs
 
 - **[Risk]** A certificate copied into a clean-region, integrity, session, or capture record can hide a live dependency from a top-level occurrence scan. **Mitigation:** every owner supplies an exact root binding; successor validation checks all root records and copied bindings before removal.
@@ -119,14 +197,54 @@ The implementation may use a bounded exact index or an exact occurrence vector, 
 ## Migration Plan
 
 1. Land the canonical recovery-state delta and relationship edges for occurrence identity, root liveness, retirement outcomes, and explicit legacy migration.
-2. Add the next semantic schema version and migration step. Existing version-6 manifests remain readable only through conservative migration/inspection; ordinary payload files are untouched.
-3. Assign stable identities to legacy fence occurrences and preserve duplicate/ambiguous references under `legacy-unreconciled` roots. Do not use serde defaults to claim current semantics.
+2. Add the next semantic schema version and migration step. Existing version-6 manifests remain readable only through conservative migration/inspection; ordinary payload files are untouched, and this change accepts a migrated manifest remaining read-only.
+3. Assign stable identities to legacy fence occurrences and preserve duplicate/ambiguous references under `legacy-unreconciled` roots. Do not use serde defaults to claim current semantics or claim that an inventory proof has discharged a root.
 4. Implement exact retirement preparation and successor validation in the recovery owner; publish no local successor before durable confirmation.
 5. Add owner-specific root creation, discharge, and rebind at current CLEAN and checksum boundaries, and preserve session-lifecycle roots on close successors, migration/import, and closed-session replacement without generic discharge. Connect coded-capture roots only through existing dirty-integrity authorities; leave closed-set session supersession to `dwv-x6y.2.3`.
 6. Exercise known rejection, durable successor, lost/corrupt acknowledgement, reopen-prior, reopen-proposed, reopen-neither, stale generation, topology change, and bound-rejection cases before enabling normal retirement.
 7. Keep serving implementation blocked on the separate `.2.2` pre-mutation reservation contract. After that prerequisite, enable settled-write retirement and measure root count, manifest bytes, refusal causes, and latency.
 8. Roll back by disabling retirement preparation and reopening the validated predecessor or supported prior schema. No rollback path deletes payload bytes or silently drops recovery evidence.
 
+Legacy-owner reconciliation remains outside this change. This change's migration
+boundary is complete at stable occurrence identity, duplicate/ambiguous
+preservation, and stale/read-only classification. It never deletes payload or
+parity data and adds no reset, rebuild, or inventory-proof machinery.
+Future work, separate from this change, targets no planned write pause for valid
+supported legacy ledgers using scalable representation and bounded temporary
+ledger space; degraded-upgrade behavior and the support window remain open there.
+
+## Quint Connect implementation evidence
+
+- `verification/quint/PersistenceEvidenceRetirementConnect.qnt` imports the
+  reviewed retention relation and fixes the focused bound to one shape, four
+  occurrences, four root IDs, and epochs 0–4. Its path covers a validated
+  CLEAN root, a second occurrence, a private pending interval, and retirement
+  of only the unbound occurrence.
+- `crates/dwv-service/src/service/tests/persistence_evidence_retirement_connect.rs`
+  drives `MemoryRecoveryStore` through `RecoveryStateStore`, obtains a
+  `RecoveryCleanPermit`, commits production fence/CLEAN/retirement mutations,
+  retains the exact recovery-validated retirement plan, and compares every
+  field represented by the durable `Snapshot` projection: generation,
+  topology, allocated occurrence/root identities, exact fence
+  shape/store-fact/claim fields, and exact root id/occurrence/binding/fact/
+  certificate fields. The bridge additionally asserts the exact CLEAN
+  `DirtyRegionRecord` state, clean generation, last-clean fence, and root
+  topology/generation. It does not project phase/outcome, private pending
+  intent, SQLite fault seams, or physical payload durability, and it does not
+  claim serialized ordering; production snapshot validation owns canonical
+  order.
+  Model fence claims are deterministic projections of captured certificate
+  facts and loaded owner roots, not a second production registry.
+- Verification evidence: `quint typecheck
+  verification/quint/PersistenceEvidenceRetirementConnect.qnt`, bounded
+  `quint run` with seed `22082026`, and the two-seed
+  `cargo test -p dwv-service --lib persistence_evidence_retirement_connect
+  -- --test-threads=1` run all passed. The profile is correspondence evidence
+  for this mapped path, not arbitrary-width or physical-durability proof.
+
 ## Open Questions
 
-None. Concrete Rust type names beyond the semantic occurrence identity and the exact bounded index shape remain implementation choices constrained by this design, the delta spec, and the adversarial review.
+Future online migration is a separate design question. This change does not
+choose a support window, degraded-upgrade behavior, or scalable ledger layout;
+the separate representability and range-local work must define those before
+promising no planned write pause.

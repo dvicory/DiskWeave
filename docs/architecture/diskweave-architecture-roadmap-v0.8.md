@@ -1287,6 +1287,7 @@ Roadmap rules:
 5. Failed or uncertain fence completion cannot be rounded to success or presumed rollback. Affected state remains `DIRTY`/`INDETERMINATE`, and the operation is reconciled or recovered explicitly.
 6. A frontend cannot strengthen backend semantics. It may expose only durability behavior supported by the complete frontend/store/recovery/hardware contract.
 7. The conservative implementation may fence the whole array and record one aggregate recovery CLEAN. More precise per-domain, per-store, or per-region watermarks are compatible optimizations, not permanent format assumptions.
+8. Current recovery semantics retain each exact fence occurrence while an owner-qualified claim or unresolved commit intent can reach it. Rebinding is per root and requires exact store, capability, domain, topology, generation, and target coverage; an uncertain retirement keeps its exact predecessor until reopen reconciliation. Settled writes do not become permanent history, and unrelated occurrences remain eligible for retirement.
 
 A `PersistenceEvidenceSet` is a proof composition over required stores and watermarks, not a cryptographic certificate unless a later format explicitly defines one. roadmap-item:role-neutral-stores owns the store/capability evidence vocabulary; roadmap-item:dirty-integrity-recovery owns its recovery-protocol use; roadmap-item:healthy-portable-io integrates it into healthy I/O; roadmap-item:linux-flush-fua-probes certifies real Linux/hardware meaning.
 

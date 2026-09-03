@@ -1549,3 +1549,69 @@ Non-claims:
   external completion gate.
 - A fresh exact-snapshot external review remains required after the Round-17
   final-angle repair; this evidence does not claim external completion.
+
+# Exact persistence-evidence retention (focused, bounded)
+
+The recovery owner retains exact fence occurrences through current and
+unresolved owner-qualified claims rather than treating the fence vector as
+permanent history. Retirement requires exact predecessor identity, owner
+rebind or discharge proof, generation/topology validation, and a representable
+successor. Equal certificate values remain distinct. The SQLite adapter keeps
+the exact prior/proposed commit intent in its sidecar until reopen
+reconciliation; an uncertain acknowledgement does not permit an unrelated
+retirement.
+
+Focused owner checks:
+
+```text
+cargo test -p dwv-recovery --lib retirement_rejects_non_exact_successors_and_preserves_predecessor
+=> 1 passed
+
+cargo test -p dwv-recovery --lib equal_fence_occurrences_retire_independently_of_root_bound_copy
+=> 1 passed
+
+cargo test -p dwv-recovery --lib stale_retirement_proposal_cannot_remove_after_other_successor
+=> 1 passed
+cargo test -p dwv-recovery --lib owner_discharge_proofs_remove_clean_and_integrity_roots
+=> 1 passed
+
+cargo test -p dwv-recovery --lib
+=> 101 passed, 2 warnings
+
+cargo test -p dwv-recovery-sqlite --lib
+=> 15 passed, 2 warnings
+```
+
+These checks cover exact same-range replacement, owner-approved discharge, and disjoint retention,
+partial or changed store/capability/domain/topology bindings, equal
+occurrence identity, stale embedded owner state, stale concurrent proposals,
+uncertain adapter acknowledgement at both durable publication boundaries,
+retry after prior-state reconciliation, and preservation of an unrelated
+occurrence and separate payload bytes.
+
+Non-claims:
+
+- The checks do not implement pre-mutation serving reservation; that remains
+  the separately tracked `dwv-x6y.2.2` prerequisite.
+- The checks do not define session-close supersession or a historical evidence
+  archive.
+
+Change-boundary checks:
+
+```text
+cargo test --workspace --all-features -- --test-threads=1
+=> 564 passed, 1 ignored
+
+cargo clippy -p dwv-recovery --all-targets --all-features -- -D warnings
+cargo clippy -p dwv-recovery-sqlite --lib --all-features -- -D warnings
+cargo clippy -p dwv-service --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+openspec validate --all --strict
+cargo xtask docs check
+cargo xtask docs build
+=> all completed successfully; strict OpenSpec validation passed 33 items,
+   documentation readiness covered 174 requirements, and the documentation
+   build produced 174 objects
+```
+
+- In-memory and SQLite tests do not certify physical device durability.

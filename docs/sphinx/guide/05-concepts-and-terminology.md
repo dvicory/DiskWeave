@@ -2,7 +2,7 @@
 
 This page keeps the product's consequential distinctions searchable. It is a
 maintained explanatory projection, not a requirements registry and not semantic
-authority. Current OpenSpecs own the behavior. The delegated
+authority. Current OpenSpecs own behavior. The delegated
 `RecoveryProtocol` model owns only the parameterized state, abstract actions,
 guards, outcomes, invariants, and release relation it declares.
 
