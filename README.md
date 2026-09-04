@@ -1,6 +1,6 @@
 # DiskWeave
 
-> Live parity for ordinary filesystems. Disks you can still read on their own.
+> Lose a drive, keep your files. No guesswork.
 
 DiskWeave is an experimental storage engine for protecting a collection of
 data disks with parity. Each data disk keeps its own ordinary filesystem and
@@ -31,41 +31,17 @@ DiskWeave aims to combine live protection with independent data disks:
 - losing more disks than parity can recover does not make healthy disks
   unreadable.
 
-## How it fits together
-
-```mermaid
-flowchart TB
-    apps[Applications]
-    fs1[Ordinary filesystem A]
-    fs2[Ordinary filesystem B]
-    v1[DiskWeave virtual disk A]
-    v2[DiskWeave virtual disk B]
-    dw[DiskWeave]
-    d1[Backing data disk A]
-    d2[Backing data disk B]
-    parity[Parity disk]
-    recovery[Recovery state]
-
-    apps --> fs1
-    apps --> fs2
-    fs1 --> v1
-    fs2 --> v2
-    v1 --> dw
-    v2 --> dw
-    dw --> d1
-    dw --> d2
-    dw --> parity
-    dw --> recovery
-```
-
-The filesystems manage files and folders. DiskWeave protects the storage below
-them. Parity and recovery data stay separate from the data disks.
-
 ## Comparison
 
-No approach wins every row. The right choice depends on whether you value
-integrated filesystem features, independent disks, live protection,
-point-in-time recovery, or a finished appliance.
+No approach wins every row. DiskWeave trades integrated features for live protection with independently readable disks.
+
+- Live protection: DiskWeave ✅ Portable · ZFS ✅ · SnapRAID ❌ Sync · Unraid ✅
+- Independently readable disks: DiskWeave ✅ · ZFS ❌ · SnapRAID ✅ · Unraid ✅
+- Integrity checks and repair that work with any filesystem: DiskWeave ✅ Portable · ZFS ✅ · SnapRAID ✅ · Unraid 🟡 Filesystem
+- Healthy disks survive excess failures: DiskWeave ✅ · ZFS ❌ · SnapRAID ✅ · Unraid ✅
+
+<details>
+<summary>Full comparison</summary>
 
 Legend: ✅ Current · 🟡 Partial or conditional · 🔵 Planned · ❌ No
 
@@ -107,6 +83,8 @@ evidence.[^dwv-scope]
 
 Comparison last checked: 10 August 2026.
 
+</details>
+
 ## Recovery
 
 A healthy data disk stays readable even when DiskWeave or its recovery data is
@@ -118,6 +96,36 @@ the rebuilt data, and accepts the replacement only after verification.
 
 If disk identity, data integrity, or recovery state is unclear, DiskWeave stops
 rather than guessing.
+
+## How it fits together
+
+```mermaid
+flowchart TB
+    apps[Applications]
+    fs1[Ordinary filesystem A]
+    fs2[Ordinary filesystem B]
+    v1[DiskWeave virtual disk A]
+    v2[DiskWeave virtual disk B]
+    dw[DiskWeave]
+    d1[Backing data disk A]
+    d2[Backing data disk B]
+    parity[Parity disk]
+    recovery[Recovery state]
+
+    apps --> fs1
+    apps --> fs2
+    fs1 --> v1
+    fs2 --> v2
+    v1 --> dw
+    v2 --> dw
+    dw --> d1
+    dw --> d2
+    dw --> parity
+    dw --> recovery
+```
+
+The filesystems manage files and folders. DiskWeave protects the storage below
+them. Parity and recovery data stay separate from the data disks.
 
 ## What DiskWeave is not
 
@@ -137,38 +145,21 @@ deployment, and the production hardware path remain unfinished.
 
 ## Progress
 
-- ✅ Portable single-parity reads and writes.
-- ✅ Data disks that remain directly readable.
-- ✅ Integrity checksums, exhaustive scrubbing, and evidence-based repair.
-- ✅ Read-only degraded access and resumable offline rebuilds.
-- ✅ Deterministic failure simulation and trace replay.
-- ✅ Narrow Linux `ublk` and ext4 acceptance with file-backed data and parity.
-- 🟡 Different-sized disks and capacity changes.
-- 🟡 Production concurrency, raw-device operation, and hardware durability.
-- 🔵 Import and rebaseline of existing data disks.
-- 🔵 Dual parity.
-- 🔵 Stable storage formats and standalone recovery tools.
-- 🔵 Degraded writes in a later phase, after a separate safety design.
-- ❌ Array-wide snapshots, compression, deduplication, or encryption.
+Portable core today:
 
-## What works today
+- single-parity reads and writes with integrity checksums, scrubbing, and verified repair;
+- directly readable data disks;
+- read-only degraded access and resumable offline rebuilds;
+- deterministic failure simulation and trace replay;
+- narrow Linux `ublk` and ext4 acceptance with file-backed storage.
 
-The portable demo exercises:
+In progress: different-sized disks and capacity changes; production concurrency, raw-device operation, and hardware durability.
 
-- healthy reads, writes, flushes, and reopen;
-- parity updated with writes;
-- read-only access with one known missing disk;
-- interrupted and resumed rebuild;
-- checksum verification, scrubbing, and verified repair;
-- deterministic trace export and replay;
-- direct reading of ordinary data disks.
+Planned: import and rebaseline of existing disks; dual parity; stable formats and standalone recovery tools; degraded writes after a separate safety design.
 
-The Linux acceptance path exports a file-backed DiskWeave disk through real
-`ublk`, formats it as ext4, mounts it, modifies files, unmounts it, restarts
-DiskWeave, and verifies the retained data.
+Not planned: array-wide snapshots, compression, deduplication, or encryption.
 
-This evidence does not establish raw-device durability, physical power-loss
-safety, broad filesystem support, production deployment, or hardware safety.
+This evidence does not establish raw-device durability, physical power-loss safety, broad filesystem support, production deployment, or hardware safety.
 
 ## Frequently asked questions
 
