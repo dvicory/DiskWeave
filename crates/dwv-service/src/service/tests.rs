@@ -3526,7 +3526,6 @@ fn clean_reopen_and_control_rebuild_preserve_ordinary_payloads() {
     .unwrap();
     let data_before = fs::read(root.join("member-1.raw")).unwrap();
     let control = ControlProjection::new(root.join("control.sqlite3"));
-    assert!(control.available());
     control.add_inventory("epoch", "4").unwrap();
     control.add_history("event", "clean-stop").unwrap();
     let entries = control.export().unwrap().entries;

@@ -1,9 +1,9 @@
 use crate::lease::quarantine;
+use rusqlite::{Connection, params};
 use std::fmt;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::time::Duration;
 
 pub const CONTROL_SCHEMA_VERSION: u32 = 1;
 const MIGRATION: &str = r#"
@@ -44,8 +44,7 @@ pub struct ControlExport {
 #[derive(Debug)]
 pub enum ControlError {
     Io(String),
-    SqliteUnavailable,
-    CommandFailed { status: Option<i32>, stderr: String },
+    Sqlite(String),
     InvalidOutput(String),
     IntegrityFailed,
     RowLimitExceeded(usize),
@@ -55,9 +54,8 @@ impl fmt::Display for ControlError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(message) => write!(formatter, "control projection I/O failed: {message}"),
-            Self::SqliteUnavailable => write!(formatter, "sqlite3 executable is unavailable"),
-            Self::CommandFailed { status, stderr } => {
-                write!(formatter, "sqlite3 command failed ({status:?}): {stderr}")
+            Self::Sqlite(message) => {
+                write!(formatter, "control projection sqlite failed: {message}")
             }
             Self::InvalidOutput(message) => {
                 write!(formatter, "invalid control projection output: {message}")
@@ -72,10 +70,24 @@ impl fmt::Display for ControlError {
 
 impl std::error::Error for ControlError {}
 
+impl From<rusqlite::Error> for ControlError {
+    /// A stored value that cannot be read as its expected type is malformed
+    /// projection output, not an engine failure.
+    fn from(error: rusqlite::Error) -> Self {
+        match error {
+            rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..) => {
+                Self::InvalidOutput(error.to_string())
+            }
+            error => Self::Sqlite(error.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ControlProjection {
     database_path: PathBuf,
-    sqlite_program: PathBuf,
     row_limit: usize,
 }
 
@@ -83,18 +95,6 @@ impl ControlProjection {
     pub fn new(database_path: impl Into<PathBuf>) -> Self {
         Self {
             database_path: database_path.into(),
-            sqlite_program: PathBuf::from("sqlite3"),
-            row_limit: 4096,
-        }
-    }
-
-    pub fn with_program(
-        database_path: impl Into<PathBuf>,
-        sqlite_program: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            database_path: database_path.into(),
-            sqlite_program: sqlite_program.into(),
             row_limit: 4096,
         }
     }
@@ -106,19 +106,36 @@ impl ControlProjection {
     pub fn database_path(&self) -> &Path {
         &self.database_path
     }
-    pub fn available(&self) -> bool {
-        Command::new(&self.sqlite_program)
-            .arg("-version")
-            .output()
-            .is_ok_and(|output| output.status.success())
+
+    /// Opens one short-lived connection for a single projection operation.
+    /// There is deliberately no connection pool.
+    ///
+    /// rusqlite installs a 5-second busy handler on every connection. The
+    /// projection disables it so lock contention fails immediately, as it did
+    /// when each call ran the `sqlite3` shell.
+    fn connect(&self) -> Result<Connection, ControlError> {
+        if let Some(parent) = self.database_path.parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent).map_err(|error| ControlError::Io(error.to_string()))?;
+        }
+        let connection = Connection::open(&self.database_path)?;
+        connection.busy_timeout(Duration::ZERO)?;
+        Ok(connection)
     }
 
     pub fn initialize(&self) -> Result<(), ControlError> {
-        self.run(MIGRATION).map(|_| ())
+        self.connect()?.execute_batch(MIGRATION)?;
+        Ok(())
     }
 
     pub fn integrity_check(&self) -> Result<bool, ControlError> {
-        Ok(self.run("PRAGMA integrity_check;")?.trim() == "ok")
+        let rows = self
+            .connect()?
+            .prepare("PRAGMA integrity_check")?
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.as_slice() == ["ok"])
     }
 
     pub fn ensure_healthy(&self) -> Result<(), ControlError> {
@@ -128,65 +145,75 @@ impl ControlProjection {
         if !self.integrity_check()? {
             return Err(ControlError::IntegrityFailed);
         }
-        self.run("SELECT version FROM control_schema WHERE singleton=1;")
-            .and_then(|output| parse_version(&output))
-            .map(|_| ())
+        self.schema_version().map(|_| ())
+    }
+
+    fn schema_version(&self) -> Result<u32, ControlError> {
+        let version: i64 = match self.connect()?.query_row(
+            "SELECT version FROM control_schema WHERE singleton=1",
+            [],
+            |row| row.get(0),
+        ) {
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(ControlError::InvalidOutput(
+                    "missing schema version".to_owned(),
+                ));
+            }
+            result => result?,
+        };
+        u32::try_from(version)
+            .map_err(|_| ControlError::InvalidOutput("invalid schema version".to_owned()))
     }
 
     pub fn add_inventory(&self, key: &str, value: &str) -> Result<(), ControlError> {
         self.initialize_if_missing()?;
-        self.run(&format!(
-            "INSERT OR REPLACE INTO inventory(key,value) VALUES ('{}','{}');",
-            quote(key),
-            quote(value)
-        ))
-        .map(|_| ())
+        self.connect()?.execute(
+            "INSERT OR REPLACE INTO inventory(key,value) VALUES (?1,?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn add_history(&self, key: &str, value: &str) -> Result<(), ControlError> {
         self.initialize_if_missing()?;
-        self.run(&format!(
-            "INSERT INTO history(key,value) VALUES ('{}','{}');",
-            quote(key),
-            quote(value)
-        ))
-        .map(|_| ())
+        self.connect()?.execute(
+            "INSERT INTO history(key,value) VALUES (?1,?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn upsert_job(&self, key: &str, value: &str) -> Result<(), ControlError> {
         self.initialize_if_missing()?;
-        self.run(&format!(
-            "INSERT OR REPLACE INTO jobs(key,value) VALUES ('{}','{}');",
-            quote(key),
-            quote(value)
-        ))
-        .map(|_| ())
+        self.connect()?.execute(
+            "INSERT OR REPLACE INTO jobs(key,value) VALUES (?1,?2)",
+            params![key, value],
+        )?;
+        Ok(())
     }
 
     pub fn export(&self) -> Result<ControlExport, ControlError> {
         self.ensure_healthy()?;
-        let query = format!(
-            "SELECT 'inventory',hex(key),hex(value) FROM inventory UNION ALL SELECT 'history',hex(key),hex(value) FROM history UNION ALL SELECT 'job',hex(key),hex(value) FROM jobs ORDER BY 1,2 LIMIT {};",
-            self.row_limit.saturating_add(1)
-        );
-        let lines: Vec<_> = self.run(&query)?.lines().map(str::to_owned).collect();
-        if lines.len() > self.row_limit {
+        let limit = i64::try_from(self.row_limit.saturating_add(1))
+            .map_err(|_| ControlError::RowLimitExceeded(self.row_limit))?;
+        let connection = self.connect()?;
+        let mut statement = connection.prepare(
+            "SELECT 'inventory', key, value FROM inventory UNION ALL SELECT 'history', key, value FROM history UNION ALL SELECT 'job', key, value FROM jobs ORDER BY 1, 2 LIMIT ?1",
+        )?;
+        let entries = statement
+            .query_map(params![limit], |row| {
+                Ok(ControlEntry::new(
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        if entries.len() > self.row_limit {
             return Err(ControlError::RowLimitExceeded(self.row_limit));
         }
-        let mut entries = Vec::with_capacity(lines.len());
-        for line in lines {
-            let mut fields = line.split('|');
-            let category = fields
-                .next()
-                .ok_or_else(|| ControlError::InvalidOutput("missing category".to_owned()))?;
-            let key = decode_hex(fields.next().unwrap_or_default())?;
-            let value = decode_hex(fields.next().unwrap_or_default())?;
-            entries.push(ControlEntry::new(category, key, value));
-        }
-        let version =
-            parse_version(&self.run("SELECT version FROM control_schema WHERE singleton=1;")?)?;
         Ok(ControlExport {
-            schema_version: version,
+            schema_version: self.schema_version()?,
             entries,
         })
     }
@@ -196,7 +223,8 @@ impl ControlProjection {
             quarantine(&self.database_path).map_err(|error| ControlError::Io(error.to_string()))?;
         }
         self.initialize()?;
-        self.run("DELETE FROM inventory; DELETE FROM history; DELETE FROM jobs;")?;
+        self.connect()?
+            .execute_batch("DELETE FROM inventory; DELETE FROM history; DELETE FROM jobs;")?;
         for entry in entries {
             match entry.category.as_str() {
                 "inventory" => self.add_inventory(&entry.key, &entry.value)?,
@@ -235,64 +263,6 @@ impl ControlProjection {
             self.initialize()
         }
     }
-
-    fn run(&self, sql: &str) -> Result<String, ControlError> {
-        if !self.available() {
-            return Err(ControlError::SqliteUnavailable);
-        }
-        if let Some(parent) = self.database_path.parent()
-            && !parent.as_os_str().is_empty()
-        {
-            fs::create_dir_all(parent).map_err(|error| ControlError::Io(error.to_string()))?;
-        }
-        let mut child = Command::new(&self.sqlite_program)
-            .arg("-batch")
-            .arg("-noheader")
-            .arg(&self.database_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| ControlError::Io(error.to_string()))?;
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| ControlError::Io("sqlite stdin unavailable".to_owned()))?
-            .write_all(sql.as_bytes())
-            .map_err(|error| ControlError::Io(error.to_string()))?;
-        let output = child
-            .wait_with_output()
-            .map_err(|error| ControlError::Io(error.to_string()))?;
-        if !output.status.success() {
-            return Err(ControlError::CommandFailed {
-                status: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-}
-
-fn parse_version(output: &str) -> Result<u32, ControlError> {
-    output
-        .trim()
-        .parse()
-        .map_err(|_| ControlError::InvalidOutput("invalid schema version".to_owned()))
-}
-fn quote(value: &str) -> String {
-    value.replace('\'', "''")
-}
-fn decode_hex(value: &str) -> Result<String, ControlError> {
-    if !value.len().is_multiple_of(2) {
-        return Err(ControlError::InvalidOutput("odd hex field".to_owned()));
-    }
-    let bytes = (0..value.len())
-        .step_by(2)
-        .map(|index| u8::from_str_radix(&value[index..index + 2], 16))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|_| ControlError::InvalidOutput("invalid hex field".to_owned()))?;
-    String::from_utf8(bytes)
-        .map_err(|_| ControlError::InvalidOutput("control values must be UTF-8".to_owned()))
 }
 
 #[cfg(test)]
@@ -313,9 +283,6 @@ mod tests {
         let database = path();
         let payload = database.with_extension("payload");
         let projection = ControlProjection::new(&database);
-        if !projection.available() {
-            return;
-        }
         let _ = projection.delete();
         fs::write(&payload, b"direct payload").unwrap();
         projection.initialize().unwrap();
@@ -339,9 +306,6 @@ mod tests {
     fn sql_values_are_exported_semantically_with_quotes_and_delimiters() {
         let database = path();
         let projection = ControlProjection::new(&database);
-        if !projection.available() {
-            return;
-        }
         let _ = projection.delete();
         projection.add_inventory("key|one", "value 'one'").unwrap();
         let export = projection.export().unwrap();
@@ -350,6 +314,27 @@ mod tests {
                 .entries
                 .contains(&ControlEntry::new("inventory", "key|one", "value 'one'"))
         );
+        let _ = projection.delete();
+    }
+
+    #[test]
+    fn lock_contention_fails_immediately_instead_of_waiting() {
+        let database = path();
+        let projection = ControlProjection::new(&database);
+        projection.initialize().unwrap();
+        let holder = Connection::open(&database).unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            projection.add_inventory("key", "value"),
+            Err(ControlError::Sqlite(_))
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "contention must not wait on a busy handler"
+        );
+        drop(holder);
+        projection.add_inventory("key", "value").unwrap();
         let _ = projection.delete();
     }
 }
