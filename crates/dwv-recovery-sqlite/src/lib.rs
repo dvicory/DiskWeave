@@ -14,13 +14,14 @@ use dwv_recovery::{
     RecoverySchemaVersion, RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn,
     TopologySnapshot,
 };
+use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
 #[cfg(test)]
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 pub const RECOVERY_SQLITE_SCHEMA_V1: &str = include_str!("../migrations/0001_recovery_state.sql");
 pub const RECOVERY_SQLITE_SCHEMA_V2: &str =
@@ -210,8 +211,7 @@ pub struct SqliteEvaluationFixture {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SqlitePrototypeError {
     Io(String),
-    SqliteUnavailable,
-    CommandFailed { status: Option<i32>, stderr: String },
+    Sqlite(String),
     InvalidOutput(String),
     MissingState,
     MissingCompleteManifest,
@@ -228,10 +228,7 @@ impl fmt::Display for SqlitePrototypeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(message) => write!(formatter, "sqlite prototype I/O failed: {message}"),
-            Self::SqliteUnavailable => write!(formatter, "sqlite3 executable is unavailable"),
-            Self::CommandFailed { status, stderr } => {
-                write!(formatter, "sqlite3 command failed ({status:?}): {stderr}")
-            }
+            Self::Sqlite(message) => write!(formatter, "sqlite operation failed: {message}"),
             Self::InvalidOutput(message) => write!(formatter, "invalid sqlite output: {message}"),
             Self::MissingState => write!(formatter, "recovery state is missing"),
             Self::MissingCompleteManifest => {
@@ -261,6 +258,21 @@ impl fmt::Display for SqlitePrototypeError {
 
 impl std::error::Error for SqlitePrototypeError {}
 
+impl From<rusqlite::Error> for SqlitePrototypeError {
+    /// A stored value that cannot be read as its expected type is malformed
+    /// adapter output, not an engine failure.
+    fn from(error: rusqlite::Error) -> Self {
+        match error {
+            rusqlite::Error::FromSqlConversionFailure(..)
+            | rusqlite::Error::InvalidColumnType(..)
+            | rusqlite::Error::IntegralValueOutOfRange(..) => {
+                Self::InvalidOutput(error.to_string())
+            }
+            error => Self::Sqlite(error.to_string()),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqliteConfigurationReport {
     pub candidate: SqliteEvaluationCase,
@@ -279,24 +291,12 @@ pub struct SemanticHeader {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SqlitePrototype {
     database_path: PathBuf,
-    sqlite_program: PathBuf,
 }
 
 impl SqlitePrototype {
     pub fn new(database_path: impl Into<PathBuf>) -> Self {
         Self {
             database_path: database_path.into(),
-            sqlite_program: PathBuf::from("sqlite3"),
-        }
-    }
-
-    pub fn with_program(
-        database_path: impl Into<PathBuf>,
-        sqlite_program: impl Into<PathBuf>,
-    ) -> Self {
-        Self {
-            database_path: database_path.into(),
-            sqlite_program: sqlite_program.into(),
         }
     }
 
@@ -304,21 +304,33 @@ impl SqlitePrototype {
         &self.database_path
     }
 
-    pub fn available(&self) -> bool {
-        Command::new(&self.sqlite_program)
-            .arg("-version")
-            .output()
-            .is_ok_and(|output| output.status.success())
+    /// Opens one short-lived connection for a single adapter operation.
+    ///
+    /// Every method opens and closes its own connection, so no SQLite
+    /// connection outlives one call. There is deliberately no connection pool.
+    ///
+    /// rusqlite installs a 5-second busy handler on every connection. This
+    /// adapter disables it so lock contention fails immediately with
+    /// `SQLITE_BUSY`, as it did when each call ran the `sqlite3` shell.
+    /// Waiting on another writer would be a new locking policy.
+    fn connect(&self, read_only: bool) -> Result<Connection, SqlitePrototypeError> {
+        let connection = if read_only {
+            Connection::open_with_flags(&self.database_path, OpenFlags::SQLITE_OPEN_READ_ONLY)?
+        } else {
+            Connection::open(&self.database_path)?
+        };
+        connection.busy_timeout(Duration::ZERO)?;
+        Ok(connection)
     }
 
     pub fn initialize(&self) -> Result<(), SqlitePrototypeError> {
         match self.storage_schema_version()? {
             0 => {
-                self.run(RECOVERY_SQLITE_SCHEMA_V1)?;
-                self.run(RECOVERY_SQLITE_SCHEMA_V2)?;
+                self.execute_batch(RECOVERY_SQLITE_SCHEMA_V1)?;
+                self.execute_batch(RECOVERY_SQLITE_SCHEMA_V2)?;
                 Ok(())
             }
-            1 => self.run(RECOVERY_SQLITE_SCHEMA_V2).map(|_| ()),
+            1 => self.execute_batch(RECOVERY_SQLITE_SCHEMA_V2),
             CURRENT_RECOVERY_SQLITE_SCHEMA => Ok(()),
             version => Err(SqlitePrototypeError::UnsupportedStorageSchema(version)),
         }
@@ -337,16 +349,22 @@ impl SqlitePrototype {
             SqliteSynchronousMode::Full => "FULL",
             SqliteSynchronousMode::Extra => "EXTRA",
         };
-        let output = self.run(&format!(
-            "PRAGMA journal_mode={journal};\nPRAGMA synchronous={synchronous};\nPRAGMA wal_autocheckpoint={};\n",
+        let connection = self.connect(false)?;
+        connection.pragma_update(None, "journal_mode", journal)?;
+        connection.pragma_update(None, "synchronous", synchronous)?;
+        connection.pragma_update(
+            None,
+            "wal_autocheckpoint",
             match candidate.checkpoint {
                 SqliteCheckpointPolicy::Automatic => 1000,
                 SqliteCheckpointPolicy::Explicit => 0,
-            }
-        ))?;
+            },
+        )?;
+        let journal_mode: String =
+            connection.pragma_query_value(None, "journal_mode", |row| row.get(0))?;
         Ok(SqliteConfigurationReport {
             candidate,
-            journal_mode: output.trim().to_owned(),
+            journal_mode,
             synchronous: synchronous.to_owned(),
         })
     }
@@ -367,16 +385,23 @@ impl SqlitePrototype {
         let payload = semantic_payload(manifest);
         let manifest_json = serialize_manifest(manifest)?;
         let manifest_digest = blake3::hash(manifest_json.as_bytes()).to_hex();
-        let sql = format!(
-            "PRAGMA foreign_keys=ON;\nPRAGMA synchronous=FULL;\nBEGIN IMMEDIATE;\nDELETE FROM recovery_state;\nINSERT INTO recovery_state(singleton, schema_version, generation, topology_epoch, manifest_payload, manifest_json, manifest_digest) VALUES (1, {}, {}, {}, '{}', '{}', '{}');\nCOMMIT;\n",
-            manifest.schema.0,
-            manifest.snapshot.generation.0,
-            manifest.snapshot.topology_epoch.0,
-            quote_sql(&payload),
-            quote_sql(&manifest_json),
-            manifest_digest,
-        );
-        self.run(&sql).map(|_| ())
+        let mut connection = self.connect(false)?;
+        durable(&connection)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM recovery_state", [])?;
+        transaction.execute(
+            "INSERT INTO recovery_state(singleton, schema_version, generation, topology_epoch, manifest_payload, manifest_json, manifest_digest) VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+            params![
+                i64::from(manifest.schema.0),
+                storable(manifest.snapshot.generation.0)?,
+                storable(manifest.snapshot.topology_epoch.0)?,
+                payload,
+                manifest_json,
+                manifest_digest.as_str(),
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
     }
     /// Atomically replaces the current manifest only when its generation
     /// matches `expected`. The caller publishes its in-memory candidate only
@@ -421,19 +446,25 @@ impl SqlitePrototype {
         let payload = semantic_payload(manifest);
         let manifest_json = serialize_manifest(manifest)?;
         let manifest_digest = blake3::hash(manifest_json.as_bytes()).to_hex();
-        let output = self.run(&format!(
-            "PRAGMA foreign_keys=ON;\nPRAGMA synchronous=FULL;\nBEGIN IMMEDIATE;\nUPDATE recovery_state SET schema_version={}, generation={}, topology_epoch={}, manifest_payload='{}', manifest_json='{}', manifest_digest='{}' WHERE singleton=1 AND generation={};\nSELECT changes();\nCOMMIT;\n",
-            manifest.schema.0,
-            manifest.snapshot.generation.0,
-            manifest.snapshot.topology_epoch.0,
-            quote_sql(&payload),
-            quote_sql(&manifest_json),
-            manifest_digest,
-            expected.0,
-        ))?;
-        if output.trim() != "1" {
+        let mut connection = self.connect(false)?;
+        durable(&connection)?;
+        let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
+            "UPDATE recovery_state SET schema_version=?1, generation=?2, topology_epoch=?3, manifest_payload=?4, manifest_json=?5, manifest_digest=?6 WHERE singleton=1 AND generation=?7",
+            params![
+                i64::from(manifest.schema.0),
+                storable(manifest.snapshot.generation.0)?,
+                storable(manifest.snapshot.topology_epoch.0)?,
+                payload,
+                manifest_json,
+                manifest_digest.as_str(),
+                storable(expected.0)?,
+            ],
+        )?;
+        if changed != 1 {
             return Err(SqlitePrototypeError::GenerationConflict { expected });
         }
+        transaction.commit()?;
         Ok(())
     }
 
@@ -454,16 +485,16 @@ impl SqlitePrototype {
                 storage_schema,
             ));
         }
-        let manifest_length_output = self.run_with(
-            "SELECT length(CAST(manifest_json AS BLOB)) FROM recovery_state WHERE singleton=1;\n",
-            read_only,
-        )?;
-        let manifest_length_line = manifest_length_output
-            .lines()
-            .next()
-            .filter(|line| !line.is_empty())
-            .ok_or(SqlitePrototypeError::MissingCompleteManifest)?;
-        let manifest_length = parse_u64(Some(manifest_length_line), "manifest_json_length")?;
+        let connection = self.connect(read_only)?;
+        let manifest_length: Option<i64> = connection
+            .query_row(
+                "SELECT length(CAST(manifest_json AS BLOB)) FROM recovery_state WHERE singleton=1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?
+            .flatten();
+        let manifest_length = manifest_length.unwrap_or(0);
         if manifest_length == 0 {
             return Err(SqlitePrototypeError::MissingCompleteManifest);
         }
@@ -474,28 +505,31 @@ impl SqlitePrototype {
                 maximum: MAX_MANIFEST_JSON_BYTES,
             });
         }
-        let output = self.run_with(
-            "SELECT schema_version || '|' || generation || '|' || topology_epoch || '|' || hex(CAST(manifest_json AS BLOB)) || '|' || manifest_digest FROM recovery_state WHERE singleton=1;\n",
-            read_only,
-        )?;
-        let line = output
-            .lines()
-            .next()
+        // The manifest is read as its exact stored bytes; the text encoding is
+        // validated by the digest and by JSON decoding, not by the row reader.
+        let row: (i64, i64, i64, Option<Vec<u8>>, Option<String>) = connection
+            .query_row(
+                "SELECT schema_version, generation, topology_epoch, CAST(manifest_json AS BLOB), manifest_digest FROM recovery_state WHERE singleton=1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            )
+            .optional()?
             .ok_or(SqlitePrototypeError::MissingState)?;
-        let mut fields = line.splitn(5, '|');
-        let schema = parse_u64(fields.next(), "schema_version")?;
-        let generation = parse_u64(fields.next(), "generation")?;
-        let topology_epoch = parse_u64(fields.next(), "topology_epoch")?;
-        let manifest_hex = fields
-            .next()
+        let schema = to_u64(row.0, "schema_version")?;
+        let generation = to_u64(row.1, "generation")?;
+        let topology_epoch = to_u64(row.2, "topology_epoch")?;
+        let manifest_bytes = row
+            .3
+            .filter(|value| !value.is_empty())
             .ok_or(SqlitePrototypeError::MissingCompleteManifest)?;
-        let expected_digest = fields
-            .next()
-            .ok_or(SqlitePrototypeError::MissingCompleteManifest)?;
-        if manifest_hex.is_empty() || expected_digest.is_empty() {
+        // A present manifest with a NULL digest is an unreadable row, not a
+        // missing manifest: health classification treats the two differently.
+        let expected_digest = row.4.ok_or_else(|| {
+            SqlitePrototypeError::InvalidOutput("missing manifest_digest".to_owned())
+        })?;
+        if expected_digest.is_empty() {
             return Err(SqlitePrototypeError::MissingCompleteManifest);
         }
-        let manifest_bytes = decode_hex(manifest_hex)?;
         if manifest_bytes.len() > MAX_MANIFEST_JSON_BYTES {
             return Err(SqlitePrototypeError::ManifestTooLarge {
                 actual: manifest_bytes.len(),
@@ -567,63 +601,53 @@ impl SqlitePrototype {
     }
 
     fn storage_schema_version_with(&self, read_only: bool) -> Result<u64, SqlitePrototypeError> {
-        parse_u64(
-            self.run_with("PRAGMA user_version;\n", read_only)?
-                .lines()
-                .next(),
-            "user_version",
-        )
+        storage_schema_version(&self.connect(read_only)?)
     }
 
     fn semantic_schema_version_with(&self, read_only: bool) -> Result<u64, SqlitePrototypeError> {
-        let output = match self.run_with(
-            "SELECT schema_version FROM recovery_state WHERE singleton=1;\n",
-            read_only,
+        let connection = self.connect(read_only)?;
+        let version: i64 = match connection.query_row(
+            "SELECT schema_version FROM recovery_state WHERE singleton=1",
+            [],
+            |row| row.get(0),
         ) {
-            Err(SqlitePrototypeError::CommandFailed { stderr, .. })
-                if stderr.contains("no such table") =>
-            {
+            Err(error) if error.to_string().contains("no such table") => {
                 return Err(SqlitePrototypeError::MissingState);
             }
-            result => result?,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(SqlitePrototypeError::MissingState);
+            }
+            Err(error) => return Err(error.into()),
+            Ok(version) => version,
         };
-        output
-            .lines()
-            .next()
-            .filter(|line| !line.is_empty())
-            .ok_or(SqlitePrototypeError::MissingState)
-            .and_then(|line| parse_u64(Some(line), "schema_version"))
+        to_u64(version, "schema_version")
     }
 
     pub fn export_header(&self) -> Result<SemanticHeader, SqlitePrototypeError> {
-        let output = match self.run(
-            "SELECT schema_version || '|' || generation || '|' || topology_epoch || '|' || manifest_payload FROM recovery_state WHERE singleton=1;\n",
+        let connection = self.connect(false)?;
+        let row: (i64, i64, i64, String) = match connection.query_row(
+            "SELECT schema_version, generation, topology_epoch, manifest_payload FROM recovery_state WHERE singleton=1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ) {
-            Err(SqlitePrototypeError::CommandFailed { stderr, .. })
-                if stderr.contains("no such table") =>
-            {
+            Err(error) if error.to_string().contains("no such table") => {
                 return Err(SqlitePrototypeError::MissingState);
             }
-            result => result?,
+            Err(rusqlite::Error::QueryReturnedNoRows) => {
+                return Err(SqlitePrototypeError::MissingState);
+            }
+            Err(error) => return Err(error.into()),
+            Ok(row) => row,
         };
-        let line = output
-            .lines()
-            .next()
-            .ok_or(SqlitePrototypeError::MissingState)?;
-        let mut fields = line.splitn(4, '|');
-        let schema = parse_u64(fields.next(), "schema_version")?;
-        let generation = parse_u64(fields.next(), "generation")?;
-        let topology_epoch = parse_u64(fields.next(), "topology_epoch")?;
-        let payload = fields
-            .next()
-            .ok_or_else(|| SqlitePrototypeError::InvalidOutput("missing payload".to_owned()))?;
         Ok(SemanticHeader {
-            schema: RecoverySchemaVersion(u16::try_from(schema).map_err(|_| {
-                SqlitePrototypeError::InvalidOutput("schema version exceeds u16".to_owned())
-            })?),
-            generation: RecoveryGeneration(generation),
-            topology_epoch,
-            payload: payload.to_owned(),
+            schema: RecoverySchemaVersion(
+                u16::try_from(to_u64(row.0, "schema_version")?).map_err(|_| {
+                    SqlitePrototypeError::InvalidOutput("schema version exceeds u16".to_owned())
+                })?,
+            ),
+            generation: RecoveryGeneration(to_u64(row.1, "generation")?),
+            topology_epoch: to_u64(row.2, "topology_epoch")?,
+            payload: row.3,
         })
     }
 
@@ -632,61 +656,31 @@ impl SqlitePrototype {
     }
 
     fn integrity_check_with(&self, read_only: bool) -> Result<bool, SqlitePrototypeError> {
-        Ok(self
-            .run_with("PRAGMA integrity_check;\n", read_only)?
-            .trim()
-            == "ok")
+        let connection = self.connect(read_only)?;
+        let mut statement = connection.prepare("PRAGMA integrity_check")?;
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(rows.as_slice() == ["ok"])
     }
 
     pub fn delete_state(&self) -> Result<(), SqlitePrototypeError> {
-        self.run("DELETE FROM recovery_state;\n").map(|_| ())
+        self.connect(false)?
+            .execute("DELETE FROM recovery_state", [])?;
+        Ok(())
     }
 
     pub fn corrupt_generation_for_fixture(&self) -> Result<(), SqlitePrototypeError> {
-        self.run("UPDATE recovery_state SET generation='corrupt' WHERE singleton=1;\n")
-            .map(|_| ())
+        self.connect(false)?.execute(
+            "UPDATE recovery_state SET generation='corrupt' WHERE singleton=1",
+            [],
+        )?;
+        Ok(())
     }
 
-    fn run(&self, sql: &str) -> Result<String, SqlitePrototypeError> {
-        self.run_with(sql, false)
-    }
-
-    fn run_with(&self, sql: &str, read_only: bool) -> Result<String, SqlitePrototypeError> {
-        if !self.available() {
-            return Err(SqlitePrototypeError::SqliteUnavailable);
-        }
-        let mut command = Command::new(&self.sqlite_program);
-        command.arg("-batch").arg("-noheader");
-        if read_only {
-            command.arg("-readonly");
-        }
-        let mut child = command
-            .arg(&self.database_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .map_err(|error| SqlitePrototypeError::Io(error.to_string()))?;
-        {
-            use std::io::Write;
-            let stdin = child
-                .stdin
-                .as_mut()
-                .ok_or_else(|| SqlitePrototypeError::Io("sqlite stdin unavailable".to_owned()))?;
-            stdin
-                .write_all(sql.as_bytes())
-                .map_err(|error| SqlitePrototypeError::Io(error.to_string()))?;
-        }
-        let output = child
-            .wait_with_output()
-            .map_err(|error| SqlitePrototypeError::Io(error.to_string()))?;
-        if !output.status.success() {
-            return Err(SqlitePrototypeError::CommandFailed {
-                status: output.status.code(),
-                stderr: String::from_utf8_lossy(&output.stderr).trim().to_owned(),
-            });
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    fn execute_batch(&self, sql: &str) -> Result<(), SqlitePrototypeError> {
+        self.connect(false)?.execute_batch(sql)?;
+        Ok(())
     }
 }
 #[derive(Debug)]
@@ -941,13 +935,6 @@ impl SqliteRecoveryStore {
         let prototype = SqlitePrototype::new(database_path);
         let storage_schema = match prototype.storage_schema_version_with(true) {
             Ok(version) => version,
-            Err(SqlitePrototypeError::SqliteUnavailable) => {
-                return RecoveryInspection::Unsupported {
-                    layer: RecoveryFormatLayer::Storage,
-                    version: None,
-                    storage_version: None,
-                };
-            }
             Err(_) => {
                 return RecoveryInspection::CorruptOrUnreadable {
                     storage_version: None,
@@ -1007,11 +994,6 @@ impl SqliteRecoveryStore {
                 RecoveryInspection::ReconciliationRequired
             }
             Ok(manifest) => RecoveryInspection::Supported(Box::new(manifest)),
-            Err(SqlitePrototypeError::SqliteUnavailable) => RecoveryInspection::Unsupported {
-                layer: RecoveryFormatLayer::Storage,
-                version: None,
-                storage_version: None,
-            },
             Err(_) => RecoveryInspection::CorruptOrUnreadable {
                 storage_version: Some(storage_schema),
                 semantic_version: Some(semantic_schema),
@@ -1500,42 +1482,28 @@ fn serialize_manifest(manifest: &RecoveryManifest) -> Result<String, SqliteProto
     Ok(json)
 }
 
-fn decode_hex(value: &str) -> Result<Vec<u8>, SqlitePrototypeError> {
-    if !value.len().is_multiple_of(2) {
-        return Err(SqlitePrototypeError::InvalidOutput(
-            "manifest hex has an odd length".to_owned(),
-        ));
-    }
-    let decoded_len = value.len() / 2;
-    if decoded_len > MAX_MANIFEST_JSON_BYTES {
-        return Err(SqlitePrototypeError::ManifestTooLarge {
-            actual: decoded_len,
-            maximum: MAX_MANIFEST_JSON_BYTES,
-        });
-    }
+fn storage_schema_version(connection: &Connection) -> Result<u64, SqlitePrototypeError> {
+    let version: i64 = connection.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    to_u64(version, "user_version")
+}
 
-    fn nibble(byte: u8) -> Option<u8> {
-        match byte {
-            b'0'..=b'9' => Some(byte - b'0'),
-            b'a'..=b'f' => Some(byte - b'a' + 10),
-            b'A'..=b'F' => Some(byte - b'A' + 10),
-            _ => None,
-        }
-    }
+fn to_u64(value: i64, field: &str) -> Result<u64, SqlitePrototypeError> {
+    u64::try_from(value)
+        .map_err(|_| SqlitePrototypeError::InvalidOutput(format!("invalid {field}: {value}")))
+}
 
-    value
-        .as_bytes()
-        .chunks_exact(2)
-        .map(|pair| {
-            let high = nibble(pair[0]).ok_or_else(|| {
-                SqlitePrototypeError::InvalidOutput("manifest contains invalid hex".to_owned())
-            })?;
-            let low = nibble(pair[1]).ok_or_else(|| {
-                SqlitePrototypeError::InvalidOutput("manifest contains invalid hex".to_owned())
-            })?;
-            Ok((high << 4) | low)
-        })
-        .collect()
+/// Preserves the previous per-write durability posture: foreign keys on and
+/// full synchronous mode before every manifest write.
+fn durable(connection: &Connection) -> Result<(), SqlitePrototypeError> {
+    connection.pragma_update(None, "foreign_keys", "ON")?;
+    connection.pragma_update(None, "synchronous", "FULL")?;
+    Ok(())
+}
+
+/// SQLite integers are signed 64-bit. Generations that cannot be stored are
+/// a corrupt manifest, matching the existing overflow treatment.
+fn storable(value: u64) -> Result<i64, SqlitePrototypeError> {
+    i64::try_from(value).map_err(|_| SqlitePrototypeError::ManifestIntegrity)
 }
 
 fn validate_manifest_topologies(manifest: &RecoveryManifest) -> Result<(), SqlitePrototypeError> {
@@ -1592,18 +1560,6 @@ fn validate_manifest_topologies(manifest: &RecoveryManifest) -> Result<(), Sqlit
     Ok(())
 }
 
-fn quote_sql(value: &str) -> String {
-    value.replace('\'', "''")
-}
-
-fn parse_u64(value: Option<&str>, field: &str) -> Result<u64, SqlitePrototypeError> {
-    let value =
-        value.ok_or_else(|| SqlitePrototypeError::InvalidOutput(format!("missing {field}")))?;
-    value
-        .parse()
-        .map_err(|_| SqlitePrototypeError::InvalidOutput(format!("invalid {field}: {value}")))
-}
-
 #[cfg(test)]
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -1628,6 +1584,15 @@ mod tests {
             std::process::id()
         ))
     }
+
+    /// Runs fixture SQL through the same in-process SQLite the adapter uses.
+    fn raw_execute(path: &Path, sql: &str, parameters: impl rusqlite::Params) {
+        Connection::open(path)
+            .expect("fixture database should open")
+            .execute(sql, parameters)
+            .expect("fixture SQL should apply");
+    }
+
     fn strip_v7_fields(value: &mut serde_json::Value) {
         match value {
             serde_json::Value::Object(object) => {
@@ -1688,10 +1653,6 @@ mod tests {
     fn migration_modes_export_integrity_and_missing_state_are_executable() {
         let path = temp_database();
         let adapter = SqlitePrototype::new(&path);
-        assert!(
-            adapter.available(),
-            "sqlite3 is required for this prototype test"
-        );
         adapter.initialize().unwrap();
         assert_eq!(
             adapter.storage_schema_version().unwrap(),
@@ -2204,13 +2165,11 @@ mod tests {
         strip_v7_fields(&mut legacy_value);
         let legacy_json = serde_json::to_string(&legacy_value).unwrap();
         let legacy_digest = blake3::hash(legacy_json.as_bytes()).to_hex().to_string();
-        adapter
-            .run(&format!(
-                "UPDATE recovery_state SET schema_version=6, manifest_json='{}', manifest_digest='{}' WHERE singleton=1;\n",
-                quote_sql(&legacy_json),
-                legacy_digest
-            ))
-            .unwrap();
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET schema_version=6, manifest_json=?1, manifest_digest=?2 WHERE singleton=1",
+            params![legacy_json, legacy_digest],
+        );
         assert!(matches!(
             SqliteRecoveryStore::open(&path),
             Err(SqliteRecoveryStoreError::Prototype(
@@ -2250,7 +2209,6 @@ mod tests {
         assert!(!path.exists());
 
         let adapter = SqlitePrototype::new(&path);
-        assert!(adapter.available());
         adapter.initialize().unwrap();
         let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
         let manifest = recovery.export_manifest(RecoveryGeneration::ZERO).unwrap();
@@ -2281,13 +2239,11 @@ mod tests {
             .remove("next_fence_occurrence_id");
         let legacy_json = serde_json::to_string(&legacy_json).unwrap();
         let legacy_digest = blake3::hash(legacy_json.as_bytes()).to_hex().to_string();
-        adapter
-            .run(&format!(
-                "UPDATE recovery_state SET schema_version=6, manifest_json='{}', manifest_digest='{}' WHERE singleton=1;\n",
-                quote_sql(&legacy_json),
-                legacy_digest
-            ))
-            .unwrap();
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET schema_version=6, manifest_json=?1, manifest_digest=?2 WHERE singleton=1",
+            params![legacy_json, legacy_digest],
+        );
         assert!(matches!(
             adapter.load_manifest(),
             Err(SqlitePrototypeError::UnsupportedSemanticSchema(6))
@@ -2306,9 +2262,11 @@ mod tests {
             }
         );
 
-        adapter
-            .run("UPDATE recovery_state SET schema_version=3 WHERE singleton=1;\n")
-            .unwrap();
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET schema_version=3 WHERE singleton=1",
+            [],
+        );
         assert_eq!(
             SqliteRecoveryStore::inspect(&path),
             RecoveryInspection::MigrationRequired {
@@ -2339,7 +2297,6 @@ mod tests {
     fn corruption_is_visible_without_becoming_a_clean_state() {
         let path = temp_database();
         let adapter = SqlitePrototype::new(&path);
-        assert!(adapter.available());
         adapter.initialize().unwrap();
         let recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
         adapter
@@ -2351,6 +2308,79 @@ mod tests {
             adapter.export_header(),
             Err(SqlitePrototypeError::InvalidOutput(_))
         ));
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn manifest_rows_are_read_as_bytes_and_keep_their_health_classification() {
+        let path = temp_database();
+        let adapter = SqlitePrototype::new(&path);
+        adapter.initialize().unwrap();
+        let manifest = MemoryRecoveryStore::new(TopologyEpoch(1))
+            .export_manifest(RecoveryGeneration(0))
+            .unwrap();
+        adapter.write_manifest(&manifest).unwrap();
+
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET manifest_json=CAST(manifest_json AS BLOB) WHERE singleton=1",
+            [],
+        );
+        assert_eq!(adapter.load_manifest().unwrap(), manifest);
+
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET manifest_digest=NULL WHERE singleton=1",
+            [],
+        );
+        let error = adapter.load_manifest().unwrap_err();
+        assert!(matches!(error, SqlitePrototypeError::InvalidOutput(_)));
+        assert_eq!(
+            SqliteRecoveryStore::health_for(&error),
+            RecoveryStoreHealth::Corrupt
+        );
+
+        raw_execute(
+            &path,
+            "UPDATE recovery_state SET manifest_digest='' WHERE singleton=1",
+            [],
+        );
+        let error = adapter.load_manifest().unwrap_err();
+        assert_eq!(error, SqlitePrototypeError::MissingCompleteManifest);
+        assert_eq!(
+            SqliteRecoveryStore::health_for(&error),
+            RecoveryStoreHealth::Missing
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn lock_contention_fails_immediately_instead_of_waiting() {
+        let path = temp_database();
+        let adapter = SqlitePrototype::new(&path);
+        adapter.initialize().unwrap();
+        let manifest = MemoryRecoveryStore::new(TopologyEpoch(1))
+            .export_manifest(RecoveryGeneration(0))
+            .unwrap();
+        adapter.write_manifest(&manifest).unwrap();
+
+        let holder = Connection::open(&path).unwrap();
+        holder.execute_batch("BEGIN EXCLUSIVE").unwrap();
+        let started = std::time::Instant::now();
+        assert!(matches!(
+            adapter.write_manifest(&manifest),
+            Err(SqlitePrototypeError::Sqlite(_))
+        ));
+        assert!(matches!(
+            adapter.load_manifest_with(true),
+            Err(SqlitePrototypeError::Sqlite(_))
+        ));
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "contention must not wait on a busy handler"
+        );
+        drop(holder);
+        adapter.write_manifest(&manifest).unwrap();
         let _ = std::fs::remove_file(path);
     }
 
@@ -2374,7 +2404,6 @@ mod tests {
         let path = temp_database();
         let direct_data_path = path.with_extension("direct-data");
         let adapter = SqlitePrototype::new(&path);
-        assert!(adapter.available());
         adapter.initialize().unwrap();
         std::fs::write(&direct_data_path, b"direct media bytes").unwrap();
 

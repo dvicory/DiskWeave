@@ -5,12 +5,11 @@ use dwv_recovery::{
 };
 use dwv_recovery_sqlite::{
     CURRENT_RECOVERY_SQLITE_SCHEMA, MAX_MANIFEST_JSON_BYTES, MAX_RECOVERY_ARTIFACT_BYTES,
-    SqlitePrototype, SqliteRecoveryStore,
+    SqliteRecoveryStore,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
@@ -116,34 +115,10 @@ fn sidecar(path: &Path, suffix: &str) -> PathBuf {
 }
 
 fn run_sql(path: &Path, sql: &str) {
-    assert!(
-        SqlitePrototype::new(path).available(),
-        "sqlite3 is required for recovery inspection fixtures"
-    );
-    let mut child = Command::new("sqlite3")
-        .args(["-batch", "-noheader"])
-        .arg(path)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("sqlite3 should start");
-    let mut stdin = child
-        .stdin
-        .take()
-        .expect("sqlite3 stdin should be available");
-    stdin
-        .write_all(sql.as_bytes())
-        .expect("sqlite3 fixture SQL should be accepted");
-    drop(stdin);
-    let output = child
-        .wait_with_output()
-        .expect("sqlite3 fixture should finish");
-    assert!(
-        output.status.success(),
-        "sqlite3 fixture failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
+    rusqlite::Connection::open(path)
+        .expect("fixture database should open")
+        .execute_batch(sql)
+        .expect("fixture SQL should apply");
 }
 
 fn create_supported(path: &Path) -> RecoveryManifest {
