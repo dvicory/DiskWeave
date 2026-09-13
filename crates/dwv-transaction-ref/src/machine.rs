@@ -353,6 +353,11 @@ impl TransactionMachine {
         self.state.stage
     }
 
+    /// Returns the accepted flush fence even if a later failure requires reconciliation.
+    pub fn accepted_flush_fence(&self) -> Option<&FenceCertificate> {
+        self.last_fence.as_ref()
+    }
+
     pub fn disposition(&self) -> Disposition {
         self.state.disposition
     }
@@ -1122,6 +1127,7 @@ mod tests {
             .unwrap();
         assert_eq!(machine.stage(), Stage::AwaitingReconciliation);
         assert!(machine.pending_action().is_none());
+        assert!(machine.accepted_flush_fence().is_some());
     }
 
     #[test]

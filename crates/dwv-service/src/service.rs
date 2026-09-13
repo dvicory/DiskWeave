@@ -45,7 +45,7 @@ use dwv_transaction_ref::{
     ActionKind, ActionResult, CodedAdmissionOutcome, CodedClaimInput, CodedClaimRelease,
     CodedEffectPermit, CommittedRecoveryGeneration, ComputationResult, ErrorClass,
     ParityComputationPlan, ParityRange, PlannedRead, PlannedWrite, RangeGuardToken, ResultKind,
-    SemanticIoResult, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
+    SemanticIoResult, Stage, StoreWatermark, TraceEvent, TransactionLimits, TransactionMachine,
     TransactionPersistenceEvidence, TransactionPlan, WriteRecoveryRecordRequirement,
 };
 use readiness::OperationReadinessLedger;
@@ -406,16 +406,6 @@ enum WritePhase {
     Writes,
     Flushes,
 }
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-enum WriteFinalizationPhase {
-    Pending,
-    WatermarksSet,
-    WritesCompleted,
-    FlushesCompleted,
-    RecoveryCommitted,
-    RangeReleased,
-    EvidenceReady,
-}
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CodedReleaseCommitState {
     NotAttempted,
@@ -443,7 +433,6 @@ struct WriteDriver {
     write_intent: WriteIntent,
     basis_permission: BasisReadPermission,
     phase: WritePhase,
-    finalization: WriteFinalizationPhase,
     write_watermarks: Option<[(StoreSubmissionIdentity, StoreWriteWatermark); 2]>,
     certificate: Option<FenceCertificate>,
     recovery_committed: Option<RecoveryGeneration>,
@@ -2520,7 +2509,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             write_intent,
             basis_permission: BasisReadPermission::Pending,
             phase: WritePhase::BasisReads,
-            finalization: WriteFinalizationPhase::Pending,
             write_watermarks: None,
             certificate: None,
             recovery_committed: None,
@@ -2818,7 +2806,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         driver: &WriteDriver,
         current: &RecoverySnapshot,
         write_recovery_record: &WriteRecoveryRecordEvidence,
-        certificate: &FenceCertificate,
     ) -> Result<Option<CaptureCleanEvaluation>, ServiceError> {
         let capture = driver.clean_capture.ok_or_else(|| {
             ServiceError::io(
@@ -2900,13 +2887,12 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 continue;
             }
             let lifecycle_evidence = if *operation == driver.operation {
+                let Some(certificate) = driver.machine.accepted_flush_fence() else {
+                    return Ok(None);
+                };
                 let Some(authorization) = self
                     .lifecycle_authority
-                    .authorize_included_live(
-                        self.admission.lifecycle_slots(),
-                        *operation,
-                        driver.finalization >= WriteFinalizationPhase::FlushesCompleted,
-                    )
+                    .authorize_included_live(self.admission.lifecycle_slots(), *operation, true)
                     .map(IncludedLifecycleAuthorization::from_lifecycle)
                 else {
                     return Ok(None);
@@ -2920,11 +2906,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 .write_drivers
                 .iter()
                 .flatten()
-                .find(|other| {
-                    other.operation == *operation
-                        && other.finalization >= WriteFinalizationPhase::FlushesCompleted
-                })
-                .and_then(|other| other.certificate.as_ref())
+                .find(|other| other.operation == *operation)
+                .and_then(|other| other.machine.accepted_flush_fence())
             {
                 let Some(authorization) = self
                     .lifecycle_authority
@@ -3031,7 +3014,7 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let write_recovery_record = driver.write_recovery_record.clone().ok_or_else(|| {
             ServiceError::io(FailureClass::Recovery, "write-recovery record is missing")
         })?;
-        if driver.finalization == WriteFinalizationPhase::Pending {
+        if driver.machine.stage() == Stage::WriteSet {
             let [
                 (data_identity, data_watermark),
                 (parity_identity, parity_watermark),
@@ -3053,16 +3036,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     ),
                 ])
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            driver.finalization = WriteFinalizationPhase::WatermarksSet;
         }
-        if driver.finalization == WriteFinalizationPhase::WatermarksSet {
+        if driver.machine.stage() == Stage::WriteSet {
             driver
                 .machine
                 .apply(ActionResult::WriteSetComplete(SemanticIoResult::complete()))
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            driver.finalization = WriteFinalizationPhase::WritesCompleted;
         }
-        if driver.finalization == WriteFinalizationPhase::WritesCompleted {
+        if driver.machine.stage() == Stage::FlushSet {
             let certificate = if let Some(certificate) = driver.certificate.clone() {
                 certificate
             } else {
@@ -3141,9 +3122,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     "transaction machine entered reconciliation during flush finalization",
                 ));
             }
-            driver.finalization = WriteFinalizationPhase::FlushesCompleted;
         }
-        if driver.finalization == WriteFinalizationPhase::FlushesCompleted {
+        if driver.machine.stage() == Stage::RecoveryClean {
             let committed = if let Some(committed) = driver.recovery_committed {
                 committed
             } else {
@@ -3157,17 +3137,9 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                         "recovery generation moved backwards during write",
                     ));
                 }
-                let certificate = driver
-                    .certificate
-                    .clone()
-                    .expect("flush finalization retains its certificate");
                 let capture = driver.clean_capture.expect("validated capture is bound");
-                let Some((decision, included_evidence)) = self.evaluate_capture_clean(
-                    driver,
-                    &current,
-                    &write_recovery_record,
-                    &certificate,
-                )?
+                let Some((decision, included_evidence)) =
+                    self.evaluate_capture_clean(driver, &current, &write_recovery_record)?
                 else {
                     return Ok(None);
                 };
@@ -3242,16 +3214,14 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                     CommittedRecoveryGeneration::new(committed, self.topology.topology_epoch()),
                 ))
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            driver.finalization = WriteFinalizationPhase::RecoveryCommitted;
         }
-        if driver.finalization == WriteFinalizationPhase::RecoveryCommitted {
+        if driver.machine.stage() == Stage::Release {
             driver
                 .machine
                 .apply(ActionResult::RangeReleased)
                 .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
-            driver.finalization = WriteFinalizationPhase::RangeReleased;
         }
-        if driver.finalization == WriteFinalizationPhase::RangeReleased {
+        if driver.machine.stage() == Stage::Completed {
             let evidence = OperationEvidence {
                 request: driver.request,
                 completion: CompletionEvidence {
@@ -3265,7 +3235,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                 release_authorization: None,
             };
             driver.evidence = Some(evidence);
-            driver.finalization = WriteFinalizationPhase::EvidenceReady;
         }
         driver
             .evidence
