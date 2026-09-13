@@ -552,6 +552,8 @@ pub struct HealthyPortableService<S: RandomAccessStore, R: RecoveryStateStore> {
     reopened_captures: BTreeSet<CodedCaptureId>,
     #[cfg(test)]
     terminalization_fault: Option<TerminalizationFault>,
+    #[cfg(test)]
+    defer_release_for_test: bool,
 }
 mod basis_observation;
 mod read_ops;
@@ -684,6 +686,8 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             reopened_captures,
             #[cfg(test)]
             terminalization_fault: None,
+            #[cfg(test)]
+            defer_release_for_test: false,
         })
     }
 
@@ -1284,6 +1288,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         self.terminalization_fault = Some(fault);
     }
 
+    #[cfg(test)]
+    fn defer_release_for_test(&mut self) {
+        self.defer_release_for_test = true;
+    }
+
     /// dwv:req req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity
     pub fn submit_write(
         &mut self,
@@ -1544,9 +1553,10 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             );
         };
         let pending_state = driver.work[pending_index].state;
-        if pending_state == WriteWorkState::Completed
-            && driver.work[pending_index].result.as_ref() == Some(&result)
-        {
+        // The slot owner classifies every valid terminal delivery for a
+        // completed child as a duplicate. Preserve that owner behavior here
+        // even when a repeated result carries a different disposition.
+        if pending_state == WriteWorkState::Completed {
             let completion = result.completion.clone();
             if let Err(error) = self.admission.deliver(StoreCompletionDelivery {
                 identity: result.work.identity,
@@ -2096,6 +2106,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         driver: WriteDriver,
         mut evidence: OperationEvidence,
     ) -> Result<OperationEvidence, ServiceError> {
+        #[cfg(test)]
+        if self.defer_release_for_test {
+            self.write_drivers[index] = Some(driver);
+            return Err(ServiceError::Blocked(FailureClass::ReconciliationRequired));
+        }
         // Every retry re-enters the exact lifecycle/coded-release protocol.
         // Cached lifecycle authorization alone does not prove that the coded
         // release receipt committed durably.
@@ -2229,11 +2244,11 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
                             error.to_string(),
                         )
                     })?;
-                if incomplete.is_none()
-                    && (!matches!(reported.disposition, CompletionDisposition::Success)
-                        || !reported.persistence.is_durable())
+                if !matches!(reported.disposition, CompletionDisposition::Success)
+                    || !reported.persistence.is_durable()
                 {
                     incomplete = Some(reported);
+                    break;
                 }
             }
             if let Some(completion) = incomplete {
@@ -2301,9 +2316,6 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
             // effect and therefore has no record to reconcile.
             self.state = ServiceState::Recovering;
         }
-        self.admission
-            .refuse_unaccepted(token)
-            .map_err(slot_error)?;
         self.admission.abandon(token).map_err(slot_error)
     }
     fn coded_claim_for_plan(

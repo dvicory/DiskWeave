@@ -1544,7 +1544,7 @@ impl OperationSlotTable {
         let index = self.active_index(token)?;
         let child_index = {
             let slot = self.slots[index].as_ref().expect("active index has a slot");
-            if slot.state == SlotState::Reclaimable {
+            if slot.abandoned || !matches!(slot.state, SlotState::Reserved | SlotState::Submitted) {
                 return Err(SlotError::InvalidState {
                     token,
                     state: slot.state,
@@ -1625,8 +1625,16 @@ impl OperationSlotTable {
                 })
             };
         }
+        if slot.abandoned {
+            return Err(SlotError::InvalidState {
+                token,
+                state: slot.state,
+            });
+        }
         child.submission = Some(identity);
-        slot.state = SlotState::Submitted;
+        if slot.state == SlotState::Reserved {
+            slot.state = SlotState::Submitted;
+        }
         Ok(())
     }
 
@@ -1670,7 +1678,18 @@ impl OperationSlotTable {
         child.refused_before_acceptance = true;
         child.terminal = true;
         if slot.children.iter().all(|child| child.terminal) {
-            slot.state = SlotState::AwaitingReconciliation;
+            let uncertain = slot.children.iter().any(|child| {
+                child.completion.as_ref().is_some_and(|completion| {
+                    completion.disposition == CompletionDisposition::Uncertain
+                })
+            });
+            slot.state = if uncertain {
+                SlotState::CompletionUncertain
+            } else {
+                SlotState::AwaitingReconciliation
+            };
+        } else {
+            slot.state = SlotState::PartiallyCompleted;
         }
         Ok(())
     }
@@ -1678,12 +1697,16 @@ impl OperationSlotTable {
     pub fn mark_submitted(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
         let index = self.active_index(token)?;
         let slot = self.slots[index].as_mut().expect("active index has a slot");
+        if slot.abandoned {
+            return Err(SlotError::InvalidState {
+                token,
+                state: slot.state,
+            });
+        }
         match slot.state {
             SlotState::Reserved => slot.state = SlotState::Submitted,
             SlotState::Submitted => {}
-            state => {
-                return Err(SlotError::InvalidState { token, state });
-            }
+            state => return Err(SlotError::InvalidState { token, state }),
         }
         Ok(())
     }
@@ -1704,6 +1727,14 @@ impl OperationSlotTable {
 
     pub fn mark_abandoned(&mut self, token: OperationSlotToken) -> Result<(), SlotError> {
         let index = self.active_index(token)?;
+        if self.slots[index]
+            .as_ref()
+            .expect("active index has a slot")
+            .abandoned
+        {
+            return Ok(());
+        }
+        self.refuse_unaccepted_children(index)?;
         self.slots[index]
             .as_mut()
             .expect("active index has a slot")
@@ -1815,39 +1846,46 @@ impl OperationSlotTable {
                 operation_id: completion.operation_id,
             }
         })?;
-        let slot = self.slots[index].as_mut().expect("active index has a slot");
-        let child = slot
-            .children
-            .get_mut(child_index)
-            .ok_or(SlotError::ChildUnknown {
-                operation_id: completion.operation_id,
-            })?;
-        if child.operation_id != completion.operation_id {
-            return Err(SlotError::ChildUnknown {
-                operation_id: completion.operation_id,
-            });
-        }
-        completion.validate().map_err(SlotError::Completion)?;
-        if completion.requested != child.requested {
-            return Err(SlotError::Completion(StoreError::InvalidCompletion(
-                CompletionError::CompletedRangeOutsideRequest,
-            )));
-        }
-        if child.terminal {
-            child.duplicate_deliveries = child.duplicate_deliveries.saturating_add(1);
-            return Ok(CompletionHandling::DuplicateIgnored);
-        }
-        if completion.disposition == CompletionDisposition::Duplicate {
-            return Err(SlotError::UnexpectedDuplicate {
-                operation_id: completion.operation_id,
-            });
+        {
+            let slot = self.slots[index].as_mut().expect("active index has a slot");
+            let child = slot
+                .children
+                .get_mut(child_index)
+                .ok_or(SlotError::ChildUnknown {
+                    operation_id: completion.operation_id,
+                })?;
+            if child.operation_id != completion.operation_id {
+                return Err(SlotError::ChildUnknown {
+                    operation_id: completion.operation_id,
+                });
+            }
+            completion.validate().map_err(SlotError::Completion)?;
+            if completion.requested != child.requested {
+                return Err(SlotError::Completion(StoreError::InvalidCompletion(
+                    CompletionError::CompletedRangeOutsideRequest,
+                )));
+            }
+            if child.terminal {
+                child.duplicate_deliveries = child.duplicate_deliveries.saturating_add(1);
+                return Ok(CompletionHandling::DuplicateIgnored);
+            }
+            if completion.disposition == CompletionDisposition::Duplicate {
+                return Err(SlotError::UnexpectedDuplicate {
+                    operation_id: completion.operation_id,
+                });
+            }
         }
 
+        if completion.disposition != CompletionDisposition::Success {
+            self.refuse_unaccepted_children(index)?;
+        }
+
+        let slot = self.slots[index].as_mut().expect("active index has a slot");
+        let child = &mut slot.children[child_index];
         child.terminal = true;
         child.completion = Some(completion.clone());
         slot.terminal_evidence.push(completion);
-        let all_terminal = slot.children.iter().all(|child| child.terminal);
-        if all_terminal {
+        if slot.children.iter().all(|child| child.terminal) {
             let uncertain = slot.children.iter().any(|child| {
                 child.completion.as_ref().is_some_and(|completion| {
                     completion.disposition == CompletionDisposition::Uncertain
@@ -1873,6 +1911,15 @@ impl OperationSlotTable {
     ) -> Result<(), SlotError> {
         let index = self.active_index(token)?;
         let slot = self.slots[index].as_mut().expect("active index has a slot");
+        if let Some(existing) = slot.reconciliation {
+            if existing == outcome {
+                return Ok(());
+            }
+            return Err(SlotError::InvalidState {
+                token,
+                state: slot.state,
+            });
+        }
         if !slot.children.iter().all(|child| child.terminal) {
             return Err(SlotError::ChildrenNotTerminal);
         }
@@ -1985,6 +2032,50 @@ impl OperationSlotTable {
         Ok(())
     }
 
+    fn refuse_unaccepted_children(&mut self, index: usize) -> Result<(), SlotError> {
+        let count = self.slots[index]
+            .as_ref()
+            .expect("active index has a slot")
+            .children
+            .iter()
+            .filter(|child| {
+                !child.terminal && child.submission.is_none() && !child.refused_before_acceptance
+            })
+            .count();
+        if count == 0 {
+            return Ok(());
+        }
+
+        let mut resources = ResourceUsage::empty();
+        resources.backend_submissions = count;
+        self.admission
+            .release_exact(resources)
+            .map_err(SlotError::Admission)?;
+        let slot = self.slots[index].as_mut().expect("active index has a slot");
+        for child in &mut slot.children {
+            if !child.terminal && child.submission.is_none() {
+                child.refused_before_acceptance = true;
+                child.terminal = true;
+            }
+        }
+        if slot.children.iter().all(|child| child.terminal) {
+            slot.state = if slot.children.iter().any(|child| {
+                child.completion.as_ref().is_some_and(|completion| {
+                    completion.disposition == CompletionDisposition::Uncertain
+                })
+            }) {
+                SlotState::CompletionUncertain
+            } else if slot.drain_state == DrainState::Required {
+                SlotState::Draining
+            } else {
+                SlotState::AwaitingReconciliation
+            };
+        } else {
+            slot.state = SlotState::PartiallyCompleted;
+        }
+        Ok(())
+    }
+
     fn active_index(&self, token: OperationSlotToken) -> Result<usize, SlotError> {
         let index = usize::try_from(token.index).ok();
         let Some(index) = index else {
@@ -2062,6 +2153,24 @@ mod tests {
             .record_reconciliation(token, ReconciliationOutcome::Durable)
             .unwrap();
         (table, token)
+    }
+
+    #[test]
+    fn reconciliation_is_idempotent_for_same_outcome_and_rejects_changes() {
+        let (mut table, token) = reclaimable_table();
+        let before = table.snapshot(token).unwrap();
+        table
+            .record_reconciliation(token, ReconciliationOutcome::Durable)
+            .unwrap();
+        assert_eq!(table.snapshot(token).unwrap(), before);
+        assert!(matches!(
+            table.record_reconciliation(token, ReconciliationOutcome::UncertainRetained),
+            Err(SlotError::InvalidState {
+                token: actual,
+                state: SlotState::Reclaimable,
+            }) if actual == token
+        ));
+        assert_eq!(table.snapshot(token).unwrap(), before);
     }
 
     #[test]
@@ -2210,6 +2319,58 @@ mod tests {
             .record_reconciliation(token, ReconciliationOutcome::Durable)
             .unwrap();
         table.release(token).unwrap();
+    }
+    #[test]
+    fn accepting_late_child_preserves_partial_slot_state() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 1, 1, 1));
+        let token = table.reserve(request(26, 7)).unwrap();
+        let first = table.register_child(token, RANGE).unwrap();
+        let second = table.register_child(token, RANGE).unwrap();
+        table.mark_submitted(token).unwrap();
+        let first_identity = StoreSubmissionIdentity::new(
+            first,
+            StoreId(5),
+            StoreIncarnationId(8),
+            TopologyEpoch(7),
+        );
+        let second_identity = StoreSubmissionIdentity::new(
+            second,
+            StoreId(6),
+            StoreIncarnationId(9),
+            TopologyEpoch(7),
+        );
+        table.accept_submission(token, first_identity).unwrap();
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: first_identity,
+                    completion: full_success(first),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            table.snapshot(token).unwrap().state,
+            SlotState::PartiallyCompleted
+        );
+        table.accept_submission(token, second_identity).unwrap();
+        assert_eq!(
+            table.snapshot(token).unwrap().state,
+            SlotState::PartiallyCompleted
+        );
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: second_identity,
+                    completion: full_success(second),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            table.snapshot(token).unwrap().state,
+            SlotState::AwaitingReconciliation
+        );
     }
 
     #[test]
@@ -2366,10 +2527,26 @@ mod tests {
         );
         table.accept_submission(token, accepted_identity).unwrap();
         table.mark_abandoned(token).unwrap();
-        assert_eq!(table.usage().backend_submissions, 2);
-        table.refuse_submission(token, refused).unwrap();
-        assert!(table.snapshot(token).unwrap().children[1].refused_before_acceptance);
         assert_eq!(table.usage().backend_submissions, 1);
+        let snapshot = table.snapshot(token).unwrap();
+        assert!(snapshot.children[1].refused_before_acceptance);
+        assert_eq!(snapshot.state, SlotState::PartiallyCompleted);
+        assert!(matches!(
+            table.accept_submission(
+                token,
+                StoreSubmissionIdentity::new(
+                    refused,
+                    StoreId(6),
+                    StoreIncarnationId(1),
+                    TopologyEpoch(1),
+                ),
+            ),
+            Err(SlotError::ChildNotAccepted { .. })
+        ));
+        assert!(matches!(
+            table.register_child(token, ByteRange::new(8, 4).unwrap()),
+            Err(SlotError::InvalidState { .. })
+        ));
         table.refuse_submission(token, refused).unwrap();
         assert_eq!(table.usage().backend_submissions, 1);
         table
@@ -2386,6 +2563,58 @@ mod tests {
             .record_reconciliation(token, ReconciliationOutcome::UncertainRetained)
             .unwrap();
         table.release(token).unwrap();
+    }
+
+    #[test]
+    fn failed_child_refuses_every_unaccepted_sibling() {
+        let mut table = OperationSlotTable::new(ResourceLimits::new(1, 1, 2, 1, 1, 1));
+        let token = table.reserve(request(24, 1)).unwrap();
+        let failed = table.register_child(token, RANGE).unwrap();
+        let refused = table
+            .register_child(token, ByteRange::new(4, 4).unwrap())
+            .unwrap();
+        let failed_identity = StoreSubmissionIdentity::new(
+            failed,
+            StoreId(5),
+            StoreIncarnationId(1),
+            TopologyEpoch(1),
+        );
+        table.accept_submission(token, failed_identity).unwrap();
+
+        let completion = StoreCompletion::new(
+            failed,
+            RANGE,
+            CompletedRangeSet::empty(),
+            CompletionDisposition::Failed(StoreError::BackendFailure { code: 5 }),
+            PersistenceEvidence::VolatileOrUnknown,
+        )
+        .unwrap();
+        table
+            .apply_delivery(
+                token,
+                StoreCompletionDelivery {
+                    identity: failed_identity,
+                    completion,
+                },
+            )
+            .unwrap();
+
+        let snapshot = table.snapshot(token).unwrap();
+        assert!(snapshot.children[1].refused_before_acceptance);
+        assert_eq!(snapshot.state, SlotState::AwaitingReconciliation);
+        assert_eq!(table.usage().backend_submissions, 1);
+        assert!(matches!(
+            table.accept_submission(
+                token,
+                StoreSubmissionIdentity::new(
+                    refused,
+                    StoreId(6),
+                    StoreIncarnationId(1),
+                    TopologyEpoch(1),
+                ),
+            ),
+            Err(SlotError::ChildNotAccepted { .. })
+        ));
     }
 
     #[test]

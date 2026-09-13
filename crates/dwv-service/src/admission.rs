@@ -465,6 +465,15 @@ mod tests {
         let range = ByteRange::new(0, 4).unwrap();
         let child = admission.child(token, range).unwrap();
         admission.submit_all(token, 1).unwrap();
+        admission
+            .accept(
+                token,
+                child,
+                StoreId(7),
+                StoreIncarnationId(3),
+                TopologyEpoch(2),
+            )
+            .unwrap();
         admission.abandon(token).unwrap();
         assert!(admission.snapshot(token).unwrap().abandoned);
         admission
@@ -502,6 +511,17 @@ mod tests {
                 .unwrap();
             let children = admission.children(token, &ranges).unwrap();
             admission.submit_all(token, children.len()).unwrap();
+            for (index, &child) in children.iter().enumerate() {
+                admission
+                    .accept(
+                        token,
+                        child,
+                        StoreId(index as u64 + 1),
+                        StoreIncarnationId(1),
+                        TopologyEpoch(2),
+                    )
+                    .unwrap();
+            }
 
             for (&child, &range) in children.iter().zip(&ranges).take(completed_count) {
                 admission
