@@ -1693,12 +1693,39 @@ impl CodedCaptureCoordinator {
         CodedCaptureLifecycleOwner::resolve(recovery, prior, refusal, retained_history_revalidated)
     }
 
+    /// Reopen futureness rule for captures, shared by the canonical and
+    /// owner-qualified paths: no capture fact may come from beyond the owning
+    /// recovery generation. Internal frontier equalities stay with their
+    /// existing validators; only futureness is shared here. The retirement
+    /// frontier is deliberately excluded: it names a newer durable boundary
+    /// by design.
+    pub(crate) fn capture_generation_bounds_valid(
+        snapshot: &CodedCaptureSnapshot,
+        bound: RecoveryGeneration,
+    ) -> bool {
+        snapshot.recovery_generation <= bound
+            && snapshot.retained_frontier.recovery_generation <= bound
+            && snapshot.capture_frontier.recovery_generation <= bound
+            && snapshot
+                .pending_later_cuts
+                .values()
+                .all(|cut| cut.recovery_generation <= bound)
+            && snapshot
+                .resolved_later_cuts
+                .values()
+                .all(|cut| cut.recovery_generation <= bound)
+    }
+
     pub(crate) fn from_snapshots(
         snapshots: impl IntoIterator<Item = CodedCaptureSnapshot>,
+        recovery_generation: RecoveryGeneration,
     ) -> Result<Self, CodedCaptureError> {
         let mut coordinator = Self::new();
         for snapshot in snapshots {
             let capture = snapshot.capture;
+            if !Self::capture_generation_bounds_valid(&snapshot, recovery_generation) {
+                return Err(CodedCaptureError::SnapshotInvalid(capture));
+            }
             let owner_facts = CodedCaptureOwnerFacts::new(
                 snapshot.topology.clone(),
                 snapshot.recovery_generation,
@@ -1738,14 +1765,13 @@ impl CodedCaptureCoordinator {
             )
             .map_err(|_| CodedCaptureError::SnapshotInvalid(capture))?;
             if snapshot.topology != *topology
-                || snapshot.recovery_generation > recovery_generation
+                || !Self::capture_generation_bounds_valid(&snapshot, recovery_generation)
                 || snapshot.checksum_profile != checksum_profile.id
                 || snapshot.checksum_set_generation != checksum_set_generation
                 || snapshot.scope != *scope.units()
                 || snapshot.lower_frontier.recovery_generation != snapshot.recovery_generation
                 || snapshot.capture_frontier.recovery_generation != snapshot.recovery_generation
                 || snapshot.retained_frontier < snapshot.lower_frontier
-                || snapshot.retained_frontier.recovery_generation > recovery_generation
             {
                 return Err(CodedCaptureError::SnapshotInvalid(capture));
             }
@@ -4672,5 +4698,109 @@ mod tests {
             ))
         );
         assert_eq!(store.snapshot, durable);
+    }
+
+    // Regression: captures from beyond the owning recovery generation are
+    // refused at reopen, even when internally consistent. Foreign-lineage
+    // admission stays parked; this covers only impossible local state.
+    #[test]
+    fn future_generation_captures_rejected_at_reopen() {
+        let capture = CodedCaptureId(23);
+        let facts = owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)]));
+        let mut captures = CodedCaptureCoordinator::new();
+        captures
+            .start_capture_unchecked(capture, facts, [])
+            .unwrap();
+        let snapshot = captures.capture_snapshot(capture).unwrap();
+        let sequence = snapshot.lower_frontier.admission_sequence;
+        // Shape 1: whole capture from generation 1 into a generation-0 store,
+        // frontiers kept consistent so only the bound can refuse it.
+        let mut future = snapshot.clone();
+        future.recovery_generation = RecoveryGeneration(1);
+        future.lower_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), sequence);
+        future.capture_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), sequence);
+        future.retained_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), sequence);
+        let future_rejected = matches!(
+            CodedCaptureCoordinator::from_snapshots([future], RecoveryGeneration::ZERO),
+            Err(CodedCaptureError::SnapshotInvalid(_))
+        );
+        // Shape 2: retained frontier alone from the future.
+        let mut retained = snapshot;
+        retained.retained_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), sequence);
+        let retained_rejected = matches!(
+            CodedCaptureCoordinator::from_snapshots([retained], RecoveryGeneration::ZERO),
+            Err(CodedCaptureError::SnapshotInvalid(_))
+        );
+        assert!(
+            future_rejected && retained_rejected,
+            "future: {future_rejected}, retained: {retained_rejected}"
+        );
+    }
+
+    // Regression: every nested generation-bearing capture fact is bounded
+    // by the owning manifest generation: pending and resolved later cuts,
+    // the capture frontier, and (previously) the recovery generation and
+    // retained frontier. The retirement frontier is intentionally newer by
+    // design and stays unbounded.
+    #[test]
+    fn future_nested_capture_facts_rejected_at_reopen() {
+        let capture = CodedCaptureId(24);
+        let facts = owner_facts(ValidatedCodedCaptureScope::complete([CodedUnitId(0)]));
+        let mut captures = CodedCaptureCoordinator::new();
+        captures
+            .start_capture_unchecked(capture, facts, [])
+            .unwrap();
+        let snapshot = captures.capture_snapshot(capture).unwrap();
+        // Shape 1: pending later cut from generation 1 in a generation-0 store.
+        let mut pending = snapshot.clone();
+        let operation = OperationSlotToken::new(9, 1);
+        pending
+            .membership
+            .insert(operation, CodedCaptureMembership::LaterUnknown);
+        pending.pending_later_cuts.insert(
+            operation,
+            CodedCaptureCut::new(
+                dwv_core::TopologyEpoch(1),
+                RecoveryGeneration(1),
+                CodedCaptureFrontier::new(RecoveryGeneration(1), 7),
+            ),
+        );
+        let pending_rejected = matches!(
+            CodedCaptureCoordinator::from_snapshots([pending], RecoveryGeneration::ZERO),
+            Err(CodedCaptureError::SnapshotInvalid(_))
+        );
+        // Shape 2: resolved later cut from generation 1. Phase and decision
+        // are set consistently (durable memberships are incompatible with an
+        // open capture) so only the generation bound can refuse it.
+        let mut resolved = snapshot.clone();
+        resolved.phase = CodedCapturePhase::CleanCommitPending;
+        resolved.decision = Some(CodedCaptureDecision::Accepted);
+        let settled = OperationSlotToken::new(10, 1);
+        resolved
+            .membership
+            .insert(settled, CodedCaptureMembership::LaterDurableAfterClean);
+        resolved.resolved_later_cuts.insert(
+            settled,
+            CodedCaptureCut::new(
+                dwv_core::TopologyEpoch(1),
+                RecoveryGeneration(1),
+                CodedCaptureFrontier::new(RecoveryGeneration(1), 7),
+            ),
+        );
+        let resolved_rejected = matches!(
+            CodedCaptureCoordinator::from_snapshots([resolved], RecoveryGeneration::ZERO),
+            Err(CodedCaptureError::SnapshotInvalid(_))
+        );
+        // Shape 3: capture frontier ahead of the snapshot generation.
+        let mut frontier = snapshot;
+        frontier.capture_frontier = CodedCaptureFrontier::new(RecoveryGeneration(1), 7);
+        let frontier_rejected = matches!(
+            CodedCaptureCoordinator::from_snapshots([frontier], RecoveryGeneration::ZERO),
+            Err(CodedCaptureError::SnapshotInvalid(_))
+        );
+        assert!(
+            pending_rejected && resolved_rejected && frontier_rejected,
+            "pending: {pending_rejected}, resolved: {resolved_rejected}, frontier: {frontier_rejected}"
+        );
     }
 }

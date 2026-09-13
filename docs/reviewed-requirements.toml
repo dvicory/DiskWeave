@@ -3599,7 +3599,7 @@ evidence = "5cb5ba53ff851e89ceed44566e4e73c05f683ba78057a7f6b9a1460389aa37b9"
 
 [coverage_endpoint_digests."req.dirty-integrity-invalidation.failures-and-restart-are-conservative"]
 implementation = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
-evidence = "ae9177f1847d5597caa691a20c49061ceb23567346d10aa9a668d1d2add8ac26"
+evidence = "421222ff130201fe1047fcc5a47a0757e148c5bab86bc451b3a70951bf37dbe7"
 
 [coverage_endpoint_digests."req.dirty-integrity-invalidation.recovery-clean-captures-a-closed-mutation-set"]
 implementation = "3c3847f5f1325968071f84bc7c3cc2458c33e2278ade7cfd7955ff6369cdaa3a"
@@ -3994,7 +3994,7 @@ implementation = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.exact-persistence-evidence-follows-owner-qualified-claim-liveness"]
-implementation = "e27b568d78191fce35609cb7ca00c67d67402e841c7bcb1131661e2bfd29c989"
+implementation = "51d740b2c175c86821a0856f6553ae9a4d5f92f7f02759f977c47931e0472fd6"
 evidence = "2963db9c79684fdb241b2b2ea9eba386903ac9a0bea9dc553b77cb2177343c40"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.fence-occurrences-have-stable-exact-identities-and-coverage"]
@@ -4002,11 +4002,11 @@ implementation = "3456b8df5e2c880281bc87fc64be8a52bf2af701a17cbee68db88d672832ab
 evidence = "2963db9c79684fdb241b2b2ea9eba386903ac9a0bea9dc553b77cb2177343c40"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor"]
-implementation = "271c3d32358d28d46b034c3ec564576468067b1bd02a4ddc7d69d52c8cbeffc4"
+implementation = "8410218e5ef6d86fadcebac18c1f1f9c1b424de62cba82523cfd0900eda14260"
 evidence = "2963db9c79684fdb241b2b2ea9eba386903ac9a0bea9dc553b77cb2177343c40"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly"]
-implementation = "d3a117eb2bb3a88708576070ef2ffcc84d0b34039cdf8623d08526db931a7ce8"
+implementation = "7b34360c2a88ee5719a81a1372fa579a7a057aadc545d9694994839ff2fc6ff2"
 evidence = "2963db9c79684fdb241b2b2ea9eba386903ac9a0bea9dc553b77cb2177343c40"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.offline-rebuild-progress-is-durable-semantic-authority"]
@@ -4015,10 +4015,10 @@ evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations"]
 implementation = "df838747af2b0b859358896c32276fc93f93304fd4635c6e0714c561446cacef"
-evidence = "1e5d69dd4606e977243c5f1e10582b5c8df2af6270a9fbc8aac8a27f6029acd6"
+evidence = "ca931313290caf5c258733951cd89507b778eb7e1a0eb30631d058a75158dbd6"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic"]
-implementation = "06432db2989466e2c661a97bbcade38a3df5054716a183465b853ea9aae9b4d4"
+implementation = "4b546ce67f7f66b93cb497c121bb58da984731186bec1f85904f1d99309eb7e0"
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout"]

@@ -1197,6 +1197,7 @@ pub enum RecoveryError {
         to: RecoverySchemaVersion,
     },
     ExportLimitExceeded(RecoveryRecordKind),
+    DuplicateRecord(RecoveryRecordKind),
     ChecksumBaseline(ExtentError),
     Rebuild(RebuildError),
 }
@@ -1226,6 +1227,7 @@ pub enum TransitionError {
     RecoveryCleanGenerationBehind,
     IntegrityCoverageMissing,
     IntegrityContentGenerationFuture,
+    FactGenerationFuture,
     IntegrityBindingMismatch,
     CodedCaptureIdentityMismatch,
     CodedCaptureClosureMismatch,
@@ -1278,6 +1280,9 @@ impl fmt::Display for RecoveryError {
             }
             Self::ExportLimitExceeded(kind) => {
                 write!(formatter, "recovery export limit exceeded for {kind:?}")
+            }
+            Self::DuplicateRecord(kind) => {
+                write!(formatter, "duplicate {kind:?} record in recovery manifest")
             }
             Self::Rebuild(error) => error.fmt(formatter),
             Self::ChecksumBaseline(error) => error.fmt(formatter),
@@ -1625,6 +1630,7 @@ impl MemoryRecoveryStore {
                 region,
                 mutation_generation,
             } => {
+                check_commit_fact(snapshot.generation, mutation_generation)?;
                 upsert_region(
                     snapshot,
                     region,
@@ -1638,6 +1644,7 @@ impl MemoryRecoveryStore {
                 extent,
                 stale_generation,
             } => {
+                check_commit_fact(snapshot.generation, stale_generation)?;
                 let record = snapshot
                     .integrity_records
                     .iter_mut()
@@ -1661,6 +1668,19 @@ impl MemoryRecoveryStore {
                 discharge_integrity_root(snapshot, extent);
             }
             RecoveryMutation::RecordDataParityFence { fence } => {
+                for generation in fence
+                    .captured_region_generations
+                    .iter()
+                    .map(|(_, generation)| *generation)
+                    .chain(
+                        fence
+                            .captured_integrity_generations
+                            .iter()
+                            .map(|(_, generation)| *generation),
+                    )
+                {
+                    check_commit_fact(snapshot.generation, generation)?;
+                }
                 append_fence(snapshot, fence, expected_topology_epoch)?;
             }
             RecoveryMutation::CloseWritableSession {
@@ -1957,6 +1977,34 @@ impl MemoryRecoveryStore {
     }
 }
 
+/// Upper bound for a single generation fact: facts must not claim more than
+/// `bound`. Shared by commit-time and reopen-time checks so dirty, stale,
+/// captured-fence, and digest-adjacent paths cannot drift apart.
+fn check_fact_generation(
+    bound: RecoveryGeneration,
+    fact: RecoveryGeneration,
+) -> Result<(), RecoveryError> {
+    if fact > bound {
+        return Err(RecoveryError::InvalidTransition(
+            TransitionError::FactGenerationFuture,
+        ));
+    }
+    Ok(())
+}
+
+/// Facts a commit on `base` may publish: the transaction commits `base + 1`,
+/// so nothing it publishes may claim later. Mirrors the digest rule
+/// (`IntegrityContentGenerationFuture`) for dirty, stale, and captured facts.
+fn check_commit_fact(
+    base: RecoveryGeneration,
+    fact: RecoveryGeneration,
+) -> Result<(), RecoveryError> {
+    let bound = base
+        .checked_add(1)
+        .ok_or(RecoveryError::GenerationExhausted)?;
+    check_fact_generation(bound, fact)
+}
+
 impl RecoveryStateStore for MemoryRecoveryStore {
     fn load_assembly_snapshot(&self) -> Result<RecoverySnapshot, RecoveryError> {
         if self.health != RecoveryStoreHealth::Healthy {
@@ -2032,9 +2080,13 @@ impl MemoryRecoveryStore {
         } else {
             validate_migrated_snapshot_fences(&manifest.snapshot)?;
         }
-        CodedCaptureCoordinator::from_snapshots(manifest.snapshot.coded_captures.clone()).map_err(
-            |_| RecoveryError::InvalidTransition(TransitionError::CodedCaptureIdentityMismatch),
-        )?;
+        CodedCaptureCoordinator::from_snapshots(
+            manifest.snapshot.coded_captures.clone(),
+            manifest.snapshot.generation,
+        )
+        .map_err(|_| {
+            RecoveryError::InvalidTransition(TransitionError::CodedCaptureIdentityMismatch)
+        })?;
         let expected_next_capture = manifest
             .snapshot
             .coded_captures
@@ -2071,6 +2123,38 @@ impl MemoryRecoveryStore {
                 )
                 .map_err(RecoveryError::Rebuild)?;
         }
+        // Trust boundary: one durable identity carries exactly one record.
+        // Consumers resolve by first match, so reopen refuses duplicates
+        // instead of silently choosing a winner. Normal write paths upsert
+        // and cannot produce these; only a constructed manifest can.
+        let mut regions: Vec<RegionId> = manifest
+            .snapshot
+            .dirty_regions
+            .iter()
+            .map(|record| record.region)
+            .collect();
+        regions.sort();
+        if regions.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(RecoveryError::DuplicateRecord(
+                RecoveryRecordKind::DirtyRegion,
+            ));
+        }
+        let mut extents: Vec<IntegrityExtentId> = manifest
+            .snapshot
+            .integrity_records
+            .iter()
+            .map(|record| record.extent)
+            .collect();
+        extents.sort();
+        if extents.windows(2).any(|pair| pair[0] == pair[1]) {
+            return Err(RecoveryError::DuplicateRecord(
+                RecoveryRecordKind::IntegrityEvidence,
+            ));
+        }
+        // Self-consistency: no fact may claim a generation later than the
+        // manifest's own. Foreign or newer lineages are a separate admission
+        // question; this refuses only causally impossible local state.
+        validate_manifest_generation_bounds(&manifest.snapshot)?;
         validate_derived_root_bindings(&manifest.snapshot)?;
         if manifest.snapshot.legacy_unreconciled.is_empty() {
             validate_snapshot_fences(&manifest.snapshot)?;
@@ -2309,6 +2393,47 @@ fn migrate_legacy_integrity_reference(
             Ok(())
         }
     }
+}
+
+fn validate_manifest_generation_bounds(snapshot: &RecoverySnapshot) -> Result<(), RecoveryError> {
+    let bound = snapshot.generation;
+    for record in &snapshot.dirty_regions {
+        if let RegionState::Dirty { dirty_since } = record.state {
+            check_fact_generation(bound, dirty_since)?;
+        }
+    }
+    for record in &snapshot.integrity_records {
+        match &record.state {
+            IntegrityState::Stale { stale_generation } => {
+                check_fact_generation(bound, *stale_generation)?;
+            }
+            IntegrityState::Valid {
+                content_generation,
+                verified_at,
+                ..
+            } => {
+                check_fact_generation(bound, *content_generation)?;
+                check_fact_generation(bound, *verified_at)?;
+            }
+            IntegrityState::Absent => {}
+        }
+    }
+    for fence in &snapshot.fences {
+        for generation in fence
+            .captured_region_generations
+            .iter()
+            .map(|(_, generation)| *generation)
+            .chain(
+                fence
+                    .captured_integrity_generations
+                    .iter()
+                    .map(|(_, generation)| *generation),
+            )
+        {
+            check_fact_generation(bound, generation)?;
+        }
+    }
+    Ok(())
 }
 
 fn upsert_region(snapshot: &mut RecoverySnapshot, region: RegionId, state: RegionState) {
@@ -2888,27 +3013,56 @@ fn validate_derived_root_bindings(snapshot: &RecoverySnapshot) -> Result<(), Rec
         return Ok(());
     }
 
-    let clean_bindings = snapshot
-        .dirty_regions
-        .iter()
-        .filter_map(|record| {
-            if !matches!(record.state, RegionState::Clean) {
-                return None;
+    // Session closure is all-or-nothing: closed requires close generation,
+    // an assigned global fence, and (below) a root; open carries none of
+    // them. The commit path only ever produces those two combinations, so any
+    // other shape is constructed. (Legacy manifests return above.)
+    if let Some(session) = snapshot.writable_session.as_ref() {
+        let evidence_complete = session.close_generation.is_some()
+            && matches!(
+                &session.global_fence,
+                Some(fence) if fence.occurrence != FenceOccurrenceId::UNASSIGNED
+            );
+        let evidence_absent = session.close_generation.is_none() && session.global_fence.is_none();
+        match (session.closed, evidence_complete, evidence_absent) {
+            (true, true, _) | (false, _, true) => {}
+            _ => {
+                return Err(RecoveryError::InvalidTransition(
+                    TransitionError::FenceOccurrenceBindingMismatch,
+                ));
             }
-            let clean_generation = record.clean_generation?;
-            let certificate = record
-                .last_clean_fence
-                .as_ref()
-                .filter(|certificate| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)?;
-            Some((
-                certificate.clone(),
-                RecoveryRootFact::CleanRegion {
-                    region: record.region,
-                    clean_generation,
-                },
-            ))
-        })
-        .collect::<Vec<_>>();
+        }
+    }
+    let mut clean_bindings = Vec::new();
+    for record in &snapshot.dirty_regions {
+        if !matches!(record.state, RegionState::Clean) {
+            continue;
+        }
+        // A current Clean claim without persistence evidence is malformed: the
+        // commit path always records both fields, so absence means
+        // construction. (Legacy manifests return above and never reach here.)
+        let Some(clean_generation) = record.clean_generation else {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        };
+        let Some(certificate) = record
+            .last_clean_fence
+            .as_ref()
+            .filter(|certificate| certificate.occurrence != FenceOccurrenceId::UNASSIGNED)
+        else {
+            return Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch,
+            ));
+        };
+        clean_bindings.push((
+            certificate.clone(),
+            RecoveryRootFact::CleanRegion {
+                region: record.region,
+                clean_generation,
+            },
+        ));
+    }
     for (certificate, fact) in clean_bindings {
         if !root_exists(snapshot, &certificate, &fact) {
             return Err(RecoveryError::InvalidTransition(
@@ -4001,6 +4155,9 @@ mod tests {
 
     #[test]
     fn new_fences_require_canonical_order_and_unique_bindings() {
+        // Captured generations stay within the committed generation throughout:
+        // the duplicate-region case isolates duplication (checked before
+        // ordering), not futureness.
         let cases = [
             FenceCertificate::new(
                 TopologyEpoch(1),
@@ -4035,7 +4192,7 @@ mod tests {
                 vec![store_fence(1, 1, 10)],
                 vec![
                     (RegionId(1), RecoveryGeneration(1)),
-                    (RegionId(1), RecoveryGeneration(2)),
+                    (RegionId(1), RecoveryGeneration(1)),
                 ],
             )
             .with_integrity_extent(IntegrityExtentId(2), RecoveryGeneration(1))
@@ -5741,5 +5898,298 @@ mod tests {
             manifest.snapshot.integrity_records[0].state,
             IntegrityState::Stale { .. }
         ));
+    }
+
+    // Regression for the reopen trust boundary: each malformed shape must be
+    // refused as a duplicate record, not merely as any error.
+    #[test]
+    fn duplicate_dirty_integrity_records_are_rejected_at_reopen() {
+        let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        let evidence = WriteRecoveryRecordCommit::new(
+            &mut recovery,
+            TopologyEpoch(1),
+            RecoveryGeneration(0),
+            InvalidationTarget::new(vec![RegionId(5)], vec![IntegrityExtentId(6)]),
+        )
+        .commit()
+        .unwrap();
+        let clean = recovery
+            .export_manifest(evidence.committed_generation)
+            .unwrap();
+        // Control: the undoctored manifest must round-trip, so a rejection
+        // below can only come from the injected duplicates.
+        assert!(MemoryRecoveryStore::from_manifest(clean.clone()).is_ok());
+        // Each malformed shape reopens on its own manifest so one family's
+        // rejection cannot mask another's acceptance; a single assert keeps
+        // every shape exercised on every run.
+        let mut region_dup = clean.clone();
+        let mut duplicate_region = region_dup.snapshot.dirty_regions[0].clone();
+        duplicate_region.state = RegionState::Clean;
+        region_dup.snapshot.dirty_regions.push(duplicate_region);
+        let region_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(region_dup),
+            Err(RecoveryError::DuplicateRecord(
+                RecoveryRecordKind::DirtyRegion
+            ))
+        );
+        let mut integrity_dup = clean.clone();
+        let mut duplicate_integrity = integrity_dup.snapshot.integrity_records[0].clone();
+        duplicate_integrity.state = IntegrityState::Absent;
+        integrity_dup
+            .snapshot
+            .integrity_records
+            .push(duplicate_integrity);
+        let integrity_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(integrity_dup),
+            Err(RecoveryError::DuplicateRecord(
+                RecoveryRecordKind::IntegrityEvidence
+            ))
+        );
+        let mut identical_dup = clean;
+        let repeat = identical_dup.snapshot.dirty_regions[0].clone();
+        identical_dup.snapshot.dirty_regions.push(repeat);
+        let identical_outcome = MemoryRecoveryStore::from_manifest(identical_dup);
+        let identical_rejected = matches!(
+            identical_outcome,
+            Err(RecoveryError::DuplicateRecord(
+                RecoveryRecordKind::DirtyRegion
+            ))
+        );
+        assert!(
+            region_rejected && integrity_rejected && identical_rejected,
+            "duplicate records must not reopen; region divergent: {region_rejected}, integrity divergent: {integrity_rejected}, region identical: {identical_rejected:?}"
+        );
+    }
+
+    // Regression: within one lineage, commits cannot publish facts from a
+    // generation later than the one they commit, and manifests cannot contain
+    // them either. Foreign or newer-manifest admission stays parked with the
+    // post-gap work.
+    #[test]
+    fn future_generation_facts_are_rejected_atomically() {
+        // One fresh store per mutation family so a rejection (or acceptance)
+        // in one family cannot mask another; a single assert keeps every
+        // family exercised on every run. The fence arm covers the third
+        // future-stamp path: captured generations are only order-checked
+        // (`validate_fence`), never bounded by the committing generation.
+        let mut outcomes = Vec::new();
+        for family in ["dirty", "stale", "fence"] {
+            let mut recovery = store();
+            let mut next = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+            if family == "dirty" {
+                next.push(RecoveryMutation::MarkRegionDirty {
+                    region: RegionId(1),
+                    mutation_generation: RecoveryGeneration(1),
+                });
+            } else if family == "stale" {
+                next.push(RecoveryMutation::MarkIntegrityStale {
+                    extent: IntegrityExtentId(2),
+                    stale_generation: RecoveryGeneration(1),
+                });
+            } else {
+                next.push(RecoveryMutation::RecordDataParityFence {
+                    fence: fence(RegionId(9), RecoveryGeneration(1)),
+                });
+            }
+            // Control: the N+1 stamp (the generation being committed) stays
+            // accepted, and the commit lands exactly on generation 1 so the
+            // future transaction below cannot fail on a generation mismatch.
+            let committed = recovery.commit_durable(next).unwrap();
+            assert_eq!(committed, RecoveryGeneration(1));
+            // Hole: N+2 stamps from a future that never happened are accepted.
+            let mut future = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+            if family == "dirty" {
+                future.push(RecoveryMutation::MarkRegionDirty {
+                    region: RegionId(3),
+                    mutation_generation: RecoveryGeneration(3),
+                });
+            } else if family == "stale" {
+                future.push(RecoveryMutation::MarkIntegrityStale {
+                    extent: IntegrityExtentId(4),
+                    stale_generation: RecoveryGeneration(3),
+                });
+            } else {
+                future.push(RecoveryMutation::RecordDataParityFence {
+                    fence: fence(RegionId(9), RecoveryGeneration(3)),
+                });
+            }
+            let before = recovery.snapshot().clone();
+            let rejected = recovery.commit_durable(future).is_err();
+            let unchanged = *recovery.snapshot() == before;
+            outcomes.push((family, rejected, unchanged));
+        }
+        assert!(
+            outcomes
+                .iter()
+                .all(|(_, rejected, unchanged)| *rejected && *unchanged),
+            "each family must reject N+2 facts atomically: {outcomes:?}"
+        );
+    }
+
+    // Regression: a Clean claim without persistence evidence is malformed,
+    // whether its root dangles or is dropped with it. Legacy migration state
+    // never reaches this check.
+    #[test]
+    fn clean_claims_require_persistence_evidence_at_reopen() {
+        let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        let mut dirty = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        dirty.push(RecoveryMutation::MarkRegionDirty {
+            region: RegionId(5),
+            mutation_generation: RecoveryGeneration(1),
+        });
+        dirty.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(5), RecoveryGeneration(1)),
+        });
+        recovery.commit_durable(dirty).unwrap();
+        let mut clean = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        clean.push(RecoveryMutation::MarkRegionClean {
+            region: RegionId(5),
+            through_generation: RecoveryGeneration(1),
+            fence_occurrence: FenceOccurrenceId(1),
+        });
+        let committed = recovery.commit_durable(clean).unwrap();
+        assert_eq!(committed, RecoveryGeneration(2));
+        let intact = recovery.export_manifest(RecoveryGeneration(2)).unwrap();
+        // Control: the evidenced claim round-trips.
+        assert!(MemoryRecoveryStore::from_manifest(intact.clone()).is_ok());
+        // Shape 1: evidence fields stripped, root left dangling.
+        let mut dangling = intact.clone();
+        dangling.snapshot.dirty_regions[0].clean_generation = None;
+        dangling.snapshot.dirty_regions[0].last_clean_fence = None;
+        let dangling_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(dangling),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 2: evidence fields stripped and root dropped: nothing demands
+        // evidence for the Clean state.
+        let mut bare = intact;
+        bare.snapshot.dirty_regions[0].clean_generation = None;
+        bare.snapshot.dirty_regions[0].last_clean_fence = None;
+        bare.snapshot.roots.clear();
+        let bare_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(bare),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        assert!(
+            dangling_rejected && bare_rejected,
+            "dangling: {dangling_rejected}, bare: {bare_rejected}"
+        );
+    }
+
+    // Regression: persisted session closure is all-or-nothing. Closed
+    // requires close generation, assigned global fence, and root; open
+    // carries none of them.
+    #[test]
+    fn session_closure_requires_complete_evidence_at_reopen() {
+        let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(1));
+        let mut begin = recovery.begin_protocol_txn(RecoveryGeneration(0), TopologyEpoch(1));
+        begin.push(RecoveryMutation::BeginWritableSession {
+            session_id: SessionId(7),
+            topology_epoch: TopologyEpoch(1),
+            dirty_envelope_generation: 0,
+        });
+        begin.push(RecoveryMutation::RecordDataParityFence {
+            fence: fence(RegionId(2), RecoveryGeneration(0)),
+        });
+        recovery.commit_durable(begin).unwrap();
+        let mut close = recovery.begin_protocol_txn(RecoveryGeneration(1), TopologyEpoch(1));
+        close.push(RecoveryMutation::CloseWritableSession {
+            session_id: SessionId(7),
+            global_fence: fence(RegionId(2), RecoveryGeneration(1)),
+        });
+        let committed = recovery.commit_durable(close).unwrap();
+        assert_eq!(committed, RecoveryGeneration(2));
+        let intact = recovery.export_manifest(RecoveryGeneration(2)).unwrap();
+        // Control: the evidenced closure round-trips.
+        assert!(MemoryRecoveryStore::from_manifest(intact.clone()).is_ok());
+        // Shape 1: closed without close generation.
+        let mut no_generation = intact.clone();
+        no_generation
+            .snapshot
+            .writable_session
+            .as_mut()
+            .unwrap()
+            .close_generation = None;
+        let no_generation_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(no_generation),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 2: closed without the global fence.
+        let mut no_fence = intact.clone();
+        no_fence
+            .snapshot
+            .writable_session
+            .as_mut()
+            .unwrap()
+            .global_fence = None;
+        let no_fence_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(no_fence),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 3: complete closure with the root dropped (already refused).
+        let mut no_root = intact.clone();
+        no_root.snapshot.roots.clear();
+        let no_root_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(no_root),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 4: reopened as open while carrying close evidence, which also
+        // blocks legitimate session begin while claiming nothing.
+        let mut half_open = intact.clone();
+        half_open.snapshot.writable_session.as_mut().unwrap().closed = false;
+        let half_open_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(half_open),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 5: open while carrying close evidence and no root: nothing
+        // demands consistency for the open state.
+        let mut open_evidence = intact.clone();
+        open_evidence
+            .snapshot
+            .writable_session
+            .as_mut()
+            .unwrap()
+            .closed = false;
+        open_evidence.snapshot.roots.clear();
+        let open_evidence_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(open_evidence),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        // Shape 6: open carrying only a close generation: the same
+        // open-purity arm with a partial-evidence combination.
+        let mut open_partial = intact.clone();
+        let open_session = open_partial.snapshot.writable_session.as_mut().unwrap();
+        open_session.closed = false;
+        open_session.global_fence = None;
+        open_partial.snapshot.roots.clear();
+        let open_partial_rejected = matches!(
+            MemoryRecoveryStore::from_manifest(open_partial),
+            Err(RecoveryError::InvalidTransition(
+                TransitionError::FenceOccurrenceBindingMismatch
+            ))
+        );
+        assert!(
+            no_generation_rejected
+                && no_fence_rejected
+                && no_root_rejected
+                && half_open_rejected
+                && open_evidence_rejected
+                && open_partial_rejected,
+            "no-generation: {no_generation_rejected}, no-fence: {no_fence_rejected}, no-root: {no_root_rejected}, half-open: {half_open_rejected}, open-evidence: {open_evidence_rejected}, open-partial: {open_partial_rejected}"
+        );
     }
 }
