@@ -10,11 +10,13 @@ This capability provides the first end-to-end portable single-parity path: norma
 <!-- dwv:requires req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations -->
 <!-- dwv:requires req.checksum-plane.current-baseline-completion-is-persisted-and-exact -->
 
-The service SHALL assemble exactly one compatible member binding for every required assignment in a validated captured topology and admit each canonical request through a generational operation slot. Local collection, discovery, or vector order SHALL NOT define slot, role, coding position, assignment, or target identity. Before child I/O, the service SHALL resolve the request's stable target slot through its captured topology and reject missing, extra, duplicate, aliased, role/position-mismatched, assignment-mismatched, or stale bindings and requests. Each opened store SHALL be selected by the topology assignment's stable store identity, and the service SHALL reject any binding whose store identity, slot, role, coding position, assignment instance, or assignment generation differs. When current recovery state carries a mandatory new-checksum-baseline obligation, read/write assembly and request admission SHALL remain blocked until the checksum owner reconstructs complete current persisted coverage. Request validation, admission ownership, child execution, terminal reconciliation, and returned operation evidence SHALL preserve the same canonical request fields without a parallel service request model.
+The service SHALL assemble exactly one compatible member binding for every required assignment in a validated captured topology and admit each canonical request through a generational operation slot. It SHALL consume, and SHALL NOT reinterpret, the exact snapshot/member-binding valid/invalid result delegated by `req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments`. Local collection, discovery, or vector order SHALL NOT define slot, role, coding position, assignment, or target identity. Before child I/O, the service SHALL resolve the request's stable target slot through its captured topology and fail when the delegated relation rejects the snapshot or bindings. A request whose captured topology epoch is stale SHALL fail before resource reservation or child I/O. Each opened store SHALL continue to be selected by the topology assignment's stable store identity. That authorization remains a non-delegated current obligation because the current assignment type supplies no expected store identity; it lies outside the delegated relation and SHALL NOT be weakened or filled. Service-owned supported-profile, bounded-resource, capability, recovery, and request-admission checks SHALL remain independently required.
+
+When current recovery state carries a mandatory new-checksum-baseline obligation, read/write assembly and request admission SHALL remain blocked until the checksum owner reconstructs complete current persisted coverage. Request validation, admission ownership, child execution, terminal reconciliation, and returned operation evidence SHALL preserve the same canonical request fields without a parallel service request model. A delegated validation rejection or any independent service prerequisite failure SHALL occur before resource reservation, child I/O, or member mutation as required by the owning boundary.
 
 #### Scenario: Healthy topology is assembled
 
-- **WHEN** all required data/parity roles have unambiguous identity and compatible capabilities and no current admission prerequisite is outstanding
+- **WHEN** the delegated topology/member-binding relation accepts, all required data/parity roles have unambiguous owner-qualified identity and compatible service capabilities, and no current admission prerequisite is outstanding
 - **THEN** the service enters serving state and accepts normalized requests with a captured topology epoch
 
 #### Scenario: Mandatory post-recovery baseline is incomplete
@@ -34,13 +36,13 @@ The service SHALL assemble exactly one compatible member binding for every requi
 
 #### Scenario: Ambiguous or stale assembly is attempted
 
-- **WHEN** identity evidence is ambiguous, a required role is unavailable, or a captured generation is stale
+- **WHEN** owner-qualified identity evidence is ambiguous, a required role is unavailable, a captured generation is stale, or the delegated topology/member-binding relation otherwise rejects
 - **THEN** assembly or request admission fails closed without mutating a member
 
 #### Scenario: Collection order differs from topology order
 
-- **WHEN** member collection order and topology assignment order differ while every binding retains the same stable slot, role, coding position, assignment instance, generation, and store identity
-- **THEN** the same request slot resolves to the same assignment and member
+- **WHEN** member collection order and topology assignment order differ while every supplied semantic value and owner-qualified identity comparison is unchanged
+- **THEN** the delegated result is unchanged and the same request slot resolves to the same assignment and member
 
 #### Scenario: A positional binding disagrees with topology
 

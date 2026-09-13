@@ -234,6 +234,8 @@ struct FakeStore {
     epoch: TopologyEpoch,
     bytes: Vec<u8>,
     read: FakeRead,
+    identity: IdentityObservationSet,
+    logical_block_size: u32,
     watermark: StoreWriteWatermark,
     write: FakeEffect,
     flush: FakeEffect,
@@ -252,6 +254,14 @@ impl FakeStore {
             id,
             epoch,
             bytes: vec![0; length as usize],
+            identity: IdentityObservationSet::new(
+                vec![IdentityObservation {
+                    source: IdentitySourceKind::StableDeviceId,
+                    fingerprint: [id.0 as u8; 16],
+                }],
+                IdentityAssessment::Confirmed,
+            ),
+            logical_block_size: BLOCK,
             read,
             physical_reads: 0,
             watermark: StoreWriteWatermark(0),
@@ -265,6 +275,22 @@ impl FakeStore {
     fn with_effects(mut self, write: FakeEffect, flush: FakeEffect) -> Self {
         self.write = write;
         self.flush = flush;
+        self
+    }
+
+    fn with_identity(mut self, fingerprint: [u8; 16], assessment: IdentityAssessment) -> Self {
+        self.identity = IdentityObservationSet::new(
+            vec![IdentityObservation {
+                source: IdentitySourceKind::StableDeviceId,
+                fingerprint,
+            }],
+            assessment,
+        );
+        self
+    }
+
+    fn with_block_size(mut self, logical_block_size: u32) -> Self {
+        self.logical_block_size = logical_block_size;
         self
     }
 
@@ -300,13 +326,7 @@ impl RandomAccessStore for FakeStore {
     }
 
     fn identity_observations(&self) -> IdentityObservationSet {
-        IdentityObservationSet::new(
-            vec![IdentityObservation {
-                source: IdentitySourceKind::StableDeviceId,
-                fingerprint: [self.id.0 as u8; 16],
-            }],
-            IdentityAssessment::Confirmed,
-        )
+        self.identity.clone()
     }
 
     fn current_identity_observations(&self) -> Result<IdentityObservationSet, StoreError> {
@@ -315,7 +335,12 @@ impl RandomAccessStore for FakeStore {
 
     fn capabilities(&self) -> StoreCapabilities {
         let length = self.bytes.len() as u64;
-        StoreCapabilities::portable_demo(length, BLOCK, length, CapabilityEvidenceId(self.id.0))
+        StoreCapabilities::portable_demo(
+            length,
+            self.logical_block_size,
+            length,
+            CapabilityEvidenceId(self.id.0),
+        )
     }
 
     fn length(&self) -> u64 {
@@ -4595,6 +4620,334 @@ fn stale_epoch_is_rejected_before_payload_mutation() {
     drop(service);
     fs::remove_dir_all(root).unwrap();
 }
+fn topology_correspondence_bindings(topology: &TopologySnapshot) -> Vec<MemberBinding<FakeStore>> {
+    topology
+        .assignments()
+        .iter()
+        .enumerate()
+        .map(|(index, assignment)| {
+            let store_id = StoreId(index as u64 + 1);
+            member_binding(
+                assignment,
+                topology.topology_epoch(),
+                store_id,
+                FakeStore::new_with_length(
+                    store_id,
+                    topology.topology_epoch(),
+                    FakeRead::Exact,
+                    topology.geometry().protected_length(),
+                ),
+            )
+        })
+        .collect()
+}
+
+fn assert_topology_correspondence_rejects(
+    topology: &TopologySnapshot,
+    members: Vec<MemberBinding<FakeStore>>,
+) {
+    assert!(validate_assembly(topology, &members).is_err());
+    assert!(members.iter().all(|member| {
+        member.store.physical_reads == 0
+            && member.store.physical_writes == 0
+            && member.store.physical_flushes == 0
+    }));
+}
+
+/// Direct bounded correspondence with `TopologyMemberBindingValidation.qnt`.
+///
+/// This test compares only the delegated valid/invalid result. Unchecked
+/// deserialization, first-error identity, array comparison, assignment-to-store
+/// authorization, `MAX_TOPOLOGY_ASSIGNMENTS`, supported-profile/capability
+/// policy, and physical truth remain explicit non-claims.
+///
+/// A Connect adapter is intentionally absent: converting generated ITF values
+/// into `RandomAccessStore` observations would manufacture the opened-store and
+/// identity-assessment facts that this boundary requires the real owner to supply.
+#[test]
+fn topology_member_binding_model_corresponds_to_production_validation() {
+    let epoch = TopologyEpoch(4);
+    let profile = CodingProfile::new(2, 1).unwrap();
+    let geometry = ProtectedGeometry::new(LENGTH, BLOCK).unwrap();
+    let assignments = (0..3)
+        .map(|position| {
+            TopologyAssignment::new(
+                SlotId::from_bytes([position as u8 + 1; 16]),
+                if position < 2 {
+                    MemberRole::Data
+                } else {
+                    MemberRole::Parity
+                },
+                CodingPosition(position),
+                AssignmentInstanceId::from_bytes([position as u8 + 11; 16]),
+                AssignmentGeneration(1),
+            )
+        })
+        .collect::<Vec<_>>();
+    let topology = TopologySnapshot::new(
+        ArrayId::from_bytes([7; 16]),
+        epoch,
+        profile,
+        geometry,
+        assignments.clone(),
+    )
+    .unwrap();
+
+    assert!(topology.validate().is_ok());
+    assert!(validate_assembly(&topology, &topology_correspondence_bindings(&topology)).is_ok());
+
+    let second_geometry = TopologySnapshot::new(
+        topology.array_id(),
+        epoch,
+        profile,
+        ProtectedGeometry::new(LENGTH * 2, BLOCK).unwrap(),
+        assignments.clone(),
+    )
+    .unwrap();
+    assert!(
+        validate_assembly(
+            &second_geometry,
+            &topology_correspondence_bindings(&second_geometry)
+        )
+        .is_ok()
+    );
+
+    let one_data_one_parity = TopologySnapshot::new(
+        ArrayId::from_bytes([7; 16]),
+        epoch,
+        CodingProfile::new(1, 1).unwrap(),
+        ProtectedGeometry::new(LENGTH, BLOCK).unwrap(),
+        vec![
+            TopologyAssignment::new(
+                SlotId::from_bytes([1; 16]),
+                MemberRole::Data,
+                CodingPosition(0),
+                AssignmentInstanceId::from_bytes([11; 16]),
+                AssignmentGeneration(1),
+            ),
+            TopologyAssignment::new(
+                SlotId::from_bytes([2; 16]),
+                MemberRole::Parity,
+                CodingPosition(1),
+                AssignmentInstanceId::from_bytes([12; 16]),
+                AssignmentGeneration(1),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(
+        validate_assembly(
+            &one_data_one_parity,
+            &topology_correspondence_bindings(&one_data_one_parity)
+        )
+        .is_ok()
+    );
+
+    let multi_parity = TopologySnapshot::new(
+        ArrayId::from_bytes([8; 16]),
+        TopologyEpoch(5),
+        CodingProfile::new(1, 2).unwrap(),
+        ProtectedGeometry::new(LENGTH, BLOCK).unwrap(),
+        vec![
+            TopologyAssignment::new(
+                SlotId::from_bytes([1; 16]),
+                MemberRole::Data,
+                CodingPosition(0),
+                AssignmentInstanceId::from_bytes([11; 16]),
+                AssignmentGeneration(2),
+            ),
+            TopologyAssignment::new(
+                SlotId::from_bytes([2; 16]),
+                MemberRole::Parity,
+                CodingPosition(1),
+                AssignmentInstanceId::from_bytes([12; 16]),
+                AssignmentGeneration(2),
+            ),
+            TopologyAssignment::new(
+                SlotId::from_bytes([3; 16]),
+                MemberRole::Parity,
+                CodingPosition(2),
+                AssignmentInstanceId::from_bytes([13; 16]),
+                AssignmentGeneration(2),
+            ),
+        ],
+    )
+    .unwrap();
+    assert!(multi_parity.validate().is_ok());
+    assert!(matches!(
+        validate_assembly(
+            &multi_parity,
+            &topology_correspondence_bindings(&multi_parity)
+        ),
+        Err(ServiceError::Invalid {
+            class: FailureClass::Capability,
+            ..
+        })
+    ));
+
+    let mut reordered_assignments = assignments.clone();
+    reordered_assignments.rotate_left(1);
+    let reordered = TopologySnapshot::new(
+        topology.array_id(),
+        epoch,
+        profile,
+        geometry,
+        reordered_assignments,
+    )
+    .unwrap();
+    let original_members = topology_correspondence_bindings(&topology);
+    let mut reordered_members = topology_correspondence_bindings(&topology);
+    reordered_members.rotate_right(1);
+    let slot_two = SlotId::from_bytes([2; 16]);
+    assert_eq!(
+        original_members
+            .iter()
+            .find(|member| member.slot_id == slot_two)
+            .map(|member| member.store_id),
+        reordered_members
+            .iter()
+            .find(|member| member.slot_id == slot_two)
+            .map(|member| member.store_id),
+    );
+    assert!(validate_assembly(&reordered, &reordered_members).is_ok());
+    assert_eq!(
+        topology.assignment_for_slot(SlotId::from_bytes([2; 16])),
+        reordered.assignment_for_slot(SlotId::from_bytes([2; 16]))
+    );
+    assert_eq!(
+        topology.assignment_for_position(CodingPosition(1)),
+        reordered.assignment_for_position(CodingPosition(1))
+    );
+
+    let rejects_snapshot = |candidate_assignments: Vec<TopologyAssignment>| {
+        assert!(
+            TopologySnapshot::new(
+                topology.array_id(),
+                epoch,
+                profile,
+                geometry,
+                candidate_assignments,
+            )
+            .is_err()
+        );
+    };
+    rejects_snapshot(assignments[..2].to_vec());
+    rejects_snapshot({
+        let mut candidate = assignments.clone();
+        candidate.push(TopologyAssignment::new(
+            SlotId::from_bytes([4; 16]),
+            MemberRole::Data,
+            CodingPosition(3),
+            AssignmentInstanceId::from_bytes([14; 16]),
+            AssignmentGeneration(1),
+        ));
+        candidate
+    });
+    rejects_snapshot({
+        let mut candidate = assignments.clone();
+        candidate[1] = TopologyAssignment::new(
+            candidate[1].slot_id(),
+            MemberRole::Parity,
+            candidate[1].coding_position(),
+            candidate[1].assignment_instance(),
+            candidate[1].assignment_generation(),
+        );
+        candidate
+    });
+    for defect in ["slot", "position", "instance"] {
+        let mut candidate = assignments.clone();
+        candidate[1] = TopologyAssignment::new(
+            if defect == "slot" {
+                candidate[0].slot_id()
+            } else {
+                candidate[1].slot_id()
+            },
+            candidate[1].role(),
+            if defect == "position" {
+                candidate[0].coding_position()
+            } else {
+                candidate[1].coding_position()
+            },
+            if defect == "instance" {
+                candidate[0].assignment_instance()
+            } else {
+                candidate[1].assignment_instance()
+            },
+            candidate[1].assignment_generation(),
+        );
+        rejects_snapshot(candidate);
+    }
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members.pop();
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    let mut extra = member_binding(
+        &assignments[0],
+        epoch,
+        StoreId(4),
+        FakeStore::new(StoreId(4), epoch, FakeRead::Exact),
+    );
+    extra.slot_id = SlotId::from_bytes([4; 16]);
+    members.push(extra);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[1].slot_id = members[0].slot_id;
+    assert_topology_correspondence_rejects(&topology, members);
+
+    for defect in ["role", "position", "instance", "generation", "epoch"] {
+        let mut members = topology_correspondence_bindings(&topology);
+        match defect {
+            "role" => members[0].role = MemberRole::Parity,
+            "position" => members[0].coding_position = CodingPosition(1),
+            "instance" => members[0].assignment_instance = AssignmentInstanceId([99; 16]),
+            "generation" => members[0].assignment_generation = AssignmentGeneration(2),
+            "epoch" => members[0].topology_epoch = TopologyEpoch(5),
+            _ => unreachable!(),
+        }
+        assert_topology_correspondence_rejects(&topology, members);
+    }
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[0].store_id = StoreId(99);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[1].store_id = StoreId(1);
+    members[1].store.id = StoreId(1);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[0].store.epoch = TopologyEpoch(5);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[0].store.bytes.resize((LENGTH * 2) as usize, 0);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[0].store =
+        FakeStore::new(StoreId(1), epoch, FakeRead::Exact).with_block_size(BLOCK * 2);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[1].store = FakeStore::new(StoreId(2), epoch, FakeRead::Exact)
+        .with_identity([1; 16], IdentityAssessment::Confirmed);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[2].store = FakeStore::new(StoreId(3), epoch, FakeRead::Exact)
+        .with_identity([2; 16], IdentityAssessment::Confirmed);
+    assert_topology_correspondence_rejects(&topology, members);
+
+    let mut members = topology_correspondence_bindings(&topology);
+    members[1].store = FakeStore::new(StoreId(2), epoch, FakeRead::Exact)
+        .with_identity([2; 16], IdentityAssessment::Ambiguous);
+    assert_topology_correspondence_rejects(&topology, members);
+}
+
 /// dwv:req req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch
 #[test]
 fn stable_slots_select_the_same_members_when_binding_order_changes() {

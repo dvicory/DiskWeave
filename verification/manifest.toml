@@ -1027,3 +1027,81 @@ non_claims = [
   "Mutation canaries establish sensitivity only to their named defects; they are not model completeness or implementation-correctness proof.",
 ]
 
+[[evidence]]
+id = "evidence.topology-member-binding-validation-model"
+path = "docs/verification/portable-verification-evidence.md"
+class = "evidence-artifact"
+claim = "The parameterized TopologyMemberBindingValidation relation decides only the exact valid/invalid member-binding result over owner-accepted profile/geometry and supplied snapshot, assignment, binding, opened-store, and owner-qualified pair-comparison facts; deterministic, focused, widened, non-vacuity, permutation, lookup, and mutation checks provide bounded executable evidence."
+tier = "portable-bounded-model"
+fault_model = [
+  "assignment undercount or overcount",
+  "role or coding-position mismatch",
+  "duplicate logical slot, active coding position, or assignment-instance identity",
+  "missing, extra, or duplicate binding",
+  "captured role, coding position, assignment instance, generation, or topology epoch mismatch",
+  "declared and opened store mismatch or duplicate store identity",
+  "opened-store epoch, protected-length, or logical-block-size mismatch",
+  "owner-qualified Same or Ambiguous comparison for either early or later unordered store pairs",
+  "collection-position lookup substituted for stable semantic lookup",
+]
+scope = [
+  "canonical input models/quint/TopologyMemberBindingValidation.qnt sha256 c30f33d2331cc6985d9cee3b9b3693d30a43b98da849ef603c7bc34e85abe610",
+  "deterministic input verification/quint/TopologyMemberBindingValidationScenarios.qnt sha256 c6eb1c9afc9931144f8264a6b644d8eaf364c9b2c10c2a444fa49de9f312dc29",
+  "focused input verification/quint/TopologyMemberBindingValidationAnalysis.qnt sha256 58bbc51686a73a4f911de5897b72e01c56d1957448dbf7dd39d693125b99a654",
+  "widened input verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt sha256 f22a5ee5e73fcdfe25cf346cd27ae7d5e911da7f2f52f7b7d301c865c9ddd596",
+  "mutation input verification/quint/TopologyMemberBindingValidationMutants.qnt sha256 11f2cdedee509480ae34e25caf95bce794dccdd2240d5daf0bc9bd30f9f89a49",
+  "quint test verification/quint/TopologyMemberBindingValidationScenarios.qnt --verbosity=3 => 8 passing",
+  "quint verify verification/quint/TopologyMemberBindingValidationAnalysis.qnt --max-steps=1 --invariants ValidIffAllDelegatedPredicates AcceptedSnapshotIsUnambiguous AcceptedBindingsAreBijective AcceptedBindingsMatchCapturedFacts AcceptedBindingsAreDistinct PermutationInvariant LookupIsUnique => No violation found",
+  "quint run verification/quint/TopologyMemberBindingValidationAnalysis.qnt --max-steps=1 --max-samples=1000 --seed=22082026 --invariants ValidIffAllDelegatedPredicates AcceptedSnapshotIsUnambiguous AcceptedBindingsAreBijective AcceptedBindingsMatchCapturedFacts AcceptedBindingsAreDistinct PermutationInvariant LookupIsUnique --witnesses ValidInputReachable InvalidInputReachable SnapshotCoverageRejectionReachable SnapshotUniquenessRejectionReachable BindingBijectionRejectionReachable CapturedFieldRejectionReachable OpenedStoreRejectionReachable OwnerComparisonRejectionReachable OneDataOneParityAcceptedReachable TwoDataOneParityAcceptedReachable MultiParityAcceptedReachable SecondGeometryAcceptedReachable SameRejectedReachable AmbiguousRejectedReachable LaterPairRejectedReachable => No violation found; every witness reached; 254 valid and 746 invalid",
+  "focused domain: 15 exact validation cases and 5 exact permutation pairs",
+  "quint test verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt --verbosity=3 => 1 passing",
+  "quint run verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt --max-steps=1 --max-samples=500 --seed=22082026 --invariants WideExpectedResult WidePermutationInvariant --witnesses WideValidReachable WideInvalidReachable => No violation found; 195 valid and 305 invalid witnesses",
+  "widened sampled profile: accepted profile 3 data plus 2 parity; slots 10-14, instances 20-24, stores 30-34, generation 7, epoch 9, protected length 16384, parity length 32768, logical block size 4096",
+  "quint test verification/quint/TopologyMemberBindingValidationMutants.qnt --verbosity=3 => 32 passing, comprising 8 deterministic baselines and 24 named mutation canaries",
+  "Gate A reviewer TopologyModelApply.TopologyGateAReviewer GO after one repair round at revision cf094e2a9f3ad0d404e2acba4cd636f07e334de9",
+  "Gate B reviewer TopologyModelApply.TopologyGateBReviewer GO after one repair round at revision 6842d1792e085d7dc6b47a2e65858b5d05b79f2c",
+]
+requirements = [
+  "req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments",
+]
+non_claims = [
+  "The focused and widened results are finite evidence, not arbitrary-width or unbounded proof.",
+  "The model consumes owner-accepted profile/geometry and owner-produced identity comparisons; it does not validate construction, unchecked deserialization, provenance, confidence, assessment precedence, or candidate choice.",
+  "Array-identity comparison and assignment-to-store authorization remain outside the supplied relation.",
+  "The model does not own service capability/resource policy, first-error identity, transitions, publication, recovery, persistence, durability, or physical I/O.",
+  "Mutation sensitivity establishes only the 24 named defects; it is not completeness or implementation-correctness proof.",
+]
+
+[[evidence]]
+id = "evidence.topology-member-binding-validation-correspondence"
+path = "crates/dwv-service/src/service/tests.rs"
+class = "test"
+claim = "Focused in-crate tests drive the real service assembly validator and service-open recovery-topology check with owner-accepted topology and real store-produced identity observations, preserving stable slot-to-store mapping under permutation and rejecting every mapped delegated defect without manufacturing trusted identity facts."
+tier = "portable-reference-comparison"
+fault_model = [
+  "model-valid production input rejected",
+  "delegated-invalid production input accepted",
+  "stable slot-to-store mapping changes under collection permutation",
+  "opened-store geometry mismatch",
+  "Same or Ambiguous owner-produced identity comparison accepted",
+  "opened stores swapped across stable topology assignments",
+]
+scope = [
+  "Rust input crates/dwv-service/src/service/tests.rs sha256 cf2cb1e6cf4a16a8424921c23d983cef2af2a8214340de8c0214bb37594d0c91",
+  "cargo test -p dwv-service topology_member_binding_model_corresponds_to_production_validation --lib -- --nocapture => 1 passed",
+  "cargo test -p dwv-service assembly_rejects_stores_swapped_across_stable_topology_assignments -- --nocapture => 1 passed",
+  "cargo test -p dwv-service --lib => 162 passed",
+  "real validate_assembly and HealthyPortableService::open paths, active recovery topology, topology-owned StoreAssignment identity, public MemberBinding construction, owner-accepted CodingProfile and ProtectedGeometry, semantic TopologySnapshot lookup, and FakeStore identity_observations",
+  "accepted profiles include protected lengths 4096 and 8192 with logical block size 512",
+  "Connect adapter intentionally absent because converting RandomAccessStore into model facts would manufacture opened-store and identity-assessment facts instead of consuming owner-supplied facts",
+]
+requirements = [
+  "req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments",
+]
+non_claims = [
+  "The correspondence test compares only the delegated valid/invalid projection; it is not Rust formal-correctness proof.",
+  "FakeStore and in-memory recovery do not certify a deployed backend, physical I/O, or durability.",
+  "The seam does not establish array comparison, unchecked-deserialization rejection, profile support, capacity policy, or identity-assessment correctness.",
+  "No Quint Connect conformance is claimed because the current production seam cannot supply every trusted input without manufacturing it.",
+]
+

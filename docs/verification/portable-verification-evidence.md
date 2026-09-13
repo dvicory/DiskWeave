@@ -1615,3 +1615,142 @@ cargo xtask docs build
 ```
 
 - In-memory and SQLite tests do not certify physical device durability.
+
+# Topology member-binding validity (executed, bounded)
+
+Date: 2026-09-03
+
+The canonical `TopologyMemberBindingValidation` module is the sole exact
+authority for one pure valid/invalid relation over an owner-accepted profile
+and geometry plus supplied snapshot assignments, member bindings, opened-store
+facts, and owner-qualified unordered store-pair comparisons. The product owner
+retains construction and trust of every supplied fact and the rejection timing.
+
+Reviewed executable inputs:
+
+| Input | SHA-256 |
+|---|---|
+| `models/quint/TopologyMemberBindingValidation.qnt` | `c30f33d2331cc6985d9cee3b9b3693d30a43b98da849ef603c7bc34e85abe610` |
+| `verification/quint/TopologyMemberBindingValidationScenarios.qnt` | `c6eb1c9afc9931144f8264a6b644d8eaf364c9b2c10c2a444fa49de9f312dc29` |
+| `verification/quint/TopologyMemberBindingValidationAnalysis.qnt` | `58bbc51686a73a4f911de5897b72e01c56d1957448dbf7dd39d693125b99a654` |
+| `verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt` | `f22a5ee5e73fcdfe25cf346cd27ae7d5e911da7f2f52f7b7d301c865c9ddd596` |
+| `verification/quint/TopologyMemberBindingValidationMutants.qnt` | `11f2cdedee509480ae34e25caf95bce794dccdd2240d5daf0bc9bd30f9f89a49` |
+| `crates/dwv-service/src/service/tests.rs` | `9a68bc5f385d6c49a7d021924eb8012512fee63709b49ad3177e37bc21d4dfd7` |
+
+The focused analysis ranges over 15 exact validation cases and 5 exact
+permutation pairs. It checks the combined relation against every separately
+named predicate: snapshot coverage, assignment uniqueness and accepted-role
+placement, binding bijection, captured-field equality, opened-store equality
+and geometry, and owner-qualified pairwise distinctness. It also checks
+permutation invariance and unique semantic lookup. Accepted and rejected inputs
+are both reachable.
+
+The widened sampled profile uses an accepted 3-data/2-parity profile, slots
+10-14, instances 20-24, stores 30-34, generation 7, epoch 9, protected length
+16384, parity length 32768, and logical block size 4096. In 500 samples it
+reached 195 valid and 305 invalid witnesses without violating the expected
+result or permutation invariant. These are evidence bounds, not product limits.
+
+Executed commands and outcomes:
+
+```text
+quint typecheck models/quint/TopologyMemberBindingValidation.qnt
+quint typecheck verification/quint/TopologyMemberBindingValidationScenarios.qnt
+quint typecheck verification/quint/TopologyMemberBindingValidationAnalysis.qnt
+quint typecheck verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt
+quint typecheck verification/quint/TopologyMemberBindingValidationMutants.qnt
+=> all exited 0 with no output
+
+quint test verification/quint/TopologyMemberBindingValidationScenarios.qnt --verbosity=3
+=> 8 passing
+
+quint verify verification/quint/TopologyMemberBindingValidationAnalysis.qnt \
+  --max-steps=1 \
+  --invariants ValidIffAllDelegatedPredicates AcceptedSnapshotIsUnambiguous \
+  AcceptedBindingsAreBijective AcceptedBindingsMatchCapturedFacts \
+  AcceptedBindingsAreDistinct PermutationInvariant LookupIsUnique
+=> No violation found
+
+quint run verification/quint/TopologyMemberBindingValidationAnalysis.qnt \
+  --max-steps=1 --max-samples=1000 --seed=22082026 \
+  --invariants ValidIffAllDelegatedPredicates AcceptedSnapshotIsUnambiguous \
+  AcceptedBindingsAreBijective AcceptedBindingsMatchCapturedFacts \
+  AcceptedBindingsAreDistinct PermutationInvariant LookupIsUnique \
+  --witnesses ValidInputReachable InvalidInputReachable \
+  SnapshotCoverageRejectionReachable SnapshotUniquenessRejectionReachable \
+  BindingBijectionRejectionReachable CapturedFieldRejectionReachable \
+  OpenedStoreRejectionReachable OwnerComparisonRejectionReachable \
+  OneDataOneParityAcceptedReachable TwoDataOneParityAcceptedReachable \
+  MultiParityAcceptedReachable SecondGeometryAcceptedReachable \
+  SameRejectedReachable AmbiguousRejectedReachable LaterPairRejectedReachable
+=> No violation found; every witness reached; valid 254/1000 and invalid
+   746/1000
+
+quint test verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt --verbosity=3
+=> 1 passing
+
+quint run verification/quint/TopologyMemberBindingValidationWideAnalysis.qnt \
+  --max-steps=1 --max-samples=500 --seed=22082026 \
+  --invariants WideExpectedResult WidePermutationInvariant \
+  --witnesses WideValidReachable WideInvalidReachable
+=> No violation found; valid witness reached 195/500 and invalid witness
+   reached 305/500
+
+quint test verification/quint/TopologyMemberBindingValidationMutants.qnt --verbosity=3
+=> 32 passing: 8 deterministic baselines and 24 named mutation canaries
+
+cargo test -p dwv-service topology_member_binding_model_corresponds_to_production_validation --lib -- --nocapture
+=> 1 passed
+
+cargo test -p dwv-service assembly_rejects_stores_swapped_across_stable_topology_assignments -- --nocapture
+=> 1 passed
+```
+
+The mutation canaries reject assignment under/over-count; invalid role or
+coding position; duplicate slot, position, or assignment instance; missing,
+extra, or duplicate-slot bindings; captured role, position, instance,
+generation, or epoch drift; declared/opened-store mismatch; duplicate store
+identity; opened epoch/length/block-size drift; `Same` and `Ambiguous`
+comparisons for both early and later unordered pairs; and positional lookup.
+Every canary begins from the accepted canonical input and demonstrates only its
+named defect.
+
+Production correspondence:
+
+| Model input or decision | Current production seam | Result |
+|---|---|---|
+| Owner-accepted profile and geometry | Checked `CodingProfile`, `ProtectedGeometry`, and `TopologySnapshot` supplied to `validate_assembly` | Direct bounded correspondence |
+| Stable assignment and binding fields | `dwv_recovery::StoreAssignment` owns the assignment's stable `StoreId`; the public `MemberBinding` constructor derives every captured field from that assignment, and `HealthyPortableService::open` requires the assembled slot-to-store relation to equal the active recovery topology | Accepted and every mapped mismatch exercised, including a same-epoch foreign topology with stores swapped across assignments |
+| Opened-store identity and geometry | Real `RandomAccessStore` identity observations and store capabilities consumed by assembly | Matching 4096/8192 geometry accepted; mismatches rejected |
+| Owner-qualified pair comparison | Production `IdentityObservationSet::compare` | Distinct accepted; `Same` and `Ambiguous` rejected |
+| Collection reordering | Original slot-to-store bindings reordered without reconstruction | Validity and stable slot resolution preserved |
+
+A Quint Connect adapter is intentionally absent. The current generic store seam
+does not expose every model input as an already owner-qualified fact; adapting
+it would manufacture opened-store and identity-assessment facts rather than
+consume trusted inputs. The direct Rust correspondence test therefore records
+the strongest practical current projection without changing production
+behavior.
+
+Independent gates:
+
+- Gate A: reviewer `TopologyModelApply.TopologyGateAReviewer`, `GO` after one
+  repair round at revision
+  `cf094e2a9f3ad0d404e2acba4cd636f07e334de9`.
+- Gate B: reviewer `TopologyModelApply.TopologyGateBReviewer`, `GO` after one
+  repair round at revision
+  `6842d1792e085d7dc6b47a2e65858b5d05b79f2c`.
+
+Non-claims:
+
+- The finite analyses do not establish arbitrary-width or unbounded proof.
+- The model does not validate profile/geometry construction, unchecked
+  deserialization, array identity, assignment-to-store authorization, identity
+  evidence provenance or assessment, confidence, precedence, or candidate
+  choice.
+- Service capability/resource policy, first-error identity, transitions,
+  publication, recovery, persistence, durability, and physical I/O remain
+  non-delegated.
+- The 24 mutation canaries establish sensitivity only to their named defects.
+- The Rust check is bounded correspondence, not formal Rust correctness,
+  deployed-backend certification, or hardware evidence.
