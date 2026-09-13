@@ -1,4 +1,3 @@
-// -*- mode: Bluespec; -*-
 /**
  * Bounded healthy-service lifecycle composition relation.
  *

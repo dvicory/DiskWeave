@@ -1,4 +1,3 @@
-// -*- mode: Bluespec; -*-
 /**
  * verify.write-recovery-lifecycle bounded recovery protocol model.
  * The model is model-only. It defines one active write lifecycle at a
