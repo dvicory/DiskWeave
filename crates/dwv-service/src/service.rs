@@ -20,7 +20,6 @@ use dwv_core::{
     DurabilityIntent, MemberRole, SlotId, TopologyAssignment, TopologyEpoch, TopologySnapshot,
 };
 use dwv_lifecycle_authority::LifecycleAuthorityOwner;
-use dwv_recovery::InvalidationTarget;
 use dwv_recovery::{
     BLAKE3_256_PROFILE, ChecksumAuthority, ChecksumBaselineStatus, ChecksumExtent,
     ChecksumPersistenceEvidence, ChecksumRecord, ChecksumSetGeneration, ChecksumTarget,
@@ -31,9 +30,10 @@ use dwv_recovery::{
     RecoveryCleanDecision, RecoveryCleanRefusalPermit, RecoveryCleanRequest,
     RecoveryCommitObservation, RecoveryError, RecoveryGeneration, RecoveryMutation,
     RecoverySnapshot, RecoveryStateStore, RecoveryStoreHealth, RecoveryTxn, RegionId,
-    WriteRecoveryRecordEvidence, assess_checksum_baseline, dirty_regions_for_range,
-    evaluate_recovery_clean,
+    TopologySnapshot as RecoveryTopologySnapshot, WriteRecoveryRecordEvidence,
+    assess_checksum_baseline, dirty_regions_for_range, evaluate_recovery_clean,
 };
+use dwv_recovery::{InvalidationTarget, StoreAssignment};
 use dwv_store::{
     ChildOperationId, CompletedRangeSet, CompletionDisposition, FenceDomain, IdentityAssessment,
     IdentityComparison, IdentityObservationSet, IdentitySourceKind, OperationSlotToken,
@@ -119,12 +119,9 @@ pub struct MemberBinding<S: RandomAccessStore> {
 }
 
 impl<S: RandomAccessStore> MemberBinding<S> {
-    pub fn new(
-        assignment: &TopologyAssignment,
-        topology_epoch: TopologyEpoch,
-        store_id: StoreId,
-        store: S,
-    ) -> Self {
+    /// Bind one opened store to the stable store identity owned by a validated
+    /// topology assignment.
+    pub fn new(assignment: &StoreAssignment, topology_epoch: TopologyEpoch, store: S) -> Self {
         Self {
             slot_id: assignment.slot_id(),
             role: assignment.role(),
@@ -132,7 +129,7 @@ impl<S: RandomAccessStore> MemberBinding<S> {
             assignment_instance: assignment.assignment_instance(),
             assignment_generation: assignment.assignment_generation(),
             topology_epoch,
-            store_id,
+            store_id: assignment.store_id(),
             store,
         }
     }
@@ -592,6 +589,42 @@ impl<S: RandomAccessStore, R: RecoveryStateStore> HealthyPortableService<S, R> {
         let snapshot = recovery
             .load_assembly_snapshot()
             .map_err(|error| ServiceError::io(FailureClass::Recovery, error.to_string()))?;
+        if snapshot.topology_epoch == topology.topology_epoch() {
+            let store_ids = topology
+                .assignments()
+                .iter()
+                .map(|assignment| {
+                    members
+                        .iter()
+                        .find(|member| member.slot_id == assignment.slot_id())
+                        .map(|member| member.store_id)
+                        .ok_or_else(|| {
+                            ServiceError::invalid(
+                                FailureClass::Identity,
+                                format!(
+                                    "missing member for stable slot {:?}",
+                                    assignment.slot_id()
+                                ),
+                            )
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            let admitted_topology =
+                RecoveryTopologySnapshot::from_core(topology.clone(), store_ids).map_err(
+                    |error| {
+                        ServiceError::invalid(
+                            FailureClass::Identity,
+                            format!("invalid admitted recovery topology: {error}"),
+                        )
+                    },
+                )?;
+            if snapshot.active_topology.as_ref() != Some(&admitted_topology) {
+                return Err(ServiceError::invalid(
+                    FailureClass::Identity,
+                    "member bindings do not match the active recovery topology",
+                ));
+            }
+        }
         let generation = snapshot.generation;
         let checksums = match assess_checksum_baseline(&snapshot) {
             ChecksumBaselineStatus::NotRequired => checksum_authority(&topology, generation)?,

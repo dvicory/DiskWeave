@@ -1051,6 +1051,12 @@ impl TopologySnapshot {
     pub fn assignments(&self) -> &[StoreAssignment] {
         &self.assignments
     }
+
+    pub fn assignment_for_slot(&self, slot_id: dwv_core::SlotId) -> Option<&StoreAssignment> {
+        self.assignments
+            .iter()
+            .find(|assignment| assignment.slot_id() == slot_id)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

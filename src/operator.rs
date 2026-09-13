@@ -972,19 +972,7 @@ where
     let service_members = open_members(policy, &topology, store_ids, true)?
         .into_iter()
         .map(|(assignment, store)| {
-            dwv_service::MemberBinding::new(
-                &dwv_core::TopologyAssignment::new(
-                    assignment.slot_id(),
-                    assignment.role(),
-                    assignment.coding_position(),
-                    assignment.assignment_instance(),
-                    assignment.assignment_generation(),
-                )
-                .with_evidence(assignment.evidence()),
-                topology.topology_epoch(),
-                assignment.store_id(),
-                store,
-            )
+            dwv_service::MemberBinding::new(&assignment, topology.topology_epoch(), store)
         })
         .collect();
     let recovery = SqliteRecoveryStore::open(&policy.recovery_path)

@@ -236,21 +236,24 @@ impl Fixture {
             .map_err(|error| AdapterError::Conflict(error.to_string()))?;
         let topology = topology(&self.manifest)?;
         let epoch = topology.topology_epoch();
+        let member_topology = dwv_recovery::TopologySnapshot::from_core(
+            topology.clone(),
+            vec![DATA_STORE, PARITY_STORE],
+        )
+        .map_err(|error| AdapterError::Conflict(error.to_string()))?;
         let members = vec![
             MemberBinding::new(
-                topology
+                member_topology
                     .assignment_for_slot(DATA_SLOT)
                     .expect("fixture topology has a data assignment"),
                 epoch,
-                DATA_STORE,
                 data,
             ),
             MemberBinding::new(
-                topology
+                member_topology
                     .assignment_for_slot(PARITY_SLOT)
                     .expect("fixture topology has a parity assignment"),
                 epoch,
-                PARITY_STORE,
                 parity,
             ),
         ];

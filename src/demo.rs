@@ -564,31 +564,32 @@ fn healthy_request(
 fn healthy_cycle(root: &Path, manifest: &FixtureManifest) -> Result<Value, DemoError> {
     let topology = core_topology(manifest)?;
     let epoch = topology.topology_epoch();
+    let member_topology = dwv_recovery::TopologySnapshot::from_core(
+        topology.clone(),
+        vec![StoreId(10), StoreId(11), StoreId(12)],
+    )
+    .map_err(|error| DemoError::failed(error.to_string()))?;
     let recovery = open_recovery(root, manifest)?;
-    let member = |slot_id, store_id, store| {
+    let member = |slot_id, store| {
         MemberBinding::new(
-            topology
+            member_topology
                 .assignment_for_slot(slot_id)
                 .expect("demo topology contains the requested assignment"),
             epoch,
-            store_id,
             store,
         )
     };
     let members = vec![
         member(
             SlotId::from_bytes([1; 16]),
-            StoreId(10),
             open_store(root, &manifest.data_files[0], manifest, StoreId(10), true)?,
         ),
         member(
             SlotId::from_bytes([2; 16]),
-            StoreId(11),
             open_store(root, &manifest.data_files[1], manifest, StoreId(11), true)?,
         ),
         member(
             SlotId::from_bytes([3; 16]),
-            StoreId(12),
             open_store(root, &manifest.parity_file, manifest, StoreId(12), true)?,
         ),
     ];

@@ -29,6 +29,24 @@ const LENGTH: u64 = 4096;
 const BLOCK: u32 = 512;
 static NEXT_FIXTURE: AtomicUsize = AtomicUsize::new(0);
 
+fn member_binding<S: RandomAccessStore>(
+    assignment: &TopologyAssignment,
+    topology_epoch: TopologyEpoch,
+    store_id: StoreId,
+    store: S,
+) -> MemberBinding<S> {
+    MemberBinding {
+        slot_id: assignment.slot_id(),
+        role: assignment.role(),
+        coding_position: assignment.coding_position(),
+        assignment_instance: assignment.assignment_instance(),
+        assignment_generation: assignment.assignment_generation(),
+        topology_epoch,
+        store_id,
+        store,
+    }
+}
+
 #[derive(Clone)]
 struct LostAckRecovery {
     inner: Rc<RefCell<MemoryRecoveryStore>>,
@@ -40,7 +58,7 @@ struct LostAckRecovery {
 
 impl LostAckRecovery {
     fn new(epoch: TopologyEpoch) -> Self {
-        Self::from_store(MemoryRecoveryStore::new(epoch))
+        Self::from_store(recovery_for(&topology(epoch)))
     }
 
     fn from_store(store: MemoryRecoveryStore) -> Self {
@@ -512,6 +530,26 @@ fn topology_with_length(epoch: TopologyEpoch, length: u64) -> TopologySnapshot {
     .unwrap()
 }
 
+fn recovery_for(topology: &TopologySnapshot) -> MemoryRecoveryStore {
+    let active_topology = dwv_recovery::TopologySnapshot::from_core(
+        topology.clone(),
+        topology
+            .assignments()
+            .iter()
+            .map(|assignment| StoreId(assignment.coding_position().0 as u64 + 1))
+            .collect(),
+    )
+    .unwrap();
+    let mut manifest = dwv_recovery::RecoveryManifest {
+        schema: dwv_recovery::CURRENT_RECOVERY_SCHEMA,
+        snapshot: MemoryRecoveryStore::new(topology.topology_epoch())
+            .snapshot()
+            .clone(),
+    };
+    manifest.snapshot.active_topology = Some(active_topology);
+    MemoryRecoveryStore::from_manifest(manifest).unwrap()
+}
+
 fn request(
     request_id: RequestId,
     epoch: TopologyEpoch,
@@ -558,7 +596,7 @@ fn fake_service_with_recovery<R: RecoveryStateStore>(
         .enumerate()
         .map(|(index, assignment)| {
             let store_id = StoreId(index as u64 + 1);
-            MemberBinding::new(
+            member_binding(
                 assignment,
                 epoch,
                 store_id,
@@ -583,7 +621,7 @@ fn fake_service_with_effects(
         .enumerate()
         .map(|(index, assignment)| {
             let store_id = StoreId(index as u64 + 1);
-            MemberBinding::new(
+            member_binding(
                 assignment,
                 epoch,
                 store_id,
@@ -591,7 +629,7 @@ fn fake_service_with_effects(
             )
         })
         .collect();
-    HealthyPortableService::open(topology, members, MemoryRecoveryStore::new(epoch), config)
+    HealthyPortableService::open(topology.clone(), members, recovery_for(&topology), config)
         .unwrap()
 }
 
@@ -604,7 +642,7 @@ fn fake_service_with_length(length: u64) -> HealthyPortableService<FakeStore, Me
         .enumerate()
         .map(|(index, assignment)| {
             let store_id = StoreId(index as u64 + 1);
-            MemberBinding::new(
+            member_binding(
                 assignment,
                 epoch,
                 store_id,
@@ -613,9 +651,9 @@ fn fake_service_with_length(length: u64) -> HealthyPortableService<FakeStore, Me
         })
         .collect();
     HealthyPortableService::open(
-        topology,
+        topology.clone(),
         members,
-        MemoryRecoveryStore::new(epoch),
+        recovery_for(&topology),
         ServiceConfig::default(),
     )
     .unwrap()
@@ -2986,7 +3024,7 @@ fn bindings(
         .enumerate()
         .map(|(index, assignment)| {
             let store_id = StoreId(index as u64 + 1);
-            MemberBinding::new(
+            member_binding(
                 assignment,
                 topology.topology_epoch(),
                 store_id,
@@ -3046,7 +3084,7 @@ fn fixture_with_config(
     let topology = topology(epoch);
     let members = bindings(&topology, open);
     let service =
-        HealthyPortableService::open(topology, members, MemoryRecoveryStore::new(epoch), config)
+        HealthyPortableService::open(topology.clone(), members, recovery_for(&topology), config)
             .unwrap();
     (root, service)
 }
@@ -3486,9 +3524,9 @@ fn clean_reopen_and_control_rebuild_preserve_ordinary_payloads() {
     let topology = topology(epoch);
     let members = bindings(&topology, open);
     let mut reopened = HealthyPortableService::open(
-        topology,
+        topology.clone(),
         members,
-        MemoryRecoveryStore::new(epoch),
+        recovery_for(&topology),
         ServiceConfig::default(),
     )
     .unwrap();
@@ -4567,9 +4605,9 @@ fn stable_slots_select_the_same_members_when_binding_order_changes() {
     let mut members = reopened_bindings(&root, &topology);
     members.reverse();
     let mut service = HealthyPortableService::open(
-        topology,
+        topology.clone(),
         members,
-        MemoryRecoveryStore::new(epoch),
+        recovery_for(&topology),
         ServiceConfig::default(),
     )
     .unwrap();
@@ -4623,7 +4661,7 @@ fn stable_slots_ignore_topology_coding_and_member_collection_order() {
     )
     .unwrap();
     let binding = |slot_id: SlotId, store_id: StoreId| {
-        MemberBinding::new(
+        member_binding(
             reordered.assignment_for_slot(slot_id).unwrap(),
             epoch,
             store_id,
@@ -4647,9 +4685,9 @@ fn stable_slots_ignore_topology_coding_and_member_collection_order() {
         binding(SlotId::from_bytes([2; 16]), StoreId(2)),
     ];
     let mut service = HealthyPortableService::open(
-        reordered,
+        reordered.clone(),
         members,
-        MemoryRecoveryStore::new(epoch),
+        recovery_for(&reordered),
         ServiceConfig::default(),
     )
     .unwrap();
@@ -4768,6 +4806,47 @@ fn assembly_rejects_stale_assignment_and_store_identity_bindings() {
 }
 
 #[test]
+fn assembly_rejects_stores_swapped_across_stable_topology_assignments() {
+    let epoch = TopologyEpoch(4);
+    let topology = topology(epoch);
+    let owner_topology = dwv_recovery::TopologySnapshot::from_core(
+        topology.clone(),
+        vec![StoreId(1), StoreId(2), StoreId(3)],
+    )
+    .unwrap();
+    let foreign_topology = dwv_recovery::TopologySnapshot::from_core(
+        topology.clone(),
+        vec![StoreId(2), StoreId(1), StoreId(3)],
+    )
+    .unwrap();
+    let members = foreign_topology
+        .assignments()
+        .iter()
+        .map(|assignment| {
+            MemberBinding::new(
+                assignment,
+                epoch,
+                FakeStore::new(assignment.store_id(), epoch, FakeRead::Exact),
+            )
+        })
+        .collect();
+    let mut manifest = dwv_recovery::RecoveryManifest {
+        schema: dwv_recovery::CURRENT_RECOVERY_SCHEMA,
+        snapshot: MemoryRecoveryStore::new(epoch).snapshot().clone(),
+    };
+    manifest.snapshot.active_topology = Some(owner_topology);
+    let recovery = MemoryRecoveryStore::from_manifest(manifest).unwrap();
+
+    assert!(matches!(
+        HealthyPortableService::open(topology, members, recovery, ServiceConfig::default()),
+        Err(ServiceError::Invalid {
+            class: FailureClass::Identity,
+            ..
+        })
+    ));
+}
+
+#[test]
 fn parity_slot_cannot_redirect_a_frontend_write() {
     let (root, mut service) = fixture();
     let before = (1..=3)
@@ -4851,7 +4930,8 @@ fn missing_slot_and_payload_mismatch_refuse_before_mutation() {
 fn reopening_with_dirty_recovery_state_is_read_only() {
     let (root, service) = fixture();
     drop(service);
-    let mut recovery = MemoryRecoveryStore::new(TopologyEpoch(4));
+    let topology = topology(TopologyEpoch(4));
+    let mut recovery = recovery_for(&topology);
     let target = InvalidationTarget::new(vec![RegionId(99)], vec![]);
     let _ = WriteRecoveryRecordCommit::new(
         &mut recovery,
@@ -4871,7 +4951,6 @@ fn reopening_with_dirty_recovery_state_is_read_only() {
         )
         .unwrap()
     };
-    let topology = topology(TopologyEpoch(4));
     let members = bindings(&topology, open);
     let service =
         HealthyPortableService::open(topology, members, recovery, ServiceConfig::default())

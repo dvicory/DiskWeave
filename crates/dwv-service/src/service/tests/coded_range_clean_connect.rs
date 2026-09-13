@@ -1538,7 +1538,7 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
             .enumerate()
             .map(|(index, assignment)| {
                 let store_id = StoreId(index as u64 + 1);
-                MemberBinding::new(
+                member_binding(
                     assignment,
                     epoch,
                     store_id,
@@ -1549,7 +1549,7 @@ fn reopened_capture_refusal_survives_failed_commit_and_restart() {
         HealthyPortableService::open(topology, members, recovery, ServiceConfig::default()).unwrap()
     };
 
-    let mut service = open_service(MemoryRecoveryStore::new(epoch));
+    let mut service = open_service(recovery_for(&topology(epoch)));
     let operation = service
         .reserve(request(
             RequestId(953),
@@ -3144,7 +3144,7 @@ mod generated_coded_operation_properties {
             .enumerate()
             .map(|(index, assignment)| {
                 let store_id = StoreId(index as u64 + 1);
-                MemberBinding::new(
+                member_binding(
                     assignment,
                     epoch,
                     store_id,
@@ -3169,7 +3169,7 @@ mod generated_coded_operation_properties {
 
         fn without_capture() -> Self {
             Self {
-                service: open_generated_service(MemoryRecoveryStore::new(TopologyEpoch(4))),
+                service: open_generated_service(recovery_for(&topology(TopologyEpoch(4)))),
                 tokens: BTreeMap::new(),
                 next_request_id: 0,
                 drop_active_claim: false,
