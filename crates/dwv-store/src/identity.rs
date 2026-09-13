@@ -10,9 +10,6 @@ use dwv_core::{
 };
 use std::fmt;
 
-pub const MAX_IDENTITY_CANDIDATES: usize = 32;
-pub const MAX_IDENTITY_OBSERVATIONS: usize = 32;
-
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum IdentitySourceKind {
     StableDeviceId,
@@ -320,8 +317,8 @@ pub struct CandidateAssessment {
     pub assessment: IdentityAssessment,
     pub confidence: IdentityConfidence,
     pub geometry_compatible: bool,
-    pub stable_observations: u8,
-    pub missing_stable_observations: u8,
+    pub stable_observations: usize,
+    pub missing_stable_observations: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -381,11 +378,14 @@ pub fn assess_identity(
     profile: &IdentityProfile,
     candidates: &[IdentityCandidate],
 ) -> IdentityResolution {
+    // A complete supplied candidate set is assessed completely. Discovery
+    // resource policy belongs upstream in enumeration, where incompleteness
+    // is explicit rather than silent.
     let mut ordered: Vec<&IdentityCandidate> = candidates.iter().collect();
     ordered.sort_by_key(|candidate| candidate.candidate_id);
-    let mut assessments = Vec::with_capacity(ordered.len().min(MAX_IDENTITY_CANDIDATES));
+    let mut assessments = Vec::with_capacity(ordered.len());
 
-    for candidate in ordered.iter().take(MAX_IDENTITY_CANDIDATES) {
+    for candidate in ordered.iter() {
         assessments.push(assess_candidate(profile, candidate));
     }
 
@@ -486,11 +486,11 @@ pub fn assess_identity(
 
     let stable_sources = assessments
         .iter()
-        .map(|assessment| assessment.stable_observations as usize)
+        .map(|assessment| assessment.stable_observations)
         .sum::<usize>();
     let missing_sources = assessments
         .iter()
-        .map(|assessment| assessment.missing_stable_observations as usize)
+        .map(|assessment| assessment.missing_stable_observations)
         .sum::<usize>();
     let report = SemanticEvidenceReport::new(
         profile.topology_epoch,
@@ -542,9 +542,9 @@ fn assess_candidate(
         };
     }
 
-    let mut stable_matches = 0u8;
-    let mut stable_conflicts = 0u8;
-    let mut filesystem_matches = 0u8;
+    let mut stable_matches = 0usize;
+    let mut stable_conflicts = 0usize;
+    let mut filesystem_matches = 0usize;
     let mut independent_difference = false;
     for expected in &profile.observations {
         if !is_stable(expected) {
@@ -576,7 +576,7 @@ fn assess_candidate(
         .observations
         .iter()
         .filter(|observation| is_stable(observation))
-        .count() as u8;
+        .count();
     let missing = expected_stable
         .saturating_sub(stable_matches)
         .saturating_sub(stable_conflicts);
@@ -951,5 +951,76 @@ mod tests {
             fixtures::reordered_discovery().assessment,
             IdentityAssessment::Match
         );
+    }
+
+    fn serial_profile() -> IdentityProfile {
+        IdentityProfile::new(
+            ArrayId([1; 16]),
+            TopologyEpoch(1),
+            SlotId([2; 16]),
+            MemberRole::Data,
+            CodingPosition(0),
+            AssignmentInstanceId([3; 16]),
+            AssignmentGeneration(1),
+            CandidateGeometry::new(4, 4, 1),
+            vec![IdentityEvidence::stable(
+                IdentitySourceKind::Serial,
+                [1; 16],
+                IdentityProvenance::Hardware,
+            )],
+        )
+    }
+
+    fn serial_match(id: u64) -> IdentityCandidate {
+        IdentityCandidate::new(
+            CandidateId(id),
+            vec![IdentityEvidence::stable(
+                IdentitySourceKind::Serial,
+                [1; 16],
+                IdentityProvenance::Hardware,
+            )],
+        )
+        .with_geometry(CandidateGeometry::new(4, 4, 1))
+    }
+
+    // Regression: the assessor evaluates every supplied candidate, so a match
+    // anywhere in discovery order resolves. Observation vectors are likewise
+    // unbounded at this layer; discovery policy bounds them upstream.
+    #[test]
+    fn supplied_match_is_assessed_regardless_of_position() {
+        let profile = serial_profile();
+        // Control: a match in an early position resolves writable.
+        let mut in_bound: Vec<IdentityCandidate> = (1..=31)
+            .map(|id| IdentityCandidate::new(CandidateId(id), vec![]))
+            .collect();
+        in_bound.push(serial_match(32));
+        assert!(assess_identity(&profile, &in_bound).assembly.is_writable());
+        // Regression: the identical match at position 33 is assessed too.
+        let mut past_bound: Vec<IdentityCandidate> = (1..=32)
+            .map(|id| IdentityCandidate::new(CandidateId(id), vec![]))
+            .collect();
+        past_bound.push(serial_match(33));
+        let resolution = assess_identity(&profile, &past_bound);
+        assert_eq!(
+            resolution.candidates.len(),
+            past_bound.len(),
+            "every supplied candidate is assessed"
+        );
+        // If any repair marks a candidate writable, it must be the assessed
+        // match, not a filler from the prefix.
+        if let AssemblyDecision::Writable { candidate, .. } = resolution.assembly {
+            assert_eq!(
+                candidate,
+                CandidateId(33),
+                "writability must track the assessed match"
+            );
+        }
+        // Negative property: the outcome must stop being indistinguishable
+        // from the no-match case.
+        let silently_dropped = resolution.assessment == IdentityAssessment::NewDevice
+            && matches!(resolution.assembly, AssemblyDecision::ReadOnly { .. });
+        if silently_dropped {
+            panic!("a supplied match must not resolve as an unassigned device");
+        }
     }
 }

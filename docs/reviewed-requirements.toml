@@ -3458,7 +3458,7 @@ implementation = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.anchorless-topology-identity.identity-evidence-is-assessed-from-multiple-observations"]
-implementation = "065c2941f8dfb9fa9f64df391b901fe878eeb4dbbed42ff2e58672ef4a54ddff"
+implementation = "82342d647de1aedaeacfdfd9dfd1214ddf0e9c9a360cd5a32bad03c8a7ba4376"
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch"]
