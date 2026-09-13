@@ -2,7 +2,9 @@
 
 ## Purpose
 This capability provides the first end-to-end portable single-parity path: normalized requests are admitted through stable topology and operation slots, executed against ordinary file-backed members, and completed only with the evidence required by the canonical dirty-region, recovery, transaction, XOR, and store contracts.
+
 ## Requirements
+
 ### Requirement: Assembly and request admission are bounded and identity-safe
 <!-- dwv:req req.healthy-portable-io.assembly-and-request-admission-are-bounded-and-identity-safe -->
 <!-- dwv:requires req.normalized-block-semantics.requests-have-validated-frontend-neutral-semantics -->
@@ -143,6 +145,7 @@ This requirement owns service composition and conformance only. The service SHAL
 
 - **WHEN** recovery or an adapter reports an unclassifiable `Unknown` commit or reopen disposition
 - **THEN** the service preserves dirty/indeterminate state and bounded capture evidence, obtains authoritative reconciliation before `CLEAN` or cleanup, and independently consumes exact external `ReleaseAllowed` when the canonical lifecycle-release owner authorizes operation or coded-claim release
+
 ### Requirement: Abandonment, restart, and failure preserve operation safety
 <!-- dwv:req req.healthy-portable-io.abandonment-restart-and-failure-preserve-operation-safety -->
 <!-- dwv:requires req.normalized-block-semantics.frontend-lifecycle-events-have-explicit-abandonment-semantics -->
@@ -200,6 +203,10 @@ For one exact generation-bearing admitted operation whose owner-approved admissi
 
 For this requirement's bounded composition surface, the exact state, action, and invariant relation SHALL be delegated to the canonical `models/quint/LifecycleRelease.qnt` module. Its external observations are exactly: terminal or authoritative-reconciled operation/media effect; terminal children; recorded required reconciliation; safe generation-qualified `Reclaimable`; the applicable owner-approved semantic transaction release requirement being satisfied; authoritative recovery-owned reconciliation; and healthy-service basis conformance showing no relevant basis remains consumable. Applicability is external admission scope, not a model observation. The model SHALL distinguish those observations, pure derived claims, `ReleaseAllowed`, cleanup requests, and observed cleanup results. It SHALL represent transaction satisfaction as the owner-approved requirement being satisfied, not raw `RangeReleased` and not a Rust `transaction_required` boolean. It SHALL NOT model CLEAN capture, raw transaction traces, reservation policy, execution mechanics, or generic operation completion. Once established, `ReleaseAllowed` has no normal invalidation or retirement transition; cleanup results cannot revoke it. Separate analysis and mutant modules under `verification/quint/` SHALL provide finite evidence only.
 
+Established authorizations are retained per slot index under an explicit per-slot budget. Admission SHALL consult retention availability before coded admission and refuse new requests that cannot be retained, leaving existing records and owners untouched. Already accepted writes SHALL be preserved through reconciliation waits rather than failed when retention is the only blocker. The exact availability transitions behind this boundary, including discharge-driven sweep, occupied replacement, exhaustion, and exact retirement, are delegated below and SHALL NOT be restated here.
+
+For this requirement's bounded retention-availability subrelation, the exact state, action, and invariant relation SHALL be delegated to the canonical `models/quint/RetentionBudgetAvailability.qnt` module. Its external inputs are exactly: established authorizations as opaque exact-generation records; outstanding-consumer flags as opaque owner observations from admission, coded-capture, and driver owners; and per-slot budgets as parameters. Slot-table occupancy, authorization composition, coded-capture consumer mechanics, budget values, transaction and recovery semantics, WriteDriver continuation, physical stores, and governor capacity policy remain outside the delegated model. The model SHALL distinguish retained entries, consumer flags, admission, refusal, retention, and exhaustion verdicts with exact verdict identity, and exact retirement. It SHALL NOT model authorization composition, slot lifecycle, coded capture internals, u32 range or index bounds, or physical durability. Separate analysis, phase-cut, composition, scenario, and mutant modules under `verification/quint/` SHALL provide finite evidence only.
+
 Reaching the operation-slot owner's safe `Reclaimable` state is a prerequisite for `ReleaseAllowed`, but successful subsequent physical slot or resource reclamation is not. If physical reclamation fails after `ReleaseAllowed` is established, the service SHALL retain the exact generation, canonical request, terminal evidence, and owned resources for retry under the operation-slot owner. The bookkeeping failure SHALL NOT revoke the semantic authorization, permit generation confusion, or authorize reuse of the retained generation's resources. Later cleanup success, topology or recovery-generation changes, unrelated work, and other later observations SHALL NOT make an established authorization false; they may end physical resource retention after the consumer no longer needs it.
 
 Neither a transaction trace `RangeReleased` observation alone nor physical slot reclamation or removal alone SHALL establish `ReleaseAllowed`. Genuine unresolved operation, media-effect, child, reconciliation, recovery, or basis state SHALL withhold the authorization. An unresolved recovery `CLEAN` capture is a separate dirty-integrity concern and SHALL NOT be consulted by this lifecycle authorization; the delegated model represents that independence by containing no CLEAN-capture state.
@@ -244,3 +251,17 @@ Neither a transaction trace `RangeReleased` observation alone nor physical slot 
 - **WHEN** an otherwise eligible operation has an unresolved dirty-integrity `CLEAN` capture
 - **THEN** this lifecycle authorization does not consult, clear, or derive authority from the capture; dirty-integrity retains its independent capture evidence and exclusion obligations
 
+#### Scenario: Saturated consumed budget refuses before admission
+
+- **WHEN** every admissible index holds a full per-slot budget of authorizations with outstanding exact-generation consumers
+- **THEN** the new request is refused before coded admission with existing records and owners untouched
+
+#### Scenario: Consumer discharge unblocks the remember path
+
+- **WHEN** a consumer owner discharges its outstanding claim and a new established authorization is remembered for the same index
+- **THEN** the service feeds the discharged state into the remember composition, which re-evaluates retention availability for the new authorization; the exact retained set follows the delegated availability relation below
+
+#### Scenario: Exhaustion errors while establishment blocks wait
+
+- **WHEN** either the index budget cannot admit a new authorization at remember time or, separately, retention is blocked at authorization establishment for an accepted write
+- **THEN** in the first case the remember path reports a reconciliation-required error with the evidence retained on the driver for retry and the refused entry not retained, while in the second case the accepted driver waits for owner reconciliation with its evidence preserved instead of failing

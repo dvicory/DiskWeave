@@ -1105,3 +1105,47 @@ non_claims = [
   "No Quint Connect conformance is claimed because the current production seam cannot supply every trusted input without manufacturing it.",
 ]
 
+[[evidence]]
+id = "evidence.retention-budget-availability"
+path = "docs/verification/retention-budget-availability.md"
+class = "evidence-artifact"
+claim = "The retention-budget availability relation preserves exact-token observe, full-and-consumed blocking with refusal purity, lowest discharged-first retirement, occupied replace without sweep, sweep-and-insert into room, failure-with-sweep exhaustion, exact retirement, and exact verdict identity across the bounded Quint relation and the real ledger correspondence seam; five deterministic mutation canaries establish sensitivity to named safety defects."
+tier = "portable-model-and-connect"
+fault_model = [
+  "sweep dropping a consumed entry",
+  "refusal despite available room",
+  "retirement with an outstanding consumer",
+  "token-blind refusal of a retained entry",
+  "whole-bucket retirement orphaning surviving consumer flags",
+  "refusal or exhaustion mutating ledger state",
+  "mislabeled verdict identity",
+]
+scope = [
+  "canonical input models/quint/RetentionBudgetAvailability.qnt sha256 84ddfd46b7e496c3b5836c82b94e40b6377c6e3675d6861f44f905866dc495ec",
+  "deterministic input verification/quint/RetentionBudgetAvailabilityAnalysis.qnt sha256 345e8e5e89892f7d2558925af363fd39d364b25a291be0b2885a12d75900261f",
+  "compact input verification/quint/RetentionBudgetAvailabilityCompact.qnt sha256 0cca2397b537a68fe88417691e45fea6d46c08a7332944982d2ec9029c27c773",
+  "compact refusal-half input verification/quint/RetentionBudgetAvailabilityCompactRefusal.qnt sha256 6c184c30a969aff57b112ad2f727e2ea7e24d0069526383f50f5912eff961401",
+  "compact retirement-half input verification/quint/RetentionBudgetAvailabilityCompactRetirement.qnt sha256 a78cdc7f71187f74c95cbd9d8b5079cf259049285d650e3ccb2496725d13aa57",
+  "staged input verification/quint/RetentionBudgetAvailabilityRefusalCycle.qnt sha256 804f8d5e1c1f226a501909ad8d3411ff3bd5b716636b9cff2213cf8b7abc84b5",
+  "staged input verification/quint/RetentionBudgetAvailabilityRetirementCycle.qnt sha256 7d04435caf2e249ec8b75bdbb1ff72980211b3620f3270d05d52c617e40b29a7",
+  "mutation input verification/quint/RetentionBudgetAvailabilityMutants.qnt sha256 50bf3493d47dfe1f62ebf03b29987182a1c06d8d8b8ff9e7329726ae9ab80d06",
+  "handoff input verification/quint/RetentionBudgetAvailabilityComposition.qnt sha256 af46c0cdce4ebcd7d956a2d6a295a28bdecc02c90d2b764d613f500f64280ff4",
+  "connect input verification/quint/RetentionBudgetAvailabilityConnect.qnt sha256 32471df8907ac74af1051286ad5e31376787cade3a1f9648e5b23741e02994cd",
+  "Rust input crates/dwv-service/src/service/tests/retention_budget_availability_connect.rs sha256 97d51c0e0142bc0661509ddf9d1b6db3822b28c57c8ed1c12c48a811a9e6de92",
+  "quint test analysis scenarios => 12 passing; occupied pinpoint plus retire-all canary => 2 passing; mutants => 4 passing; staged and composition paths passing",
+  "quint verify staged refusal/retirement/cross-traffic/isolation depth 7, occupied pinpoint depth 9, handoff composition depth 22 => NoError; compact full-interleaving depth 4 five-invariant set NoError with six-invariant set recorded open",
+  "quint run production-shape full-step 1000 traces => no violation found",
+  "cargo test -p dwv-service --all-features --lib retention_ => 8 passed (seven Connect paths plus the exact-retention ledger unit test)",
+  "real ReleaseAuthorizationLedger retention, exact-token observe, blocking probes, discharge sweep, occupied replacement, exhaustion failure, and exact retirement through scripted slot-table tokens, real lifecycle-owner authorizations, and a fixture outstanding-consumer set",
+  "adversarial model review GO at confidence 0.96, adversarial delegation review GO at confidence 0.97, adversarial Connect review GO at confidence 0.97",
+]
+requirements = [
+  "req.healthy-portable-io.generation-qualified-release-authorization-composes-owner-approved-lifecycle-facts",
+]
+non_claims = [
+  "The relation and handoff composition do not own authorization composition, budget values, slot-table occupancy, slot lifecycle, coded capture mechanics, transaction or recovery semantics, WriteDriver continuation, physical stores, governor capacity, u32 range or index bounds, or authorization payloads.",
+  "Trusted fixture inputs do not prove upstream truth.",
+  "Bounded, staged, and Connect traces do not prove arbitrary-width concurrency or liveness; the two-slot profiles are the checked finite domains, not proof of every slot count, budget, or generation shape.",
+  "Real slot-table and lifecycle-owner fixtures are not deployed-backend, hardware, or physical-durability certification.",
+  "Mutation canaries establish sensitivity only to their named defects; they are not model completeness or implementation-correctness proof.",
+]

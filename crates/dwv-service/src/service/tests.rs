@@ -5567,3 +5567,5 @@ mod lifecycle_connect;
 mod persistence_evidence_retirement_connect;
 #[path = "tests/retained_operation_core_connect.rs"]
 mod retained_operation_core_connect;
+#[path = "tests/retention_budget_availability_connect.rs"]
+mod retention_budget_availability_connect;
