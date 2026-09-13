@@ -986,3 +986,44 @@ non_claims = [
   "The tests do not replace individual semantic review of current owners or evidence.",
   "They do not execute product verification or establish product behavior, physical durability, or platform certification.",
 ]
+
+[[evidence]]
+id = "evidence.retained-operation-execution-core"
+path = "docs/verification/retained-operation-execution-core.md"
+class = "evidence-artifact"
+claim = "The retained-operation core preserves exact child correlation, acceptance-before-execution, delayed and out-of-order delivery, duplicate disposition, conservative non-success sibling refusal, completion-identity rejection, one-way abandonment, and reconciliation through Reclaimable across the bounded Quint relation and the real service correspondence seam; six deterministic mutation canaries establish sensitivity to named safety defects."
+tier = "portable-model-and-connect"
+fault_model = [
+  "mismatched child identity",
+  "mismatched completion identity",
+  "delayed or out-of-order completion",
+  "duplicate terminal delivery",
+  "unaccepted sibling not refused after non-success completion",
+  "accepted sibling not retained after non-success completion",
+  "reconciliation outcome replacement after reclaim",
+  "accepted work after abandonment",
+  "failed or uncertain physical completion",
+  "late child acceptance after partial completion",
+]
+scope = [
+  "PortableOperationExecutionCore.qnt fixed six-child delegated production domain",
+  "verification/quint/PortableOperationExecution.qnt evidence-only qualified composition of PortableOperationExecutionCore, RecoveryProtocol, and LifecycleRelease with explicit trusted fixture inputs",
+  "recovery effects require successful exact-fixture core children; transaction-range release requires exact-generation core reconciliation and Reclaimable",
+  "PortableOperationExecutionCoreAnalysis.qnt compact bounded checks",
+  "PortableOperationExecutionCoreMutants.qnt deterministic negative canaries for acceptance, identity, disposition, sibling refusal, abandonment, and reconciliation guards",
+  "adversarial review GO at confidence 0.93 for all six deterministic mutation canaries and their stated claim boundary",
+  "PortableOperationExecutionCoreConnect.qnt deterministic six-child success, abandonment, failure, accepted-sibling retention, short, uncertainty, duplicate, and identity paths",
+  "dwv-service quint-connect success, abandonment, failure, short, uncertainty, child-identity, and completion-identity probes",
+  "dwv-store one-shot reconciliation retry regression",
+]
+requirements = [
+  "req.store-operation-contracts.operation-slots-own-backend-lifetimes-and-generations",
+]
+non_claims = [
+  "The core and composition do not own canonical request production, topology/store/incarnation selection, buffers/tags, resources, drain, generation reuse, watermarks, persistence admissibility, physical stores, recovery authority, transaction semantics, ReleaseAllowed, frontend abandonment, shutdown, session, startup, or post-Reclaimable cleanup.",
+  "Trusted identity inputs do not prove upstream truth.",
+  "Two-child, bounded, and deterministic Connect traces do not prove arbitrary-width concurrency or liveness; the six-child profile is the delegated production identity domain, not proof of every operation shape.",
+  "FakeStore and in-memory recovery evidence is not deployed-backend, hardware, or physical-durability certification.",
+  "Mutation canaries establish sensitivity only to their named defects; they are not model completeness or implementation-correctness proof.",
+]
+

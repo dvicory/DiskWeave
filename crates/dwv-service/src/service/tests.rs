@@ -5212,3 +5212,5 @@ mod coded_range_clean_connect;
 mod lifecycle_connect;
 #[path = "tests/persistence_evidence_retirement_connect.rs"]
 mod persistence_evidence_retirement_connect;
+#[path = "tests/retained_operation_core_connect.rs"]
+mod retained_operation_core_connect;
