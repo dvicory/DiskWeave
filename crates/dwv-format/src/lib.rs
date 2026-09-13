@@ -325,6 +325,30 @@ impl EnvelopeRecord {
                 "block size and stripe width must be non-zero",
             ));
         }
+        // Capacity invariant: the payload must hold the logical range it
+        // claims to represent. Payload capacity beyond the logical length is
+        // legitimate; the reverse is a contradiction, never a partial cover.
+        // Enforced here so neither our own encoder nor a foreign decoder path
+        // can bless it; raw bytes stay inspectable without decoding.
+        if self.logical_length > self.payload.length {
+            return Err(FormatError::InvalidGeometry(
+                "logical length exceeds payload capacity",
+            ));
+        }
+        // Exact front placement: current profiles define no front gap or
+        // partial-layout reservation, so the payload begins exactly at the
+        // canonical end of the front metadata (the envelope copy slot, plus
+        // the bitmap region when present). Extra payload capacity beyond the
+        // logical length stays legal; this is about placement, not length
+        // equality. The trailing copy slot needs the parity extent size,
+        // which the record does not carry.
+        let metadata_bytes = (COPY_BYTES + self.bitmap.len()) as u64;
+        if self.payload.offset == metadata_bytes {
+        } else {
+            return Err(FormatError::InvalidGeometry(
+                "payload must begin at the canonical end of front metadata",
+            ));
+        }
         if self.profile == Profile::RedundantEnvelope && !self.bitmap.is_empty() {
             return Err(FormatError::InvalidField(
                 "Profile B cannot contain a bitmap",
@@ -923,7 +947,7 @@ mod tests {
             parity_device_id: [2; 16],
             parity_role: 0,
             codec_profile: 1,
-            payload: ByteRange::new(4096, 8192).unwrap(),
+            payload: ByteRange::new(4096 + bitmap.len() as u64, 8192).unwrap(),
             logical_length: if profile == Profile::EnvelopeBitmap {
                 1
             } else {
@@ -1085,6 +1109,91 @@ mod tests {
                 profile: Profile::BareParity,
                 reason: CopyReason::MissingCopy
             }
+        );
+    }
+
+    // Regression: contradictory geometry is refused at the shared validation
+    // boundary, on write and on read. Mirrors the `layout()`
+    // protected-vs-payload invariant. Raw bytes stay inspectable; they must
+    // not decode into a trusted copy.
+    #[test]
+    fn geometry_contradicting_logical_length_is_not_writable() {
+        let mut bad = record(Profile::RedundantEnvelope, 0);
+        bad.logical_length = bad.payload.length + 1;
+        // The contradictory record seals cleanly: checksums cover geometry they
+        // never verify.
+        // Every refusal rung is recorded, not skipped: only a writable
+        // decoding fails the proof.
+        let outcome = match encode_copy(&bad) {
+            Err(_) => "refused at encode",
+            Ok(bytes) => match decode_copy(&bytes) {
+                Err(_) => "refused at decode",
+                Ok(decoded) => {
+                    if decoded.usability.writable() {
+                        "writable"
+                    } else {
+                        "non-writable"
+                    }
+                }
+            },
+        };
+        eprintln!("negative proof dwv-6oc outcome: {outcome}");
+        let writable_found = outcome == "writable";
+        if writable_found {
+            panic!("a copy whose payload cannot hold its logical length must not authorize writes");
+        }
+    }
+
+    // Regression: a payload range overlapping the front metadata (envelope
+    // copy slot, plus bitmap region when present) is malformed geometry.
+    // Canonical layouts start the payload after the metadata; the simulator
+    // builds exactly those records.
+    #[test]
+    fn payload_overlapping_metadata_is_rejected_at_encode() {
+        let mut bad = record(Profile::RedundantEnvelope, 0);
+        bad.payload = ByteRange::new(0, 8192).unwrap();
+        assert!(matches!(
+            encode_copy(&bad),
+            Err(FormatError::InvalidGeometry(_))
+        ));
+    }
+
+    /// Reseal honestly-encoded bytes after patching one body u64, so the read
+    /// trust boundary faces validly checksummed contradiction. Body layout:
+    /// array_id[16] + parity_device_id[16] + role[1] + codec[2], then
+    /// payload offset[8] at +35, payload length[8] at +43, logical length[8]
+    /// at +51.
+    fn resealed_with_u64_at(body_offset: usize, value: u64) -> Vec<u8> {
+        let mut bytes = encode_copy(&record(Profile::RedundantEnvelope, 0)).unwrap();
+        let body_len = u32::from_le_bytes(bytes[12..16].try_into().unwrap()) as usize;
+        let at = HEADER_BYTES + body_offset;
+        bytes[at..at + 8].copy_from_slice(&value.to_le_bytes());
+        let body = bytes[HEADER_BYTES..HEADER_BYTES + body_len].to_vec();
+        bytes[40..72].copy_from_slice(blake3::hash(&body).as_bytes());
+        let header = bytes[..72].to_vec();
+        bytes[72..104].copy_from_slice(blake3::hash(&header).as_bytes());
+        bytes
+    }
+
+    // Regression: the read boundary refuses sealed contradictions even when
+    // they bypass the encoder. Checksums attest integrity, not sense; the
+    // control with the honest value rewritten proves the reseal methodology
+    // preserves honest bytes.
+    #[test]
+    fn sealed_contradictions_rejected_at_decode() {
+        let control = resealed_with_u64_at(51, 0);
+        assert!(
+            decode_copy(&control).is_ok(),
+            "reseal methodology must preserve honest bytes"
+        );
+        let logical = resealed_with_u64_at(51, 8192 + 1);
+        let logical_rejected =
+            matches!(decode_copy(&logical), Err(FormatError::InvalidGeometry(_)));
+        let offset = resealed_with_u64_at(35, 0);
+        let offset_rejected = matches!(decode_copy(&offset), Err(FormatError::InvalidGeometry(_)));
+        assert!(
+            logical_rejected && offset_rejected,
+            "logical: {logical_rejected}, offset: {offset_rejected}"
         );
     }
 }
