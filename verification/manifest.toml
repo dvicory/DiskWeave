@@ -1087,10 +1087,10 @@ fault_model = [
   "opened stores swapped across stable topology assignments",
 ]
 scope = [
-  "Rust input crates/dwv-service/src/service/tests.rs sha256 cf2cb1e6cf4a16a8424921c23d983cef2af2a8214340de8c0214bb37594d0c91",
+  "Rust input crates/dwv-service/src/service/tests.rs sha256 e515fce39c8ae7a110d26957c9c8f67e18d268b432ac7f6e15e8bb2f91342259",
   "cargo test -p dwv-service topology_member_binding_model_corresponds_to_production_validation --lib -- --nocapture => 1 passed",
   "cargo test -p dwv-service assembly_rejects_stores_swapped_across_stable_topology_assignments -- --nocapture => 1 passed",
-  "cargo test -p dwv-service --lib => 162 passed",
+  "cargo test -p dwv-service --lib => 169 passed",
   "real validate_assembly and HealthyPortableService::open paths, active recovery topology, topology-owned StoreAssignment identity, public MemberBinding construction, owner-accepted CodingProfile and ProtectedGeometry, semantic TopologySnapshot lookup, and FakeStore identity_observations",
   "accepted profiles include protected lengths 4096 and 8192 with logical block size 512",
   "Connect adapter intentionally absent because converting RandomAccessStore into model facts would manufacture opened-store and identity-assessment facts instead of consuming owner-supplied facts",

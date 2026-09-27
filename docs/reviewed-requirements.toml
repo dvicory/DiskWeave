@@ -3283,7 +3283,7 @@ condition = "owner-present"
 "req.anchorless-topology-identity.topology-identities-are-explicit-and-immutable-within-an-epoch" = "Reviewed stable semantic ordering against topology identity implementation and dependents; ownership remains canonical and order is no longer caller-defined. Currentized the exact current implementation endpoint set after the persistence-hardening rebase; identity, scope, and artifact boundaries remain reviewed."
 "req.anchorless-topology-identity.topology-transition-plans-bind-source-target-and-recovery" = "Exact v0.8 fragment mapping and migration evidence were reviewed; current code exposes no coding-profile migration, so no runtime implementation relationship is claimed."
 "req.anchorless-topology-identity.topology-transitions-are-staged-and-recoverable" = "TopologyAuthority remains the staged prepare/verify/commit/publish semantic owner and refuses profile changes; add/remove/resize/profile execution remains unsupported and the evidence records its non-runtime boundary."
-"req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the retention-budget Connect wiring: the only endpoint change is a test-module declaration in service/tests.rs with no marker, production, or semantic effect."
+"req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the retention-budget Connect wiring: the only endpoint change is a test-module declaration in service/tests.rs with no marker, production, or semantic effect. Re-reviewed after the in-process rusqlite adapter binding: the only evidence change removes an obsolete sqlite3-availability assertion from an unrelated control-projection test in service/tests.rs; both pinned topology tests pass and the evidence scope hash is re-pinned."
 "req.anchorless-topology-identity.writable-assembly-fails-closed-on-unresolved-identity" = "Reviewed current typed implementation and evidence endpoint sets for Writable assembly fails closed on unresolved identity; absent targets remain explicitly deferred."
 "req.architecture-contract.data-payloads-and-protection-metadata-remain-separate" = "Reviewed current typed implementation and evidence endpoint sets for Data payloads and protection metadata remain separate; absent targets remain explicitly deferred."
 "req.architecture-contract.diskweave-protects-conventional-member-images-at-block-level" = "Reviewed current typed implementation and evidence endpoint sets for DiskWeave protects conventional member images at block level; absent targets remain explicitly deferred."
@@ -3359,7 +3359,7 @@ condition = "owner-present"
 "req.healthy-portable-io.healthy-reads-preserve-exact-range-evidence" = "Reviewed current typed implementation and evidence endpoint sets for Healthy reads preserve exact-range evidence; absent targets remain explicitly deferred. Currentized the exact current implementation endpoint set after the persistence-hardening rebase; identity, scope, and artifact boundaries remain reviewed."
 "req.healthy-portable-io.portable-members-remain-ordinary-and-control-state-is-disposable" = "Reviewed after the approved vocabulary and identity migration; the current requirement retains its semantic owner, conservative boundaries, and applicable relationships."
 "req.healthy-portable-io.publication-identity-is-derived-from-admitted-semantics" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged."
-"req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the retention-budget Connect wiring: the only endpoint change is a test-module declaration in service/tests.rs with no marker, production, or semantic effect."
+"req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the retention-budget Connect wiring: the only endpoint change is a test-module declaration in service/tests.rs with no marker, production, or semantic effect. Re-reviewed after the in-process rusqlite adapter binding: the only evidence change removes an obsolete sqlite3-availability assertion from an unrelated control-projection test in service/tests.rs; the service write path is unchanged and the full service suite passes."
 "req.independent-parity-verification.standalone-equation-verification-is-bounded-read-only-and-non-authorizing" = "Canonical standalone verifier boundary is distinct from XOR equation and parity-verification policy: it owns descriptor admission, bounded regions, renderer/process status, non-mutation, and explicit experimental evidence scope; referenced owners retain equation semantics, evidence policy, and authority boundaries. Focused executable evidence covers matching, mismatch, incomplete/unavailable input, zero extension, bounds, alias refusal, output equivalence, deterministic status, and non-mutation."
 "req.independent-recovery-inspection.independent-recovery-state-inspection-is-bounded-and-non-authorizing" = "Reviewed the updated dependency on consequential result projections against crates/dwv-recovery-sqlite/src/recovery_inspect.rs, crates/dwv-recovery-sqlite/tests/recovery_inspect.rs, and the focused operator projection evidence; all six conservative classifications, bounded non-mutation, format facts, non-authorization, and human/structured parity remain covered."
 "req.linux-ublk-frontend.assembly-and-shutdown-preserve-ownership-and-recovery-authority" = "Pure shutdown gates and live owner-death, cleanup, drain, checkpoint, and endpoint-removal evidence cover the changed lifecycle contract."
@@ -3418,9 +3418,9 @@ condition = "owner-present"
 "req.recovery-state-semantics.fence-retirement-preserves-an-exact-durable-predecessor" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged."
 "req.recovery-state-semantics.legacy-fence-retention-migrates-explicitly" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged."
 "req.recovery-state-semantics.offline-rebuild-progress-is-durable-semantic-authority" = "Reviewed after the approved vocabulary and identity migration; the current requirement retains its semantic owner, conservative boundaries, and applicable relationships."
-"req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged."
-"req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic" = "Reviewed the final architecture-hardening owner repairs and refreshed the affected typed endpoints; canonical requirement meaning is unchanged."
-"req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout" = "Reviewed non-mutating SQLite inspection for absent, supported, unreadable, unsupported, migration-required, and reconciliation-required states plus unchanged conservative writable and dependent boundaries. Currentized the exact current evidence endpoint set after the persistence-hardening rebase; identity, scope, and artifact boundaries remain reviewed."
+"req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations" = "Reviewed the final active-recovery-topology binding repair and refreshed affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the in-process rusqlite adapter binding: SqlitePrototype opens one short-lived connection per operation instead of spawning sqlite3, keeps immediate SQLITE_BUSY failure, and preserves error-to-health classification; marked endpoints and conservative commit observations are unchanged."
+"req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic" = "Reviewed the final architecture-hardening owner repairs and refreshed the affected typed endpoints; canonical requirement meaning is unchanged. Re-reviewed after the in-process rusqlite adapter binding: generation-checked writes keep foreign_keys=ON, synchronous=FULL, and BEGIN IMMEDIATE, and now roll back on any statement failure where the sqlite3 shell could commit a partial script."
+"req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout" = "Reviewed non-mutating SQLite inspection for absent, supported, unreadable, unsupported, migration-required, and reconciliation-required states plus unchanged conservative writable and dependent boundaries. Currentized the exact current evidence endpoint set after the persistence-hardening rebase; identity, scope, and artifact boundaries remain reviewed. Re-reviewed after the in-process rusqlite adapter binding: export, health, and read-only inspection use typed row reads and exact manifest bytes, no SQLite handle crosses dwv-recovery, and the byte-for-byte non-mutation evidence passes."
 "req.recovery-state-semantics.semantic-schema-migrations-and-exports-are-versioned-independently-of-sqlite" = "Reviewed current typed implementation and evidence endpoint sets for Semantic schema, migrations, and exports are versioned independently of SQLite; absent targets remain explicitly deferred."
 "req.recovery-state-semantics.sqlite-remains-an-evidence-driven-adapter-decision" = "Reviewed 'SQLite remains an evidence-driven adapter decision' after canonical ownership wording changed; no consequential outgoing relationship. The requirement retains one local responsibility, conservative failure behavior where applicable, and its scenarios still exercise that local contract."
 "req.recovery-state-semantics.the-sqlite-prototype-remains-evaluation-only-and-storage-independent-at-the-semantic-boundary" = "Reviewed current typed implementation and evidence endpoint sets for The SQLite prototype remains evaluation-only and storage-independent at the semantic boundary; absent targets remain explicitly deferred."
@@ -3475,7 +3475,7 @@ evidence = "6b77fbe2d8b2349e6abf68f3229a87f67cf76090b55ddfeee45eb7d704da177e"
 
 [coverage_endpoint_digests."req.anchorless-topology-identity.topology-validation-rejects-ambiguous-or-inconsistent-assignments"]
 implementation = "816d9ba54cad1acab9a5066917b1738e53fc37ff4068c395afbb40fdc2007612"
-evidence = "ce7d25edcfc990ad853b42360bb414aaaf8ec13b3b21b8a2224b22574a7be990"
+evidence = "cbe13d22552ef942753a66d2e96d6c425fd780ce166b9c24655b65b8c3e838dd"
 
 [coverage_endpoint_digests."req.anchorless-topology-identity.writable-assembly-fails-closed-on-unresolved-identity"]
 implementation = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
@@ -3779,7 +3779,7 @@ evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.healthy-portable-io.writes-follow-the-reference-transaction-and-update-single-xor-parity"]
 implementation = "c9d4f6e9f0330cee8827b953494063e131e68ab611f4e66cc3db26c45c193167"
-evidence = "86d53a8ffb21c1b121a1aeef5cd2d4ed4fd53095e4ca97bc9c078d146733e9c1"
+evidence = "33fda3dcac637bb15f2ccb26cb6df6ada864c97a098e0de8d78f03d2cd7148ec"
 
 [coverage_endpoint_digests."req.independent-parity-verification.standalone-equation-verification-is-bounded-read-only-and-non-authorizing"]
 implementation = "9ddd08cbb526b25ddaa2a8789f041ad0c981dad30d91c5ecbdcbf9a35a36e83d"
@@ -4014,15 +4014,15 @@ implementation = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.recovery-adapters-report-conservative-commit-observations"]
-implementation = "df838747af2b0b859358896c32276fc93f93304fd4635c6e0714c561446cacef"
+implementation = "d3445a175aebc567eb41786fb0ca8c468bfd5ffd549012fc420fb17c71a033b8"
 evidence = "ca931313290caf5c258733951cd89507b778eb7e1a0eb30631d058a75158dbd6"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.recovery-transactions-are-generation-checked-and-atomic"]
-implementation = "4b546ce67f7f66b93cb497c121bb58da984731186bec1f85904f1d99309eb7e0"
+implementation = "2a017a85c5d599d76806afc7e38813872f96461e275d63f41eb07c3db8cf4079"
 evidence = "d53d18c23212ea7b6300594bb89bce60218f6eff2b9d628b8cc42d3e79bbd5ab"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.semantic-export-and-health-are-independent-of-storage-engine-layout"]
-implementation = "b453b4d04dd46b4dd640ff48b84528aec36d769025a8a0e4e13b67a14a14c7b7"
+implementation = "dc81c7f181b1bdb70c9478ffb425bf4fe63d46731756e689cfcaa12d171ca473"
 evidence = "a2ff904b03fc8c8a5429d49ebc6380e85e0ee88e065d21a7dbf6108d21ff8973"
 
 [coverage_endpoint_digests."req.recovery-state-semantics.semantic-schema-migrations-and-exports-are-versioned-independently-of-sqlite"]
